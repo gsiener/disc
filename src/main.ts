@@ -4,7 +4,29 @@ import { buildSystems } from './systems';
 import { applyShot, SHOTS, type ShotName } from './capture/Shots';
 
 const params = new URLSearchParams(location.search);
-const tier = (params.get('q') as QualityTier) ?? 'ultra';
+
+/**
+ * Pick a starting tier from what we can cheaply observe. `ultra` costs ~47 ms a
+ * frame on an M1 Max, so it is never the default for a visitor — the engine's
+ * adaptive DPR will claw resolution back if we still guessed high, but it cannot
+ * undo a tier that is fundamentally too heavy for the device.
+ */
+function detectTier(): QualityTier {
+  const q = params.get('q') as QualityTier | null;
+  if (q && ['low', 'medium', 'high', 'ultra'].includes(q)) return q;
+
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+    || (navigator.maxTouchPoints > 1 && window.innerWidth < 1100);
+  if (mobile) return 'low';
+
+  const cores = navigator.hardwareConcurrency ?? 4;
+  // Device Memory API — Chromium only, in GiB. Absent elsewhere, so assume fine.
+  const memGiB = (navigator as any).deviceMemory ?? 8;
+  if (cores <= 4 || memGiB <= 4) return 'medium';
+  return 'high';
+}
+
+const tier = detectTier();
 const capture = params.get('capture') === '1';
 const debug = params.get('debug') === '1';
 const seed = Number(params.get('seed') ?? 20260729);

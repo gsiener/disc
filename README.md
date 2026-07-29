@@ -3,10 +3,35 @@
 A 7v7 Ultimate Frisbee game in Three.js, built with **zero binary assets** — every
 mesh, texture, environment map and sound is generated in code at load time.
 
-> **Status: in progress.** The simulation layer is complete and tested. The
-> renderer builds and runs but is mid-iteration, and players are still
-> placeholder capsules. See [Current state](#current-state) for an honest
-> account of what does and does not work yet.
+### ▶ [gsiener.github.io/ultimate-threejs](https://gsiener.github.io/ultimate-threejs/)
+
+> **Status: in progress — and what is deployed is a renderer preview, not a
+> playable game.** You can fly around a stadium and jump between camera
+> framings. You cannot throw a disc: `src/sim/Game.ts` is still a stub, so
+> nothing yet connects the (fully tested) input, locomotion, disc-physics and
+> rules systems into a game loop. Players render as placeholder capsules.
+> See [Current state](#current-state) for the full accounting.
+
+## Controls
+
+Everything is camera control for now — there is no gameplay to drive.
+
+| input | does |
+|---|---|
+| **drag** | orbit the camera around its target |
+| **wheel** | zoom (multiplicative, so it feels the same at 2 m and 200 m) |
+| **1**–**0** | jump between the ten named framings — broadcast, sideline, closeup, layout, disc, stadium, turf, crowd, endzone, night |
+| **F** | toggle free-fly — **WASD** to move, **Q**/**E** down/up, hold **shift** for speed |
+| **R** | toggle slow auto-orbit |
+| **H** | hide the overlay |
+
+Quality is auto-detected (mobile → `low`, few cores or little RAM → `medium`,
+otherwise `high`; `ultra` is never chosen for you because it costs ~47 ms/frame
+on an M1 Max). Override it with `?q=low|medium|high|ultra`. `?debug=1` enables
+gizmos, `?seed=N` reseeds the deterministic RNG.
+
+The **night** framing (`0`) and the **stadium** exterior (`6`) currently look
+best. The **turf** macro (`7`) shows the procedural grass up close.
 
 ## Why it's interesting
 
@@ -124,7 +149,23 @@ same code path.
 **Not started:**
 
 - Player rig, materials and animation — players are placeholder capsules.
-- Broadcast camera director, HUD, and audio.
+- **The game loop.** `src/sim/Game.ts` is a 9-line stub. Input, locomotion, disc
+  physics and rules are each built and tested in isolation, but nothing wires
+  them together, so the deployed build is not playable.
+- Broadcast camera direction (the camera is a viewer/explorer instead), HUD, audio.
+
+## Blind review
+
+Frames are scored by critics that are not told what they are looking at and are
+asked to guess the product tier from the pixels alone, against a rubric where 10
+means indistinguishable from a shipped Madden 26 marketing frame.
+
+Round 2 scored **3.33/10, unanimous PROTOTYPE**. All three reviewers independently
+named the same root cause — an *inversion of effort*: an ambitious renderer (CSM,
+GTAO, scattering sky, single-tone-map AgX chain) drawing a placeholder world of
+two-box cars and trees made of three icospheres. The full review, with 28 ranked
+defects and fixes across 19 files, is in
+[`docs/reviews/round-2.md`](docs/reviews/round-2.md).
 
 ## Running it
 
@@ -132,10 +173,14 @@ same code path.
 npm install
 npm run dev          # http://localhost:5173
 npm run check        # tsc --noEmit
-npm run shots        # capture all shots
+npm run build        # static bundle -> dist/
+npm run preview      # serve the built bundle
+npm run shots        # capture all shots -> shots/
 ```
 
-Query params: `?q=low|medium|high|ultra`, `?debug=1`, `?seed=N`.
+Deploys to GitHub Pages from `main` via `.github/workflows/pages.yml`. `vite.config.ts`
+sets `base: './'` so the same bundle works at a domain root or under a project
+subpath without hardcoding the repo name.
 
 ## Note on how this was built
 

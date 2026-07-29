@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vite build",
     "check": "tsc --noEmit",
-    "shots": "node tools/capture.mjs"
+    "shots": "node tools/capture.mjs",
+    "preview": "vite preview --port 4173"
   },
   "keywords": [],
   "author": "",
