@@ -4,25 +4,37 @@ import type { SunState } from './Solar';
 /**
  * Exposure control.
  *
- * The renderer runs AgX, which has a wide latitude but still needs to be told
- * where middle grey is. Rather than a magic constant per shot, we estimate the
- * irradiance actually landing on the pitch from our own rig and solve for the
- * exposure that puts turf near middle grey — then bias the target down at night
- * so a floodlit game reads as a floodlit game instead of a slightly blue noon.
+ * The grade runs AgX, which has a wide latitude but still needs to be told where
+ * middle grey is. Rather than a magic constant per shot, we estimate the
+ * irradiance actually landing in the scene from our own rig and solve for the
+ * exposure that puts turf a little under middle grey — then bias the target down
+ * at night so a floodlit game reads as a floodlit game instead of a slightly
+ * blue noon.
  *
  * Estimating instead of measuring keeps this deterministic (no readback, no
  * frame lag, identical output on every machine) and it degrades sanely if a
  * peer sky publishes a sun intensity on some other scale: whatever they choose,
  * the frame stays exposed.
+ *
+ * The `ambient` term must be the *whole* indirect budget — IBL plus probe plus
+ * wrap. It used to be the probe alone while the image-based light quietly
+ * contributed twice as much again, which meant every daylight frame was metered
+ * against about half the light it was actually receiving.
  */
 
 /** Irradiance that should map to a well-exposed daylight frame. */
-const DAY_TARGET = 3.30;
+const DAY_TARGET = 3.85;
 /** Same, at night — lower, so the floodlit pitch keeps its contrast. */
-const NIGHT_TARGET = 2.05;
+const NIGHT_TARGET = 2.85;
 
-const MIN_EXPOSURE = 0.42;
-const MAX_EXPOSURE = 2.30;
+const MIN_EXPOSURE = 0.35;
+/**
+ * Golden hour is genuinely dark on a horizontal surface — a 6° sun puts about a
+ * twentieth of noon's irradiance on the pitch — and the ceiling has to be high
+ * enough to let those shots open up instead of silently clipping to a muddy
+ * under-exposure. It is a stop and a half above what the shot list needs.
+ */
+const MAX_EXPOSURE = 6.00;
 
 export class Exposure {
   value = 1;
@@ -32,14 +44,17 @@ export class Exposure {
   private target = 1;
 
   /**
-   * @param ambient  irradiance from sky + bounce (roughly the probe's DC term).
+   * @param ambient  total indirect irradiance on an up-facing surface.
    * @param tower    irradiance from the floodlight rig at pitch level.
    */
   evaluate(sun: SunState, ambient: number, tower: number): number {
     const sunUp = Math.max(0, Math.sin(sun.elevation));
-    // A grazing sun lights the turf far less than its intensity suggests, so
-    // weight by the cosine but never let it collapse to zero while it is up.
-    const key = sun.intensity * (0.16 + 0.84 * sunUp);
+    const lumaCol = 0.2126 * sun.color.r + 0.7152 * sun.color.g + 0.0722 * sun.color.b;
+    // Metering a scene, not a light meter lying on the grass. A grazing sun puts
+    // very little on the pitch but a great deal on every vertical surface — the
+    // crowd, the stands, the players — so the estimate blends the horizontal
+    // cosine with a floor that stands in for all that upright geometry.
+    const key = sun.intensity * lumaCol * (0.28 + 0.62 * sunUp);
     const e = key + ambient + tower;
     this.estimate = e;
 

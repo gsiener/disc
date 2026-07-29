@@ -75,6 +75,8 @@ export class LightingSystem implements System {
   private sceneHookInstalled: ((...a: any[]) => void) | null = null;
   private prevSceneHook: ((...a: any[]) => void) | null = null;
   private unsub: Array<() => void> = [];
+  /** Forces an indirect re-solve even when the sun has not moved. */
+  private ambientDirty = true;
 
   /* ---------------------------------------------------------------- init */
 
@@ -91,6 +93,8 @@ export class LightingSystem implements System {
     this.unsub.push(ctx.events.on('shot:apply', (p: any) => {
       if (typeof p?.shot?.hour === 'number') this.hour = p.shot.hour;
       this.snapExposure = true;
+      this.ambientDirty = true;
+      if (p?.shot) this.fitCascadesToShot(p.shot);
     }));
     this.unsub.push(ctx.events.on('shot:applied', () => {
       this.csm?.updateFrustums();
@@ -101,6 +105,7 @@ export class LightingSystem implements System {
     this.unsub.push(ctx.events.on('env:ready', (p: any) => {
       const tex = p?.texture as THREE.Texture | undefined;
       if (tex) this.ambient.adoptEnvironment(ctx.scene, tex, ctx.scene.environmentIntensity ?? 1);
+      this.ambientDirty = true;
     }));
 
     this.refreshSun(true);
@@ -161,6 +166,12 @@ export class LightingSystem implements System {
    * Bias and filter width scale with the cascade's world-space texel size.
    * A single global bias is what produces either acne in cascade 0 or
    * peter-panning in cascade 3 — there is no value that is right for both.
+   *
+   * `radius` is in *texels*, so a constant value would make the near cascade's
+   * penumbra a centimetre and the far one's half a metre. That is the wrong way
+   * round from what an eye expects — but it is also, by luck, close to right:
+   * contact shadows should be tight and distant ones should not shimmer. What it
+   * must not do is grow without limit, so the far cascades are held down.
    */
   private tuneCascades(): void {
     const csm = this.csm;
@@ -169,10 +180,45 @@ export class LightingSystem implements System {
       const l = csm.lights[i];
       const cam = l.shadow.camera as THREE.OrthographicCamera;
       const texel = Math.max(1e-4, (cam.right - cam.left) / this.csmSizes[i]);
-      l.shadow.normalBias = clamp(texel * 1.65, 0.008, 0.28);
-      l.shadow.bias = -0.000014 * (1 + i * 0.75);
-      l.shadow.radius = 1.05 + i * 0.45;
+      // Normal-offset is the only bias that survives a grazing sun without
+      // detaching the shadow from the contact point, so it carries the load and
+      // the depth bias stays near zero. Scaled by 1/sin(elevation) because a
+      // low sun stretches the depth gradient across the same texel.
+      const graze = clamp(1 / Math.max(0.22, Math.abs(this.sun.dir.y)), 1, 3.4);
+      l.shadow.normalBias = clamp(texel * 1.15 * graze, 0.006, 0.30);
+      l.shadow.bias = -0.000008 * (1 + i * 0.6);
+      // Keep the world-space penumbra from exploding on the far cascades: they
+      // cover ten times the ground, so a constant texel radius is ten times the
+      // blur, and a 60 cm-soft shadow under a player's foot reads as fog.
+      const worldBlur = 0.055;                       // metres, roughly a foot's edge
+      l.shadow.radius = clamp(worldBlur / texel, 0.9, 2.4);
     }
+  }
+
+  /**
+   * Cascade coverage follows the shot.
+   *
+   * `maxFar` is what actually decides shadow texel density: four cascades spread
+   * across 160 m give a portrait shot 4 cm texels under a chin, which is a
+   * smeared grey blob rather than a contact shadow. Every named shot knows how
+   * far away its subject is — that is what `focus` is — so the cascade set is
+   * fitted to it and the far stands simply stop casting sun shadows they were
+   * never going to be judged on.
+   */
+  private fitCascadesToShot(shot: { pos?: readonly number[]; target?: readonly number[]; focus?: number }): void {
+    const csm = this.csm;
+    if (!csm) return;
+    let subject = shot.focus ?? 0;
+    if (!(subject > 0) && shot.pos && shot.target) {
+      const dx = shot.pos[0] - shot.target[0];
+      const dy = shot.pos[1] - shot.target[1];
+      const dz = shot.pos[2] - shot.target[2];
+      subject = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    if (!(subject > 0)) subject = 40;
+    csm.maxFar = clamp(subject * 1.9 + 8, 16, CSM_MAX_FAR);
+    csm.updateFrustums();
+    this.tuneCascades();
   }
 
   /* --------------------------------------------------------------- events */
@@ -242,15 +288,17 @@ export class LightingSystem implements System {
     // Re-project the SH only when it would actually change.
     const moved = this.projectedDir.dot(sun.dir) < 0.99996
       || Math.abs(this.projectedI - sun.intensity) > 0.02;
-    if (force || moved) {
-      this.ambient.update(sun, this.towers.irradiance);
+    if (force || moved || this.ambientDirty) {
+      if (!this.ambient.hasForeignEnv) this.ambient.ensureFallbackEnv(this.ctx, this.hour);
+      // The sun's irradiance on a horizontal surface is what the indirect budget
+      // is expressed against — see Ambient.ts.
+      const sunUp = sun.intensity * Math.max(0, sun.dir.y)
+        * (0.2126 * sun.color.r + 0.7152 * sun.color.g + 0.0722 * sun.color.b);
+      this.ambient.update(this.ctx, sun, this.towers.irradiance, this.ctx.scene.environment, sunUp);
       this.projectedDir.copy(sun.dir);
       this.projectedI = sun.intensity;
-      if (!this.ambient.hasForeignEnv) this.ambient.ensureFallbackEnv(this.ctx, this.hour);
+      this.ambientDirty = false;
     }
-
-    const envI = 0.95 - 0.25 * sun.night;
-    this.ambient.setEnvIntensity(this.ctx.scene, envI);
   }
 
   lateUpdate(dt: number, ctx: Ctx): void {
@@ -258,12 +306,7 @@ export class LightingSystem implements System {
     this.duckTypeSky();
     this.refreshSun(false);
 
-    // Ambient DC term, roughly: the probe's band-0 luminance back out of SH.
-    const c0 = this.ambient.probe.sh.coefficients[0];
-    const ambientE = 0.886227 * (0.2126 * c0.x + 0.7152 * c0.y + 0.0722 * c0.z)
-      * this.ambient.probe.intensity * Math.PI * 0.32;
-
-    this.exposure.evaluate(this.sun, ambientE, this.towers.irradiance);
+    this.exposure.evaluate(this.sun, this.ambient.irradianceUp, this.towers.irradiance);
     ctx.renderer.toneMappingExposure = this.exposure.step(dt, this.snapExposure || this.frames < 3);
     this.snapExposure = false;
 

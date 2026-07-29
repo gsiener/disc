@@ -8,11 +8,17 @@ import { buildScreens, type ScreensBuild } from './stadium/Screens';
 import { buildTowers, type TowersBuild } from './stadium/Towers';
 import { buildSideline } from './stadium/Sideline';
 import { buildExterior, setExteriorNight } from './stadium/Exterior';
-import { bowlRows, ringSamples, sampleSeats, type SeatSample } from './stadium/Layout';
+import {
+  bowlRows, ringSamples, sampleSeats, seatLayout, bowlSpec,
+  type SeatSample, type StadiumBowlSpec, type StadiumSeatLayout,
+} from './stadium/Layout';
 
 export {
-  FLOODLIGHT_TOWERS, SCREENS, BOWL, ROOF, CLUB, sampleSeats,
-  rowY, rowOffset, bowlRows, type FloodlightTower, type SeatSample,
+  FLOODLIGHT_TOWERS, SCREENS, BOWL, ROOF, CLUB, ROWS, SIT_HEIGHT,
+  sampleSeats, seatLayout, bowlSpec, sectionAt,
+  rowY, rowOffset, rowTread, rowRise, bowlRows, roofYAt,
+  DECK_TOP_Y, OUTER_OFF, FACADE_OFF,
+  type FloodlightTower, type SeatSample, type StadiumBowlSpec, type StadiumSeatLayout,
 } from './stadium/Layout';
 
 /**
@@ -38,8 +44,24 @@ export {
  *   exterior  hardstand, car parks with cars and lighting columns, trees, a
  *             low-rise city edge and hills fading into aerial perspective.
  *
- * Peers can read seat placement via `sampleSeats(rows)` (Layout.ts) rather than
- * re-deriving the bowl geometry.
+ * ---------------------------------------------------------------------------
+ * SEAT LAYOUT API — for the Crowd system
+ * ---------------------------------------------------------------------------
+ * Read seat placement off this system rather than re-deriving the bowl. Every
+ * one of these is populated in `init()` and never mutated afterwards, and each
+ * is defensively available both as a property and as a getter:
+ *
+ *   ctx.sys.stadium.seats         SeatSample[]        every modelled seat
+ *   ctx.sys.stadium.seatLayout    StadiumSeatLayout   seats + row/section structure
+ *   ctx.sys.stadium.bowl          StadiumBowlSpec     flat numeric summary
+ *   ctx.sys.stadium.hasBowl       true                a real deck exists — do not
+ *                                                     build a fallback one
+ *   ctx.sys.stadium.getSeats()  /  .getSeatLayout()  /  .getBowl()
+ *
+ * `StadiumBowlSpec` is field-for-field the same shape as `crowd/Bowl.ts`'s
+ * `BowlSpec`, so it can be adopted wholesale. Full contract, including what
+ * `pos`/`yaw`/`row`/`t`/`seg`/`tier`/`section` mean, is documented at the
+ * bottom of `src/world/stadium/Layout.ts`.
  */
 export class StadiumSystem implements System {
   readonly name = 'stadium';
@@ -57,9 +79,20 @@ export class StadiumSystem implements System {
   private nextJumboAt = -1;
   private rows = 30;
 
-  /** Seat slots, exposed for the crowd system. */
-  seats: SeatSample[] = [];
-  seatCount = 0;
+  /* ------------------------------------------- seat layout API (see above) */
+  /** Every modelled seat, row-major from row 0. Read-only for peers. */
+  seats: SeatSample[] = sampleSeats();
+  /** Seats + row/section structure + exact per-row heights. */
+  seatLayout: StadiumSeatLayout = seatLayout();
+  /** Flat numeric summary, shaped like `crowd/Bowl.ts`'s `BowlSpec`. */
+  bowl: StadiumBowlSpec = bowlSpec();
+  /** Tells peers not to build a fallback deck of their own. */
+  readonly hasBowl = true;
+  seatCount = this.seats.length;
+
+  getSeats(): SeatSample[] { return this.seats; }
+  getSeatLayout(): StadiumSeatLayout { return this.seatLayout; }
+  getBowl(): StadiumBowlSpec { return this.bowl; }
 
   init(ctx: Ctx): void {
     this.root.name = 'stadium';
@@ -87,9 +120,6 @@ export class StadiumSystem implements System {
     this.root.add(this.exterior);
 
     ctx.scene.add(this.root);
-
-    // Seat samples for peers that want to populate the bowl.
-    this.seats = sampleSeats(rows);
 
     ctx.events.on('shot:apply', (p: { name: string; shot: Shot }) => {
       this.targetNight = nightFromHour(p.shot.hour);

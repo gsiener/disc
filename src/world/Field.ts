@@ -91,9 +91,12 @@ export class FieldSystem implements System {
       maps: this.turfMaps, wear: this.wear, anisotropy: aniso,
     });
     this.uniforms = uniforms;
-    if (tier === 'low') {
-      uniforms.uNormalScale.value = 0.9;
-    }
+    // How much relief the normal map may carry is bounded by how well it can be
+    // filtered: `low` gets 4 anisotropic taps against a 512² set, so the same
+    // tilt that reads as grain at `high` reads as shimmer here. (This used to
+    // push the scale *up* to 0.9 at low, which is the wrong direction — the
+    // grazing turf camera is exactly where the fewest taps are available.)
+    if (tier === 'low' || tier === 'medium') uniforms.uNormalScale.value *= 0.8;
 
     this.turfMesh = new THREE.Mesh(geo, material);
     this.turfMesh.name = 'field.turf';

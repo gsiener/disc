@@ -4,14 +4,24 @@ import { fbm2, ridged2, clamp, smoothstep } from '../../util/Noise';
 import type { Ctx } from '../../core/Ctx';
 import { parts, mat, type Part, type RGB } from './Geo';
 import type { StadiumMaterials } from './Materials';
-import { BOWL, rowOffset } from './Layout';
+import { BOWL, FACADE_OFF, roofBackOff, ptAt, type RingPt } from './Layout';
 
 /**
  * Context beyond the bowl so the horizon is never empty: an apron of hardstand
  * and car parks, a treed ring, a low-rise city edge and a band of hills that
  * fades into aerial perspective. Everything is instanced or merged, and the
  * whole thing is four draw calls.
+ *
+ * Everything close in is laid out on the *bowl's own plan* offset outward
+ * (`ptAt`), not on a circle. A circular apron round a 107 × 170 m building
+ * either cuts through the ends or leaves a huge empty crescent at the sides,
+ * and either one instantly rescales the venue in the establishing shot.
  */
+
+/** Outer face of the stadium facade — everything outside is laid out from here. */
+const PAD = FACADE_OFF;
+
+const _e: RingPt = { x: 0, z: 0, nx: 0, nz: 0, t: 0, seg: 0 };
 
 export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
   const g = new THREE.Group();
@@ -19,8 +29,6 @@ export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
   const rnd = ctx.rand.fork(0xe7e2);
   const tier = ctx.quality.tier;
   const scale = tier === 'low' ? 0.35 : tier === 'medium' ? 0.6 : 1;
-
-  const bowlRad = BOWL.cornerR + rowOffset(30) + 12;
 
   /* ------------------------------------------------------------- ground */
   const groundR = 870;   // just inside the camera's 900 m far plane
@@ -30,6 +38,7 @@ export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
       map: bakeGroundPlan(groundR), roughness: 0.97, metalness: 0, name: 'exterior-ground',
     }),
   );
+
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = -0.09;
   ground.receiveShadow = true;
@@ -83,10 +92,10 @@ export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
     const m4 = new THREE.Matrix4();
     const col = new THREE.Color();
     for (let i = 0; i < treeCount; i++) {
-      const a = rnd.next() * Math.PI * 2;
-      const r = bowlRad + 34 + rnd.next() * rnd.next() * 320;
+      const off = PAD + 96 + rnd.next() * rnd.next() * 300;
+      ptAt(rnd.next(), off, _e);
       const s = 0.75 + rnd.next() * 0.75;
-      m4.copy(mat(Math.cos(a) * r, 0, Math.sin(a) * r, 0, rnd.range(0, 6.28), 0, s, s * (0.85 + rnd.next() * 0.4), s));
+      m4.copy(mat(_e.x, 0, _e.z, 0, rnd.range(0, 6.28), 0, s, s * (0.85 + rnd.next() * 0.4), s));
       trees.setMatrixAt(i, m4);
       const k = 0.55 + rnd.next() * 0.5;
       col.setRGB(k * 0.72, k, k * 0.6);
@@ -107,9 +116,9 @@ export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
   {
     const m4 = new THREE.Matrix4();
     for (let i = 0; i < poleCount; i++) {
-      const a = (i / poleCount) * Math.PI * 2 + 0.2;
-      const r = bowlRad + 26 + (i % 3) * 21;
-      m4.copy(mat(Math.cos(a) * r, 0, Math.sin(a) * r, 0, a + Math.PI / 2, 0));
+      const off = PAD + 26 + (i % 3) * 22;
+      ptAt((i + 0.35) / poleCount, off, _e);
+      m4.copy(mat(_e.x, 0, _e.z, 0, Math.atan2(_e.nx, _e.nz) + Math.PI, 0));
       poles.setMatrixAt(i, m4);
     }
     poles.instanceMatrix.needsUpdate = true;
@@ -126,14 +135,16 @@ export function buildExterior(ctx: Ctx, M: StadiumMaterials): THREE.Group {
     const m4 = new THREE.Matrix4();
     const col = new THREE.Color();
     const palette = [0xd8dade, 0x1b1d21, 0x8b9096, 0x2c4a6e, 0x7a2320, 0xb0b6bc, 0x394048];
+    // Three continuous double-loaded bays following the facade line.
+    const lanes = 3;
+    const perLane = Math.max(1, Math.ceil(carCount / lanes));
     for (let i = 0; i < carCount; i++) {
-      const lane = i % 26;
-      const bay = Math.floor(i / 26);
-      const a = (bay / Math.max(1, Math.ceil(carCount / 26))) * Math.PI * 2 + 0.14;
-      const r = bowlRad + 22 + (lane % 2) * 5.4 + Math.floor(lane / 2) * 0.1;
-      const along = (lane - 13) * 2.6;
-      const tx = -Math.sin(a), tz = Math.cos(a);
-      m4.copy(mat(Math.cos(a) * r + tx * along, 0, Math.sin(a) * r + tz * along, 0, a + (lane % 2 ? Math.PI : 0), 0));
+      const lane = i % lanes;
+      const slot = Math.floor(i / lanes);
+      const off = PAD + 18 + lane * 12 + (slot % 2) * 5.2;
+      ptAt((slot + 0.5) / perLane, off, _e);
+      const yaw = Math.atan2(_e.nx, _e.nz) + (slot % 2 ? Math.PI : 0);
+      m4.copy(mat(_e.x, 0, _e.z, 0, yaw, 0));
       cars.setMatrixAt(i, m4);
       col.setHex(palette[(i * 7) % palette.length], THREE.SRGBColorSpace);
       cars.setColorAt(i, col);
@@ -248,11 +259,38 @@ function buildHills(rnd: { next(): number }): THREE.Mesh {
 
 /* -------------------------------------------------------------- textures */
 
-/** Plan-view ground: apron, ring road, car-park bays, then open country. */
+/**
+ * Plan-view ground: hardstand apron, car-park bays, ring road, then open
+ * country. Every band is an outward offset of the *stadium's* rounded-rect
+ * plan, so the apron hugs the building instead of hoop-la-ing round it.
+ *
+ * NB the world's +Z maps to canvas +Y here, and the stadium is long in Z, so
+ * the rects are (halfX → canvas X, halfZ → canvas Y).
+ */
 function bakeGroundPlan(radius: number): THREE.CanvasTexture {
   const S = 1024;
   return canvasTexture(S, S, (c, W, H) => {
     const px = (m: number) => (m / (radius * 2)) * W;
+    const cx = W / 2, cy = H / 2;
+    // Building half-extents at grade, and the outer edge of the canopy.
+    const bx = BOWL.hx + PAD, bz = BOWL.hz + PAD, br = BOWL.cornerR + PAD;
+    const roofOut = roofBackOff();
+
+    const plan = (off: number) => {
+      const hx = px(bx + off), hz = px(bz + off), r = px(br + off);
+      c.beginPath();
+      c.moveTo(cx - hx + r, cy - hz);
+      c.lineTo(cx + hx - r, cy - hz);
+      c.arcTo(cx + hx, cy - hz, cx + hx, cy - hz + r, r);
+      c.lineTo(cx + hx, cy + hz - r);
+      c.arcTo(cx + hx, cy + hz, cx + hx - r, cy + hz, r);
+      c.lineTo(cx - hx + r, cy + hz);
+      c.arcTo(cx - hx, cy + hz, cx - hx, cy + hz - r, r);
+      c.lineTo(cx - hx, cy - hz + r);
+      c.arcTo(cx - hx, cy - hz, cx - hx + r, cy - hz, r);
+      c.closePath();
+    };
+
     c.fillStyle = '#3d5c33';
     c.fillRect(0, 0, W, H);
 
@@ -265,50 +303,56 @@ function bakeGroundPlan(radius: number): THREE.CanvasTexture {
       c.fillStyle = n > 0 ? 'rgba(90,120,70,0.22)' : 'rgba(48,72,44,0.28)';
       c.fillRect(x, y, 14, 14);
     }
-    const cx = W / 2, cy = H / 2;
-    // hardstand apron
-    c.fillStyle = '#5a5a58';
-    c.beginPath(); c.arc(cx, cy, px(74), 0, Math.PI * 2); c.fill();
-    // car parks
+
+    // Car parks, then the paved hardstand concourse on top of them.
     c.fillStyle = '#3a3a3c';
-    c.beginPath(); c.arc(cx, cy, px(130), 0, Math.PI * 2);
-    c.arc(cx, cy, px(78), 0, Math.PI * 2, true); c.fill();
-    // ring road
-    c.strokeStyle = '#2f3032'; c.lineWidth = Math.max(3, px(9));
-    c.beginPath(); c.arc(cx, cy, px(146), 0, Math.PI * 2); c.stroke();
-    c.strokeStyle = 'rgba(230,225,180,0.5)'; c.lineWidth = Math.max(1, px(0.5));
-    c.setLineDash([px(4), px(5)]);
-    c.beginPath(); c.arc(cx, cy, px(146), 0, Math.PI * 2); c.stroke();
-    c.setLineDash([]);
-    // parking bay lines
+    plan(74); c.fill();
+    c.fillStyle = '#5a5a58';
+    plan(14); c.fill();
+
+    // Parking bay lines, struck perpendicular to each bay's centre line.
     c.strokeStyle = 'rgba(235,235,220,0.42)';
     c.lineWidth = Math.max(1, px(0.28));
     for (let ring = 0; ring < 3; ring++) {
-      const r = px(88 + ring * 15);
-      const n = 190 + ring * 40;
+      const off = 18 + ring * 12;
+      const n = 150 + ring * 26;
       for (let i = 0; i < n; i++) {
-        const a = (i / n) * Math.PI * 2;
+        ptAt(i / n, off, _e);
+        const x0 = cx + px(_e.x), y0 = cy + px(_e.z);
         c.beginPath();
-        c.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
-        c.lineTo(cx + Math.cos(a) * (r + px(11)), cy + Math.sin(a) * (r + px(11)));
+        c.moveTo(x0, y0);
+        c.lineTo(x0 + px(_e.nx * 10.4), y0 + px(_e.nz * 10.4));
         c.stroke();
       }
     }
-    // approach roads
+
+    // Ring road with a dashed centre line.
+    c.strokeStyle = '#2f3032'; c.lineWidth = Math.max(3, px(9));
+    plan(84); c.stroke();
+    c.strokeStyle = 'rgba(230,225,180,0.5)'; c.lineWidth = Math.max(1, px(0.5));
+    c.setLineDash([px(4), px(5)]);
+    plan(84); c.stroke();
+    c.setLineDash([]);
+
+    // Approach roads striking off the ring road.
     c.strokeStyle = '#2f3032'; c.lineWidth = px(11);
     for (let i = 0; i < 4; i++) {
-      const a = i * Math.PI / 2 + 0.5;
+      ptAt(0.125 + i * 0.25, 84, _e);
       c.beginPath();
-      c.moveTo(cx + Math.cos(a) * px(140), cy + Math.sin(a) * px(140));
-      c.lineTo(cx + Math.cos(a) * W, cy + Math.sin(a) * W);
+      c.moveTo(cx + px(_e.x), cy + px(_e.z));
+      c.lineTo(cx + _e.nx * W, cy + _e.nz * W);
       c.stroke();
     }
-    // a soft AO ring where the bowl meets the ground
-    const grd = c.createRadialGradient(cx, cy, px(48), cx, cy, px(84));
-    grd.addColorStop(0, 'rgba(0,0,0,0.55)');
-    grd.addColorStop(1, 'rgba(0,0,0,0)');
-    c.fillStyle = grd;
-    c.beginPath(); c.arc(cx, cy, px(84), 0, Math.PI * 2); c.fill();
+
+    // Contact shadow where the building meets the ground, following the roof
+    // edge in rather than a radial gradient that cannot know the plan.
+    c.save();
+    plan(roofOut - PAD + 10); c.clip();
+    for (let k = 8; k >= 0; k--) {
+      c.fillStyle = `rgba(0,0,0,${0.075 * (1 - k / 9)})`;
+      plan(-2 + k * 2.4); c.fill();
+    }
+    c.restore();
   }, { name: 'ground-plan', wrap: THREE.ClampToEdgeWrapping, anisotropy: 16 });
 }
 

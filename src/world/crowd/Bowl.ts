@@ -308,19 +308,37 @@ export function fitBowl(s: BowlSpec, budget: number, fill: number): SeatWalkOpts
 /* ------------------------------------------------------------- occupancy */
 
 /**
- * Probability a given seat is taken. Real stands empty out in clusters — the
- * top rows, the corners, and blotchy patches wherever the walk-ups did not
- * arrive — and that irregularity is most of what sells the shot.
+ * Relative demand for a seat, *unnormalised* — the caller scales the whole
+ * field by one number so the total lands on its instance budget (see
+ * `CrowdSystem.generate`, which sums this over every seat first).
+ *
+ * Real stands do not empty out evenly. They empty in blocks: a section nobody
+ * bought, the top of the upper tier, the corners, the row behind a stanchion.
+ * The cluster field is therefore pushed through a hard smoothstep so it is
+ * mostly near 0 or near 1 rather than a uniform sprinkle — a thinly but
+ * *evenly* populated bowl is the single most artificial-looking crowd there is,
+ * and at the low tier (900 of ~19 000 seats) an even sprinkle is all you would
+ * ever get without this.
  */
+export function seatWeight(rowT: number, tNorm: number, corner: number, x: number): number {
+  // Two scales: broad blocks a section wide, and finer holes within them.
+  const broad = fbm2(tNorm * 7.5, rowT * 2.2, { octaves: 3, seed: 991 }) * 0.5 + 0.5;
+  const fine = fbm2(tNorm * 31, rowT * 9.0, { octaves: 2, seed: 613 }) * 0.5 + 0.5;
+  const block = smoothstep(0.36, 0.60, broad) * (0.55 + 0.75 * smoothstep(0.30, 0.72, fine));
+  let p = 0.055 + 1.55 * block;
+  // Stands fill from the front. Sell the lower bowl out first and let the top
+  // of the upper tier be the part with the holes in it — that is both what
+  // happens and what puts the bodies where a broadcast camera is looking.
+  p *= 1 - 0.78 * smoothstep(0.30, 0.98, rowT);     // upper tier thins out
+  p *= 1 - 0.42 * corner;                           // corners fill last
+  p *= 1 - 0.14 * smoothstep(0.0, 0.07, rowT);      // front-row rail seats
+  p *= 1 + 0.28 * smoothstep(42, 8, Math.abs(x));   // halfway-line premium
+  return Math.max(0, p);
+}
+
+/** `seatWeight` scaled by the caller's density and clamped to a probability. */
 export function occupancy(
   rowT: number, tNorm: number, corner: number, base: number, x: number,
 ): number {
-  const cluster = fbm2(tNorm * 26, rowT * 7.5, { octaves: 3, seed: 991 }) * 0.5 + 0.5;
-  let p = base;
-  p *= 1 - 0.62 * smoothstep(0.5, 1.0, rowT);      // upper rows thin out
-  p *= 1 - 0.34 * corner;                           // corners are the last to fill
-  p *= 0.5 + 1.0 * cluster;                         // blotchy patches
-  p *= 1 - 0.12 * smoothstep(0.0, 0.08, rowT);      // front row rail seats
-  p *= 1 + 0.16 * smoothstep(40, 10, Math.abs(x));  // halfway-line premium
-  return clamp(p, 0, 1);
+  return clamp(base * seatWeight(rowT, tNorm, corner, x), 0, 1);
 }

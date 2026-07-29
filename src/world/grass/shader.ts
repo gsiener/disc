@@ -76,6 +76,31 @@ float gPaint(vec2 p) {
   return clamp(max(max(sl, el), bm), 0.0, 1.0);
 }
 
+/**
+ * How much of the mown rectangle (±33 × ±63) this point is inside. Outside it
+ * the ground drops to the outfield datum and, in the 33..46 band, becomes
+ * rubber crumb — which grass must not grow out of.
+ */
+float gTurfMask(vec2 q) {
+  return (1.0 - smoothstep(31.0, 34.0, q.x)) * (1.0 - smoothstep(61.0, 64.0, q.y));
+}
+
+/**
+ * Ground height, matching Terrain.analytic in field/Layout.ts: the pitch is
+ * crowned ~1% and drains outward from the centre line. Blades were previously
+ * pinned to a single constant Y, which floats them 16 cm above the turf by the
+ * time you reach the sidelines. The fbm settlement waves are omitted — they are
+ * ±7 cm over 50 m and cost more than they are worth at eight million vertices.
+ */
+float gGroundY(vec2 p, float turfMask) {
+  vec2 q = abs(p);
+  float tx = clamp(p.x / 20.0, -1.0, 1.0);
+  float tz = clamp(q.y / 66.0, 0.0, 1.0);
+  float edge = (1.0 - smoothstep(26.0, 33.0, q.x)) * (1.0 - smoothstep(56.0, 63.0, q.y));
+  float crown = -0.185 * tx * tx * (1.0 - 0.40 * tz * tz) * edge;
+  return mix(-0.16, crown, turfMask);
+}
+
 vec3 gPos;
 vec3 gNrm;
 `;
@@ -89,7 +114,21 @@ export const GRASS_VERT_BODY = /* glsl */`
   vec3  h1 = gHash3(cellId);
   vec3  h2 = gHash3(cellId + 71.317);
 
-  vec2  wxz = cellId * uCellSize + (h1.xy - 0.5) * uCellSize * 0.96;
+  /* ------------------------------------------------------------ tufting
+     A jittered grid alone spreads blades evenly, and evenly-spread blades at
+     any affordable budget read as isolated spikes on a painted floor. Real
+     turf grows in tufts: pulling each blade a third of the way toward the
+     centre of its 3×3 cell block concentrates nine blades into a clump, which
+     multiplies *apparent* density without costing a single extra instance, and
+     leaves genuine thatch gaps between clumps for the turf texture to show
+     through. The clump centre is hashed from its own world cell, so it is as
+     stable under a moving camera as the blades are. */
+  vec2  base = cellId * uCellSize + (h1.xy - 0.5) * uCellSize * 0.96;
+  vec2  clumpId = floor(cellId * 0.3333333);
+  vec3  hc = gHash3(clumpId + 13.77);
+  vec2  clumpC = (clumpId + 0.5 + (hc.xy - 0.5) * 0.72) * (uCellSize * 3.0);
+  float pull = 0.24 + 0.22 * hc.z;
+  vec2  wxz = mix(base, clumpC, pull);
 
   /* ---------------------------------------------------------------- LOD */
   float dist = length(wxz - cameraPosition.xz);
@@ -98,6 +137,11 @@ export const GRASS_VERT_BODY = /* glsl */`
     ? smoothstep(uRing.x, uRing.y, dist + dith * (uRing.y - uRing.x)) : 1.0;
   float fout = 1.0 - smoothstep(uRing.z, uRing.w, dist + dith * (uRing.w - uRing.z));
   float lod  = fin * fout;
+  // How far along the "stop being an object, start being turf" ramp this blade
+  // is. Past ~16 m a blade is one pixel wide and a few tall, so anything that
+  // distinguishes it from the ground — its darker root, its extra height —
+  // becomes a speck of litter on the pitch rather than a blade of grass.
+  float farLod = smoothstep(3.0, 16.0, dist);
 
   /* ------------------------------------------------------ turf lookup */
   vec2  tuv  = (wxz - uTurfOrigin) / uTurfSize;
@@ -105,15 +149,31 @@ export const GRASS_VERT_BODY = /* glsl */`
   vec4  nse  = texture2D(uNoiseMap, wxz * 0.235); // tufting band
   float tuft = nse.b;
 
-  float cover = turf.a * mix(0.55, 1.25, tuft);
+  vec2  aw = abs(wxz);
+  float turfMask = gTurfMask(aw);
+  // The rubber-crumb apron runs from the mown edge out to 46 × 78; nothing
+  // grows out of it. Past that the rough outfield picks up again.
+  float rough = min(1.0, smoothstep(45.0, 51.0, aw.x) + smoothstep(77.0, 84.0, aw.y));
+  float ground = max(turfMask, rough * 0.85);
+
+  float cover = turf.a * mix(0.55, 1.25, tuft) * ground;
   float grow  = smoothstep(0.12, 0.62, cover - h2.z * 0.34);
   lod *= grow;
 
-  /* ------------------------------------------------- size + mow stripe */
-  float stripe = floor(wxz.y / uStripeW);
+  /* ------------------------------------------------- size + mow stripe
+     Passes run the length of the pitch, banded in X, at exactly the width the
+     turf shader uses (field/Layout.ts MOW_STRIPE) and in phase with it: the
+     shader's band is cos(pi*x/W) > 0, which is floor(x/W + 0.5) even here. The
+     painted stripe and the physical lean have to agree or the anisotropy reads
+     as two unrelated patterns laid over each other. */
+  float stripe = floor(wxz.x / uStripeW + 0.5);
   float sSign  = mod(stripe, 2.0) < 0.5 ? 1.0 : -1.0;
 
+  // Blades at the heart of a tuft grow taller than the stragglers around it.
+  float clumpBoost = 1.0 - 0.30 * clamp(length(wxz - clumpC) / (uCellSize * 1.5), 0.0, 1.0);
+
   float bh = uBlade.x * mix(0.62, 1.34, h2.x) * mix(0.72, 1.16, tuft)
+           * clumpBoost * mix(1.0, 1.55, rough) * mix(1.0, 0.60, farLod)
            * mix(1.0, 0.40, turf.z) * lod;
 
   float bw = uBlade.y * uWidthScale * mix(0.78, 1.3, h2.y);
@@ -122,7 +182,7 @@ export const GRASS_VERT_BODY = /* glsl */`
 
   /* --------------------------------------------------------- direction */
   float yaw = (h2.z - 0.5) * 1.45 + (nse.b - 0.5) * 1.1;
-  vec2  leanDir = gRot(vec2(0.0, sSign), yaw);
+  vec2  leanDir = gRot(vec2(sSign, 0.0), yaw);
 
   /* -------------------------------------------------------------- wind */
   vec2  g1 = texture2D(uNoiseMap, (wxz - uWindPhase) * 0.055).rg;
@@ -166,16 +226,25 @@ export const GRASS_VERT_BODY = /* glsl */`
               + wide * wHalf
               + face * (uCurl * bw * (side * side * 4.0 - 1.0) * 0.22 * taper);
 
-  gPos = vec3(wxz.x, uGroundY, wxz.y) + bladeP;
+  gPos = vec3(wxz.x, gGroundY(wxz, turfMask) + uGroundY, wxz.y) + bladeP;
   gNrm = normalize(face * cos(curlA) + wide * sin(curlA));
 
   /* ------------------------------------------------------------- shade */
   float paint = gPaint(wxz);
   vec3 col = mix(uColDry, uColLush, turf.x * mix(0.55, 1.25, tuft));
   col = mix(col, uColSoil, turf.y * 0.55);
-  col *= mix(0.9, 1.16, h2.y);
+  col *= mix(0.86, 1.20, h2.y);
+  // Blade-to-blade hue drift within a tuft — a clump of identically coloured
+  // blades is the giveaway that this is instanced geometry.
+  col *= vec3(1.0 + (h1.x - 0.5) * 0.16, 1.0 + (h1.y - 0.5) * 0.10, 1.0 - (h1.x - 0.5) * 0.20);
   col *= 1.0 + sSign * uStripeTint;
-  col = mix(col * 0.52, col * 1.1, smoothstep(0.0, 0.55, t));
+  /* Root shadowing is the strongest single cue that a blade is a solid object
+     standing in a sward — and the fastest way to turn a distant blade into a
+     dirt speck, because once it is six pixels tall the dark root is most of
+     what you see. So it relaxes with distance: near blades are grounded, far
+     blades converge on the turf they are supposed to be dissolving into. */
+  col = mix(col * mix(0.44, 0.88, farLod), col * 1.14, smoothstep(0.0, 0.55, t));
+  col = mix(col, mix(uColDry, uColLush, 0.62) * 1.12, farLod * 0.55);
   col = mix(col, uColPaint, paint * smoothstep(0.12, 0.62, t) * 0.88);
 
   vGrassCol   = col;
@@ -183,8 +252,8 @@ export const GRASS_VERT_BODY = /* glsl */`
   vGrassWN    = gNrm;
   vGrassWT    = tang;
   vGrassAux.x = t;
-  vGrassAux.y = clamp(mix(0.30, 0.62, t) + turf.z * 0.22 + paint * 0.3, 0.05, 1.0);
-  vGrassAux.z = mix(0.22, 1.0, smoothstep(0.0, 0.42, t)) * mix(1.0, 0.72, tuft);
+  vGrassAux.y = clamp(mix(0.28, 0.60, t) + turf.z * 0.22 + paint * 0.3, 0.05, 1.0);
+  vGrassAux.z = mix(0.18, 1.0, smoothstep(0.0, 0.42, t)) * mix(1.0, 0.72, tuft);
   vGrassAux.w = mix(0.25, 1.0, t) * (1.0 - paint * 0.7);
 `;
 
@@ -218,11 +287,21 @@ export const GRASS_FRAG_LIGHT = /* glsl */`
     float extra = max(0.0, wrapped - max(ndl, 0.0));
     reflectedLight.directDiffuse += uSunCol * extra * 0.55 * diffuseColor.rgb;
 
-    // Forward scattering through the blade (thin at the tip, thick at the root).
+    /* Forward scattering through the blade. This is the single term that does
+       most of the work of making grass look like grass: a blade is a 0.2 mm
+       waxy sheet, so with the sun behind it you are looking at transmitted
+       light, not reflected, and it goes a much more saturated yellow-green
+       than any lit face ever does. Two multipliers matter —
+
+         - thinness, strongest at the tip (vGrassAux.x → 1), because that is
+           where there is least leaf between the sun and the eye;
+         - sun elevation, because a high sun puts the transmission lobe into
+           the ground rather than into the camera. Low sun, big glow. */
     vec3 Ht = normalize(Lw + Nw * uSssDistort);
     float fwd = pow(clamp(dot(Vw, -Ht), 0.0, 1.0), uSssPower) * uSssScale;
-    float thick = mix(0.28, 1.0, vGrassAux.x);
-    reflectedLight.directDiffuse += uSunCol * uSssTint * (fwd * thick) * diffuseColor.rgb;
+    float thin = mix(0.24, 1.0, vGrassAux.x);
+    float lowSun = mix(0.45, 1.0, 1.0 - clamp(Lw.y, 0.0, 1.0));
+    reflectedLight.directDiffuse += uSunCol * uSssTint * (fwd * thin * lowSun) * diffuseColor.rgb;
 
     // Anisotropic sheen along the blade — this is what keeps mow stripes reading.
     vec3 Tw = normalize(vGrassWT);

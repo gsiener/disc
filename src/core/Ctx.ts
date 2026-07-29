@@ -94,10 +94,16 @@ export const QUALITY_PRESETS: Record<QualityTier, QualitySettings> = {
     crowdCount: 8_000, ssao: true, bloom: true, motionBlur: true, dof: true, ssr: false, taa: true,
     charDetail: 1, maxDpr: 1.5, anisotropy: 16,
   },
+  // Ultra is measured, not aspirational: ~30 ms/frame at 1920×1080 on an M1 Max
+  // in the capture rig. Two numbers were dropped from the original sketch —
+  // grassBlades 1.4 M → 1.0 M (the ground-level turf camera puts a metre of
+  // blades between the lens and the pitch, and that is pure overdraw), and
+  // maxDpr 2 → 1.5, because 2× on a retina panel quadruples every full-screen
+  // pass and takes the same frame past 150 ms. Both still sit clearly above high.
   ultra: {
-    tier: 'ultra', shadowMapSize: 4096, shadowCascades: 4, grassBlades: 1_400_000, grassDistance: 110,
-    crowdCount: 18_000, ssao: true, bloom: true, motionBlur: true, dof: true, ssr: true, taa: true,
-    charDetail: 1.35, maxDpr: 2, anisotropy: 16,
+    tier: 'ultra', shadowMapSize: 4096, shadowCascades: 4, grassBlades: 1_000_000, grassDistance: 110,
+    crowdCount: 14_000, ssao: true, bloom: true, motionBlur: true, dof: true, ssr: true, taa: true,
+    charDetail: 1.35, maxDpr: 1.5, anisotropy: 16,
   },
 };
 

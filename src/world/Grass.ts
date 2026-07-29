@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Ctx, System } from '../core/Ctx';
 import { linearColor } from '../util/Tex';
+import { MOW_STRIPE } from './field/Layout';
 import { bakeTurfMap, bakeNoiseMap } from './grass/maps';
 import { bladeGeometry } from './grass/blade';
 import { planRings, buildCells, type RingSpec } from './grass/scatter';
@@ -33,6 +34,31 @@ interface Ring {
 }
 
 interface Pusher { x: number; z: number; r: number; s: number; }
+
+type CompileHook = (
+  shader: THREE.WebGLProgramParametersWithUniforms,
+  renderer: THREE.WebGLRenderer,
+) => void;
+
+/**
+ * Installs an `onBeforeCompile` that survives a later plain assignment: ours
+ * always runs, and whatever is assigned afterwards (three's CSM addon) runs
+ * after it. Same trick the turf material uses.
+ */
+function chainCompile(mat: THREE.Material, mine: CompileHook): void {
+  let other: CompileHook | null = null;
+  Object.defineProperty(mat, 'onBeforeCompile', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return (s: THREE.WebGLProgramParametersWithUniforms, r: THREE.WebGLRenderer) => {
+        mine(s, r);
+        other?.(s, r);
+      };
+    },
+    set(fn) { other = typeof fn === 'function' ? fn : null; },
+  });
+}
 
 const BEND_N = 128;
 const BEND_HALF = 32;
@@ -73,26 +99,26 @@ export class GrassSystem implements System {
     uBendMap: { value: null as THREE.Texture | null },
     uBendRegion: { value: new THREE.Vector3(0, 0, BEND_HALF) },
     uPxScale: { value: 0.0006 },
-    uStripeW: { value: 4.5 },
+    uStripeW: { value: MOW_STRIPE },
     uGroundY: { value: GROUND_Y },
-    uBlade: { value: new THREE.Vector2(0.052, 0.0044) },
-    uLean: { value: 0.46 },
-    uCurl: { value: 0.55 },
-    uColLush: { value: linearColor(0x2f7a26) },
-    uColDry: { value: linearColor(0x7d8a33) },
+    uBlade: { value: new THREE.Vector2(0.062, 0.0040) },
+    uLean: { value: 0.58 },
+    uCurl: { value: 0.58 },
+    uColLush: { value: linearColor(0x3a8a2a) },
+    uColDry: { value: linearColor(0x8a9138) },
     uColSoil: { value: linearColor(0x6a5638) },
     uColPaint: { value: linearColor(0xe6ead8) },
-    uStripeTint: { value: 0.045 },
+    uStripeTint: { value: 0.075 },
     uSunDir: { value: new THREE.Vector3(-0.51, 0.76, 0.38).normalize() },
     uSunCol: { value: new THREE.Color(1, 0.95, 0.88) },
     uSssTint: { value: new THREE.Color(0.55, 1.0, 0.28) },
     uSkyCol: { value: new THREE.Color(0.055, 0.075, 0.10) },
-    uSssPower: { value: 4.2 },
-    uSssScale: { value: 2.1 },
-    uSssDistort: { value: 0.42 },
+    uSssPower: { value: 2.6 },
+    uSssScale: { value: 3.0 },
+    uSssDistort: { value: 0.50 },
     uWrap: { value: 0.55 },
-    uSheen: { value: 0.5 },
-    uSheenExp: { value: 26.0 },
+    uSheen: { value: 0.6 },
+    uSheenExp: { value: 22.0 },
   };
 
   init(ctx: Ctx): void {
@@ -160,7 +186,12 @@ export class GrassSystem implements System {
         dithering: true,
       });
       mat.name = `grass.ring${spec.segments}`;
-      mat.onBeforeCompile = (shader) => {
+      // Self-chaining: three's CSM addon assigns `material.onBeforeCompile`
+      // wholesale when it registers a material for cascaded shadows. A plain
+      // assignment here would be silently replaced and every blade would fall
+      // back to the raw unit-sized geometry sitting at the world origin — which
+      // is exactly what a big white triangle across the pitch looks like.
+      chainCompile(mat, (shader) => {
         Object.assign(shader.uniforms, uni);
         shader.vertexShader = shader.vertexShader
           .replace('#include <common>', `#include <common>\n${GRASS_COMMON}\n${GRASS_VERT_DECL}`)
@@ -171,7 +202,7 @@ export class GrassSystem implements System {
           .replace('#include <map_fragment>', '  diffuseColor.rgb *= vGrassCol * vGrassAux.z;')
           .replace('#include <roughnessmap_fragment>', '  float roughnessFactor = vGrassAux.y;')
           .replace('#include <opaque_fragment>', `${GRASS_FRAG_LIGHT}\n#include <opaque_fragment>`);
-      };
+      });
       mat.customProgramCacheKey = () => 'grass-v1';
 
       const mesh = new THREE.Mesh(geo, mat);
@@ -181,6 +212,13 @@ export class GrassSystem implements System {
       mesh.receiveShadow = true;
       mesh.castShadow = false;
       mesh.renderOrder = -1;
+      // Opt out of GTAO's G-buffer. That pass re-renders the scene with a
+      // `MeshNormalMaterial` override, which cannot run the vertex shader above —
+      // every blade would collapse back to its raw unit-sized source triangle at
+      // the world origin. At ultra that is 1.4 M near-fullscreen triangles of
+      // pure overdraw (measured: ~1000 ms/frame on the ground-level turf shot)
+      // occluding the frame with a silhouette the blades do not actually have.
+      mesh.userData.noAO = true;
       group.add(mesh);
 
       this.rings.push({ spec, mesh, mat, uni });
@@ -205,9 +243,11 @@ export class GrassSystem implements System {
       if (typeof h === 'number') this.u.uWindStrength.value = 0.34 + 0.16 * Math.sin(h);
     });
 
-    // Cheap coupling to a cascaded shadow setup if one exists.
-    const csm = (ctx.sys['lighting'] as any)?.csm;
-    if (csm?.setupMaterial) for (const r of this.rings) { try { csm.setupMaterial(r.mat); } catch { /* optional */ } }
+    // Cheap coupling to a cascaded shadow setup if one exists. Go through the
+    // lighting system's own registrar, never `csm.setupMaterial` directly — the
+    // registrar knows about the accessor above and composes with it.
+    const lighting = ctx.sys['lighting'] as { register?(m: THREE.Material): void } | undefined;
+    if (lighting?.register) for (const r of this.rings) lighting.register(r.mat);
   }
 
   /* ------------------------------------------------------------------- api */

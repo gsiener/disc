@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { bake, heightField, heightToNormal, linearColor, canvasTexture } from '../../util/Tex';
 import { fbm2, worley2, ridged2, valueNoise2, clamp, smoothstep } from '../../util/Noise';
 import type { Ctx } from '../../core/Ctx';
-import { CLUB } from './Layout';
+import { CLUB, BOWL, AISLE_COUNT } from './Layout';
 
 /**
  * Every stadium surface gets albedo variation, relief and spatially varying
@@ -249,16 +249,18 @@ export function bakeSeatMap(): THREE.CanvasTexture {
 
     // Section alternation — every other section a touch darker.
     c.globalAlpha = 0.16;
-    for (let i = 0; i < 28; i += 2) {
+    for (let i = 0; i < AISLE_COUNT; i += 2) {
       c.fillStyle = '#000000';
-      c.fillRect((i / 28) * W, 0, W / 28, H);
+      c.fillRect((i / AISLE_COUNT) * W, 0, W / AISLE_COUNT, H);
     }
     c.globalAlpha = 1;
 
-    // Base parameter ranges (must mirror Layout.SEGS ordering).
-    const sxL = 24 - 12, szL = 55 - 12;
-    const segLens = [2 * szL, 12 * Math.PI / 2, 2 * sxL, 12 * Math.PI / 2,
-      2 * szL, 12 * Math.PI / 2, 2 * sxL, 12 * Math.PI / 2];
+    // Base parameter ranges — derived from the plan so lettering stays inside
+    // its own straight when the bowl is re-proportioned.
+    const R = BOWL.cornerR;
+    const sxL = BOWL.hx - R, szL = BOWL.hz - R;
+    const segLens = [2 * szL, R * Math.PI / 2, 2 * sxL, R * Math.PI / 2,
+      2 * szL, R * Math.PI / 2, 2 * sxL, R * Math.PI / 2];
     const P = segLens.reduce((a, b) => a + b, 0);
     const t0: number[] = []; let acc = 0;
     for (const l of segLens) { t0.push(acc / P); acc += l; }

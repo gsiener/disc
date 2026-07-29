@@ -17,6 +17,18 @@ import { QuadPass, texel } from './Common';
  * or if it lies at/behind the centre inside the centre's CoC. That single test
  * is what stops sharp backgrounds bleeding onto blurred foregrounds and gives
  * near-field blur that spills *over* the focal plane the way a real lens does.
+ *
+ * ## Why the foreground is treated differently from the background
+ *
+ * `1/z` runs away in front of the focal plane and does not run away behind it:
+ * a lens focused at 2 m has a bounded circle of confusion at infinity and an
+ * unbounded one at 20 cm. Left alone that is exactly what happened to the
+ * ground-level turf shot — the metre of grass between the lens and the pitch,
+ * i.e. the entire subject of the shot, went to maximum blur while a strip of
+ * turf 50 cm deep stayed sharp. So the near lobe gets its own, smaller scale and
+ * its own, smaller ceiling. This is not physical and it is not pretending to be;
+ * every shipped title does it, because foreground mush destroys a frame in a way
+ * background melt never does.
  */
 export class DofPass extends QuadPass {
   /** Metres. */
@@ -24,9 +36,11 @@ export class DofPass extends QuadPass {
   /** Blur strength scalar taken from the shot list (not an f-number). */
   aperture = 1.0;
   /** Pixels of CoC per unit of `aperture · fovFactor · diopter`. */
-  scale = 0.0017;
-  /** Hard cap on the blur radius, as a fraction of frame height. */
-  maxRadius = 0.013;
+  scale = 0.0011;
+  /** Hard cap on the background blur radius, as a fraction of frame height. */
+  maxRadius = 0.0085;
+  /** Foreground CoC, as a fraction of the background's scale and ceiling. */
+  nearFraction = 0.45;
 
   private h = 1080;
 
@@ -41,6 +55,7 @@ export class DofPass extends QuadPass {
         uFocus: { value: 12 },
         uCoCScale: { value: 0 },
         uMaxCoC: { value: 14 },
+        uNear: { value: 0.45 },
       },
       fragmentShader: /* glsl */`
         uniform sampler2D tDiffuse;
@@ -49,10 +64,14 @@ export class DofPass extends QuadPass {
         uniform float uFocus;
         uniform float uCoCScale;
         uniform float uMaxCoC;
+        uniform float uNear;
         varying vec2 vUv;
 
         float cocOf(float z) {
-          return clamp(uCoCScale * (1.0 / uFocus - 1.0 / max(z, 0.05)), -uMaxCoC, uMaxCoC);
+          float c = uCoCScale * (1.0 / uFocus - 1.0 / max(z, 0.05));
+          // Negative = in front of the focal plane. See the class note.
+          if (c < 0.0) return max(c * uNear, -uMaxCoC * uNear);
+          return min(c, uMaxCoC);
         }
 
         void main() {
@@ -64,7 +83,12 @@ export class DofPass extends QuadPass {
           // Below a pixel of blur the gather is a no-op and costs 32 taps.
           if (r < 0.85) { gl_FragColor = vec4(centre, 1.0); return; }
 
-          float ang = hash13(vec3(gl_FragCoord.xy, 7.0)) * 6.28318530718;
+          // Interleaved gradient noise rather than a hash: it is low-discrepancy
+          // over any small neighbourhood, so a sparse gather over high-frequency
+          // content (a stand full of one-pixel crowd) breaks up into a fine
+          // ordered dither instead of white speckle.
+          float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          float ang = ign * 6.28318530718;
           float ca = cos(ang), sa = sin(ang);
 
           vec3  sum = centre;
@@ -111,10 +135,12 @@ export class DofPass extends QuadPass {
     this.u.uFocus.value = this.focus;
     this.u.uCoCScale.value = s;
     this.u.uMaxCoC.value = this.h * this.maxRadius;
+    this.u.uNear.value = this.nearFraction;
 
-    // If the tightest plausible CoC in the scene is sub-pixel, skip the pass.
-    // Worst case over the depth range is at z -> infinity: s/focus.
-    return s / this.focus > 0.35;
+    // If the largest plausible CoC in the scene is under a pixel, skip the pass:
+    // the gather would early-out per fragment anyway and still cost a
+    // full-screen resolve. Worst case over the depth range is z -> infinity.
+    return s / this.focus > 0.8;
   }
 
   override setSize(width: number, height: number): void {

@@ -184,6 +184,17 @@ export function reconcileDirection(
   if (out.lengthSq() < 1e-8) { directionAt(hour, out); return; }
   out.normalize();
   directionAt(hour, _ref);
+  // Elevation first, azimuth only as a tie-break. Both models agree on where the
+  // sun is in *height* at a given hour — that is unambiguous, and it stays
+  // unambiguous even when the sun is below the horizon. Azimuth is the part a
+  // peer could reasonably disagree with us about, and deciding the sign from a
+  // whole-vector dot product means a sky that merely runs a different azimuth
+  // arc can flip our key light to the far side of the pitch, which puts every
+  // shadow in the frame on the wrong side of every object.
+  const dy = Math.abs(out.y - _ref.y);
+  const dyFlip = Math.abs(-out.y - _ref.y);
+  if (dyFlip < dy - 1e-4) { out.negate(); return; }
+  if (dy < dyFlip - 1e-4) return;
   if (out.dot(_ref) < 0) out.negate();
 }
 const _ref = new THREE.Vector3();

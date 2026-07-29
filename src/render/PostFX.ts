@@ -45,6 +45,56 @@ import { FilmPass } from './post/Film';
  * display-referred pixels where their thresholds actually mean something.
  */
 
+const BLOOM_STRENGTH = 0.20;
+/**
+ * Bloom thresholds are *display*-referred, not scene-referred.
+ *
+ * That distinction is the whole game. `UnrealBloomPass` reads the scene-linear
+ * HDR buffer, which at this point has not been exposed yet — the grade applies
+ * `toneMappingExposure` later in the chain. And the exposure is not a constant:
+ * the solver runs it from 1.7 on a 36° sun to 4.8 at golden hour to 2.5 under
+ * floodlights. A fixed scene-linear threshold therefore means something
+ * completely different in every shot, which is exactly how the night frame ended
+ * up with four 300-pixel white smears across legible sponsor boards while the
+ * same number left daylight untouched.
+ *
+ * So the knee is stated in the units the eye actually judges — "this will clip
+ * on screen" — and divided back through the live exposure each frame.
+ */
+const BLOOM_KNEE_DAY = 7.0;
+const BLOOM_KNEE_NIGHT = 4.2;
+/**
+ * Ceiling on what the pass is allowed to *see*, in the same display-referred
+ * units. A floodlight lens is emissive at a few hundred; feeding that straight
+ * into a gaussian pyramid turns a 40 cm fixture into a white disc that swallows
+ * the roof behind it. Clamping the high-pass seed keeps the halo proportional to
+ * the fixture, and the lens itself still clips to white on its own.
+ */
+const BLOOM_CEIL = 11.0;
+/** Mip blend weight. Wide, soft glow over everything is the amateur tell. */
+const BLOOM_RADIUS = 0.30;
+
+/**
+ * Clamp the bloom pass's high-pass output. `UnrealBloomPass` has no knob for
+ * this, so we patch the one line of its luminosity shader that writes the seed.
+ * Returns the uniform so the ceiling can track exposure frame by frame.
+ */
+function clampBloomInput(bloom: UnrealBloomPass, ceiling: number): THREE.IUniform | null {
+  const mat = (bloom as unknown as { materialHighPassFilter?: THREE.ShaderMaterial }).materialHighPassFilter;
+  if (!mat) return null;
+  const SRC = 'gl_FragColor = mix( outputColor, texel, alpha );';
+  if (!mat.fragmentShader.includes(SRC)) return null;
+  mat.uniforms.uBloomCeiling = { value: ceiling };
+  mat.fragmentShader = mat.fragmentShader.replace(SRC, /* glsl */`
+      vec4 seed = mix( outputColor, texel, alpha );
+      float peak = max( seed.r, max( seed.g, seed.b ) );
+      if ( peak > uBloomCeiling ) seed.rgb *= uBloomCeiling / peak;
+      gl_FragColor = seed;`)
+    .replace('uniform float smoothWidth;', 'uniform float smoothWidth;\n\t\tuniform float uBloomCeiling;');
+  mat.needsUpdate = true;
+  return mat.uniforms.uBloomCeiling;
+}
+
 /** `?post=off` kills the chain; `?post=nobloom,nodof` kills individual effects. */
 function postFlags(): Set<string> {
   try {
@@ -67,6 +117,7 @@ export class PostFXSystem implements System {
   private dof: DofPass | null = null;
   private motion: MotionBlurPass | null = null;
   private bloom: UnrealBloomPass | null = null;
+  private bloomCeiling: THREE.IUniform | null = null;
   private grade!: GradePass;
   private smaa: SMAAPass | null = null;
   private film!: FilmPass;
@@ -137,12 +188,19 @@ export class PostFXSystem implements System {
       // stands, and it dies out to nothing across open flat grass because there
       // is no occluder within half a metre. The steep distance exponent keeps it
       // from turning distant crowd geometry into grey mud.
+      // `scale` is a gamma on the raw occlusion (`ao = pow(ao, scale)`), which
+      // makes it the right knob and the previous 1.15 the wrong value. A gamma
+      // leaves open ground almost exactly alone — flat turf resolves to ao ≈
+      // 0.98, and 0.98^2.4 is 0.95, a 5 % darkening nobody will ever see — while
+      // a crease at ao ≈ 0.6 drops to 0.30. That asymmetry is the whole point:
+      // it buys real contact darkening without laying grey mud over the pitch,
+      // which a linear intensity multiplier cannot do at any setting.
       gtao.updateGtaoMaterial({
-        radius: 0.45,
+        radius: 0.50,
         distanceExponent: 1.8,
-        thickness: 0.55,
-        distanceFallOff: 0.9,
-        scale: 1.15,
+        thickness: 0.50,
+        distanceFallOff: 1.0,
+        scale: 2.4,
         samples: quality.tier === 'medium' ? 8 : 16,
         screenSpaceRadius: false,
       });
@@ -151,7 +209,7 @@ export class PostFXSystem implements System {
         radius: 4, radiusExponent: 1, rings: 2,
         samples: quality.tier === 'medium' ? 8 : 16,
       });
-      gtao.blendIntensity = 0.9;
+      gtao.blendIntensity = 1.0;
       // `?post=aoonly` dumps the denoised AO buffer — the only honest way to
       // check that the radius is darkening contact points and not the whole
       // pitch, because a correctly tuned AO term is nearly invisible in beauty.
@@ -201,12 +259,8 @@ export class PostFXSystem implements System {
 
     /* ------------------------------------------------------------- 7. bloom */
     if (quality.bloom && !this.flags.has('nobloom')) {
-      // Threshold is in scene-referred linear. Sunlit turf sits well under 1,
-      // so nothing on the field blooms; only the sun disc, lamp housings, and
-      // hot speculars on sweat and on the disc's rim clear the bar. Radius is
-      // kept modest — a wide, soft glow over the whole frame is the single most
-      // reliable way to make a render look amateur.
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(pw, ph), 0.42, 0.55, 2.0);
+      this.bloom = new UnrealBloomPass(new THREE.Vector2(pw, ph), BLOOM_STRENGTH, BLOOM_RADIUS, BLOOM_KNEE_DAY);
+      this.bloomCeiling = clampBloomInput(this.bloom, BLOOM_CEIL);
       composer.addPass(this.bloom);
     }
 
@@ -322,15 +376,19 @@ export class PostFXSystem implements System {
     }
 
     if (this.bloom) {
-      // Slightly hotter and slightly wider at night: the only bright things left
-      // are the light rigs, and they should read as rigs.
-      this.bloom.strength = 0.42 + 0.16 * this.nightness;
-      this.bloom.threshold = 2.0 - 0.55 * this.nightness;
+      // Slightly hotter and lower-threshold at night: the only bright things left
+      // are the light rigs, and they should read as rigs. Both numbers are
+      // converted out of display-referred units through the live exposure — see
+      // the constants at the top of this file.
+      const exp = Math.max(0.05, ctx.renderer.toneMappingExposure);
+      this.bloom.strength = BLOOM_STRENGTH + 0.10 * this.nightness;
+      this.bloom.threshold = THREE.MathUtils.lerp(BLOOM_KNEE_DAY, BLOOM_KNEE_NIGHT, this.nightness) / exp;
+      if (this.bloomCeiling) this.bloomCeiling.value = BLOOM_CEIL / exp;
     }
 
     // Higher sensor gain after dark, exactly like a broadcast camera.
     this.film.material.uniforms.uGrain.value = this.flags.has('nofilm')
-      ? 0 : 0.032 + 0.022 * this.nightness;
+      ? 0 : 0.022 + 0.016 * this.nightness;
     this.film.setTime(ctx.time);
   }
 

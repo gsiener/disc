@@ -2,15 +2,47 @@ import * as THREE from 'three';
 import { clamp, smoothstep, mix } from '../../util/Noise';
 
 /**
- * Analytic daylight model — Preetham/Hosek-family single-scattering, evaluated
- * identically on the CPU (here) and on the GPU (SkyMaterial.ts). Having one
- * numerically-matched implementation on each side is what lets the environment
- * map, the aerial-perspective fog and the drawn sky agree; if they disagree the
- * horizon shows a visible seam between "sky" and "distant stuff".
+ * Analytic daylight model — Preetham-family scattering, evaluated identically on
+ * the CPU (here) and on the GPU (SkyMaterial.ts). Having one numerically-matched
+ * implementation on each side is what lets the environment map, the
+ * aerial-perspective fog and the drawn sky agree; if they disagree the horizon
+ * shows a visible seam between "sky" and "distant stuff".
  *
  * Everything is parameterised on *solar elevation* rather than on the clock, so
  * the same tuning curve serves dawn and dusk and there is no discontinuity when
  * a shot picks an hour between the keyframes.
+ *
+ * ## Why this is not textbook Preetham
+ *
+ * The classic three.js `Sky` shader computes `pow(base * (1 - Fex), 1.5)` and
+ * then undoes most of that with a `pow(colour, 1/(1.2 + 1.2·sunfade))` at the
+ * very end. Net exponent ≈ 0.6–0.9. Ship the 1.5 without the compensating
+ * gamma — which is what happens the moment you drop the shader into a real post
+ * chain and let the grade own the tone curve — and the horizon comes out nine
+ * times brighter than the zenith instead of three. Under AgX, which desaturates
+ * hard above ~1.0 scene-linear, that is a white sky. It is exactly what this
+ * project's frames were showing.
+ *
+ * So three things changed:
+ *
+ *  1. **Range compression is applied to luminance, not per channel.** `pow(y,P)`
+ *     with the chroma ratios preserved keeps the horizon/zenith ratio near 3:1
+ *     while a sunset stays as saturated as the physics says it is. A per-channel
+ *     `pow` desaturates every pixel it compresses, which is the one thing this
+ *     sky could not afford.
+ *  2. **The sun path is spectral.** Radiance is multiplied by `sunT`, the
+ *     per-channel transmittance along the ray *to the sun*. That is the actual
+ *     mechanism that reddens a low sun, and it replaces the `pow(base*Fex, 0.5)`
+ *     fudge the original used to fake it.
+ *  3. **There is a multiple-scattering term.** Pure single scattering paints the
+ *     entire sunset sky orange, because every scattering event is fed by the
+ *     same reddened beam. Real skies stay blue overhead because that light has
+ *     bounced several times, high up, through much less air. `msT` models that
+ *     with a fraction of the sun-path optical depth, carrying the Rayleigh
+ *     spectrum, whitening toward the horizon where the bounce count is high.
+ *
+ * Radiance is scene-linear, pre-tone-map, and sized so a sunlit pitch at ~0.18
+ * sits under a zenith of ~0.22 and a horizon of ~0.8.
  */
 
 const DEG = Math.PI / 180;
@@ -56,10 +88,13 @@ export function sunPosition(hour: number, out?: SunPos): SunPos {
   return res;
 }
 
-/** Moon rides ~125° of azimuth off the sun at a comfortable broadcast altitude. */
+/**
+ * Moon rides ~118° of azimuth off the sun, low enough (26°) to actually land in
+ * a broadcast frame rather than above every camera's top edge.
+ */
 export function moonPosition(sun: SunPos, out = new THREE.Vector3()): THREE.Vector3 {
-  const az = sun.azimuth - 125 * DEG;
-  const el = 41 * DEG;
+  const az = sun.azimuth - 118 * DEG;
+  const el = 26 * DEG;
   const ce = Math.cos(el);
   return out.set(Math.sin(az) * ce, Math.sin(el), Math.cos(az) * ce);
 }
@@ -73,8 +108,11 @@ export interface SkyTuning {
   rayleigh: number;
   mieCoefficient: number;
   mieDirectionalG: number;
-  /** Scales the whole radiance field into the tonemapper's happy range. */
+  /** Scales the compressed radiance field into the tonemapper's happy range. */
   exposure: number;
+  /** Weight of the multiple-scattering term — the thing that keeps a sunset
+   *  zenith blue instead of orange. */
+  msStrength: number;
   /** 0..1 cloud cover. */
   cloudCoverage: number;
   cloudDensity: number;
@@ -91,16 +129,20 @@ interface Key extends SkyTuning { el: number }
  *  9°   golden hour    — mie takes over, long warm gradient
  *  -1°  sunset         — maximum rayleigh, red belt on the horizon
  *  -18° night          — handled mostly by the night branch, kept dim here
+ *
+ * `exposure` climbs steeply as the sun drops because the physical radiance
+ * collapses by two orders of magnitude between noon and sunset and a camera
+ * operator would be opening up the whole way down.
  */
 const KEYS: Key[] = [
-  { el: -18, turbidity: 2.4, rayleigh: 0.9, mieCoefficient: 0.0040, mieDirectionalG: 0.80, exposure: 0.030, cloudCoverage: 0.42, cloudDensity: 0.75, fogDensity: 0.0016 },
-  { el: -7, turbidity: 3.2, rayleigh: 2.0, mieCoefficient: 0.0055, mieDirectionalG: 0.83, exposure: 0.032, cloudCoverage: 0.44, cloudDensity: 0.85, fogDensity: 0.0019 },
-  { el: -1, turbidity: 4.6, rayleigh: 3.3, mieCoefficient: 0.0092, mieDirectionalG: 0.865, exposure: 0.034, cloudCoverage: 0.46, cloudDensity: 0.95, fogDensity: 0.0024 },
-  { el: 4, turbidity: 4.3, rayleigh: 3.0, mieCoefficient: 0.0082, mieDirectionalG: 0.855, exposure: 0.032, cloudCoverage: 0.45, cloudDensity: 1.0, fogDensity: 0.0022 },
-  { el: 10, turbidity: 3.7, rayleigh: 2.45, mieCoefficient: 0.0062, mieDirectionalG: 0.835, exposure: 0.030, cloudCoverage: 0.44, cloudDensity: 1.0, fogDensity: 0.0019 },
-  { el: 22, turbidity: 3.0, rayleigh: 1.85, mieCoefficient: 0.0046, mieDirectionalG: 0.795, exposure: 0.0275, cloudCoverage: 0.42, cloudDensity: 1.0, fogDensity: 0.0015 },
-  { el: 42, turbidity: 2.5, rayleigh: 1.45, mieCoefficient: 0.0036, mieDirectionalG: 0.755, exposure: 0.0255, cloudCoverage: 0.40, cloudDensity: 1.0, fogDensity: 0.0012 },
-  { el: 66, turbidity: 2.1, rayleigh: 1.25, mieCoefficient: 0.0030, mieDirectionalG: 0.725, exposure: 0.0235, cloudCoverage: 0.38, cloudDensity: 1.0, fogDensity: 0.0010 },
+  { el: -18, turbidity: 2.4, rayleigh: 1.00, mieCoefficient: 0.0040, mieDirectionalG: 0.800, exposure: 0.175, msStrength: 0.075, cloudCoverage: 0.30, cloudDensity: 0.75, fogDensity: 0.0016 },
+  { el: -7, turbidity: 3.0, rayleigh: 1.90, mieCoefficient: 0.0052, mieDirectionalG: 0.820, exposure: 0.175, msStrength: 0.075, cloudCoverage: 0.33, cloudDensity: 0.85, fogDensity: 0.0019 },
+  { el: -1, turbidity: 4.4, rayleigh: 2.50, mieCoefficient: 0.0090, mieDirectionalG: 0.845, exposure: 0.165, msStrength: 0.085, cloudCoverage: 0.36, cloudDensity: 0.95, fogDensity: 0.0024 },
+  { el: 4, turbidity: 4.2, rayleigh: 2.40, mieCoefficient: 0.0084, mieDirectionalG: 0.840, exposure: 0.130, msStrength: 0.085, cloudCoverage: 0.37, cloudDensity: 1.0, fogDensity: 0.0022 },
+  { el: 10, turbidity: 3.7, rayleigh: 2.10, mieCoefficient: 0.0068, mieDirectionalG: 0.825, exposure: 0.100, msStrength: 0.085, cloudCoverage: 0.36, cloudDensity: 1.0, fogDensity: 0.0019 },
+  { el: 22, turbidity: 2.8, rayleigh: 1.75, mieCoefficient: 0.0044, mieDirectionalG: 0.790, exposure: 0.070, msStrength: 0.085, cloudCoverage: 0.34, cloudDensity: 1.0, fogDensity: 0.0015 },
+  { el: 42, turbidity: 2.4, rayleigh: 1.45, mieCoefficient: 0.0035, mieDirectionalG: 0.755, exposure: 0.052, msStrength: 0.085, cloudCoverage: 0.32, cloudDensity: 1.0, fogDensity: 0.0012 },
+  { el: 66, turbidity: 2.1, rayleigh: 1.28, mieCoefficient: 0.0029, mieDirectionalG: 0.725, exposure: 0.044, msStrength: 0.085, cloudCoverage: 0.30, cloudDensity: 1.0, fogDensity: 0.0010 },
 ];
 
 export function tuningForElevation(el: number): SkyTuning {
@@ -114,6 +156,7 @@ export function tuningForElevation(el: number): SkyTuning {
     mieCoefficient: mix(a.mieCoefficient, b.mieCoefficient, t),
     mieDirectionalG: mix(a.mieDirectionalG, b.mieDirectionalG, t),
     exposure: mix(a.exposure, b.exposure, t),
+    msStrength: mix(a.msStrength, b.msStrength, t),
     cloudCoverage: mix(a.cloudCoverage, b.cloudCoverage, t),
     cloudDensity: mix(a.cloudDensity, b.cloudDensity, t),
     fogDensity: mix(a.fogDensity, b.fogDensity, t),
@@ -134,6 +177,53 @@ const EE = 1000.0;
 const THREE_OVER_16PI = 0.05968310365946075;
 const ONE_OVER_4PI = 0.07957747154594767;
 
+/**
+ * λ⁻⁴ shape of the multiple-scattering source, normalised to blue. The artistic
+ * `rayleigh` multiplier cancels out of the ratio, so this really is a constant —
+ * and it is what makes the twilight zenith blue rather than orange.
+ */
+export const BETA_RN: readonly [number, number, number] = [
+  TOTAL_RAYLEIGH[0] / TOTAL_RAYLEIGH[2],
+  TOTAL_RAYLEIGH[1] / TOTAL_RAYLEIGH[2],
+  1,
+];
+/**
+ * What multiply-scattered light converges on once it has bounced enough to
+ * forget its spectrum. Two regimes, blended on solar elevation:
+ *
+ *  - **High sun** — the bounces happen in the aerosol layer near the ground, lit
+ *    by an almost-white sun, so the horizon whitens. This is real: a clear
+ *    midday horizon is pale, not blue.
+ *  - **Low sun** — the aerosol layer is in shadow and the multiply-scattered
+ *    light comes from the air *above* it, which is still lit and still blue. So
+ *    the twilight horizon away from the sun goes mauve, not khaki, and the frame
+ *    gets the warm-to-cool banding that says "dusk" rather than "dust".
+ */
+export const HAZE_DAY: readonly [number, number, number] = [0.86, 0.94, 1.0];
+export const HAZE_DUSK: readonly [number, number, number] = [0.60, 0.70, 1.0];
+/**
+ * Fraction of the sun-path optical depth the multi-scatter term walks — two
+ * values, blended along the same horizon weight as the haze tint.
+ *
+ * Looking *up*, the light that has bounced reaches you from the twilight arch
+ * tens of kilometres above, where the sun is still well clear of the local
+ * horizon and its path through air is a fraction of the one at ground level.
+ * That light is barely reddened, so the twilight zenith stays blue.
+ *
+ * Looking *along* the horizon you are staring down the length of the aerosol
+ * layer, and everything scattered into your eye there has itself come through
+ * the same grazing sun path the direct beam did. That light is thoroughly
+ * reddened, which is what makes the whole horizon ring warm at dusk and not
+ * just the few degrees around the sun.
+ *
+ * Use one number for both and you have to pick which half of the sky to get
+ * wrong: long gives a khaki zenith, short gives a grey horizon.
+ */
+export const MS_DEPTH_ZENITH = 0.05;
+export const MS_DEPTH_HORIZON = 0.30;
+/** Luminance compression exponent. 1 = physical, 0.6 = flat. */
+export const COMPRESS = 0.72;
+
 export function sunIntensityAt(zenithCos: number): number {
   const z = clamp(zenithCos, -1, 1);
   return EE * Math.max(0, 1 - Math.exp(-((CUTOFF_ANGLE - Math.acos(z)) / STEEPNESS)));
@@ -141,7 +231,7 @@ export function sunIntensityAt(zenithCos: number): number {
 
 function hgPhase(cosTheta: number, g: number): number {
   const g2 = g * g;
-  return ONE_OVER_4PI * ((1 - g2) / Math.pow(1 - 2 * g * cosTheta + g2, 1.5));
+  return ONE_OVER_4PI * ((1 - g2) / Math.pow(Math.max(1 - 2 * g * cosTheta + g2, 1e-4), 1.5));
 }
 
 /** Relative optical depth along a ray leaving the ground at elevation `dirY`. */
@@ -149,6 +239,8 @@ function opticalInverse(dirY: number): number {
   const zenith = Math.acos(Math.max(0, dirY));
   return 1 / (Math.cos(zenith) + 0.15 * Math.pow(93.885 - (zenith * 180) / Math.PI, -1.253));
 }
+
+const LUM = [0.2126, 0.7152, 0.0722];
 
 /**
  * Everything the sky shader and the env bake need for one instant in time.
@@ -161,9 +253,18 @@ export class SkyState {
   tuning: SkyTuning = tuningForElevation(45);
   /** 0 = full day, 1 = full night. */
   night = 0;
+  /** 0 away from the horizon, 1 through the golden-hour / twilight window. */
+  dusk = 0;
 
   betaR = new Float32Array(3);
   betaM = new Float32Array(3);
+  /** Colour the multi-scatter term whitens toward. See HAZE_DAY / HAZE_DUSK. */
+  hazeTint = new Float32Array(HAZE_DAY);
+  /** Per-channel transmittance along the ray to the sun. Reddens the key. */
+  sunT = new Float32Array(3);
+  /** Multi-scatter transmittance looking up, and looking along the horizon. */
+  msT = new Float32Array(3);
+  msTH = new Float32Array(3);
   sunE = 0;
 
   /** Colour of direct sunlight at the ground, normalised to max component 1. */
@@ -172,6 +273,8 @@ export class SkyState {
   sunIntensity = 3.4;
   /** Unclamped extincted solar radiance — what the clouds are lit by. */
   sunRadiance = new THREE.Color(1, 1, 1);
+  /** Radiance of the solar disc itself, already exposure-scaled. Clips, by design. */
+  sunDisc = new THREE.Color(1, 1, 1);
 
   zenith = new THREE.Color();
   horizon = new THREE.Color();
@@ -184,13 +287,25 @@ export class SkyState {
     moonPosition(this.sun, this.moonDir);
     const el = this.sun.elevation;
     this.tuning = tuningForElevation(el);
-    this.night = smoothstep(-1.5, -8.0, el);
+    // Night starts the moment the disc touches the horizon and is complete by
+    // the end of civil twilight; `dusk` peaks through the golden hour so peers
+    // can drive warm-grade and lamp-warmup behaviour off one number.
+    this.night = smoothstep(0.5, -7.5, el);
+    this.dusk = smoothstep(20, 2, el) * (1 - this.night);
 
     const t = this.tuning;
+    const hz = smoothstep(2, 26, el);
+    for (let i = 0; i < 3; i++) this.hazeTint[i] = mix(HAZE_DUSK[i], HAZE_DAY[i], hz);
+
     const mieC = 0.434 * (0.2 * t.turbidity * 1e-17);
+    const invSun = opticalInverse(this.sun.dir.y);
     for (let i = 0; i < 3; i++) {
       this.betaR[i] = TOTAL_RAYLEIGH[i] * t.rayleigh;
       this.betaM[i] = mieC * MIE_CONST[i] * t.mieCoefficient;
+      const tau = (this.betaR[i] * RAYLEIGH_ZENITH + this.betaM[i] * MIE_ZENITH) * invSun;
+      this.sunT[i] = Math.exp(-tau);
+      this.msT[i] = Math.exp(-tau * MS_DEPTH_ZENITH);
+      this.msTH[i] = Math.exp(-tau * MS_DEPTH_HORIZON);
     }
     this.sunE = sunIntensityAt(this.sun.dir.y);
 
@@ -216,29 +331,38 @@ export class SkyState {
     // Slight de-saturation: raw Preetham extinction is harsher than film.
     const soft = fex.map((v) => Math.pow(v, 0.78));
     const m = Math.max(soft[0], soft[1], soft[2], 1e-5);
-    const lum = 0.2126 * fex[0] + 0.7152 * fex[1] + 0.0722 * fex[2];
+    const lum = LUM[0] * fex[0] + LUM[1] * fex[1] + LUM[2] * fex[2];
 
     const day = smoothstep(-1.6, 3.5, this.sun.elevation);
     if (this.night > 0.98) {
       // Moonlight key: cool, dim, so stadium rigs dominate.
       this.sunColor.setRGB(0.55, 0.68, 1.0, THREE.LinearSRGBColorSpace);
-      this.sunIntensity = 0.28;
+      this.sunIntensity = 0.24;
     } else {
       this.sunColor.setRGB(soft[0] / m, soft[1] / m, soft[2] / m, THREE.LinearSRGBColorSpace);
-      this.sunIntensity = mix(0.28, 4.3 * Math.max(lum, 0.02), day);
+      this.sunIntensity = mix(0.24, 4.3 * Math.max(lum, 0.02), day);
       if (this.night > 0) {
         const c = new THREE.Color(0.55, 0.68, 1.0);
         this.sunColor.lerp(c, this.night);
       }
     }
+
     // Radiance the cloud layer is lit by (not normalised — clouds want the
-    // absolute value so a low sun genuinely under-lights them).
-    const s = this.sunE * this.tuning.exposure * 0.55;
+    // absolute value so a low sun genuinely under-lights them). The 0.19 puts a
+    // side-lit cumulus flank near 0.6 and a forward-scattering rim well over 1,
+    // which is what a silver lining is.
+    const s = this.sunE * this.tuning.exposure * 0.19;
     this.sunRadiance.setRGB(fex[0] * s, fex[1] * s, fex[2] * s, THREE.LinearSRGBColorSpace);
     if (this.night > 0) {
-      const moon = 0.055 * this.night;
+      const moon = 0.10 * this.night;
       this.sunRadiance.lerp(new THREE.Color(moon * 0.62, moon * 0.74, moon), this.night);
     }
+
+    // The disc. Deliberately far above white so bloom has a genuine highlight,
+    // but built from the physical transmittance so a low sun is orange rather
+    // than the tomato the artistic rayleigh would make of it.
+    const d = this.sunE * this.tuning.exposure * 1.35 * (1 - this.night);
+    this.sunDisc.setRGB(fex[0] * d, fex[1] * d, fex[2] * d, THREE.LinearSRGBColorSpace);
   }
 
   /** Cheap 3-colour fit of the sky used for aerial perspective. */
@@ -270,57 +394,74 @@ export class SkyState {
       THREE.LinearSRGBColorSpace,
     );
 
-    // Turf bounce for the lower env hemisphere.
-    const a = [0.055, 0.082, 0.030];
+    // Turf bounce: the radiance leaving the pitch, which is what the lower half
+    // of the environment map, the ambient under a cloud base and every
+    // downward-looking fog ray actually see. It is albedo times the irradiance
+    // landing on it, so it cannot exceed the pitch's own rendered value — a
+    // bounce brighter than the surface it came off is the fastest way to turn a
+    // stadium into a lightbox.
+    const alb = [0.090, 0.160, 0.050];
     const sun = Math.max(0, this.sun.dir.y);
     this.ground.setRGB(
-      a[0] * (this.horizon.r * 1.6 + this.sunRadiance.r * sun * 2.2),
-      a[1] * (this.horizon.g * 1.6 + this.sunRadiance.g * sun * 2.2),
-      a[2] * (this.horizon.b * 1.6 + this.sunRadiance.b * sun * 2.2),
+      alb[0] * (this.horizon.r * 0.5 + this.sunRadiance.r * sun * 0.35),
+      alb[1] * (this.horizon.g * 0.5 + this.sunRadiance.g * sun * 0.35),
+      alb[2] * (this.horizon.b * 0.5 + this.sunRadiance.b * sun * 0.35),
       THREE.LinearSRGBColorSpace,
     );
   }
 
-  /** Preetham in-scattering for one direction. Mirror of the GLSL in SkyMaterial. */
+  /**
+   * In-scattered radiance for one direction. Mirror of `atmosphere()` in
+   * SkyMaterial.ts — keep the two in step or the env map and the dome disagree.
+   */
   radiance(dx: number, dy: number, dz: number, out: [number, number, number]): void {
     const t = this.tuning;
     const inv = opticalInverse(dy);
-    const sR = RAYLEIGH_ZENITH * inv, sM = MIE_ZENITH * inv;
     const cosTheta = dx * this.sun.dir.x + dy * this.sun.dir.y + dz * this.sun.dir.z;
     const rp = THREE_OVER_16PI * (1 + Math.pow(cosTheta * 0.5 + 0.5, 2));
     const mp = hgPhase(cosTheta, t.mieDirectionalG);
-    const upDotSun = clamp(this.sun.dir.y, -1, 1);
-    const sunsetMix = clamp(Math.pow(1 - upDotSun, 5), 0, 1);
 
+    // Optical *thickness* of the view ray, per channel: 0 straight up in clean
+    // air, 1 along the horizon. It is both the in-scatter weight and the
+    // "how many bounces" proxy the multi-scatter whitening keys off.
+    const opa = [0, 0, 0];
     for (let i = 0; i < 3; i++) {
-      const bR = this.betaR[i], bM = this.betaM[i];
-      const fex = Math.exp(-(bR * sR + bM * sM));
-      const num = bR * rp + bM * mp;
-      const den = bR + bM;
-      const base = this.sunE * (num / den);
-      let lin = Math.pow(Math.max(0, base * (1 - fex)), 1.5);
-      const alt = Math.pow(Math.max(0, base * fex), 0.5);
-      lin *= mix(1, alt, sunsetMix);
-      out[i] = (lin + 0.06 * fex) * t.exposure;
+      opa[i] = 1 - Math.exp(-(this.betaR[i] * RAYLEIGH_ZENITH + this.betaM[i] * MIE_ZENITH) * inv);
     }
+    const w = Math.pow(opa[1], 1.5);
+
+    let y = 0;
+    for (let i = 0; i < 3; i++) {
+      const single = this.sunT[i] * (this.betaR[i] * rp + this.betaM[i] * mp)
+        / (this.betaR[i] + this.betaM[i]);
+      const ms = mix(this.msT[i], this.msTH[i], w);
+      const multi = t.msStrength * ms * mix(BETA_RN[i], this.hazeTint[i], w);
+      out[i] = Math.max(0, this.sunE * (single + multi) * opa[i]);
+      y += LUM[i] * out[i];
+    }
+    // Compress luminance, keep chroma. A per-channel pow() would desaturate
+    // every pixel it compressed — and the sunset is the whole point.
+    const k = Math.pow(Math.max(y, 1e-6), COMPRESS) / Math.max(y, 1e-6) * t.exposure;
+    for (let i = 0; i < 3; i++) out[i] *= k;
 
     if (this.night > 0) {
       const n = this.night;
       const h = clamp(dy, 0, 1);
-      const zen = [0.0042, 0.0068, 0.0155];
-      const hor = [0.0135, 0.0190, 0.0330];
-      // Residual twilight in the sun's azimuth, plus warm city glow.
+      const zen = [0.0034, 0.0053, 0.0122];
+      const hor = [0.0092, 0.0132, 0.0248];
+      // Residual twilight in the sun's azimuth, plus warm city glow hugging the
+      // skyline. Both are tight so the sky above them stays genuinely dark.
       const l = Math.hypot(this.sun.dir.x, this.sun.dir.z) || 1;
       const hl = Math.hypot(dx, dz) || 1;
       const az = ((this.sun.dir.x / l) * (dx / hl) + (this.sun.dir.z / l) * (dz / hl));
-      const tw = Math.pow(Math.max(0, az), 3) * Math.exp(-h * 7)
-        * smoothstep(-16, -3, this.sun.elevation);
-      const glow = [0.10, 0.045, 0.020];
-      const city = Math.exp(-h * 13) * 0.9;
+      const tw = Math.pow(Math.max(0, az), 2.2) * Math.exp(-h * 5.5)
+        * smoothstep(-15, -1, this.sun.elevation);
+      const glow = [0.62, 0.24, 0.10];
+      const city = Math.exp(-h * 22) * 0.85;
       for (let i = 0; i < 3; i++) {
         const nightC = mix(hor[i], zen[i], Math.pow(h, 0.55))
           + glow[i] * tw
-          + [0.028, 0.017, 0.008][i] * city;
+          + [0.0125, 0.0072, 0.0032][i] * city;
         out[i] = mix(out[i], nightC, n);
       }
     }

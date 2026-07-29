@@ -26,9 +26,13 @@ export class FilmPass extends QuadPass {
         tDiffuse: { value: null },
         uResolution: { value: new THREE.Vector2(width, height) },
         uAspect: { value: width / Math.max(1, height) },
-        uCa: { value: 1.1 },       // pixels of fringing at the very corner
-        uVignette: { value: 0.30 },
-        uGrain: { value: 0.035 },
+        // Pixels of fringing at the very corner. Under a pixel on purpose: the
+        // stands are a field of one-pixel crowd detail, and any wider than this
+        // the fringe stops reading as a lens and starts reading as rainbow
+        // speckle over every seat in the bowl.
+        uCa: { value: 0.7 },
+        uVignette: { value: 0.28 },
+        uGrain: { value: 0.024 },
         uGrainScale: { value: 1.0 },
         uTime: { value: 0 },
       },

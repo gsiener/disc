@@ -26,10 +26,12 @@ import * as THREE from 'three';
 export const AERIAL = {
   uAerialSky: new Float32Array([0.05, 0.09, 0.18]),
   uAerialHoriz: new Float32Array([0.2, 0.24, 0.3]),
+  /** What a *downward* ray scatters — the ground-bounce term, not the sky. */
+  uAerialGround: new Float32Array([0.04, 0.05, 0.04]),
   uAerialSun: new Float32Array([0, 0, 0]),
   uAerialSunDir: new Float32Array([0, 1, 0]),
   /** density · 1/m, height falloff · 1/m, sun-glow exponent, max opacity */
-  uAerialParams: new Float32Array([0.0016, 0.012, 7.0, 0.92]),
+  uAerialParams: new Float32Array([0.0003, 0.012, 7.0, 0.92]),
   /** fog base height (m), unused, unused, unused */
   uAerialParams2: new Float32Array([-6, 0, 0, 0]),
 };
@@ -61,6 +63,7 @@ const PARS_FRAGMENT = /* glsl */`
 	#endif
 	uniform vec3 uAerialSky;
 	uniform vec3 uAerialHoriz;
+	uniform vec3 uAerialGround;
 	uniform vec3 uAerialSun;
 	uniform vec3 uAerialSunDir;
 	uniform vec4 uAerialParams;
@@ -74,9 +77,15 @@ const FRAGMENT = /* glsl */`
 	float aerialDist = max( length( aerialRay ), 1e-3 );
 	aerialRay /= aerialDist;
 
-	float aerialH = smoothstep( -0.10, 0.45, aerialRay.y );
-	vec3 aerialCol = mix( uAerialHoriz, uAerialSky, aerialH * aerialH );
-	aerialCol += uAerialSun * pow( max( dot( aerialRay, uAerialSunDir ), 0.0 ), uAerialParams.z );
+	// A ray that points *down* — every ray that lands on the pitch — scatters the
+	// ground bounce, not the sky. Using the horizon radiance for those (it is an
+	// order of magnitude brighter than sunlit turf) is what turns a stadium into
+	// a milk bath the moment the fog is thick enough to see.
+	float aerialUp = smoothstep( 0.0, 0.45, aerialRay.y );
+	float aerialDn = smoothstep( -0.32, 0.0, aerialRay.y );
+	vec3 aerialCol = mix( uAerialGround, uAerialHoriz, aerialDn );
+	aerialCol = mix( aerialCol, uAerialSky, aerialUp * aerialUp );
+	aerialCol += uAerialSun * pow( max( dot( aerialRay, uAerialSunDir ), 0.0 ), uAerialParams.z ) * aerialDn;
 
 	float aerialK = uAerialParams.y;
 	float aerialY0 = max( cameraPosition.y - uAerialParams2.x, 0.0 );
@@ -138,6 +147,7 @@ function writeColor(dst: Float32Array, c: THREE.Color, scale = 1): void {
 export interface AerialUpdate {
   sky: THREE.Color;
   horizon: THREE.Color;
+  ground: THREE.Color;
   sunGlow: THREE.Color;
   sunDir: THREE.Vector3;
   density: number;
@@ -149,7 +159,15 @@ export interface AerialUpdate {
 export function updateAerial(u: AerialUpdate): void {
   writeColor(AERIAL.uAerialSky, u.sky);
   writeColor(AERIAL.uAerialHoriz, u.horizon);
-  writeColor(AERIAL.uAerialSun, u.sunGlow);
+  writeColor(AERIAL.uAerialGround, u.ground);
+  // The glow toward a low sun is a genuine radiance spike — 60× the horizon at
+  // 19:00 — and multiplying it by a fog factor still hands the frame a nuclear
+  // wash on the sun side. Cap it against the horizon so it reads as a warm lift.
+  _c.copy(u.sunGlow);
+  _c.r = Math.min(_c.r, u.horizon.r * 2.2);
+  _c.g = Math.min(_c.g, u.horizon.g * 2.2);
+  _c.b = Math.min(_c.b, u.horizon.b * 2.2);
+  writeColor(AERIAL.uAerialSun, _c);
   AERIAL.uAerialSunDir[0] = u.sunDir.x;
   AERIAL.uAerialSunDir[1] = u.sunDir.y;
   AERIAL.uAerialSunDir[2] = u.sunDir.z;
@@ -157,5 +175,4 @@ export function updateAerial(u: AerialUpdate): void {
   AERIAL.uAerialParams[1] = u.heightFalloff;
   AERIAL.uAerialParams[2] = u.sunGlowExponent;
   AERIAL.uAerialParams[3] = u.maxOpacity;
-  void _c;
 }

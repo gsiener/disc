@@ -47,8 +47,12 @@ export const SHOTS = {
     pos: [3.2, 2.4, 3.4], target: [0, 2.2, 0], fov: 26, hour: 18.2, tableau: 'huck', focus: 4.4, aperture: 4.5,
   },
   stadium: {
+    // The bowl's roof reaches x = ±59, z = ±90, y = 27.6, and the floodlight
+    // masts stand at (±48, ±79) with heads at y = 43.5. Anything inside that
+    // envelope frames a truss, not a stadium — this sits well outside it and
+    // high enough to look down into the bowl and read the pitch markings.
     about: 'Establishing wide — whole stadium bowl, stands, lighting rigs, sky, field markings legible.',
-    pos: [-72, 44, 78], target: [0, 4, 0], fov: 40, hour: 19.4, tableau: 'flow',
+    pos: [-134, 82, 150], target: [0, 15, 0], fov: 42, hour: 19.4, tableau: 'flow',
   },
   turf: {
     about: 'Ground-level turf macro — individual grass blades, mow stripes, chalk line edge, cleat divots.',

@@ -26,13 +26,25 @@ export interface RingSpec {
   widthScale: number;
 }
 
-const SHARE = [0.30, 0.34, 0.36];
+/**
+ * Budget split across the three rings.
+ *
+ * Ring areas differ by two orders of magnitude, so an even split is really a
+ * density collapse: the old [0.30, 0.34, 0.36] over an 8.5 / 27 / 26 m layout
+ * put 175 blades/m² in front of a camera 16 cm off the ground, which reads as
+ * scattered spikes on a painted floor rather than as turf. Density is what
+ * makes a sward, and density only matters where a blade is more than a pixel
+ * wide — so the near ring is now small and takes nearly half the budget, and
+ * the outer ring (where blades are already clamped to the 1.3 px width floor
+ * and are doing nothing but blending into the turf texture) takes the least.
+ */
+const SHARE = [0.55, 0.30, 0.15];
 const SEGMENTS = [4, 3, 1];
 
 export function planRings(budget: number, distance: number): RingSpec[] {
   const d = Math.max(12, distance);
-  const r0 = Math.min(Math.max(d * 0.22, 3.2), 8.5);
-  const r1 = Math.min(Math.max(d * 0.55, 9), 27);
+  const r0 = Math.min(Math.max(d * 0.10, 2.2), 4.5);
+  const r1 = Math.min(Math.max(d * 0.42, 7), 22);
   const bounds: Array<[number, number]> = [[0, r0], [r0, r1], [r1, d]];
 
   const specs: RingSpec[] = [];

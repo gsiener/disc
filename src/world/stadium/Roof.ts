@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Ctx } from '../../core/Ctx';
 import { Mesher, parts, strut, UNIT_BOX, type Part, type RGB } from './Geo';
 import type { StadiumMaterials } from './Materials';
-import { BASE_PERIMETER, ROOF, roofBackOff, ptAt, type RingPt } from './Layout';
+import { BASE_PERIMETER, ROOF, roofBackOff, roofYAt, COLUMN_OFF, ptAt, ringTable, type RingPt } from './Layout';
 
 /**
  * Cantilever roof: a continuous ring canopy carried on radial steel trusses,
@@ -26,11 +26,13 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
   const th = ROOF.thickness;
   const US = 0.16;
 
+  const tTab = ringTable(ringN, bOff * 0.8);
+  const N = tTab.length - 1;
   const ring: RingPt[] = [];
-  for (let i = 0; i <= ringN; i++) {
+  for (let i = 0; i <= N; i++) {
     const p: RingPt = { x: 0, z: 0, nx: 0, nz: 0, t: 0, seg: 0 };
-    ptAt((i / ringN) % 1, 0, p);
-    p.t = i / ringN;
+    ptAt(tTab[i] % 1, 0, p);
+    p.t = tTab[i];
     ring.push(p);
   }
   const P: [number, number] = [0, 0], Q: [number, number] = [0, 0];
@@ -45,7 +47,7 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
   const deck = new Mesher();
   const span = bOff - fOff;
   const UNDER: RGB = [0.62, 0.63, 0.66];
-  for (let i = 0; i < ringN; i++) {
+  for (let i = 0; i < N; i++) {
     const u0 = uAt(i), u1 = uAt(i + 1);
     at(i, fOff, P); at(i + 1, fOff, Q); at(i + 1, bOff, Rr); at(i, bOff, S);
     // top skin
@@ -63,7 +65,9 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
       [u0, 0, u1, 0, u1, 0.2, u0, 0.2], [0.8, 0.8, 1, 1]);
   }
   const deckMesh = new THREE.Mesh(deck.build('roof-deck'), M.roofDeck);
-  deckMesh.castShadow = ctx.quality.tier !== 'low';
+  // The canopy shadow raking across the stands at low sun is the signature
+  // stadium cue, so this one casts at every tier — it is a single mesh.
+  deckMesh.castShadow = true;
   deckMesh.receiveShadow = true;
   g.add(deckMesh);
 
@@ -89,8 +93,11 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
   g.add(trusses);
 
   /* ------------------------------------------------------------ columns */
+  // An outer colonnade: the props stand clear of the parapet, on the ground,
+  // so the building reads as roof-on-structure from any low angle rather than
+  // as a lid balanced on the seating deck.
   const colCount = Math.round(count / 2);
-  const colGeo = buildColumn(bY - 2.9);
+  const colGeo = buildColumn(roofYAt(COLUMN_OFF) - 0.34);
   const cols = new THREE.InstancedMesh(colGeo, M.steelDark, colCount);
   cols.name = 'roof-columns';
   for (let i = 0; i < colCount; i++) {
@@ -98,7 +105,7 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
     nrm.set(_p.nx, 0, _p.nz);
     tan.set(-_p.nz, 0, _p.nx);
     m4.makeBasis(nrm, up, tan);
-    m4.setPosition(_p.x + _p.nx * (bOff - 1.1), 0, _p.z + _p.nz * (bOff - 1.1));
+    m4.setPosition(_p.x + _p.nx * COLUMN_OFF, 0, _p.z + _p.nz * COLUMN_OFF);
     cols.setMatrixAt(i, m4);
   }
   cols.instanceMatrix.needsUpdate = true;
@@ -108,7 +115,7 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
   g.add(cols);
 
   /* -------------------------------------------- circumferential chords */
-  const chordN = Math.max(48, Math.round(ringN / 3));
+  const chordN = Math.max(48, Math.round(N / 3));
   const chordParts: Part[] = [];
   const chordOffs = [fOff + 1.2, fOff + span * 0.36, fOff + span * 0.68];
   for (const off of chordOffs) {
@@ -126,6 +133,27 @@ export function buildRoof(ctx: Ctx, M: StadiumMaterials, rows: number, ringN: nu
   chords.castShadow = false;
   chords.receiveShadow = true;
   g.add(chords);
+
+  /* -------------------------------------- concentric ridges on the skin */
+  // Crossing the radial standing seams: together they give the canopy a
+  // readable panel grid instead of one continuous sheet.
+  const ridgeN = Math.max(80, Math.round(N / 2));
+  const ridgeParts: Part[] = [];
+  for (const f of [0.30, 0.62, 0.88]) {
+    const off = fOff + span * f;
+    const y = fY + (bY - fY) * f + th + 0.09;
+    let prev: [number, number, number] | null = null;
+    for (let i = 0; i <= ridgeN; i++) {
+      ptAt((i / ridgeN) % 1, 0, _p);
+      const p: [number, number, number] = [_p.x + _p.nx * off, y, _p.z + _p.nz * off];
+      if (prev) ridgeParts.push({ ...strut(prev, p, 0.20, UNIT_BOX), color: [1.06, 1.06, 1.08] as RGB });
+      prev = p;
+    }
+  }
+  const ridges = new THREE.Mesh(parts(ridgeParts, 'roof-ridges'), M.roofDeck);
+  ridges.castShadow = false;
+  ridges.receiveShadow = true;
+  g.add(ridges);
 
   return g;
 }
@@ -162,6 +190,17 @@ function buildTruss(fOff: number, bOff: number, fY: number, bY: number): THREE.B
     list.push({
       ...strut([fOff + span * f0, botY(f0), 0], [fOff + span * f1, botY(f1), 0], chordW * 1.1, UNIT_BOX),
       color: STEEL,
+    });
+  }
+  // Standing seam on top of the deck, one per truss. Without these the canopy
+  // is a hectare of unbroken plate and the whole building loses its scale from
+  // the establishing camera.
+  const seamY = (f: number) => fY + (bY - fY) * f + 0.86;
+  for (let p = 0; p < panels; p++) {
+    const f0 = p / panels, f1 = (p + 1) / panels;
+    list.push({
+      ...strut([fOff + span * f0, seamY(f0), 0], [fOff + span * f1, seamY(f1), 0], 0.24, UNIT_BOX),
+      color: [1.1, 1.1, 1.12] as RGB,
     });
   }
   for (let p = 0; p <= panels; p++) {

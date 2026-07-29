@@ -29,6 +29,14 @@ export const FIELD = {
   apronHalfZ: 78,
 } as const;
 
+/**
+ * Width of one mower pass, in metres. The turf shader turns this into a lay
+ * direction and the grass system leans its blades by it, so both *must* read
+ * the same number or the painted stripe and the physical stripe drift apart
+ * and the anisotropy stops reading as one surface.
+ */
+export const MOW_STRIPE = 5.2;
+
 /** The eight corner-cone positions, in play order. */
 export const CORNER_CONES: readonly [number, number][] = [
   [-FIELD.halfWidth, -FIELD.halfLength], [FIELD.halfWidth, -FIELD.halfLength],

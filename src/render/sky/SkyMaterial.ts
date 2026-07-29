@@ -1,8 +1,15 @@
 import * as THREE from 'three';
+import { BETA_RN, COMPRESS } from './Atmosphere';
 
 /**
- * The sky dome shader: Preetham single-scattering, a raymarched cumulus layer,
- * a night hemisphere with a magnitude-distributed star field and a shaded moon.
+ * The sky dome shader: the scattering model from Atmosphere.ts, a raymarched
+ * cumulus layer, a night hemisphere with a magnitude-distributed star field and
+ * a shaded moon.
+ *
+ * `atmosphere()` here is a line-for-line mirror of `SkyState.radiance()`. That
+ * is deliberate and it is load-bearing: the same numbers feed the PMREM env map
+ * and the aerial-perspective fog on the CPU side, and any drift between the two
+ * shows up as a seam where the far stands meet the sky.
  *
  * The cloud march is the expensive part, so it is compiled per quality tier
  * through `defines` rather than branched at runtime, and it early-outs on
@@ -36,6 +43,12 @@ uniform vec3 uSunDir;
 uniform vec3 uMoonDir;
 uniform vec3 uBetaR;
 uniform vec3 uBetaM;
+uniform vec3 uSunT;
+uniform vec3 uMsT;
+uniform vec3 uMsTH;
+uniform vec3 uHaze;
+uniform vec3 uSunDisc;
+uniform float uMs;
 uniform float uSunE;
 uniform float uMieG;
 uniform float uExposure;
@@ -62,6 +75,8 @@ const float THREE_OVER_16PI = 0.05968310365946075;
 const float ONE_OVER_4PI = 0.07957747154594767;
 const float RAYLEIGH_ZENITH = 8.4e3;
 const float MIE_ZENITH = 1.25e3;
+const vec3 LUM = vec3( 0.2126, 0.7152, 0.0722 );
+const vec3 BETA_RN = vec3( BETA_RN_X, BETA_RN_Y, 1.0 );
 
 float hgPhase( float c, float g ) {
   float g2 = g * g;
@@ -75,24 +90,27 @@ float opticalInverse( float dy ) {
 
 /* ------------------------------------------------------------- atmosphere */
 
-vec3 atmosphere( vec3 rd, out vec3 Fex ) {
+/** @param opa out: per-channel view-ray opacity, reused by the cloud fade. */
+vec3 atmosphere( vec3 rd, out vec3 opa ) {
   float inv = opticalInverse( rd.y );
-  Fex = exp( - ( uBetaR * RAYLEIGH_ZENITH * inv + uBetaM * MIE_ZENITH * inv ) );
+  opa = 1.0 - exp( - ( uBetaR * RAYLEIGH_ZENITH + uBetaM * MIE_ZENITH ) * inv );
 
   float cosT = dot( rd, uSunDir );
   float rP = THREE_OVER_16PI * ( 1.0 + pow( cosT * 0.5 + 0.5, 2.0 ) );
   float mP = hgPhase( cosT, uMieG );
 
-  vec3 num = uBetaR * rP + uBetaM * mP;
-  vec3 den = uBetaR + uBetaM;
-  vec3 base = uSunE * ( num / den );
+  // Single scattering, reddened by the spectral transmittance to the sun.
+  vec3 single = uSunT * ( uBetaR * rP + uBetaM * mP ) / ( uBetaR + uBetaM );
+  // Multiple scattering: Rayleigh-coloured, walking a fraction of the sun path,
+  // whitening toward the horizon where the bounce count is high.
+  float w = pow( opa.g, 1.5 );
+  vec3 multi = uMs * mix( uMsT, uMsTH, w ) * mix( BETA_RN, uHaze, w );
 
-  vec3 lin = pow( max( base * ( 1.0 - Fex ), vec3( 0.0 ) ), vec3( 1.5 ) );
-  vec3 alt = pow( max( base * Fex, vec3( 0.0 ) ), vec3( 0.5 ) );
-  float sunsetMix = clamp( pow( 1.0 - uSunDir.y, 5.0 ), 0.0, 1.0 );
-  lin *= mix( vec3( 1.0 ), alt, sunsetMix );
-
-  return ( lin + 0.06 * Fex ) * uExposure;
+  vec3 L = max( uSunE * ( single + multi ) * opa, vec3( 0.0 ) );
+  // Compress luminance, keep chroma — a per-channel pow would desaturate the
+  // sunset it is meant to preserve.
+  float y = max( dot( L, LUM ), 1e-6 );
+  return L * ( pow( y, COMPRESS_P ) / y * uExposure );
 }
 
 /* ------------------------------------------------------------------ night */
@@ -103,13 +121,13 @@ float hash21( vec2 p ) {
 
 vec3 nightBase( vec3 rd ) {
   float h = clamp( rd.y, 0.0, 1.0 );
-  vec3 c = mix( vec3( 0.0135, 0.0190, 0.0330 ), vec3( 0.0042, 0.0068, 0.0155 ), pow( h, 0.55 ) );
+  vec3 c = mix( vec3( 0.0092, 0.0132, 0.0248 ), vec3( 0.0034, 0.0053, 0.0122 ), pow( h, 0.55 ) );
   vec2 sa = normalize( uSunDir.xz + 1e-5 );
   vec2 ra = normalize( rd.xz + 1e-5 );
-  float tw = pow( max( dot( sa, ra ), 0.0 ), 3.0 ) * exp( - h * 7.0 )
-    * smoothstep( -16.0, -3.0, uSunElev );
-  c += vec3( 0.10, 0.045, 0.020 ) * tw;
-  c += vec3( 0.028, 0.017, 0.008 ) * exp( - h * 13.0 ) * 0.9;   // city glow
+  float tw = pow( max( dot( sa, ra ), 0.0 ), 2.2 ) * exp( - h * 5.5 )
+    * smoothstep( -15.0, -1.0, uSunElev );
+  c += vec3( 0.62, 0.24, 0.10 ) * tw;
+  c += vec3( 0.0125, 0.0072, 0.0032 ) * exp( - h * 22.0 ) * 0.85;   // city glow
   return c;
 }
 
@@ -131,7 +149,7 @@ vec3 stars( vec3 rd ) {
   float band = exp( - pow( dot( rd, mwAxis ) * 2.3, 2.0 ) );
 
   vec3 col = vec3( 0.0 );
-  col += vec3( 0.0075, 0.0082, 0.0125 ) * band * band;
+  col += vec3( 0.0060, 0.0068, 0.0110 ) * band * band;
 
   for ( int L = 0; L < 2; L ++ ) {
     float dens = L == 0 ? 130.0 : 62.0;
@@ -160,33 +178,36 @@ vec3 stars( vec3 rd ) {
     tint = mix( vec3( 1.0 ), tint, 0.75 );
     col += tint * bright;
   }
-  return col * 0.045;
+  // Stars extinct into the horizon haze exactly like everything else does.
+  return col * 0.055 * smoothstep( -0.02, 0.16, rd.y );
 }
 
 vec3 moon( vec3 rd ) {
   float ang = dot( rd, uMoonDir );
-  const float R = 0.0088;                       // slightly larger than life; reads better
+  const float R = 0.0082;                       // slightly larger than life; reads better
   vec3 col = vec3( 0.0 );
 
   // Atmospheric halo around the disc.
-  float halo = pow( max( ang, 0.0 ), 2200.0 ) * 0.55 + pow( max( ang, 0.0 ), 90.0 ) * 0.012;
-  col += vec3( 0.62, 0.70, 0.92 ) * halo;
+  float halo = pow( max( ang, 0.0 ), 2600.0 ) * 0.42 + pow( max( ang, 0.0 ), 70.0 ) * 0.010;
+  col += vec3( 0.60, 0.69, 0.94 ) * halo;
 
   vec3 mx = normalize( cross( uMoonDir, vec3( 0.0, 1.0, 0.02 ) ) );
   vec3 my = cross( mx, uMoonDir );
   vec2 q = vec2( dot( rd, mx ), dot( rd, my ) ) / R;
   float r2 = dot( q, q );
   if ( r2 < 1.25 ) {
-    float disc = 1.0 - smoothstep( 0.985, 1.0, r2 );
+    float disc = 1.0 - smoothstep( 0.982, 1.0, r2 );
     vec3 n = normalize( mx * q.x + my * q.y - uMoonDir * sqrt( max( 1.0 - min( r2, 1.0 ), 0.0 ) ) );
+    // The moon is lit by the sun even when the sun is below our horizon, so the
+    // terminator has to come from the real solar direction, not from a fake one.
     float lam = max( dot( n, uSunDir ), 0.0 );
     lam = pow( lam, 0.45 );                     // regolith is retro-reflective, not lambert
     float mare = texture( uDetail, n * 1.7 + 4.0 ).r;
     float fine = texture( uDetail, n * 6.3 + 1.0 ).g;
-    float alb = mix( 0.55, 1.0, mare * 0.75 + fine * 0.25 );
-    col += vec3( 1.0, 0.975, 0.93 ) * alb * lam * disc * 2.6;
+    float alb = mix( 0.52, 1.0, mare * 0.75 + fine * 0.25 );
+    col += vec3( 1.0, 0.972, 0.925 ) * alb * lam * disc * 3.2;
   }
-  return col;
+  return col * smoothstep( -0.03, 0.10, rd.y );
 }
 
 /* ----------------------------------------------------------------- clouds */
@@ -222,23 +243,37 @@ float cloudDensity( vec3 p, float lod ) {
 
   vec3 wind = vec3( uWind.x, 0.0, uWind.y ) * uTime;
   vec3 wth = texture( uWeather, ( p.xz + wind.xz * 0.25 ) * 4.4e-5 ).rgb;
-  // Weather red is centred on 0.5; spread it hard so the sky has genuine banks
-  // and genuine holes rather than an even wash.
-  float cov = clamp( ( wth.r - 0.5 ) * 1.55 + uCoverage * 1.28, 0.0, 1.0 );
-  if ( cov <= 0.02 ) return 0.0;
+  // Weather red is centred on 0.5 with roughly ±0.25 of swing; spread it hard so
+  // the sky has genuine banks and genuine holes.
+  //
+  // The gain here matters more than it looks. Cumulus at these scales are
+  // optically thick — 0.055/m over a kilometre is an optical depth of thirty —
+  // so a cell either blocks the sky completely or is not there. Coverage is
+  // therefore the *only* control over how much blue survives, and at the
+  // previous bias the field never dropped below threshold anywhere: the result
+  // was a seamless overcast deck that read as a flat grey sky with no clouds in
+  // it at all, which is exactly what the frames were showing.
+  float cov = clamp( ( wth.r - 0.5 ) * 2.6 + uCoverage, 0.0, 1.0 );
+  if ( cov <= 0.03 ) return 0.0;
 
   // Vertical shear: tops lag the bases, which is most of why real cumulus lean.
   vec3 sp = p + wind + vec3( uWind.x, 0.0, uWind.y ) * h * 260.0;
   vec3 uvw = sp * ( 1.0 / 13000.0 );
 
-  vec3 warp = texture( uDetail, uvw * 3.1 ).rgb - 0.5;
-  uvw += warp * 0.26;
+  // Two-stage domain warp. One octave of warp gives wobbly noise; feeding the
+  // warp through a second, coarser field is what turns it into structure that
+  // does not read as a scrolling texture. Amplitudes are in tile units and one
+  // tile is 13 km, so 0.18 is already a two-kilometre displacement — push it
+  // much further and cumulus smear into streaks.
+  vec3 w1 = texture( uDetail, uvw * 0.83 + 0.17 ).rgb - 0.5;
+  vec3 w2 = texture( uDetail, uvw * 3.1 + w1 * 0.35 ).rgb - 0.5;
+  uvw += w1 * 0.18 + w2 * 0.13;
 
   vec4 s = texture( uShape, uvw );
   float band = dot( s.gba, vec3( 0.625, 0.25, 0.125 ) );
   float base = remap01( s.r, band * 0.85 - 0.85, 1.0 );
   base *= heightGradient( h, wth.g );
-  base = remap01( base, 1.0 - cov, 1.0 );
+  base = remap01( base, 1.0 - cov * 0.94, 1.0 );
   if ( base <= 0.0 ) return 0.0;
 
   if ( lod < 0.5 ) {
@@ -269,14 +304,17 @@ float lightMarch( vec3 p, vec3 L ) {
 }
 
 vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
-  if ( rd.y < 0.012 ) return vec4( 0.0 );
+  // Clouds have to reach the geometric horizon: in a stadium bowl the only sky
+  // most cameras see is the band just above the stands, and cutting the march
+  // off at 0.7° of elevation deletes the cloud layer from every wide shot.
+  if ( rd.y < -0.004 ) return vec4( 0.0 );
 
   vec3 sp = ro + vec3( 0.0, PLANET_R, 0.0 );
   float t0 = shellDist( sp, rd, PLANET_R + uCloudBottom );
   float t1 = shellDist( sp, rd, PLANET_R + uCloudTop );
   if ( t1 <= 0.0 ) return vec4( 0.0 );
   t0 = max( t0, 0.0 );
-  float span = min( t1 - t0, 46000.0 );
+  float span = min( t1 - t0, 62000.0 );
   if ( span <= 0.0 ) return vec4( 0.0 );
 
   float dt = span / float( CLOUD_STEPS );
@@ -295,9 +333,11 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
   for ( int i = 0; i < CLOUD_STEPS; i ++ ) {
     if ( tr < 0.015 ) break;
     vec3 p = ro + rd * t;
-    // Cheap probe first: skip the erosion fetch in empty space, and stride out
-    // once we are confidently outside any cloud.
-    float d = cloudDensity( p, empty > 1 ? 1.0 : 0.0 );
+    // Cheap probe first: skip the erosion fetch in empty space, once we are
+    // confidently outside any cloud, and past ~12 km where a 2 km step could
+    // not resolve the erosion band anyway.
+    float lod = ( empty > 1 || t > 12000.0 ) ? 1.0 : 0.0;
+    float d = cloudDensity( p, lod );
     if ( d <= 0.0005 ) {
       empty ++;
       t += dt * ( empty > 2 ? 1.85 : 1.0 );
@@ -310,11 +350,12 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
 
     // Three-octave multiple-scattering approximation: successive octaves lose
     // energy, absorb less and flatten their phase, which is what gives thick
-    // clouds bright, soft interiors instead of a hard dark core.
+    // clouds bright, soft interiors instead of a hard dark core. The forward
+    // lobe of the first octave is the silver lining.
     vec3 sun = vec3( 0.0 );
     float a = 1.0, b = 1.0, c = 1.0;
     for ( int o = 0; o < 3; o ++ ) {
-      float ph = mix( hgPhase( cosT, 0.80 * c ), hgPhase( cosT, -0.32 * c ), 0.28 );
+      float ph = mix( hgPhase( cosT, 0.82 * c ), hgPhase( cosT, -0.34 * c ), 0.28 );
       sun += vec3( a * exp( - tau * SIGMA_L * b ) * ( ph + 0.055 ) );
       a *= 0.52; b *= 0.42; c *= 0.68;
     }
@@ -338,10 +379,19 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
   scatter /= max( alpha, 1e-3 );
 
   // Aerial perspective on the cloud layer itself: far banks wash into the sky.
+  // The near-horizon deck is 30–50 km out, so this is also what stops a 2 km
+  // march step showing up as banding — by then it is nearly all sky.
+  //
+  // The low-angle ramp is doing real work, not just hiding artefacts. The band
+  // of sky a stadium camera can actually see is the first few degrees above the
+  // stands, and that is precisely where the cloud layer is furthest away and
+  // most washed out. Letting a grey 30 km deck sit at full opacity across it
+  // desaturates the one strip of sky in the frame — a dusk that should be amber
+  // comes out neutral. Fade it out and the horizon keeps its own colour.
   float md = wsum > 0.0 ? meanT / wsum : t0;
-  float fade = exp( - md * 2.1e-5 );
-  scatter = mix( skyCol, scatter, clamp( fade + 0.12, 0.0, 1.0 ) );
-  alpha *= mix( 0.55, 1.0, fade ) * smoothstep( 0.012, 0.07, rd.y );
+  float fade = exp( - md * 7.0e-5 );
+  scatter = mix( skyCol, scatter, clamp( fade + 0.06, 0.0, 1.0 ) );
+  alpha *= mix( 0.35, 1.0, fade ) * smoothstep( -0.002, 0.055, rd.y );
   return vec4( scatter * alpha, alpha );
 }
 #endif
@@ -351,24 +401,33 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
 void main() {
   vec3 rd = normalize( vWorldPos - cameraPosition );
 
-  vec3 Fex;
-  vec3 sky = atmosphere( rd, Fex );
+  vec3 opa;
+  vec3 sky = atmosphere( rd, opa );
 
   if ( uNight > 0.001 ) {
     sky = mix( sky, nightBase( rd ), uNight );
     sky += ( stars( rd ) + moon( rd ) ) * uNight;
   }
 
-  // Solar disc with limb darkening. Kept very bright so bloom has something to
-  // find, but soft-edged so it does not alias into a polygon.
+  // Solar disc. Real angular radius is 0.267°; this runs a shade over life size
+  // so it survives 1080p, and carries a proper quadratic limb-darkening law
+  // (u=0.60, v=0.18 at 550 nm) instead of a flat plate.
   float sunCos = dot( rd, uSunDir );
   float sunAng = acos( clamp( sunCos, -1.0, 1.0 ) );
-  const float SUN_R = 0.0075;
-  float disc = 1.0 - smoothstep( SUN_R * 0.90, SUN_R * 1.06, sunAng );
-  float limb = sqrt( max( 0.0, 1.0 - pow( min( sunAng / SUN_R, 1.0 ), 2.0 ) ) );
-  disc *= mix( 0.55, 1.0, pow( limb, 0.42 ) );
-  sky += Fex * uSunE * uExposure * 260.0 * disc * ( 1.0 - uNight );
-  sky += Fex * uSunE * uExposure * 0.55 * pow( max( sunCos, 0.0 ), 340.0 ) * ( 1.0 - uNight );
+  const float SUN_R = 0.0062;
+  float rN = min( sunAng / SUN_R, 1.0 );
+  float mu = sqrt( max( 0.0, 1.0 - rN * rN ) );
+  float limb = 1.0 - 0.60 * ( 1.0 - mu ) - 0.18 * ( 1.0 - mu * mu );
+  float disc = ( 1.0 - smoothstep( SUN_R * 0.94, SUN_R * 1.04, sunAng ) ) * max( limb, 0.0 );
+  // The disc is extincted by the *view* ray as well, so it sinks into the haze
+  // as it sets rather than staying a hot dot on a dark band.
+  vec3 discT = 1.0 - opa * 0.92;
+  sky += uSunDisc * disc * discT;
+  // Aureole: a tight forward-scattering lobe plus a wide one. Both ride the same
+  // transmittance, so the glow reddens with the disc.
+  sky += uSunDisc * discT * (
+      0.0060 * pow( max( sunCos, 0.0 ), 900.0 )
+    + 0.0016 * pow( max( sunCos, 0.0 ), 90.0 ) );
 
   // Ground half: the world's own geometry covers this in-frame, but the dome
   // has to agree with it at the horizon or distant objects sit on a seam.
@@ -376,7 +435,11 @@ void main() {
   sky = mix( sky, mix( uHorizon * 0.85, uGround, 0.72 ), below );
 
 #ifdef USE_CLOUDS
-  float dither = fract( sin( dot( gl_FragCoord.xy, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 );
+  // Interleaved-gradient noise, not a white-noise hash. The march is jittered by
+  // a full step to trade banding for grain, and near the horizon a step is over
+  // a kilometre — white noise turns every cloud silhouette into salt-and-pepper,
+  // whereas IGN spreads the same error over a fine, even, filter-friendly weave.
+  float dither = fract( 52.9829189 * fract( dot( gl_FragCoord.xy, vec2( 0.06711056, 0.00583715 ) ) ) );
   vec3 L = uNight > 0.5 ? uMoonDir : uSunDir;
   vec4 cl = marchClouds( cameraPosition, rd, L, sky, dither );
   sky = sky * ( 1.0 - cl.a ) + cl.rgb;
@@ -396,7 +459,7 @@ void main() {
     if ( SKY_DEBUG == 5 ) gl_FragColor = vec4( wth4, 1.0 );
     if ( SKY_DEBUG == 6 ) gl_FragColor = vec4( s4.rgb, 1.0 );
     if ( SKY_DEBUG == 7 ) gl_FragColor = vec4( vec3( ta / 30000.0 ), 1.0 );
-    if ( rd.y < 0.012 ) gl_FragColor = vec4( 1.0, 0.0, 0.0, 1.0 );
+    if ( rd.y < -0.004 ) gl_FragColor = vec4( 1.0, 0.0, 0.0, 1.0 );
     return;
   }
 #endif
@@ -411,10 +474,17 @@ void main() {
 }
 `;
 
+/** GLSL float literal with enough digits to match the CPU model bit-for-eye. */
+const f = (v: number) => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+
 export function createSkyMaterial(opts: SkyMaterialOpts): THREE.ShaderMaterial {
   const defines: Record<string, string | number> = {
     CLOUD_STEPS: opts.cloudSteps,
     CLOUD_LIGHT_STEPS: Math.min(6, opts.cloudLightSteps),
+    // Shared with Atmosphere.ts so the dome, the env map and the fog agree.
+    BETA_RN_X: f(BETA_RN[0]),
+    BETA_RN_Y: f(BETA_RN[1]),
+    COMPRESS_P: f(COMPRESS),
   };
   if (opts.clouds) defines.USE_CLOUDS = '';
   const dbg = Number(new URLSearchParams(location.search).get('skyDebug') || 0);
@@ -430,9 +500,15 @@ export function createSkyMaterial(opts: SkyMaterialOpts): THREE.ShaderMaterial {
       uMoonDir: { value: new THREE.Vector3(0, 1, 0) },
       uBetaR: { value: new THREE.Vector3() },
       uBetaM: { value: new THREE.Vector3() },
+      uSunT: { value: new THREE.Vector3(1, 1, 1) },
+      uMsT: { value: new THREE.Vector3(1, 1, 1) },
+      uMsTH: { value: new THREE.Vector3(1, 1, 1) },
+      uHaze: { value: new THREE.Vector3(0.86, 0.94, 1.0) },
+      uSunDisc: { value: new THREE.Vector3(1, 1, 1) },
+      uMs: { value: 0.085 },
       uSunE: { value: 1000 },
       uMieG: { value: 0.8 },
-      uExposure: { value: 0.03 },
+      uExposure: { value: 0.05 },
       uNight: { value: 0 },
       uSunElev: { value: 45 },
       uTime: { value: 0 },
@@ -452,7 +528,10 @@ export function createSkyMaterial(opts: SkyMaterialOpts): THREE.ShaderMaterial {
     },
     side: THREE.BackSide,
     depthWrite: false,
-    depthTest: false,
+    // Test, do not write. Combined with renderOrder 1000 this turns the dome
+    // into a deferred background fill: the cloud march runs only where the
+    // depth buffer is still at the far plane.
+    depthTest: true,
     fog: false,
     toneMapped: true,
   });

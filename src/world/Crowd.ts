@@ -3,7 +3,7 @@ import type { Ctx, System } from '../core/Ctx';
 import { bake, linearColor } from '../util/Tex';
 import { fbm2, valueNoise2, worley2, clamp, smoothstep } from '../util/Noise';
 import {
-  BOWL, resolveBowl, fitBowl, occupancy, peerSeats, ownSeats, SIT_HEIGHT,
+  BOWL, resolveBowl, fitBowl, seatWeight, peerSeats, ownSeats, SIT_HEIGHT,
   type BowlSpec, type SeatSet,
 } from './crowd/Bowl';
 import { buildBody, buildChair, buildCloth } from './crowd/Body';
@@ -14,27 +14,41 @@ import {
 } from './crowd/Shader';
 
 /**
- * The crowd: up to 18k individually-dressed spectators in the stadium bowl,
- * drawn in two instanced draw calls and animated entirely from an instance seed
- * in the vertex shader — idle sway, clapping, arms up, standing, and waves of
- * celebration that propagate outward from wherever something just happened.
+ * The crowd: up to 14k individually-dressed spectators in the stadium bowl,
+ * drawn in three instanced draw calls and animated entirely from an instance
+ * seed in the vertex shader — idle sway, clapping, arms up, standing, and waves
+ * of celebration that propagate outward from wherever something just happened.
  *
  * Structure
- *   • Seats come from the shared bowl layout (crowd/Bowl.ts).
- *   • Every spectator is one instance in an interleaved 24-float record.
- *   • Two LODs share that record: a near mesh (articulated, ~430 tri) gathered
- *     per camera move from spatial blocks, and a far mesh (~90 tri silhouette)
- *     holding the whole crowd. Each instance picks its own switch distance
- *     inside a band, so the LOD boundary never reads as a ring.
+ *   • Seats come from the shared bowl layout (crowd/Bowl.ts), which prefers the
+ *     Stadium system's own slots and falls back to its own rounded-rect rake.
+ *   • Every spectator is one instance in an interleaved 28-float record. The
+ *     record carries its own body build (shoulder width, girth), resting
+ *     posture, hair style, palette and enthusiasm — so no two neighbours share
+ *     a silhouette, and none of it costs a CPU update.
+ *   • THREE LODs share that record, and none of them is a billboard: every one
+ *     is a solid articulated body oriented to its *seat* yaw, so a spectator on
+ *     the far side of the bowl is correctly seen from behind. They are
+ *       near (~700 tri, gathered from spatial blocks inside MAX_NEAR_DIST),
+ *       mid  (~260 tri, gathered inside MAX_MID_DIST),
+ *       far  (~120 tri silhouette, the whole crowd, one static buffer).
+ *     All three run the same fragment shader off the same uniform block, so
+ *     colour and lighting are bit-identical either side of a switch. Each
+ *     instance jitters its own switch distance across a 26 % band, which turns
+ *     the handover into a stochastic cross-fade several metres deep instead of
+ *     a visible ring.
  *   • Colour and contrast bleed into the haze with range, so the far stands
  *     read as texture rather than as thousands of tiny lit dolls.
  */
 
-const STRIDE = 24;
+const STRIDE = 28;
 const OFF_POS = 0, OFF_YAW = 3, OFF_RAND = 4, OFF_SIZE = 8;
 const OFF_SHIRT = 10, OFF_SKIN = 13, OFF_HAIR = 16, OFF_FLAGS = 19, OFF_ROWT = 23;
+/** x shoulder width, y girth, z resting posture id, w hair style. */
+const OFF_BODY = 24;
 
-const MAX_NEAR_DIST = 30;
+const MAX_NEAR_DIST = 26;
+const MAX_MID_DIST = 74;
 /** Seconds of simulation the capture rig settles for; staged waves aim at it. */
 const CAPTURE_SETTLE = 2.5;
 const WAVE_SPEED = 13.5;
@@ -78,18 +92,21 @@ export class CrowdSystem implements System {
 
   private group = new THREE.Group();
   private uni!: LightUniforms & Record<string, THREE.IUniform>;
-  private nearMesh!: THREE.Mesh;
   private nearGeo!: THREE.InstancedBufferGeometry;
+  private midGeo!: THREE.InstancedBufferGeometry;
 
   private master!: Float32Array;
   private nearData!: Float32Array;
   private nearBuf!: THREE.InstancedInterleavedBuffer;
+  private midData!: Float32Array;
+  private midBuf!: THREE.InstancedInterleavedBuffer;
   private blocks: Block[] = [];
   private order2: number[] = [];
   private dists!: Float32Array;
 
   private count = 0;
   private nearCap = 0;
+  private midCap = 0;
   private lastCam = new THREE.Vector3(1e9, 0, 0);
   private lastRefresh = -999;
   private nearDirty = true;
@@ -114,7 +131,7 @@ export class CrowdSystem implements System {
   get root(): THREE.Group { return this.group; }
   /** Published for peers: the seat grid the crowd actually used. */
   bowl: BowlSpec = { ...BOWL };
-  stats = { spectators: 0, seats: 0, nearCap: 0, meshes: 0 };
+  stats = { spectators: 0, seats: 0, nearCap: 0, midCap: 0, meshes: 0 };
 
   init(ctx: Ctx): void {
     const res = resolveBowl(ctx);
@@ -132,6 +149,7 @@ export class CrowdSystem implements System {
     this.uni = { ...makeLightUniforms() } as LightUniforms & Record<string, THREE.IUniform>;
     this.uni.uEnergy = { value: this.energy };
     this.uni.uNearEnd = { value: MAX_NEAR_DIST };
+    this.uni.uMidEnd = { value: MAX_MID_DIST };
     this.uni.uWaveInvSpeed = { value: 1 / WAVE_SPEED };
     this.waves = [new THREE.Vector4(0, 0, 0, 0), new THREE.Vector4(0, 0, 0, 0),
       new THREE.Vector4(0, 0, 0, 0)];
@@ -154,6 +172,7 @@ export class CrowdSystem implements System {
     this.stats.spectators = this.count;
     this.stats.seats = seatSet.n;
     this.stats.nearCap = this.nearCap;
+    this.stats.midCap = this.midCap;
     this.stats.meshes = this.group.children.length;
   }
 
@@ -205,13 +224,37 @@ export class CrowdSystem implements System {
     }
     idx.sort((a, b) => key[a] - key[b]);
 
-    // Pass 1 — how full can the bowl be before the budget bites? Normalising
-    // here keeps every tier looking like the *same* stadium, just thinner.
+    // Pass 1 — normalise the demand field so the expected head count lands on
+    // the budget. Summing the *unclamped* weight is what makes this exact: the
+    // old code summed the clamped probability at base = 1, which saturated
+    // almost everywhere, under-counted badly, and left a floor high enough that
+    // the budget ran out partway round the bowl — so the last sections came out
+    // empty in section order rather than in any plausible pattern.
+    const w = new Float32Array(N);
+    for (let i = 0; i < N; i++) {
+      w[i] = seatWeight(seats.rowT[i], seats.t[i], seats.corner[i], seats.x[i]);
+    }
+    // A budget far under capacity has to read as a *part-full ground* — a few
+    // blocks sold out and a lot of bare seats — not as one spectator every
+    // twenty seats sprinkled evenly, which is what a flat scale gives you and
+    // is the single most artificial-looking crowd there is. `low` is 900 heads
+    // in a 16 000-seat bowl: sharpening the demand field by an exponent that
+    // rises as the fill falls concentrates those 900 into plausible pockets.
+    // At `high` and above the exponent is 1 and this is a no-op.
+    const fillFrac = budget / Math.max(1, N);
+    const gamma = fillFrac < 0.5 ? 1 + 2.4 * (1 - fillFrac / 0.5) : 1;
     let sum = 0;
     for (let i = 0; i < N; i++) {
-      sum += occupancy(seats.rowT[i], seats.t[i], seats.corner[i], 1, seats.x[i]);
+      if (gamma !== 1) w[i] = Math.pow(w[i], gamma);
+      sum += w[i];
     }
-    const base = clamp(budget / Math.max(1, sum), 0.12, 1);
+    // The ceiling is deliberately well above 1. The weight field averages ~0.42,
+    // so clamping the scale at 1 caps the bowl at ~42 % however big the budget
+    // is — `ultra` asked for 14 000 and got 6 900. Letting it run past 1 lets
+    // the high-demand seats saturate first and the marginal ones fill in after,
+    // which is what a sell-out actually looks like.
+    const base = clamp(budget / Math.max(1, sum), 0.004, 6);
+    const sitH = this.spec.sitHeight > 0 ? this.spec.sitHeight : SIT_HEIGHT;
 
     const rng = ctx.rand.fork(0x5eed);
     const rand = () => rng.next();
@@ -238,7 +281,7 @@ export class CrowdSystem implements System {
 
     for (let ii = 0; ii < N; ii++) {
       const i = idx[ii];
-      const x = seats.x[i], y = seats.y[i] + SIT_HEIGHT, z = seats.z[i];
+      const x = seats.x[i], y = seats.y[i] + sitH, z = seats.z[i];
       const yaw = seats.yaw[i], rowT = seats.rowT[i], t = seats.t[i];
       const sec = Math.min(SECT - 1, (t * SECT) | 0);
       const bandKey = sec * 32 + ((rowT * 10) | 0);
@@ -252,7 +295,9 @@ export class CrowdSystem implements System {
       }
 
       if (n >= budget) continue;
-      if (rand() > occupancy(rowT, t, seats.corner[i], base, x)) {
+      // `w` already carries seatWeight, sharpened for thin crowds; `base` is the
+      // one scale that lands the total on the budget.
+      if (rand() > Math.min(1, base * w[i])) {
         if (rowT > 0.12 && emptyIdx.length < 4000) emptyIdx.push(i);
         continue;
       }
@@ -272,6 +317,25 @@ export class CrowdSystem implements System {
       master[o + OFF_SIZE] = kid ? 0.74 + rand() * 0.1
         : clamp(1 + rng.gauss() * 0.055, 0.86, 1.16);
       master[o + OFF_SIZE + 1] = clamp(1 + rng.gauss() * 0.09, 0.82, 1.3) * (kid ? 0.9 : 1);
+
+      // Body build, applied to the torso and pelvis only, so shoulder width and
+      // chest depth vary independently of overall scale. Uniform scaling alone
+      // makes a crowd of one person at several sizes; this is what actually
+      // stops the near rows reading as clones. Frame is mildly anti-correlated
+      // with height (short-and-broad, tall-and-narrow both exist).
+      const frame = rng.gauss();
+      master[o + OFF_BODY] = clamp(1 + frame * 0.085 + (kid ? -0.10 : 0), 0.84, 1.20);
+      master[o + OFF_BODY + 1] = clamp(1 + frame * 0.055 + rng.gauss() * 0.10
+        + (kid ? -0.12 : 0), 0.80, 1.32);
+      // Four resting postures — upright, folded forward over the knees, arms
+      // crossed, slumped back. A stand where everyone sits the same way is the
+      // other half of the clone problem.
+      const po = rand();
+      master[o + OFF_BODY + 2] = po < 0.38 ? 0 : po < 0.60 ? 1 : po < 0.80 ? 2 : 3;
+      // Hair: short / long-past-the-collar / shaved. Long hair is the single
+      // biggest silhouette break in a bare-headed row.
+      const hs = rand();
+      master[o + OFF_BODY + 3] = hs < 0.56 ? 0 : hs < 0.85 ? 1 : 2;
 
       // Allegiance drifts across the bowl: home sideline one way, mixed ends.
       const bias = clamp(0.5 + 0.40 * Math.tanh(-x / 20)
@@ -363,6 +427,7 @@ export class CrowdSystem implements System {
     g.setAttribute('iHair', new THREE.InterleavedBufferAttribute(buf, 3, OFF_HAIR));
     g.setAttribute('iFlags', new THREE.InterleavedBufferAttribute(buf, 4, OFF_FLAGS));
     g.setAttribute('iRowT', new THREE.InterleavedBufferAttribute(buf, 1, OFF_ROWT));
+    g.setAttribute('iBody', new THREE.InterleavedBufferAttribute(buf, 4, OFF_BODY));
     g.instanceCount = count;
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 8, 0), 280);
     this.disposables.push(g);
@@ -371,35 +436,56 @@ export class CrowdSystem implements System {
 
   private buildMeshes(ctx: Ctx): void {
     const tier = ctx.quality.tier;
-    this.nearCap = Math.min(this.count,
-      tier === 'ultra' ? 4200 : tier === 'high' ? 3000 : tier === 'medium' ? 1500 : 600);
+    const t = tier === 'ultra' ? 3 : tier === 'high' ? 2 : tier === 'medium' ? 1 : 0;
+    this.nearCap = Math.min(this.count, [420, 1100, 2200, 3200][t]);
+    this.midCap = Math.min(this.count, [1200, 3200, 6000, 8500][t]);
 
     const uniforms = this.uni as unknown as Record<string, THREE.IUniform>;
-    const matFar = new THREE.ShaderMaterial({
-      uniforms, vertexShader: CROWD_VERT, fragmentShader: CROWD_FRAG, side: THREE.FrontSide,
-    });
-    matFar.name = 'crowd-far';
-    const matNear = new THREE.ShaderMaterial({
-      uniforms, vertexShader: CROWD_VERT, fragmentShader: CROWD_FRAG, side: THREE.FrontSide,
-      defines: { LOD_NEAR: '' },
-    });
-    matNear.name = 'crowd-near';
-    this.disposables.push(matFar, matNear);
+    // One vertex shader, one fragment shader, one uniform block. The LOD is a
+    // #define, so the three materials cannot drift apart in colour or lighting
+    // — which is the whole reason the switch is invisible.
+    const mk = (name: string, defines: Record<string, string>) => {
+      const m = new THREE.ShaderMaterial({
+        uniforms, vertexShader: CROWD_VERT, fragmentShader: CROWD_FRAG,
+        side: THREE.FrontSide, defines,
+      });
+      m.name = name;
+      this.disposables.push(m);
+      return m;
+    };
+
+    const gather = (
+      cap: number, lod: 0 | 1, defines: Record<string, string>, name: string,
+    ): { geo: THREE.InstancedBufferGeometry; data: Float32Array;
+      buf: THREE.InstancedInterleavedBuffer; mesh: THREE.Mesh } => {
+      const data = new Float32Array(cap * STRIDE);
+      const buf = new THREE.InstancedInterleavedBuffer(data, STRIDE);
+      buf.setUsage(THREE.DynamicDrawUsage);
+      const geo = this.instancedFrom(buildBody(lod), buf, 0);
+      const mesh = new THREE.Mesh(geo, mk(name, defines));
+      mesh.frustumCulled = false;
+      mesh.name = name;
+      // GTAO rebuilds its G-buffer with a MeshNormalMaterial override, which
+      // cannot run this vertex shader — every instance would land on top of the
+      // next at the world origin and occlusion-test against a silhouette the
+      // crowd does not have. Opt out (PostFX honours userData.noAO).
+      mesh.userData.noAO = true;
+      return { geo, data, buf, mesh };
+    };
+
+    const near = gather(this.nearCap, 0, { LOD_NEAR: '' }, 'crowd-near');
+    this.nearGeo = near.geo; this.nearData = near.data; this.nearBuf = near.buf;
+    const mid = gather(this.midCap, 1, { LOD_MID: '' }, 'crowd-mid');
+    this.midGeo = mid.geo; this.midData = mid.data; this.midBuf = mid.buf;
 
     const farBuf = new THREE.InstancedInterleavedBuffer(this.master, STRIDE);
-    const farMesh = new THREE.Mesh(this.instancedFrom(buildBody(1), farBuf, this.count), matFar);
+    const farMesh = new THREE.Mesh(
+      this.instancedFrom(buildBody(2), farBuf, this.count), mk('crowd-far', {}));
     farMesh.frustumCulled = false;
     farMesh.name = 'crowd-far';
+    farMesh.userData.noAO = true;
 
-    this.nearData = new Float32Array(this.nearCap * STRIDE);
-    this.nearBuf = new THREE.InstancedInterleavedBuffer(this.nearData, STRIDE);
-    this.nearBuf.setUsage(THREE.DynamicDrawUsage);
-    this.nearGeo = this.instancedFrom(buildBody(0), this.nearBuf, 0);
-    this.nearMesh = new THREE.Mesh(this.nearGeo, matNear);
-    this.nearMesh.frustumCulled = false;
-    this.nearMesh.name = 'crowd-near';
-
-    this.group.add(farMesh, this.nearMesh);
+    this.group.add(farMesh, mid.mesh, near.mesh);
   }
 
   private buildFallbackDeck(
@@ -430,6 +516,7 @@ export class CrowdSystem implements System {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
     mesh.name = 'crowd-seats';
+    mesh.userData.noAO = true;
     this.group.add(mesh);
     this.disposables.push(chair, geo, mat);
   }
@@ -502,6 +589,7 @@ export class CrowdSystem implements System {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.frustumCulled = false;
     mesh.name = 'crowd-cloth';
+    mesh.userData.noAO = true;
     this.group.add(mesh);
     this.disposables.push(cloth, geo, mat);
   }
@@ -684,10 +772,12 @@ export class CrowdSystem implements System {
   }
 
   /**
-   * Gathers the nearest spectator blocks into the near-LOD instance buffer.
-   * Blocks are ~30 contiguous seats, so the gather is a handful of memcpys. The
-   * cut distance is published as `uNearEnd`; both LODs derive their per-instance
-   * switch from it, so the far mesh picks up exactly what the near mesh drops.
+   * Gathers the nearest spectator blocks into the near- and mid-LOD instance
+   * buffers. Blocks are ~30 contiguous seats, so each gather is a handful of
+   * memcpys. The two cut distances are published as `uNearEnd` / `uMidEnd`; all
+   * three LODs derive their per-instance switch from those same two numbers
+   * with the same per-instance jitter, so the partition is exact — every
+   * spectator is drawn by exactly one mesh, with no ring and no double-draw.
    */
   private refreshNear(ctx: Ctx): void {
     const cam = ctx.camera.position;
@@ -706,12 +796,13 @@ export class CrowdSystem implements System {
       const dx = b.cx - cam.x, dy = b.cy - cam.y, dz = b.cz - cam.z;
       d[i] = Math.max(0, Math.sqrt(dx * dx + dy * dy + dz * dz) - b.r);
     }
-    this.order2.sort((a, b) => d[a] - d[b]);
+    const ord = this.order2;
+    ord.sort((a, b) => d[a] - d[b]);
 
     let w = 0;
     let cut = MAX_NEAR_DIST;
-    for (let i = 0; i < this.order2.length; i++) {
-      const bi = this.order2[i];
+    for (let i = 0; i < ord.length; i++) {
+      const bi = ord[i];
       const b = B[bi];
       if (d[bi] >= MAX_NEAR_DIST) break;
       if (w + b.count > this.nearCap) { cut = d[bi]; break; }
@@ -722,6 +813,28 @@ export class CrowdSystem implements System {
     this.nearGeo.instanceCount = w;
     this.nearBuf.needsUpdate = true;
     this.uni.uNearEnd.value = cut;
+
+    // The mid band. `d` is a *lower* bound on the range to any seat in a block
+    // (centre minus radius), so `d + 2r` is an upper bound; a block entirely
+    // inside the near band cannot contain a mid instance and is skipped. The
+    // 0.74 is the bottom of the per-instance jitter band in the vertex shader —
+    // skipping any wider than that would punch holes in the crowd.
+    let m = 0;
+    let midCut = MAX_MID_DIST;
+    const nearFloor = cut * 0.74;
+    for (let i = 0; i < ord.length; i++) {
+      const bi = ord[i];
+      const b = B[bi];
+      if (d[bi] >= MAX_MID_DIST) break;
+      if (d[bi] + 2 * b.r < nearFloor) continue;
+      if (m + b.count > this.midCap) { midCut = d[bi]; break; }
+      this.midData.set(
+        this.master.subarray(b.start * STRIDE, (b.start + b.count) * STRIDE), m * STRIDE);
+      m += b.count;
+    }
+    this.midGeo.instanceCount = m;
+    this.midBuf.needsUpdate = true;
+    this.uni.uMidEnd.value = Math.max(midCut, cut);
   }
 
   dispose(): void {

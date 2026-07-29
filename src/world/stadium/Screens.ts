@@ -2,9 +2,9 @@ import * as THREE from 'three';
 import { RectAreaLightUniformsLib } from 'three/addons/lights/RectAreaLightUniformsLib.js';
 import { canvasTexture } from '../../util/Tex';
 import type { Ctx } from '../../core/Ctx';
-import { Mesher, parts, strut, UNIT_BOX, type Part, type RGB } from './Geo';
+import { Mesher, parts, strut, mat, UNIT_BOX, type Part, type RGB } from './Geo';
 import type { StadiumMaterials } from './Materials';
-import { BASE_PERIMETER, BOWL, ROOF, SCREENS, ptAt, type RingPt } from './Layout';
+import { BASE_PERIMETER, BOWL, ROOF, SCREENS, ptAt, ringTable, type RingPt } from './Layout';
 
 /**
  * Everything that emits pixels: the pitch-side LED perimeter ring, the ribbon
@@ -146,14 +146,16 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   perimeterMat.name = 'led-perimeter';
 
   const led = new Mesher();
+  const tTab = ringTable(ringN, 0);
+  const N = tTab.length - 1;
   const ringPts: RingPt[] = [];
-  for (let i = 0; i <= ringN; i++) {
+  for (let i = 0; i <= N; i++) {
     const p: RingPt = { x: 0, z: 0, nx: 0, nz: 0, t: 0, seg: 0 };
-    ptAt((i / ringN) % 1, 0, p);
-    p.t = i / ringN;
+    ptAt(tTab[i] % 1, 0, p);
+    p.t = tTab[i];
     ringPts.push(p);
   }
-  for (let i = 0; i < ringN; i++) {
+  for (let i = 0; i < N; i++) {
     const a = ringPts[i], b = ringPts[i + 1];
     const off = -0.06;
     const ax = a.x + a.nx * off, az = a.z + a.nz * off;
@@ -175,7 +177,7 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   ribbonMat.name = 'led-ribbon';
   const ribbon = new Mesher();
   const fOff = ROOF.frontOff - 0.09;
-  for (let i = 0; i < ringN; i++) {
+  for (let i = 0; i < N; i++) {
     const a = ringPts[i], b = ringPts[i + 1];
     const ax = a.x + a.nx * fOff, az = a.z + a.nz * fOff;
     const bx = b.x + b.nx * fOff, bz = b.z + b.nz * fOff;
@@ -205,6 +207,7 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
 
   const screens = new Mesher();
   const frameParts: Part[] = [];
+  const caseParts: Part[] = [];
   const FRAME: RGB = [0.35, 0.36, 0.38];
   for (const s of SCREENS) {
     const yaw = s.yaw;
@@ -218,6 +221,16 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
       [ox + tx * hw, py + hh, oz + tz * hw], [ox - tx * hw, py + hh, oz - tz * hw],
       [0, 0, 1, 0, 1, 1, 0, 1],
     );
+    // Clad backing box. Corner boards are seen from *behind* by half the
+    // establishing shots, so the back has to read as equipment rather than as
+    // an open rectangle of black lattice hanging over the roof.
+    caseParts.push({
+      geo: UNIT_BOX,
+      m: mat(px - dx * 1.15, py, pz - dz * 1.15, 0, yaw, 0, s.w + 0.9, s.h + 0.9, 2.1),
+      color: [1.0, 1.0, 1.0],
+      uvScale: 0.6,
+    });
+
     // Bezel + backing box + support legs down onto the bowl.
     const b = 0.55;
     const corners: [number, number, number][][] = [
@@ -241,10 +254,11 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
       const y = i * hh * 0.85;
       frameParts.push({ ...strut(toWorld([-hw, y, 1.1]), toWorld([hw, y, 1.1]), 0.22, UNIT_BOX), color: FRAME });
     }
-    // Braced legs from the screen down onto the roof deck.
+    // Braced legs from the screen down on to the roof's top skin — `baseY` is
+    // the canopy height directly under the board, so nothing floats.
     for (const sxs of [-0.72, 0.72]) {
       const top = toWorld([sxs * hw, -hh - b, 0.8]);
-      const foot: [number, number, number] = [top[0], py - hh - 9.5, top[2]];
+      const foot: [number, number, number] = [top[0], s.baseY, top[2]];
       frameParts.push({ ...strut(foot, top, 0.85, UNIT_BOX), color: FRAME });
       for (let k = 0; k < 5; k++) {
         const y0 = foot[1] + (k / 5) * (top[1] - foot[1]);
@@ -260,6 +274,12 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   frames.castShadow = ctx.quality.tier !== 'low';
   frames.receiveShadow = true;
   g.add(frames);
+  // Light-metal cladding, kept off the dark-steel material so the back of a
+  // corner board reads as a housing rather than a hole in the establishing shot.
+  const cases = new THREE.Mesh(parts(caseParts, 'jumbo-cases'), M.steel);
+  cases.castShadow = ctx.quality.tier !== 'low';
+  cases.receiveShadow = true;
+  g.add(cases);
 
   /* ------------------------------------------------------- light spill */
   if (!lowTier) {
@@ -292,9 +312,12 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
       jumboTex.needsUpdate = true;
     },
     setNight(k: number) {
-      perimeterMat.uniforms.uGain.value = 1.35 + k * 2.6;
-      ribbonMat.uniforms.uGain.value = 1.0 + k * 2.2;
-      jumboMat.uniforms.uGain.value = 1.5 + k * 3.2;
+      // Night gains are held just under the bloom threshold: an LED board that
+      // clips to white is a board whose sponsor you cannot read, which is the
+      // opposite of what perimeter advertising is for.
+      perimeterMat.uniforms.uGain.value = 1.35 + k * 1.05;
+      ribbonMat.uniforms.uGain.value = 1.0 + k * 0.95;
+      jumboMat.uniforms.uGain.value = 1.5 + k * 1.15;
       for (const c of g.children) {
         if ((c as THREE.RectAreaLight).isRectAreaLight) {
           (c as THREE.RectAreaLight).intensity = 3.0 + k * 22.0;

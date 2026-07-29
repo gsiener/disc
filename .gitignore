@@ -3,3 +3,6 @@ dist/
 shots/
 .DS_Store
 *.log
+
+# agent scratch probes
+tools/_*.mjs

@@ -3,7 +3,7 @@ import { canvasTexture } from '../../util/Tex';
 import type { Ctx } from '../../core/Ctx';
 import { Mesher, parts, strut, mat, UNIT_BOX, type Part, type RGB } from './Geo';
 import type { StadiumMaterials } from './Materials';
-import { FIELD, BOWL, ROOF } from './Layout';
+import { FIELD, BOWL, ROOF, roofYAt } from './Layout';
 
 /**
  * Sideline dressing. An empty touchline is the single fastest way to make a
@@ -16,8 +16,10 @@ import { FIELD, BOWL, ROOF } from './Layout';
  * (fabric) and people — plus one instanced mesh per small repeated prop.
  */
 
-const APRON_X = 21.3;         // centre of the +X run-off strip
-const CREW_X = -21.3;
+// Centre of the run-off strip between the touchline and the perimeter wall.
+// Derived so the benches and their canopies stay clear of both.
+const APRON_X = (FIELD.halfW + BOWL.hx) * 0.5;
+const CREW_X = -APRON_X;
 
 export interface SidelineBuild {
   group: THREE.Group;
@@ -120,9 +122,10 @@ export function buildSideline(ctx: Ctx, M: StadiumMaterials): SidelineBuild {
   }
 
   /* ------------------------------------------------- broadcast positions */
-  // Hung camera gantry under the roof on the −X side (the main game camera).
-  gantry(hard, people, { BOX, CYL6, SPH }, -1, 30, rnd);
-  gantry(hard, people, { BOX, CYL6, SPH }, -1, -30, rnd);
+  // Hung camera gantries under the roof on the −X side, flanking the main
+  // game camera position rather than sitting on top of it.
+  gantry(hard, people, { BOX, CYL6, SPH }, -1, 36, rnd);
+  gantry(hard, people, { BOX, CYL6, SPH }, -1, -36, rnd);
 
   // Low hand-held camera positions along the −X touchline, clear of the
   // narrow sideline shot's frustum.
@@ -228,13 +231,17 @@ function gantry(
   side: number, z: number,
   rnd: { next(): number; range(a: number, b: number): number },
 ): void {
-  const x = side * (BOWL.hx + 11.5);
-  const deckY = 14.2;
+  // Hung off the canopy just behind its leading edge, so the pod is always
+  // under the roof and always the same height above the seats.
+  const off = ROOF.frontOff + 2.4;
+  const roofY = roofYAt(off);
+  const x = side * (BOWL.hx + off);
+  const deckY = roofY - 3.6;
   const w = 8.0, d = 4.4;
   hard.push({ geo: P.BOX, m: mat(x, deckY, z, 0, 0, 0, d, 0.16, w), color: [0.42, 0.44, 0.47] });
   for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
     const px = x + sx * d / 2, pz = z + sz * w / 2;
-    hard.push({ ...strut([px, deckY, pz], [px, ROOF.frontY - 1.6, pz], 0.09, P.BOX), color: [0.6, 0.62, 0.65] });
+    hard.push({ ...strut([px, deckY, pz], [px, roofY - 0.3, pz], 0.09, P.BOX), color: [0.6, 0.62, 0.65] });
     hard.push({ ...strut([px, deckY + 1.05, pz], [px, deckY, pz], 0.05, P.BOX), color: [0.72, 0.74, 0.77] });
   }
   for (const sz of [-1, 1]) {

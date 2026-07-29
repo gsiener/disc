@@ -50,19 +50,26 @@ export class GradePass extends QuadPass {
       uniforms: {
         tDiffuse: { value: null },
         uExposure: { value: 1 },
-        uContrast: { value: 1.08 },
-        uLift: { value: new THREE.Vector3(-0.0030, -0.0010, 0.0040) },
-        uGain: { value: new THREE.Vector3(1.030, 1.000, 0.972) },
+        // A real S-curve, not a nudge. 1.14 in log₂ about 18 % grey is roughly
+        // a broadcast camera's own knee: it opens up the separation between
+        // sunlit turf and turf in shadow, which is the whole reason the shadow
+        // work upstream was worth doing, without touching the shoulder — the
+        // contrast happens in log space, so highlights ride into AgX intact.
+        uContrast: { value: 1.14 },
+        uLift: { value: new THREE.Vector3(-0.0042, -0.0014, 0.0052) },
+        uGain: { value: new THREE.Vector3(1.034, 1.000, 0.966) },
         uInvGamma: { value: new THREE.Vector3(1, 1, 1) },
-        uSat: { value: 1.03 },
+        uSat: { value: 1.05 },
         uGreenPush: { value: 0.20 },
         uGreenSat: { value: 1.07 },
         uSkinGuard: { value: 0.58 },
         uSatCeil: { value: 0.72 },
-        uShadowTint: { value: new THREE.Vector3(0.955, 0.995, 1.055) },
-        uHighTint: { value: new THREE.Vector3(1.045, 1.005, 0.955) },
-        uPostSat: { value: 1.08 },
-        uPunch: { value: 0.10 },
+        // Teal shadows, warm highlights — the split every sports broadcast
+        // truck runs, kept to ~7 % so it reads as a look and not as a filter.
+        uShadowTint: { value: new THREE.Vector3(0.938, 0.992, 1.072) },
+        uHighTint: { value: new THREE.Vector3(1.058, 1.008, 0.938) },
+        uPostSat: { value: 1.10 },
+        uPunch: { value: 0.13 },
         uCurve: { value: CURVE_AGX },
       },
       fragmentShader: /* glsl */`

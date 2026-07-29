@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Ctx } from '../../core/Ctx';
 import { parts, strut, UNIT_BOX, mat, type Part, type RGB } from './Geo';
 import type { StadiumMaterials } from './Materials';
-import { FLOODLIGHT_TOWERS } from './Layout';
+import { FLOODLIGHT_TOWERS, MAST_TILT } from './Layout';
 
 /**
  * Floodlight masts — the visible hardware only. LightingSystem owns the actual
@@ -112,7 +112,7 @@ function buildMast(H: number, headX: number, detail: boolean): THREE.BufferGeome
     const x = lx() * (1 - t * 0.6);
     list.push({ ...strut([x, y, -0.3], [x, y, 0.3], 0.055, UNIT_BOX), color: LACE });
   }
-  for (const y of [12, 24, 34]) {
+  for (const y of [H * 0.35, H * 0.62, H * 0.86]) {
     const s = half(y);
     list.push({ geo: new THREE.BoxGeometry(s * 2.3, 0.16, 1.5), m: mat(-s * 0.4, y, 0), color: DECK });
     for (const dz of [-0.75, 0.75]) {
@@ -158,7 +158,9 @@ function buildMast(H: number, headX: number, detail: boolean): THREE.BufferGeome
   return geo;
 }
 
-const TILT = 0.47;   // ≈27° down, matching the mast height vs pitch distance
+/** Derived from head height vs. aim point in Layout.ts, so the housings point
+ *  where the Lighting system actually aims its spots. */
+const TILT = MAST_TILT;
 
 function forEachFixture(
   H: number, headX: number,

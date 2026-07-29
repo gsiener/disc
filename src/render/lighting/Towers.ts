@@ -4,6 +4,7 @@ import type { Ctx } from '../../core/Ctx';
 import { bake, heightField, heightToNormal, linearColor, packORM } from '../../util/Tex';
 import { clamp, fbm2, smoothstep, worley2 } from '../../util/Noise';
 import { FLOOD_COLOR } from './Solar';
+import { FLOODLIGHT_TOWERS } from '../../world/stadium/Layout';
 
 /**
  * The night rig: four corner floodlight towers.
@@ -39,13 +40,22 @@ export interface TowerTier {
   spotShadowSize: number;
 }
 
+/**
+ * Four towers is not a detail setting — it is the *look*. A floodlit pitch reads
+ * as floodlit because every object throws several shadows of different lengths
+ * in different directions; two lights give two shadows and the eye reads it as a
+ * strange afternoon. So the light count is four at every tier and only the
+ * number that can afford a depth pass moves. At night the sun's cascades stop
+ * updating (nothing casts a moon shadow anyone can see), which is what pays for
+ * these: the frame trades 2–4 frozen cascade renders for 1–4 spot renders.
+ */
 export function tierFor(ctx: Ctx): TowerTier {
   const s = ctx.quality.shadowMapSize;
   switch (ctx.quality.tier) {
-    case 'low': return { spots: 2, shadowCasters: 0, spotShadowSize: 512 };
-    case 'medium': return { spots: 4, shadowCasters: 1, spotShadowSize: Math.min(s, 1024) };
-    case 'high': return { spots: 4, shadowCasters: 2, spotShadowSize: Math.min(s, 2048) };
-    default: return { spots: 4, shadowCasters: 3, spotShadowSize: Math.min(s, 2048) };
+    case 'low': return { spots: 4, shadowCasters: 1, spotShadowSize: 768 };
+    case 'medium': return { spots: 4, shadowCasters: 2, spotShadowSize: Math.min(s, 1024) };
+    case 'high': return { spots: 4, shadowCasters: 3, spotShadowSize: Math.min(s, 2048) };
+    default: return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 2048) };
   }
 }
 
@@ -175,6 +185,41 @@ export interface TowerSlot {
   index: number;
 }
 
+/**
+ * The stadium publishes where its masts actually are.
+ *
+ * `world/stadium/Layout.ts` exports `FLOODLIGHT_TOWERS` with the note *"put your
+ * light source here"* — and it matters, because this rig was doing neither. It
+ * stood its own lattice masts at (±54, 33.5, ±47), which is **inside** the roof
+ * ring and roughly six metres below the canopy's trailing edge, so every beam
+ * had to pass through the roof to reach the pitch. The result at ultra, where
+ * the spots cast shadows, was a set of enormous hard-edged dark polygons lying
+ * across the middle of the field: the roof trusses, correctly shadowed, from a
+ * light source that no stadium would ever site there. It also drew a second set
+ * of masts a critic could see next to the real ones.
+ *
+ * So the geometry comes from the stadium when the stadium has any, and the rig
+ * falls back to its own corner masts only in a build without one.
+ */
+function canonicalSlots(): TowerSlot[] | null {
+  const src = FLOODLIGHT_TOWERS as ReadonlyArray<{
+    head: readonly number[]; aim: readonly number[];
+  }> | undefined;
+  if (!Array.isArray(src) || src.length < 1) return null;
+  const out: TowerSlot[] = [];
+  for (let i = 0; i < src.length && i < 4; i++) {
+    const t = src[i];
+    if (!t?.head || !t?.aim || t.head.length < 3 || t.aim.length < 3) return null;
+    if (!isFinite(t.head[0] + t.head[1] + t.head[2])) return null;
+    out.push({
+      index: i,
+      head: new THREE.Vector3(t.head[0], t.head[1], t.head[2]),
+      aim: new THREE.Vector3(t.aim[0], t.aim[1], t.aim[2]),
+    });
+  }
+  return out.length ? out : null;
+}
+
 /* --------------------------------------------------------------- class */
 
 export class TowerRig {
@@ -190,6 +235,10 @@ export class TowerRig {
   private tier!: TowerTier;
   private disposables: Array<{ dispose(): void }> = [];
   private primed = 0;
+  /** True when the stadium owns the mast hardware and we only place lights. */
+  private hosted = false;
+  /** Mean squared distance from a head to its aim point, for the irradiance estimate. */
+  private throw2 = 95 * 95;
 
   /** Irradiance the rig currently puts on the pitch, for exposure + ambient. */
   irradiance = 0;
@@ -199,15 +248,27 @@ export class TowerRig {
     this.group.name = 'lighting.towers';
     ctx.scene.add(this.group);
 
-    const corners: Array<[number, number]> = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
-    for (let i = 0; i < corners.length; i++) {
-      const [sx, sz] = corners[i];
-      this.slots.push({
-        index: i,
-        head: new THREE.Vector3(sx * TOWER_X, HEAD_Y, sz * TOWER_Z),
-        aim: new THREE.Vector3(-sx * AIM_BIAS_X, 0.0, -sz * AIM_BIAS_Z),
-      });
+    const canon = canonicalSlots();
+    if (canon) {
+      this.hosted = true;
+      for (const s of canon) this.slots.push(s);
+    } else {
+      const corners: Array<[number, number]> = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
+      for (let i = 0; i < corners.length; i++) {
+        const [sx, sz] = corners[i];
+        this.slots.push({
+          index: i,
+          head: new THREE.Vector3(sx * TOWER_X, HEAD_Y, sz * TOWER_Z),
+          aim: new THREE.Vector3(-sx * AIM_BIAS_X, 0.0, -sz * AIM_BIAS_Z),
+        });
+      }
     }
+
+    let sum2 = 0;
+    for (const s of this.slots) sum2 += s.head.distanceToSquared(s.aim);
+    this.throw2 = Math.max(400, sum2 / this.slots.length);
+
+    if (this.hosted) { this.buildLights(ctx); this.buildAtmospherics(); return; }
 
     const texSize = ctx.quality.tier === 'low' ? 256 : 512;
     const aniso = ctx.quality.anisotropy;
@@ -268,16 +329,25 @@ export class TowerRig {
     this.group.add(structure, housing, lensMesh);
     this.disposables.push(structure.geometry, housing.geometry, lensMesh.geometry);
 
-    /* ---------------------------------------------------------- glow */
+    this.buildAtmospherics(glowPts);
+    this.buildLights(ctx);
+  }
+
+  /* ------------------------------------------------------- sub-builders */
+
+  /** Lens halos and the soft scatter cone hanging off each head. */
+  private buildAtmospherics(glowPts?: Array<{ p: THREE.Vector3; s: number }>): void {
+    const pts = glowPts ?? this.slots.map((s) => ({ p: s.head.clone(), s: 5.5 }));
 
     this.glowMat = makeGlowMaterial();
-    this.glowMesh = new THREE.Mesh(buildGlowQuads(glowPts), this.glowMat);
+    this.glowMesh = new THREE.Mesh(buildGlowQuads(pts), this.glowMat);
     this.glowMesh.name = 'towers.glow';
     this.glowMesh.frustumCulled = false;
     this.glowMesh.renderOrder = 20;
     this.group.add(this.glowMesh);
     this.disposables.push(this.glowMat, this.glowMesh.geometry);
 
+    const beams = this.slots.map((s) => this.buildBeam(s));
     this.beamMat = makeBeamMaterial();
     this.beamMesh = new THREE.Mesh(mergeGeometries(beams, false), this.beamMat);
     this.beamMesh.name = 'towers.beams';
@@ -285,35 +355,38 @@ export class TowerRig {
     this.group.add(this.beamMesh);
     for (const g of beams) g.dispose();
     this.disposables.push(this.beamMat, this.beamMesh.geometry);
+  }
 
-    /* -------------------------------------------------------- lights */
-
-    for (let i = 0; i < this.tier.spots; i++) {
+  private buildLights(_ctx: Ctx): void {
+    for (let i = 0; i < this.tier.spots && i < this.slots.length; i++) {
       const slot = this.slots[i];
-      const spot = new THREE.SpotLight(FLOOD_COLOR.getHex(), 0, 0, 0.56, 0.78, 2);
+      const thr = Math.max(20, slot.head.distanceTo(slot.aim));
+      // 0.34 rad is what `stadium/Layout.ts` says covers the pitch from these
+      // heads. A wider cone does not add light where the play is — it only
+      // sprays the near sideline, where the inverse square makes the LED boards
+      // twenty times brighter than the turf they are supposed to sit behind.
+      const spot = new THREE.SpotLight(FLOOD_COLOR.getHex(), 0, 0, 0.34, 0.62, 2);
       spot.color.copy(FLOOD_COLOR);
-      spot.position.copy(slot.head).setY(HEAD_Y - 1.4);
+      spot.position.copy(slot.head);
       spot.target.position.copy(slot.aim);
       spot.name = `tower.spot.${i}`;
       spot.castShadow = i < this.tier.shadowCasters;
       if (spot.castShadow) {
         spot.shadow.mapSize.set(this.tier.spotShadowSize, this.tier.spotShadowSize);
-        spot.shadow.camera.near = 26;
-        spot.shadow.camera.far = 185;
+        spot.shadow.camera.near = Math.max(8, thr * 0.30);
+        spot.shadow.camera.far = thr * 1.9;
         // Narrow the depth pass onto the middle of the pool: the corners of a
         // 100 m cone are never where the play is, and this buys ~2x resolution.
-        spot.shadow.focus = 0.52;
-        spot.shadow.bias = -0.00035;
-        spot.shadow.normalBias = 0.055;
-        spot.shadow.radius = 2.6;
+        spot.shadow.focus = 0.55;
+        spot.shadow.bias = -0.00022;
+        spot.shadow.normalBias = 0.045;
+        spot.shadow.radius = 2.2;
         spot.shadow.intensity = 0;
       }
       this.group.add(spot, spot.target);
       this.spots.push(spot);
     }
   }
-
-  /* ------------------------------------------------------- sub-builders */
 
   private buildMast(slot: TowerSlot, out: THREE.BufferGeometry[]): void {
     const { x, z } = slot.head;
@@ -449,12 +522,12 @@ export class TowerRig {
 
   /** A short, soft scatter cone hanging off each head. */
   private buildBeam(slot: TowerSlot): THREE.BufferGeometry {
-    const len = 40;
-    const g = new THREE.ConeGeometry(len * Math.tan(0.5), len, 22, 1, true);
+    const len = Math.min(46, slot.head.distanceTo(slot.aim) * 0.42);
+    const g = new THREE.ConeGeometry(len * Math.tan(0.36), len, 22, 1, true);
     g.translate(0, -len / 2, 0);
     const dir = new THREE.Vector3().subVectors(slot.aim, slot.head).normalize();
     _q.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
-    _m.compose(slot.head.clone().setY(HEAD_Y - 1.2), _q, new THREE.Vector3(1, 1, 1));
+    _m.compose(slot.head.clone(), _q, new THREE.Vector3(1, 1, 1));
     g.applyMatrix4(_m);
     return g;
   }
@@ -485,14 +558,17 @@ export class TowerRig {
     }
     this.primed++;
 
-    const dist2 = 95 * 95;
-    this.irradiance = (perSpot / dist2) * Math.min(this.spots.length, 4) * 0.62;
+    this.irradiance = (perSpot / this.throw2) * Math.min(this.spots.length, 4) * 0.62;
 
-    this.lensMat.emissiveIntensity = 26 * f;
-    this.lensMat.roughness = 0.16;
+    if (this.lensMat) {
+      this.lensMat.emissiveIntensity = 26 * f;
+      this.lensMat.roughness = 0.16;
+    }
 
     const glowU = this.glowMat.uniforms;
-    glowU.uIntensity.value = 3.1 * f;
+    // When the stadium draws its own lit fixture clusters, this is a halo on
+    // top of something already bright — a fraction of the standalone value.
+    glowU.uIntensity.value = (this.hosted ? 1.1 : 3.1) * f;
     glowU.uColor.value.copy(FLOOD_COLOR);
     this.glowMesh.visible = on;
 
