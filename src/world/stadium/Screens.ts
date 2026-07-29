@@ -104,6 +104,19 @@ export interface ScreensBuild {
 
 const _p: RingPt = { x: 0, z: 0, nx: 0, nz: 0, t: 0, seg: 0 };
 
+/**
+ * Board-spill emitter strength, in nits, per 9.5 m panel run.
+ *
+ * A real perimeter board runs 4–6 000 cd/m² and the turf a metre in front of it
+ * is visibly lifted; ten metres out it is not. These two numbers put roughly
+ * 1.3 units of irradiance on the turf directly in front of a board at night and
+ * a tenth of that at mid-pitch — a readable band, not a wash. The old single
+ * 92 m emitter at 25 nits delivered about 10 units across the whole run-off,
+ * which is why it clipped.
+ */
+const SPILL_DAY = 0.9;
+const SPILL_NIGHT = 5.0;
+
 function ledMaterial(map: THREE.Texture, grid: THREE.Vector2, gain: number, scroll: number, sub: number, curve: number) {
   // UniformsUtils.merge deep-clones values, so the texture is attached after.
   const m = new THREE.ShaderMaterial({
@@ -282,21 +295,50 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   g.add(cases);
 
   /* ------------------------------------------------------- light spill */
+  //
+  // A board ring is not one light. It used to be modelled as four: each an
+  // emitter 92 m long — the entire touchline — driven to 25 nits at night.
+  // A RectAreaLight of that size puts roughly ten units of irradiance on the
+  // turf in front of it (E ≈ L·h/d for a long strip), which is three times a
+  // midday sun, and three.js RectAreaLights cannot cast a shadow *ever*. So
+  // the night frame was carrying key-strength fill that nothing could occlude:
+  // the run-off clipped to paper white and no object on the pitch had a dark
+  // side. Every shadow in the shot was being erased by the advertising.
+  //
+  // Segmented instead, one emitter per panel run. The falloff along the
+  // touchline becomes spatial (each segment is a local source obeying its own
+  // inverse square) rather than a uniform wash, peak drops by 5×, and the LED
+  // emissive — which is what a viewer actually reads as "the boards are on" —
+  // carries the rest. Pass/fail is the sponsor text staying legible at the
+  // exposure that puts the pitch at middle grey.
   if (!lowTier) {
     RectAreaLightUniformsLib.init();
-    const mk = (x: number, z: number, w: number, yaw: number) => {
-      const l = new THREE.RectAreaLight(0xd8e4ff, 9.0, w, boardH * 1.6);
+    /** Panel run length, metres. Matches a real perimeter board module. */
+    const SEG_W = 9.5;
+    const segs = ctx.quality.tier === 'medium' ? [3, 1] : [4, 2];
+    const mk = (x: number, z: number, yaw: number) => {
+      const l = new THREE.RectAreaLight(0xd8e4ff, SPILL_DAY, SEG_W, boardH * 1.6);
       l.position.set(x, (BOARD_LO + BOARD_HI) * 0.5, z);
       l.rotation.set(0, yaw, 0);
       l.name = 'led-spill';
-      return l;
+      g.add(l);
+    };
+    /** Evenly spaced segment centres over a straight run of half-length `half`. */
+    const centres = (n: number, half: number): number[] => {
+      const out: number[] = [];
+      for (let i = 0; i < n; i++) out.push(((i + 0.5) / n * 2 - 1) * half);
+      return out;
     };
     // Yaw so each light's -Z (its emission axis) points at the pitch.
     const zx = BOWL.hx - 0.2, zz = BOWL.hz - 0.2;
-    g.add(mk(zx, 0, 2 * (BOWL.hz - BOWL.cornerR), Math.PI / 2));
-    g.add(mk(-zx, 0, 2 * (BOWL.hz - BOWL.cornerR), -Math.PI / 2));
-    g.add(mk(0, zz, 2 * (BOWL.hx - BOWL.cornerR), 0));
-    g.add(mk(0, -zz, 2 * (BOWL.hx - BOWL.cornerR), Math.PI));
+    for (const c of centres(segs[0], BOWL.hz - BOWL.cornerR)) {
+      mk(zx, c, Math.PI / 2);
+      mk(-zx, c, -Math.PI / 2);
+    }
+    for (const c of centres(segs[1], BOWL.hx - BOWL.cornerR)) {
+      mk(c, zz, 0);
+      mk(c, -zz, Math.PI);
+    }
   }
 
   let clockPhase = 0;
@@ -320,7 +362,7 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
       jumboMat.uniforms.uGain.value = 1.5 + k * 1.15;
       for (const c of g.children) {
         if ((c as THREE.RectAreaLight).isRectAreaLight) {
-          (c as THREE.RectAreaLight).intensity = 3.0 + k * 22.0;
+          (c as THREE.RectAreaLight).intensity = SPILL_DAY + k * (SPILL_NIGHT - SPILL_DAY);
         }
       }
     },

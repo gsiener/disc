@@ -10,9 +10,9 @@ import { FLOODLIGHT_TOWERS } from '../../world/stadium/Layout';
  * The night rig: four corner floodlight towers.
  *
  * What sells a floodlit pitch is not brightness, it is *multiplicity* — every
- * player throws three or four overlapping shadows of different lengths and
- * densities, and every wet-looking surface carries four separate specular
- * highlights. So the towers are real SpotLights (three at ultra cast shadows),
+ * player throws four overlapping shadows of different lengths and densities, and
+ * every wet-looking surface carries four separate specular highlights. So the
+ * towers are real SpotLights, all four shadow-casting at every quality tier,
  * aimed cross-field so their pools overlap on the centre of play.
  *
  * Everything is welded into world space and merged, so the whole rig — masts,
@@ -44,20 +44,55 @@ export interface TowerTier {
  * Four towers is not a detail setting — it is the *look*. A floodlit pitch reads
  * as floodlit because every object throws several shadows of different lengths
  * in different directions; two lights give two shadows and the eye reads it as a
- * strange afternoon. So the light count is four at every tier and only the
- * number that can afford a depth pass moves. At night the sun's cascades stop
- * updating (nothing casts a moon shadow anyone can see), which is what pays for
- * these: the frame trades 2–4 frozen cascade renders for 1–4 spot renders.
+ * strange afternoon.
+ *
+ * The tier table used to say that and then break it, letting 1–3 of the 4 spots
+ * cast below ultra — which is the one degradation that costs the shot the thing
+ * it exists to show. So **all four cast at every tier**, and the budget comes
+ * out of resolution instead: 4 × 768² is 2.4 M depth texels against 3 × 2048²'s
+ * 12.6 M, so this is *cheaper* than what it replaces at every tier as well as
+ * being the picture the brief promises. Resolution is the right thing to spend,
+ * because the penumbra below is derived from the fixture rack's angular size and
+ * is 9 cm wide at the receiver — softer than any of these maps can resolve
+ * anyway. At night the sun's cascades stop updating (nothing casts a moon shadow
+ * anyone can see), which is what pays for the fourth pass.
  */
 export function tierFor(ctx: Ctx): TowerTier {
   const s = ctx.quality.shadowMapSize;
   switch (ctx.quality.tier) {
-    case 'low': return { spots: 4, shadowCasters: 1, spotShadowSize: 768 };
-    case 'medium': return { spots: 4, shadowCasters: 2, spotShadowSize: Math.min(s, 1024) };
-    case 'high': return { spots: 4, shadowCasters: 3, spotShadowSize: Math.min(s, 2048) };
-    default: return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 2048) };
+    case 'low': return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 512) };
+    case 'medium': return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 768) };
+    case 'high': return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 1024) };
+    default: return { spots: 4, shadowCasters: 4, spotShadowSize: Math.min(s, 1536) };
   }
 }
+
+/**
+ * Half-angle of the spot cone, radians. `stadium/Layout.ts` says 0.34 covers the
+ * pitch from these heads; wider does not add light where the play is, it only
+ * sprays the near sideline where the inverse square makes the LED boards twenty
+ * times brighter than the turf they sit behind.
+ */
+const CONE = 0.34;
+/**
+ * Fraction of the cone the depth pass covers. This was 0.55, which put a 21 m
+ * shadow disc around each aim point on a 39 m light pool — so a player standing
+ * anywhere but the middle of one tower's aim was lit by a light whose shadow
+ * frustum did not contain him, and three returns "lit" outside the frustum.
+ * Half the pitch was therefore unshadowed by construction. 0.80 puts the four
+ * discs at ~30 m and their union covers the field including the endzones.
+ */
+const SHADOW_FOCUS = 0.80;
+/**
+ * Width of the fixture rack, metres — the physical size of the light source.
+ * Penumbra at a receiver is sourceWidth × (occluder→receiver) / (source→occluder),
+ * so a 10 m rack at a 110 m throw gives a 9 cm soft edge under a standing player.
+ * That is the number the PCF radius is solved from below, rather than a constant
+ * that means a different blur at every map size.
+ */
+const RACK_W = 10.0;
+/** Typical occluder height above its own contact shadow, metres. */
+const CONTACT_H = 1.0;
 
 /* ------------------------------------------------------------- textures */
 
@@ -358,29 +393,32 @@ export class TowerRig {
   }
 
   private buildLights(_ctx: Ctx): void {
+    const size = this.tier.spotShadowSize;
     for (let i = 0; i < this.tier.spots && i < this.slots.length; i++) {
       const slot = this.slots[i];
       const thr = Math.max(20, slot.head.distanceTo(slot.aim));
-      // 0.34 rad is what `stadium/Layout.ts` says covers the pitch from these
-      // heads. A wider cone does not add light where the play is — it only
-      // sprays the near sideline, where the inverse square makes the LED boards
-      // twenty times brighter than the turf they are supposed to sit behind.
-      const spot = new THREE.SpotLight(FLOOD_COLOR.getHex(), 0, 0, 0.34, 0.62, 2);
+      const spot = new THREE.SpotLight(FLOOD_COLOR.getHex(), 0, 0, CONE, 0.62, 2);
       spot.color.copy(FLOOD_COLOR);
       spot.position.copy(slot.head);
       spot.target.position.copy(slot.aim);
       spot.name = `tower.spot.${i}`;
       spot.castShadow = i < this.tier.shadowCasters;
       if (spot.castShadow) {
-        spot.shadow.mapSize.set(this.tier.spotShadowSize, this.tier.spotShadowSize);
+        spot.shadow.mapSize.set(size, size);
         spot.shadow.camera.near = Math.max(8, thr * 0.30);
         spot.shadow.camera.far = thr * 1.9;
-        // Narrow the depth pass onto the middle of the pool: the corners of a
-        // 100 m cone are never where the play is, and this buys ~2x resolution.
-        spot.shadow.focus = 0.55;
+        spot.shadow.focus = SHADOW_FOCUS;
         spot.shadow.bias = -0.00022;
         spot.shadow.normalBias = 0.045;
-        spot.shadow.radius = 2.2;
+        // PCF taps are offset in *texels*, so a constant radius is a different
+        // blur at every map size and at every throw. Solve it instead: the
+        // penumbra a 10 m rack casts under a standing player at this throw is
+        // ~9 cm, and one shadow texel here covers 2·tan(CONE·focus)·thr/size
+        // metres. The floor keeps a single tap from stair-stepping; the ceiling
+        // keeps the kernel inside what a 5×5 PCF can afford.
+        const texel = (2 * Math.tan(CONE * SHADOW_FOCUS) * thr) / size;
+        const penumbra = (RACK_W * CONTACT_H) / thr;
+        spot.shadow.radius = clamp(penumbra / texel, 0.9, 3.6);
         spot.shadow.intensity = 0;
       }
       this.group.add(spot, spot.target);
@@ -550,7 +588,12 @@ export class TowerRig {
       s.intensity = perSpot;
       s.visible = true;                        // constant light count, always
       if (s.castShadow) {
-        s.shadow.intensity = 0.86 * f;
+        // Full density. Capping this at 0.86 was pre-emptively lifting every
+        // shadow by 14 % *before* the indirect budget had even been subtracted,
+        // on the assumption that the fill would otherwise look crushed. The fill
+        // is now solved rather than guessed (see Ambient.ts), so the shadow gets
+        // to be a shadow and softness comes from the derived penumbra above.
+        s.shadow.intensity = f;
         // Freeze the depth pass while the rig is dark; prime it for the first
         // couple of frames so the sampler always has a valid map bound.
         s.shadow.autoUpdate = on || this.primed < 2;

@@ -155,7 +155,18 @@ export function bakeTurf(size: number, anisotropy: number): MapSet {
         const s = L.k * u + L.l * v + warp;
         const id = Math.floor(s);
         const band = s - id;
-        const segF = L.sk * u + L.sl * v;
+        /* The cross-cut needs its own warp, and it did not have one.
+           Warping only the band coordinate fixes the spacing along one axis and
+           leaves the cuts that end each tuft on a perfectly even 1/13-tile
+           pitch, so the pattern still resolves into a regular 23 x 77 mm
+           lattice of pale dashes — hessian sacking, which is exactly the
+           "woven fabric" read this bake is supposed to have eliminated. The
+           comment forty lines up claims both axes were handled; only one was.
+           A second, decorrelated warp (different fields, opposite signs, so it
+           is not just a rotated copy of the first) makes the cuts wander by
+           most of a segment and the lattice stops being findable. */
+        const segWarp = sampleLR(fWarpB, u, v) * 0.85 - sampleLR(fWarpA, u, v) * 0.42;
+        const segF = L.sk * u + L.sl * v + segWarp;
         const seg = Math.floor(segF);
         /* Taper each tuft to nothing at both ends of its segment.
            `seg` used to be a hash key only, so a tuft's brightness changed

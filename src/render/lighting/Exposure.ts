@@ -24,8 +24,18 @@ import type { SunState } from './Solar';
 
 /** Irradiance that should map to a well-exposed daylight frame. */
 const DAY_TARGET = 3.85;
-/** Same, at night — lower, so the floodlit pitch keeps its contrast. */
-const NIGHT_TARGET = 2.85;
+/**
+ * Same, at night — lower, so the floodlit pitch keeps its contrast.
+ *
+ * Nudged up from 2.85 because the estimate below is now honest and it was not
+ * before: the LED ring drove four unshadowable area lights that put roughly ten
+ * units on the run-off, none of which appeared in `e`, so the frame was being
+ * exposed for 1.5 units while receiving 11 and the boards clipped a 900 px
+ * strip to paper white. With the spill segmented and cut to a fifth, the solve
+ * and the scene agree, and the pitch can be given the extra sixth of a stop it
+ * was previously stealing from the highlights.
+ */
+const NIGHT_TARGET = 3.15;
 
 const MIN_EXPOSURE = 0.35;
 /**

@@ -107,9 +107,14 @@ export class FieldSystem implements System {
     this.root.add(this.turfMesh);
 
     /* ---- runoff, apron, cones, sideline furniture ---- */
+    // The venue dresses its own touchline (benches, canopies, coolers, kit
+    // bags, camera crews) on the same 5 m run-off strip. Two sets of team
+    // benches two metres apart reads worse than none, so ours is a fallback
+    // for when the field is standing on its own.
     this.root.add(buildSurrounds({
       turf: this.turfMaps, apron: this.apronMaps,
       terrain: this.terrain, rand: ctx.rand, anisotropy: aniso,
+      dressSideline: !ctx.sys.stadium,
     }));
 
     this.disposables.push(geo, material, this.wear,

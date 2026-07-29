@@ -6,7 +6,7 @@ import {
   applyDerived, evaluate, makeSunState, reconcileDirection, type SunState,
 } from './lighting/Solar';
 import { AmbientRig } from './lighting/Ambient';
-import { TowerRig } from './lighting/Towers';
+import { TowerRig, tierFor } from './lighting/Towers';
 import { Exposure } from './lighting/Exposure';
 
 /**
@@ -37,14 +37,33 @@ import { Exposure } from './lighting/Exposure';
  *    shadow intensity and shadow auto-update.
  */
 
-/** Cascades stop mattering past here; the far stands sit around 120 m. */
-const CSM_MAX_FAR = 160;
+/**
+ * Hard ceiling on cascade coverage.
+ *
+ * This was 160 m — chosen for a bowl whose far stands sit at 120 — and the
+ * establishing shot parks its camera 212 m from its target. Every cascade
+ * therefore ended *behind* the camera's own subject, so the one frame whose
+ * entire job is to sell scale had no cast sun in it at all: the car park, the
+ * trees, the roof and the masts were lit but ungrounded, and the only dark
+ * shapes on the tarmac were the approach roads painted into the ground texture.
+ * `fitCascadesToShot` still sizes the set to the subject, so a portrait keeps
+ * its centimetre texels; this only stops the clamp from eating the wide.
+ */
+const CSM_MAX_FAR = 620;
 /** 0 = uniform splits, 1 = logarithmic. Tuned so a 3 m subject and a 120 m
  *  stand both land on usable texel densities with only four cascades. */
 const SPLIT_LAMBDA = 0.65;
 /** Clamp for the log term — camera.near is 0.15 m, which would push cascade 0
  *  absurdly tight and starve everything behind it. */
 const SPLIT_NEAR = 0.5;
+/**
+ * Subject distance past which a shot is treated as an establishing wide: the
+ * splits are pushed out ahead of the subject (nothing in those frames is close
+ * to the lens) and every cascade is allocated at full resolution rather than the
+ * near-cascade-only budget, because in a wide it is the *far* cascade that has
+ * to resolve a parked car.
+ */
+const WIDE_SUBJECT = 90;
 
 type LitMaterial = THREE.Material & { userData: Record<string, unknown> };
 
@@ -72,11 +91,16 @@ export class LightingSystem implements System {
   private frames = 0;
 
   private csmSizes: number[] = [];
+  private csmBase = 2048;
+  private csmHalf = 1024;
+  /** Lower bound on the split ladder; raised for establishing wides. */
+  private splitNear = SPLIT_NEAR;
   private sceneHookInstalled: ((...a: any[]) => void) | null = null;
   private prevSceneHook: ((...a: any[]) => void) | null = null;
   private unsub: Array<() => void> = [];
   /** Forces an indirect re-solve even when the sun has not moved. */
   private ambientDirty = true;
+  private debugMode: 'full' | 'direct' | 'indirect' = 'full';
 
   /* ---------------------------------------------------------------- init */
 
@@ -113,12 +137,33 @@ export class LightingSystem implements System {
     this.syncMaterials(ctx.scene);
   }
 
+  /**
+   * Shadow maps are texture units, and a fragment shader gets sixteen of them.
+   *
+   * The scene spends two on the area-light LTC pair, one on the environment and
+   * five or six on a physical material's map set, so the shadow budget is seven
+   * — total, across the cascade set *and* the floodlight rig, because they
+   * compile into the same program even though they are never both casting.
+   *
+   * Four towers is the look of a night game and the shot list has one; a fourth
+   * cascade is a texel-density refinement on shots whose subject the cascades
+   * are already fitted to. Given seven, the towers get four and the sun gets
+   * three. Exceeding this does not degrade — it fails to link, and the material
+   * that loses the draw is whichever one happens to compile last.
+   */
+  private cascadeBudget(ctx: Ctx): number {
+    const towers = tierFor(ctx).shadowCasters;
+    return clamp(7 - towers, 1, 4);
+  }
+
   private buildCsm(ctx: Ctx): void {
-    const cascades = clamp(ctx.quality.shadowCascades, 1, 4);
+    const cascades = clamp(Math.min(ctx.quality.shadowCascades, this.cascadeBudget(ctx)), 1, 4);
     const base = clamp(ctx.quality.shadowMapSize, 256, 4096);
     // The near cascade gets the full budget; the rest run at half, which is
     // where the memory goes at ultra (a 4096 map is 134 MB of colour + depth).
     const half = Math.max(256, base >> 1);
+    this.csmBase = base;
+    this.csmHalf = half;
     this.csmSizes = [];
     for (let i = 0; i < cascades; i++) this.csmSizes.push(i === 0 ? base : half);
 
@@ -133,12 +178,17 @@ export class LightingSystem implements System {
       // which is still texel-aligned, so nothing crawls when the camera moves.
       shadowMapSize: half,
       lightIntensity: 1,
+      // A cascade fitted to a 400 m frustum slice is a ~700 m ortho box, and the
+      // light is parked `lightMargin` behind its far corner. 520 m of depth
+      // range clipped the back half of exactly the cascade the establishing shot
+      // depends on, so the range now covers the widest set `CSM_MAX_FAR` allows.
+      // Ortho depth is linear, so this costs no precision worth measuring.
       lightNear: 1,
-      lightFar: 520,
-      lightMargin: 140,
+      lightFar: 1800,
+      lightMargin: 420,
       lightDirection: new THREE.Vector3(0, -1, 0),
       customSplitsCallback: (n, near, far, target) => {
-        const nn = Math.max(near, SPLIT_NEAR);
+        const nn = Math.max(near, SPLIT_NEAR, this.splitNear);
         for (let i = 1; i < n; i++) {
           const f = i / n;
           const log = nn * Math.pow(far / nn, f);
@@ -209,14 +259,41 @@ export class LightingSystem implements System {
     const csm = this.csm;
     if (!csm) return;
     let subject = shot.focus ?? 0;
-    if (!(subject > 0) && shot.pos && shot.target) {
+    let camDist = 0;
+    if (shot.pos && shot.target) {
       const dx = shot.pos[0] - shot.target[0];
       const dy = shot.pos[1] - shot.target[1];
       const dz = shot.pos[2] - shot.target[2];
-      subject = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      camDist = Math.sqrt(dx * dx + dy * dy + dz * dz);
     }
+    // `focus` is where the lens is looking, not how far the *set* extends. In a
+    // wide the two differ by an order of magnitude, and it is the camera-to-
+    // target distance that says how much world has to cast.
+    if (!(subject > 0)) subject = camDist;
+    else if (camDist > subject) subject = Math.max(subject, camDist * 0.9);
     if (!(subject > 0)) subject = 40;
+
     csm.maxFar = clamp(subject * 1.9 + 8, 16, CSM_MAX_FAR);
+    // In a wide, cascade 0 is spent on air. Pushing the whole split ladder out
+    // ahead of the subject moves two more cascades onto the geometry that is
+    // actually in frame, which is worth more than the near cascade it costs.
+    this.splitNear = subject > WIDE_SUBJECT
+      ? clamp(subject * 0.16, SPLIT_NEAR, csm.maxFar * 0.25)
+      : SPLIT_NEAR;
+    // …and in a wide the far cascade is the one that has to resolve a car, so
+    // it gets the full map instead of the half the near-shot budget gives it.
+    const wide = subject > WIDE_SUBJECT;
+    const cap = Math.min(this.csmBase, 2048);
+    for (let i = 0; i < csm.lights.length; i++) {
+      const want = wide ? cap : (i === 0 ? this.csmBase : this.csmHalf);
+      if (this.csmSizes[i] === want) continue;
+      this.csmSizes[i] = want;
+      const sh = csm.lights[i].shadow;
+      sh.mapSize.set(want, want);
+      // Three only allocates the render target once; force a re-alloc.
+      sh.map?.dispose();
+      sh.map = null;
+    }
     csm.updateFrustums();
     this.tuneCascades();
   }
@@ -299,6 +376,25 @@ export class LightingSystem implements System {
       this.projectedI = sun.intensity;
       this.ambientDirty = false;
     }
+
+    if (this.debugMode !== 'full') this.applyDebugMode();
+  }
+
+  /** Mutes one half of the transport. See `setDebugMode`. */
+  private applyDebugMode(): void {
+    const direct = this.debugMode === 'direct';
+    if (direct) {
+      this.ambient.probe.intensity = 0;
+      this.ambient.hemi.intensity = 0;
+      this.ctx.scene.environmentIntensity = 0;
+      return;
+    }
+    if (this.csm) for (const l of this.csm.lights) l.intensity = 0;
+    for (const s of this.towers.spots) s.intensity = 0;
+    // Board spill is a light, not a bounce — it belongs on the direct side.
+    this.ctx.scene.traverse((o) => {
+      if ((o as THREE.RectAreaLight).isRectAreaLight) (o as THREE.RectAreaLight).intensity = 0;
+    });
   }
 
   lateUpdate(dt: number, ctx: Ctx): void {
@@ -317,6 +413,61 @@ export class LightingSystem implements System {
   resize(_w: number, _h: number, _ctx: Ctx): void {
     this.csm?.updateFrustums();
     this.tuneCascades();
+  }
+
+  /* --------------------------------------------------------------- debug */
+
+  /**
+   * Renders only one half of the light transport.
+   *
+   * The ratio between key and fill is the single number that decides whether a
+   * shadow is visible, and until now it was being *guessed at* — the floodlight
+   * rig had leaked into the indirect budget in three separate places precisely
+   * because nothing in the build could show you what the split actually was.
+   * `'direct'` kills every indirect term, `'indirect'` kills every light, and
+   * the two frames divide to give the ratio at any pixel in the image.
+   */
+  setDebugMode(mode: 'full' | 'direct' | 'indirect'): void {
+    this.debugMode = mode;
+    this.ambientDirty = true;
+    this.snapExposure = true;
+  }
+
+  /**
+   * The solved light budget, in irradiance units, plus the key:fill ratio it
+   * implies at pitch centre. `fillSide` is the number that matters for a
+   * standing player: it is what the shadowed side of him receives.
+   */
+  lightReport(): {
+    hour: number; elevation: number; night: number;
+    keyUp: number; towerIrr: number; fillUp: number; fillSide: number;
+    ratioUp: number; ratioSide: number;
+    exposure: number; terms: Record<string, number>;
+  } {
+    const sun = this.sun;
+    const lumaCol = 0.2126 * sun.color.r + 0.7152 * sun.color.g + 0.0722 * sun.color.b;
+    const keyUp = sun.intensity * Math.max(0, sun.dir.y) * lumaCol;
+    const tower = this.towers.irradiance;
+    const fillUp = this.ambient.irradianceUp;
+    const fillSide = this.ambient.irradianceSide;
+    // A vertical surface at pitch centre sees the sun/rig at a cosine of roughly
+    // the elevation's complement; for the ratio that decides shadow visibility
+    // the useful comparison is total key against total fill on the same normal.
+    const keySide = sun.intensity * Math.sqrt(Math.max(0, 1 - sun.dir.y * sun.dir.y)) * lumaCol
+      + tower * 0.62;
+    return {
+      hour: this.hour,
+      elevation: (sun.elevation * 180) / Math.PI,
+      night: sun.night,
+      keyUp: keyUp + tower,
+      towerIrr: tower,
+      fillUp,
+      fillSide,
+      ratioUp: fillUp > 1e-6 ? (keyUp + tower) / fillUp : Infinity,
+      ratioSide: fillSide > 1e-6 ? keySide / fillSide : Infinity,
+      exposure: this.exposure.value,
+      terms: { ...this.ambient.report },
+    };
   }
 
   /* ----------------------------------------------------- CSM material glue */
