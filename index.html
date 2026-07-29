@@ -1,0 +1,24 @@
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>ULTIMATE — Championship Disc</title>
+<style>
+  :root { color-scheme: dark; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #05070a; }
+  body { font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #ui { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+  #boot {
+    position: fixed; inset: 0; z-index: 100; display: grid; place-items: center;
+    background: #05070a; color: #cfe3ff; transition: opacity .6s ease;
+    font-variant-numeric: tabular-nums; letter-spacing: .18em; font-size: 12px; text-transform: uppercase;
+  }
+  #boot.hide { opacity: 0; pointer-events: none; }
+  #boot .bar { margin-top: 14px; width: 220px; height: 2px; background: #12203a; overflow: hidden; }
+  #boot .bar i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg,#2b6cff,#7cc2ff); transition: width .25s ease; }
+</style>
+<div id="app"></div>
+<div id="ui"></div>
+<div id="boot"><div><div id="boot-label">Initializing</div><div class="bar"><i id="boot-bar"></i></div></div></div>
+<script type="module" src="/src/main.ts"></script>

@@ -1,0 +1,26 @@
+{
+  "name": "ultimate",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "check": "tsc --noEmit",
+    "shots": "node tools/capture.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.1",
+    "puppeteer-core": "^25.3.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.5"
+  }
+}
