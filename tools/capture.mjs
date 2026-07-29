@@ -17,10 +17,24 @@ import puppeteer from 'puppeteer-core';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createServer } from 'node:net';
 
 const CHROME = process.env.CHROME_PATH
   ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const PORT = Number(process.env.PORT ?? 5173);
+
+/** Grab an OS-assigned free port so concurrent agents never collide. */
+function freePort() {
+  return new Promise((res, rej) => {
+    const s = createServer();
+    s.once('error', rej);
+    s.listen(0, '127.0.0.1', () => {
+      const p = s.address().port;
+      s.close(() => res(p));
+    });
+  });
+}
+
+const PORT = Number(process.env.PORT ?? await freePort());
 const ORIGIN = `http://localhost:${PORT}`;
 
 const argv = process.argv.slice(2);
