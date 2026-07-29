@@ -6,3 +6,7 @@ shots/
 
 # agent scratch probes
 tools/_*.mjs
+
+# local source snapshots
+.snapshots/
+restored/
