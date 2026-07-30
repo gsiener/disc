@@ -10,3 +10,6 @@ tools/_*.mjs
 # local source snapshots
 .snapshots/
 restored/
+
+# agent scratch
+tools/.scratch/

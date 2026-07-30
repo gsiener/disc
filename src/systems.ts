@@ -19,8 +19,16 @@ import { PostFXSystem } from './render/PostFX';
  * The engine's system list, in construction order. `order` on each class decides
  * init and update sequencing; PostFX is pinned last because it must wrap the
  * final scene and camera.
+ *
+ * `Locomotion` (order 7) is registered here as the instance `GameSystem` owns,
+ * not a fresh one. `Engine.add` publishes a system on `ctx.sys` at construction
+ * time, so a second `new Locomotion()` would occupy `ctx.sys.locomotion` with an
+ * empty roster and shadow the populated one — the AI, the animator and the
+ * material library's sweat model all probe that name. Registering the game's own
+ * instance gives it its `init`/`update` slot with exactly one body list.
  */
 export function buildSystems(): System[] {
+  const game = new GameSystem();
   return [
     new SkySystem(),
     new LightingSystem(),
@@ -30,7 +38,8 @@ export function buildSystems(): System[] {
     new CrowdSystem(),
     new PlayersSystem(),
     new DiscSystem(),
-    new GameSystem(),
+    game,
+    game.loco,
     new InputSystem(),
     new CameraDirector(),
     new HudSystem(),
