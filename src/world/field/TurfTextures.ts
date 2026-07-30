@@ -203,7 +203,15 @@ export function bakeTurf(size: number, anisotropy: number): MapSet {
   }
 
   /* -------- albedo: tuft-to-tuft colour, tussock drift, dead thatch ------ */
-  const deep = [24, 46, 26], lush = [64, 106, 48], thatch = [88, 78, 44], soil = [58, 47, 33];
+  /* Thatch used to be [88, 78, 44] — *lighter* than the living blade tone it
+     sits between, which inverts the figure/ground of the whole tile: the gaps
+     between tufts came out brighter than the tufts, and a bright lattice
+     between dark bands is the "woven hessian" read the macro turf shot still
+     had. Thatch is dead leaf lying under a canopy; it is in shadow and it is
+     olive, not straw. Darkening it below the lush tone and pulling its hue off
+     yellow leaves the tuft structure intact while dropping the lattice
+     contrast by more than half. */
+  const deep = [24, 46, 26], lush = [64, 106, 48], thatch = [62, 58, 36], soil = [48, 41, 30];
   const meanA = [0, 0, 0];
   const albedo = bake((x, y, u, v, out, i) => {
     const j = y * size + x;
@@ -220,13 +228,13 @@ export function bakeTurf(size: number, anisotropy: number): MapSet {
     // thatch and bare soil in the gaps between tufts
     const gap = 1 - smoothstep(0.04, 0.34, h);
     const th = clamp(0.30 + 0.85 * (sampleLR(fThatch, u, v) * 0.5 + 0.5), 0, 1);
-    r = mix(r, thatch[0], gap * th * 0.42);
-    g = mix(g, thatch[1], gap * th * 0.42);
-    b = mix(b, thatch[2], gap * th * 0.42);
+    r = mix(r, thatch[0], gap * th * 0.30);
+    g = mix(g, thatch[1], gap * th * 0.30);
+    b = mix(b, thatch[2], gap * th * 0.30);
     const bare = (1 - smoothstep(0.0, 0.10, h)) * smoothstep(0.55, 0.95, th);
-    r = mix(r, soil[0], bare * 0.7);
-    g = mix(g, soil[1], bare * 0.7);
-    b = mix(b, soil[2], bare * 0.7);
+    r = mix(r, soil[0], bare * 0.45);
+    g = mix(g, soil[1], bare * 0.45);
+    b = mix(b, soil[2], bare * 0.45);
 
     // Per-texel grain. Deliberately mild: white noise at texel frequency has no
     // mip below level 0, so anything strong here becomes crawling fizz the

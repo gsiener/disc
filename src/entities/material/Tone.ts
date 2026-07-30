@@ -151,11 +151,16 @@ export function randomSkin(rand: RandLike): SkinBio {
   // Pheomelanin runs high only at the pale end (the red-haired, freckled end of
   // the range) and is essentially absent at the deep end.
   const pale = Math.max(0, 1 - m / 0.09);
+  // Measured out of the model (see the anchor sweep in the header): these ranges
+  // put the roster's albedo hue between 12° and 23° and its saturation between
+  // 27 % and 48 %, which is the band real skin occupies on a colour chart. The
+  // first pass ran pheomelanin twice as high and landed the pale end at 9°,
+  // i.e. salmon — the same complementary-pink failure the pitch had.
   return {
     melanin: m,
-    pheomelanin: 0.04 + pale * (0.10 + rand.next() * 0.52),
-    blood: 0.016 + rand.next() * 0.016,
-    carotene: 0.010 + rand.next() * 0.014 + (m > 0.05 && m < 0.16 ? 0.008 : 0),
+    pheomelanin: 0.035 + pale * (0.05 + rand.next() * 0.26),
+    blood: 0.013 + rand.next() * 0.014,
+    carotene: 0.030 + rand.next() * 0.020 + (m > 0.03 && m < 0.20 ? 0.014 : 0),
     oxygenation: 0.72 + rand.next() * 0.10,
     epidermis: 0.0068 + rand.next() * 0.0016,
   };
@@ -177,33 +182,51 @@ export interface HairColour {
 }
 
 /**
- * Hair is the same two pigments in a different ratio and at a much higher
- * concentration than skin, so the same absorption laws apply — just over a
- * single 60 µm fibre rather than a layered slab. Black hair is eumelanin at
- * ~4 %, blond is eumelanin at ~0.06 %, red is pheomelanin-dominant.
+ * Hair is the same two pigments, but a fibre is not a slab and the diffusion
+ * solution used for skin does not transfer to it: run at a 60 µm thickness it
+ * returns ~0.48 reflectance for black hair, which is the colour of a swim cap
+ * and is exactly what the first pass rendered.
+ *
+ * What actually happens is that light entering a hair MASS bounces between
+ * fibres many times, so the path length is millimetres of fibre, not microns,
+ * and the survival probability per bounce is what sets the colour. That is a
+ * classic similarity problem: for a semi-infinite medium of single-scatter
+ * albedo `a` the diffuse reflectance is (1 − √(1−a)) / (1 + √(1−a)). Add the
+ * ~1.6 % achromatic Fresnel term off the cuticle — the reason black hair is
+ * never actually black — and the family lands where a colour chart puts real
+ * hair: black at 0.03 linear, mid brown at 0.18, blond at 0.40.
+ *
+ * Absorption cross-sections are the standard hair pair (Marschner / d'Eon):
+ * eumelanin (0.419, 0.697, 1.370) and pheomelanin (0.187, 0.400, 1.050) per mm,
+ * with concentrations of order 0.1 (platinum) to 8 (black).
  */
+const A_EU = [0.419, 0.697, 1.370] as const;
+const A_PH = [0.187, 0.400, 1.050] as const;
+const CUTICLE = 0.016;
+
 export function hairColour(eu: number, pheo: number, greyFrac = 0): HairColour {
-  const px = (thick: number) => {
+  const px = (mm: number) => {
     const out: number[] = [];
     for (let i = 0; i < 3; i++) {
-      const l = LAMBDA[i];
-      const mua = eu * muaEumelanin(l) * 0.10 + pheo * muaPheomelanin(l) * 0.10;
-      const ms = 40 * Math.pow(l / 500, -0.9);
-      // Reflectance of the fibre bundle: same diffusion solution, thin slab.
-      const t = Math.exp(-mua * thick);
-      out.push(diffuseReflectance(mua, ms) * (0.35 + 0.65 * t));
+      const a = Math.exp(-(eu * A_EU[i] + pheo * A_PH[i]) * mm);
+      const s = Math.sqrt(Math.max(0, 1 - a));
+      out.push(CUTICLE + (1 - CUTICLE) * (1 - s) / (1 + s));
     }
     return out;
   };
-  const root = px(0.010);
-  const tip = px(0.0072);
-  const lum = 0.2126 * tip[0] + 0.7152 * tip[1] + 0.0722 * tip[2];
-  const k = lum > 1e-5 ? 0.55 / Math.max(0.06, lum) : 1;
+  // A full bounce path through the mass, a shorter one for sun-bleached ends,
+  // and a single traverse for the transmitted lobe — which is why the TRT
+  // highlight is always warmer and lighter than the hair it sits on.
+  const root = px(1.0);
+  const tip = px(0.78);
+  const sheen = px(0.30);
   return {
     root: col(root),
-    tip: col(tip.map((v, i) => v * (1 + 0.30 * (i === 0 ? 1 : i === 1 ? 0.6 : 0.2)))),
-    sheen: col(tip.map((v) => Math.min(1, v * k * 0.9 + 0.05))),
-    scatter: 0.22 + 0.30 * Math.min(1, 1 / (1 + eu * 60)),
+    tip: col(tip),
+    sheen: col(sheen),
+    // Light hair is translucent, so neighbouring strands differ far more than
+    // in dark hair, where every strand is equally black.
+    scatter: 0.14 + 0.34 * Math.exp(-eu * 0.55),
     grey: greyFrac,
   };
 }
@@ -212,16 +235,22 @@ export function hairColour(eu: number, pheo: number, greyFrac = 0): HairColour {
 export function randomHair(rand: RandLike, skin: SkinBio): HairColour {
   const dark = Math.min(1, skin.melanin / 0.14);
   const r = rand.next();
-  // A red-head or a blond needs a pale skin to be plausible; a deep skin tone
-  // gets black hair essentially always.
-  const eu = dark > 0.7
-    ? 0.030 + rand.next() * 0.020
-    : r < 0.10 ? 0.0006 + rand.next() * 0.0012          // blond
-      : r < 0.20 ? 0.0022 + rand.next() * 0.0030        // light brown
-        : r < 0.28 ? 0.0016 + rand.next() * 0.0018      // auburn base
-          : 0.006 + rand.next() * 0.026 * (0.4 + dark); // brown → black
-  const pheo = r < 0.28 && dark < 0.6 ? 0.020 + rand.next() * 0.045 : 0.004 + rand.next() * 0.010;
-  return hairColour(eu, pheo, rand.next() < 0.12 ? rand.next() * 0.35 : 0);
+  let eu: number;
+  let pheo: number;
+  if (dark > 0.7) {
+    eu = 4.5 + rand.next() * 3.5; pheo = 0.15 + rand.next() * 0.35;      // black
+  } else if (r < 0.09) {
+    eu = 0.14 + rand.next() * 0.18; pheo = 0.45 + rand.next() * 0.55;    // blond
+  } else if (r < 0.16) {
+    eu = 0.14 + rand.next() * 0.22; pheo = 4.5 + rand.next() * 2.5;      // ginger
+  } else if (r < 0.30) {
+    eu = 0.55 + rand.next() * 0.60; pheo = 0.5 + rand.next() * 0.6;      // light brown
+  } else if (r < 0.62) {
+    eu = 1.1 + rand.next() * 1.3; pheo = 0.4 + rand.next() * 0.5;        // brown
+  } else {
+    eu = 2.4 + rand.next() * 3.4 * (0.55 + dark); pheo = 0.2 + rand.next() * 0.4;
+  }
+  return hairColour(eu, pheo, rand.next() < 0.10 ? rand.next() * 0.30 : 0);
 }
 
 /* -------------------------------------------------------------------- iris */
@@ -306,6 +335,23 @@ export interface Colourway {
  * team from 40 m instead of as seven people in similar shirts.
  */
 export const COLOURWAYS: readonly Colourway[] = [
+  // The two the art direction names, first, because they are the two kits the
+  // frame is allowed to saturate. Everything else on the pitch — turf, crowd,
+  // boards, concrete — sits under 50 % saturation so these read.
+  {
+    id: 'home', name: 'Riverside Current', code: 'RVR',
+    primary: 0x1d4e94, secondary: 0x14315c, accent: 0xe8b23c,
+    numberFill: 0xf6f8fb, numberOutline: 0xe8b23c, pattern: 3,
+    shorts: 0x14315c, shortsTrim: 0xe8b23c, sock: 0x1d4e94, sockBand: 0xf6f8fb,
+    shoe: 0x14181f, shoeAccent: 0xe8b23c, mark: 2,
+  },
+  {
+    id: 'away', name: 'Cutbank Union', code: 'CUT',
+    primary: 0xf2f2ee, secondary: 0xb3372e, accent: 0x2a2724,
+    numberFill: 0xb3372e, numberOutline: 0x2a2724, pattern: 1,
+    shorts: 0x2a2724, shortsTrim: 0xb3372e, sock: 0xf2f2ee, sockBand: 0xb3372e,
+    shoe: 0xeceae4, shoeAccent: 0xb3372e, mark: 0,
+  },
   {
     id: 'storm', name: 'Seattle Storm', code: 'SEA',
     primary: 0x16305e, secondary: 0xeef2f7, accent: 0x37c0ef,

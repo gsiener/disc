@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  hook, at, FRAG_PARS, VERT_PARS, VERT_MAIN, PART_DEFS, NOISE, HEAD_DIR, PI_DEFS,
+  hook, at, prelude, vertexPatch, FRAG_PARS, PART_DEFS, NOISE, HEAD_DIR, PI_DEFS,
 } from './Glsl.ts';
 import type { DetailTextures } from './Detail.ts';
 import type { SkinTones, HairColour } from './Tone.ts';
@@ -91,9 +91,9 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
   hook(m, (sh) => {
     Object.assign(sh.uniforms, u, i.shared.uniforms);
 
-    sh.vertexShader = VERT_PARS + sh.vertexShader.replace('void main() {', `void main() {\n${VERT_MAIN}`);
+    sh.vertexShader = vertexPatch(sh.vertexShader);
 
-    sh.fragmentShader = PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + HEAD_DIR + /* glsl */`
+    sh.fragmentShader = prelude(sh.fragmentShader, PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + HEAD_DIR + /* glsl */`
       uniform sampler2D uPore;
       uniform sampler2D uAux;
       uniform vec3 uTone, uToneTan, uToneFlush, uToneLip, uSss, uHairCol;
@@ -101,7 +101,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
       uniform vec4 uSkinCtl;    // stubble, freckleThreshold, bodyHair, seed
       uniform float uSweat, uBodyScale;
       uniform vec3 uSunView, uSunColor;
-      uniform float uTime;
+      uniform float uSunGlow, uTime;
 
       // Set once per fragment, read by the lighting model below. GLSL has no
       // other way to get per-fragment data into RE_Direct.
@@ -130,7 +130,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         return texture2D(uAux, p.zy * s) * w.x + texture2D(uAux, p.xz * s) * w.y
              + texture2D(uAux, p.xy * s) * w.z;
       }
-    ` + sh.fragmentShader;
+    `);
 
     /* ------------------------------------------------ per-fragment masks */
     sh.fragmentShader = at(sh.fragmentShader, 'map_fragment', {
@@ -156,7 +156,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float jawNy = -0.66 - 0.46 * clamp(hz, 0.0, 1.0) + 0.36 * clamp(-hz, 0.0, 1.0);
 
         float micro = 0.5;
-        vec2 poreN = poreTri(bp, bn, 190.0, micro);
+        vec2 poreN = poreTri(bp, bn, 118.0, micro);
         vec4 aux = auxTri(bp, bn, 9.0);
 
         /* ---- sun exposure: the tan line is where the kit stops -------- */
@@ -230,13 +230,19 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float sweat = sweatZone * uSweat;
         // Beads: a cellular field thresholded so the wet area is patchy, not a
         // uniform gloss. It is the breakup, not the shine, that reads as sweat.
-        vec2 bead = mworley(bp * 320.0).xy;
+        // Projected, not volumetric: a 2D cellular field is one ninth of the
+        // taps and the beads only ever have to be right on the surface. The z
+        // shear decorrelates front from back so a chest and a spine do not
+        // sweat in the same pattern.
+        vec2 bead = mworley(bp.xy * 320.0 + bp.z * 61.0);
         float wetIslands = smoothstep(0.55, 0.16, bead.x) * step(0.30, bead.y);
         float wet = sweat * mix(0.35, 1.0, wetIslands);
       `,
       after: /* glsl */`
-        vec3 skin = mix(uTone, uToneTan, expo);
-        skin = mix(skin, uToneFlush, flush * 0.85);
+        vec3 skin = mix(uTone, uToneTan, expo * 0.85);
+        // Perfusion at 0.85 put a sunburn on both cheeks of every athlete. Blood
+        // shifts hue; it does not repaint the face.
+        skin = mix(skin, uToneFlush, flush * 0.45);
         // Complexion mottle — every real face has it and no rendered one does.
         skin *= 1.0 + (aux.r - 0.5) * 0.16 + (vnoise(vSurfUv * 24.0) - 0.5) * 0.06;
         // Subdermal venous cast on the thin-skinned surfaces.
@@ -245,7 +251,9 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // Freckles. Threshold is per-player: most of the roster has none.
         float fk = smoothstep(uSkinCtl.y, uSkinCtl.y + 0.09, aux.g)
           * (pHead * fr * (0.5 + 0.5 * g1(hy, -0.22, 0.34)) + pArm * 0.7 + pTorso * 0.4);
-        skin = mix(skin, skin * vec3(0.62, 0.46, 0.38), fk * 0.75);
+        // Freckles at 0.75 of a hard brown read as grit thrown at the forehead.
+        // They are a pigment concentration, not a different material.
+        skin = mix(skin, skin * vec3(0.74, 0.60, 0.52), fk * 0.42);
         skin = mix(skin, uToneLip, lips * 0.92);
         // Hair, last, because it sits on top of all of it.
         vec3 hairAlbedo = uHairCol * 0.85;
@@ -263,7 +271,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // Red wraps furthest because it is the least absorbed in the dermis; this
         // ratio is the whole reason a terminator on skin goes orange.
         gWrap = vec3(0.42, 0.20, 0.11) * mix(1.0, 0.55, expo * 0.5);
-        gThin = clamp(0.10 + pEar * 0.95 + isPart(P_FINGER) * 0.60 + pNeck * 0.18
+        gThin = clamp(0.08 + pEar * 0.62 + isPart(P_FINGER) * 0.42 + pNeck * 0.14
           + pHead * fr * (0.70 * g1(hy, -0.36, 0.10) * g1(axf, 0.0, 0.22)
                         + 0.30 * g1(hy, -0.90, 0.14) * g1(axf, 0.0, 0.26)), 0.0, 1.0);
         gTrans = 1.0;
@@ -297,15 +305,15 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           float m2;
           vec2 fine = poreN;
           ${i.quality > 0 ? `
-          vec2 coarse = poreTri(bp, bn, 46.0, m2);
-          fine += coarse * 0.55;` : ''}
+          vec2 coarse = poreTri(bp, bn, 33.0, m2);
+          fine += coarse * 0.95;` : ''}
           // Hair sits proud of the skin; brows and stubble have to disturb the
           // surface or they read as a decal printed on a smooth face.
           float hairBump = brow * 0.9 + beard * 0.7 + bhair * 0.5 + lash * 0.8;
           fine += (mhash22(vSurfUv * vec2(700.0, 260.0)) - 0.5) * hairBump * 1.6;
           // Beads stand up off the surface where the film has broken.
           fine += (mhash22(bp.xy * 300.0) - 0.5) * wet * wetIslands * 1.1;
-          vec3 mapN = vec3(fine * 1.15, 1.0);
+          vec3 mapN = vec3(fine * 1.22, 1.0);
           normal = normalize(tbn * mapN);
         }
       `,
@@ -355,7 +363,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           float bk = pow(clamp(dot(geometryViewDir, -LT), 0.0, 1.0), 4.5);
           float shaded = clamp(0.55 - 0.75 * dot(geometryNormal, Lv), 0.0, 1.0);
           reflectedLight.indirectDiffuse += uSunColor * uSunGlow * bk * gThin * shaded
-            * mix(diffuseColor.rgb, gSss * 0.9, 0.65) * 1.35;
+            * mix(diffuseColor.rgb, gSss * 0.9, 0.65) * 0.80;
           // The rig's baked cavity term stands in for an AO map.
           reflectedLight.indirectDiffuse *= 1.0 - 0.55 * vCrease;
         }

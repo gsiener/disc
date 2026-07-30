@@ -73,7 +73,7 @@ export interface BodyState {
 }
 
 /** Small deterministic hash — per-player variety without touching an Rng. */
-function hash01(n: number): number {
+export function hash01(n: number): number {
   let x = (n | 0) * 0x9e3779b1;
   x = (x ^ (x >>> 15)) * 0x85ebca6b;
   x = (x ^ (x >>> 13)) * 0xc2b2ae35;
@@ -405,7 +405,13 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   const sp = bs.sp;
   const t = armTuneFor(loco, bs);
   const k = (0.40 + 0.34 * sp) * t.swing;
-  const elbowBase = 0.55 + 0.62 * sp + t.elbow;
+  // Elbow carriage is a function of GROUND SPEED, not of speed-as-a-fraction-
+  // of-top-speed, and it saturates: a jogger and a sprinter both run with the
+  // elbow near a right angle, and what actually grows with pace is the swing
+  // amplitude, which is read off the legs below. Scaling it linearly with `sp`
+  // left everyone below a sprint running with near-straight arms.
+  const carriage = smooth(clamp01(bs.speed / 3.2));
+  const elbowBase = 0.26 + 1.06 * carriage + t.elbow;
   const adductBase = 0.34 + 0.16 * sp + t.adduct;
 
   for (let si = 0; si < 2; si++) {
@@ -465,7 +471,10 @@ function armTuneFor(loco: LocoLike, bs: BodyState): ArmTune {
     case 'landing':
       return { elbow: 0.20, adduct: -0.30, swing: 0.4, raise: 0.20 };
     default:
-      if (bs.speed < 0.35) return { elbow: 0.18, adduct: 0.05, swing: 0, raise: 0 };
+      // Standing: the carriage term is already near zero at this speed, so the
+      // arms hang. Adding elbow here on top of it is what produced the
+      // permanently-flexed mannequin idle.
+      if (bs.speed < 0.35) return { elbow: 0, adduct: 0.05, swing: 0, raise: 0 };
       return RUN_TUNE;
   }
 }

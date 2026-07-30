@@ -250,14 +250,30 @@ void turfShade() {
   col *= mix(uTintDry, uTintLush, smoothstep(0.06, 0.68, health));
   col *= 0.93 + 0.16 * (mott * 0.5 + 0.5) + 0.09 * macro;
 
-  float dirt = smoothstep(0.42, 0.92, wear + 0.10 * mott);
-  vec3 soil = uColDirt * (0.70 + 0.60 * (fFbm(P * 5.5, 3) * 0.5 + 0.5));
-  // clods of turned soil where the sward has gone entirely
-  soil *= 0.82 + 0.40 * smoothstep(0.50, 0.60, fNoise(P * 22.0));
+  /* ---- thinning sward, not scratches -------------------------------------
+     Round 2 read the wear as "salmon-pink streaks … scratches rather than
+     wear", and both halves of that are this block.
+
+     *Pink* was a hue problem. uColDirt was a red-brown at H≈28°, and a
+     red-brown laid over a green sward and then lit by a warm low key
+     complements straight into magenta. The tint is now straw at H≈41° — the
+     colour of thinned grass with the soil showing through, which is what worn
+     turf actually is — and it never goes below 35°.
+
+     *Scratches* was a contrast and a bandwidth problem. The ramp opened at
+     wear 0.42 over a 0.5-wide window, so a stamped skid crossed from full
+     sward to bare soil inside its own 40 cm width and drew a hard-edged mark.
+     It now opens later and takes twice as long to get there, tops out at 0.82
+     rather than 1.0 (bare soil under a *stadium* pitch is a patch, never a
+     stripe), and the 4.5 cm clod term — four times past Nyquist at broadcast
+     range, and pure aliasing energy — is gated behind the near-field band. */
+  float dirt = 0.82 * smoothstep(0.50, 1.00, wear + 0.06 * mott);
+  vec3 soil = uColDirt * (0.78 + 0.42 * (fFbm(P * 5.5, 3) * 0.5 + 0.5));
+  soil *= 1.0 + 0.26 * detail * (smoothstep(0.50, 0.60, fNoise(P * 22.0)) - 0.5);
   col = mix(col, soil, dirt);
 
-  float mud = smoothstep(0.20, 0.78, mudA) * smoothstep(0.10, 0.50, wear);
-  col = mix(col, uColMud * (0.76 + 0.48 * (fFbm(P * 3.2 + 9.0, 2) * 0.5 + 0.5)), mud);
+  float mud = 0.75 * smoothstep(0.34, 0.86, mudA) * smoothstep(0.22, 0.62, wear);
+  col = mix(col, uColMud * (0.80 + 0.40 * (fFbm(P * 3.2 + 9.0, 2) * 0.5 + 0.5)), mud);
 
   /* ---- mow stripes: a lay direction, evaluated against the view ----------
      Not a painted band. The blades in alternating passes lie in opposite
@@ -318,15 +334,33 @@ void turfShade() {
   const float HW = ${FIELD.lineHalfWidth.toFixed(3)};
   vec3 cn = chalkNearest(P);
   float aa = max(1.2e-4, length(vec2(dot(cn.yz, dPdx), dot(cn.yz, dPdy))));
-  float cov = clamp((HW - cn.x) / aa + 0.5, 0.0, 1.0)
-            - clamp((-HW - cn.x) / aa + 0.5, 0.0, 1.0);
+  /* Minimum drawn width.
+     Coverage preservation is the correct answer to aliasing and the wrong
+     answer to legibility: it is energy-exact, so a line that goes sub-pixel
+     fades toward the turf and the viewer loses the state of play. Every
+     shipped sports title clamps its field lines to a floor of about one
+     pixel and lets the coverage term carry the fading instead. 0.42 of the
+     across-line footprint is a 0.84 px floor — under a pixel, so it never
+     grows a fat halo on a line that is genuinely resolved, and it only
+     engages past ~18 cm of footprint, i.e. the far third of the pitch at
+     broadcast range and nowhere at all in a macro crop. */
+  float HWe = max(HW, 0.42 * aa);
+  float cov = clamp((HWe - cn.x) / aa + 0.5, 0.0, 1.0)
+            - clamp((-HWe - cn.x) / aa + 0.5, 0.0, 1.0);
   // Erosion is 40 cm detail. Once it is sub-pixel it must converge to its own
   // mean rather than keep modulating, or the far half of every line flickers
   // between full and two-thirds strength along its length.
   float near = 1.0 - smoothstep(0.020, 0.13, px);
   float grain = fFbm(P * 2.6 + 7.0, 3);
-  cov *= mix(0.88, mix(0.66, 1.0, smoothstep(-0.42, 0.42, grain)), near);
-  cov *= 1.0 - 0.55 * chalkCut * mix(0.5, 1.0, near);
+  cov *= mix(0.94, mix(0.78, 1.0, smoothstep(-0.42, 0.42, grain)), near);
+  /* Scuffing, capped.
+     This term used to be able to take 55 % of a line away, and the wear map
+     hands it a saturated cut channel exactly where the chalk is: the goal
+     lines carry a seeded scrimmage band *and* forty pivot stamps, so the two
+     lines a viewer most needs — the ones that say where the endzone is — were
+     the two being erased hardest. A pitch is re-lined the morning of a match.
+     Play scuffs the paint; it does not remove it. */
+  cov *= 1.0 - 0.24 * chalkCut * mix(0.55, 1.0, near);
   // Overspray either side of the line — the soft edge is scattered powder on
   // the blades, not a filtering artefact, so it is authored at a fixed world
   // width and antialiased the same way.
@@ -337,7 +371,7 @@ void turfShade() {
   float chalk = clamp(cov + dust * (1.0 - cov), 0.0, 1.0);
 
   vec3 chalkCol = uColChalk * (0.90 + 0.20 * fNoise(P * 95.0) * fine);
-  col = mix(col, chalkCol, chalk * 0.95);
+  col = mix(col, chalkCol, chalk * 0.97);
   rough = mix(rough, 0.96, chalk);
   gAO = mix(gAO, 1.0, chalk * 0.7);
 
@@ -392,8 +426,10 @@ export function makeTurfMaterial(opts: TurfMaterialOpts): {
     uSunTint: { value: new THREE.Vector3(1.0, 0.86, 0.62) },
     uTintLush: { value: new THREE.Vector3(0.78, 1.08, 0.72) },
     uTintDry: { value: new THREE.Vector3(1.26, 1.02, 0.58) },
-    uColDirt: { value: linearColor(0x6a5237) },
-    uColMud: { value: linearColor(0x3f3123) },
+    // Straw, H≈41°. Never take this below H 35° — see the wear block in
+    // `turfShade`: a red-brown over green under a warm key reads as pink.
+    uColDirt: { value: linearColor(0x6a5b3a) },
+    uColMud: { value: linearColor(0x3e352a) },
     uColChalk: { value: linearColor(0xf2f3ee) },
     uDetailMean: { value: maps.meanAlbedo.clone() },
     uDataMean: { value: maps.meanData.clone() },

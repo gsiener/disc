@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import {
-  hook, at, FRAG_PARS, VERT_PARS, VERT_MAIN, PART_DEFS, NOISE, PI_DEFS,
+  hook, at, prelude, vertexPatch, FRAG_PARS, PART_DEFS, NOISE, PI_DEFS,
 } from './Glsl.ts';
 import type { DetailTextures } from './Detail.ts';
 import type { Colourway } from './Tone.ts';
@@ -41,7 +41,10 @@ import type { SharedUniforms, MatDetail } from './Shared.ts';
 export interface ClothInputs {
   colourway: Colourway;
   atlas: KitAtlas;
+  /** The team's shared name strip — one row per squad member. */
   nameStrip: THREE.DataTexture;
+  /** This player's row inside that strip, as (v origin, v span). */
+  nameRow?: THREE.Vector2;
   detail: DetailTextures;
   shared: SharedUniforms;
   quality: MatDetail;
@@ -67,6 +70,7 @@ const FABRIC_PARS = /* glsl */`
   uniform vec4 uPattern;    // pattern id, hoopCount, panelWidth, seed
   uniform vec4 uDigit;      // digit0 cell origin, digit1 cell origin
   uniform vec4 uNumCfg;     // digitCount, frontScale, backScale, nameOn
+  uniform vec2 uNameRow;    // v origin, v span of this player's row in the team strip
   uniform vec2 uMarkCell;
   uniform vec2 uWeaveRep;
   uniform vec2 uHole;       // pitch, radius
@@ -87,6 +91,19 @@ const FABRIC_PARS = /* glsl */`
   float kitSdf(vec2 org, vec2 luv) {
     return texture2D(uKit, org + clamp(luv, 0.006, 0.994) * 0.25).r;
   }
+
+  /**
+   * One cord of a flat-lock seam, as a Gaussian ridge at c of half-width w,
+   * gated by g. Accumulates BOTH coverage and signed slope: the slope is the
+   * derivative of the ridge and it is what puts a real bump into the normal —
+   * coverage alone paints a line, which is what a printed-on seam looks like.
+   *
+   * A macro rather than a function because the two variants write to different
+   * accumulators and GLSL ES 1.00 has no output parameters worth the noise. The
+   * braces make each invocation a statement, so call sites take no semicolon.
+   */
+  #define SEAM_U(x, c, w, g) { float _t = ((x) - (c)) / (w); float _e = exp(-_t * _t) * (g); seam += _e; slopeU += _t * _e * 1.6; }
+  #define SEAM_V(x, c, w, g) { float _t = ((x) - (c)) / (w); float _e = exp(-_t * _t) * (g); seam += _e; slopeV += _t * _e * 1.6; }
 `;
 
 const NUMBER_BLOCK = /* glsl */`
@@ -104,6 +121,11 @@ const NUMBER_BLOCK = /* glsl */`
   vec4 kitNumber(vec2 uv, vec2 c, vec2 h, float bevel) {
     vec2 q = (uv - c) / h;
     float inside = step(abs(q.x), 1.0) * step(abs(q.y), 1.0);
+    // The torso's u runs from the athlete's left, across the chest, to their
+    // right, and that is screen-right to screen-left from BOTH sides of the
+    // shirt. Sampling the atlas straight off it prints every number and every
+    // name in mirror writing — which is exactly what it did.
+    q.x = -q.x;
     q = clamp(q, -1.0, 1.0);
     float two = step(1.5, uNumCfg.x);
     float side = step(0.0, q.x);
@@ -145,7 +167,8 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
     uNumLine: { value: lin(cw.numberOutline) },
     uPattern: { value: new THREE.Vector4(cw.pattern, 7, 0.055, i.seed % 1000 / 1000) },
     uDigit: { value: new THREE.Vector4(d.c0.x, d.c0.y, d.c1.x, d.c1.y) },
-    uNumCfg: { value: new THREE.Vector4(d.count, 1, 1, 1) },
+    uNumCfg: { value: new THREE.Vector4(d.count, 1, 1, i.nameRow ? 1 : 0) },
+    uNameRow: { value: i.nameRow ? i.nameRow.clone() : new THREE.Vector2(0, 1) },
     uMarkCell: { value: i.atlas.markCell.clone() },
     uSweat: { value: 0 },
   };
@@ -159,15 +182,24 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
     // The knit's wales run up the garment, so the specular anisotropy has to run
     // along the bitangent. Rotating it is the difference between a fabric that
     // catches light down its length and one that reads as painted rubber.
-    anisotropy: 0.55,
+    // Knit is anisotropic but only just. At 0.55 the stretched highlight read
+    // as brushed steel across the chest, which is the loudest "this is plastic"
+    // cue the garment had.
+    anisotropy: 0.16,
     anisotropyRotation: Math.PI / 2,
-    sheen: 0.55,
-    sheenRoughness: 0.72,
+    // Cloth is a poor specular reflector. Leaving three's default of 1.0 gives
+    // a jersey the Fresnel of a lacquered surface.
+    specularIntensity: 0.42,
+    // Sheen at 0.55 with a near-white sheen colour turned every grazing angle
+    // on the shoulder into a pale wash and made the shirt read as glass. A
+    // performance knit has sheen; it does not have a satin.
+    sheen: 0.28,
+    sheenRoughness: 0.78,
     alphaTest: 0.5,
     side: THREE.FrontSide,
   });
   jersey.name = 'player.jersey';
-  jersey.sheenColor.copy(lin(cw.primary)).lerp(new THREE.Color(1, 1, 1), 0.45);
+  jersey.sheenColor.copy(lin(cw.primary)).lerp(new THREE.Color(1, 1, 1), 0.22);
 
   // Physical tile size: the garment's uv spans its own circumference, so the
   // repeat count has to be derived from the athlete, not fixed.
@@ -182,9 +214,9 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
 
   hook(jersey, (sh) => {
     Object.assign(sh.uniforms, jerseyUni, i.shared.uniforms);
-    sh.vertexShader = VERT_PARS + sh.vertexShader.replace('void main() {', `void main() {\n${VERT_MAIN}`);
-    sh.fragmentShader = PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + FABRIC_PARS + NUMBER_BLOCK
-      + sh.fragmentShader;
+    sh.vertexShader = vertexPatch(sh.vertexShader);
+    sh.fragmentShader = prelude(sh.fragmentShader,
+      PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + FABRIC_PARS + NUMBER_BLOCK);
 
     sh.fragmentShader = at(sh.fragmentShader, 'map_fragment', {
       before: /* glsl */`
@@ -228,14 +260,18 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
         }
         // A sleeve always takes the yoke colour of the body it grows out of, or
         // the shoulder seam reads as a costume change.
-        panel = mix(panel, max(panel, smoothstep(0.02, 0.10, vv) * step(2.5, pat)), sleeve);
+        // A yoke crosses onto the sleeve CAP and stops. Taking the whole sleeve
+        // makes the arms read as separate garments pulled on over the shirt.
+        panel = mix(panel, max(panel, (1.0 - smoothstep(0.18, 0.34, vv)) * step(2.5, pat)), sleeve);
         base = mix(base, uSecondary, clamp(panel, 0.0, 1.0));
         // Collar rib and cuff band.
         float collar = smoothstep(0.945, 0.962, vv) * (1.0 - sleeve);
-        float cuff = smoothstep(0.70, 0.745, vv) * sleeve;
+        // A cuff band is ~18 mm of a 16 cm sleeve. Taking a quarter of the
+        // sleeve, as the first pass did, is not a cuff, it is an armband.
+        float cuff = smoothstep(0.815, 0.845, vv) * sleeve;
         base = mix(base, uSecondary, collar * 0.92);
-        base = mix(base, uAccent, cuff * 0.85);
-        base = mix(base, uAccent, clamp(trim, 0.0, 1.0) * 0.9);
+        base = mix(base, uAccent, cuff * 0.80);
+        base = mix(base, uAccent, clamp(trim, 0.0, 1.0) * 0.75);
         // Hem stripe.
         float hemBand = (1.0 - smoothstep(0.030, 0.048, vv)) * (1.0 - sleeve);
         base = mix(base, uAccent, hemBand * 0.55);
@@ -267,6 +303,7 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
         // a coverage term and a signed slope, and the slope is what puts a real
         // ridge into the normal instead of a painted line.
         float seam = 0.0, slopeU = 0.0, slopeV = 0.0;
+        float body0 = 1.0 - sleeve;
         SEAM_U(flank, 0.0075, 0.0028, 1.0)
         SEAM_U(flank, 0.0125, 0.0028, 1.0)
         SEAM_V(vv, 0.0255, 0.0034, body0)
@@ -294,13 +331,19 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
         // Club mark on the wearer's right chest.
         vec2 mq = (uvF - vec2(0.187, 0.760)) / vec2(0.034, 0.052);
         float mIn = step(abs(mq.x), 1.0) * step(abs(mq.y), 1.0) * body;
+        mq.x = -mq.x;
         float md = texture2D(uKit, uMarkCell + clamp(clamp(mq, -1.0, 1.0) * 0.5 + 0.5, 0.01, 0.99) * 0.25).r;
         float mark = sdfCoverage(md, max(fwidth(mq.x) * 0.5 * SDF_RATE, 0.002), 0.0) * mIn;
         // Name across the shoulders, arched the way a real strip is heat-set.
         vec2 nq = (uvF - vec2(0.75, 0.800)) / vec2(0.100, 0.024);
         nq.y -= 0.50 * (1.0 - clamp(nq.x * nq.x, 0.0, 1.0));
         float nIn = step(abs(nq.x), 1.0) * step(abs(nq.y), 1.0) * body * step(0.5, uNumCfg.w);
-        float nd = texture2D(uName, clamp(clamp(nq, -1.0, 1.0) * 0.5 + 0.5, 0.004, 0.996)).r;
+        nq.x = -nq.x;
+        // One strip per TEAM, one row per player: the lookup is the player's own
+        // row window, and the 0.004 inset keeps the bilinear tap off its border.
+        vec2 nuv = clamp(clamp(nq, -1.0, 1.0) * 0.5 + 0.5, 0.004, 0.996);
+        nuv.y = uNameRow.x + nuv.y * uNameRow.y;
+        float nd = texture2D(uName, nuv).r;
         float nw = max(max(fwidth(nq.x) * 0.5, fwidth(nq.y) * 0.5) * 6.4, 0.002);
         float nameC = sdfCoverage(nd, nw, 0.0) * nIn;
         float nameL = (sdfCoverage(nd, nw, -0.16) * nIn - nameC);
@@ -356,10 +399,14 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
         {
           vec2 kn = (weave.xy - 0.5) * 2.0 * 0.9;
           ${i.quality > 0 ? `
-          // A second, coarser pass reads as the panel's own drape rather than as
-          // more knit; without it the fabric is flat between the folds.
-          vec2 kn2 = (texture2D(uWeave, wuv * 0.11).xy - 0.5) * 2.0 * 0.35;
-          kn += kn2;` : ''}
+          // Panel drape. Deliberately NOT a second tap of the knit map at a
+          // tenth of its rate: that prints a 13 mm waffle across the whole
+          // shirt and reads as quilting, which is precisely what the first
+          // pass did. A two-octave fbm gradient is a fold.
+          vec2 dsc = uvF * vec2(6.0, 4.5) + uPattern.w * 17.0;
+          float d0 = mfbm(dsc, 2);
+          kn += vec2(d0 - mfbm(dsc + vec2(0.012, 0.0), 2),
+                     d0 - mfbm(dsc + vec2(0.0, 0.012), 2)) * 5.5;` : ''}
           // Flat-lock seams stand proud, and the number is a pressed transfer
           // with a bevelled edge — that bevel is most of why it reads as applied.
           kn.y += stitchRelief * 0.75;
@@ -377,7 +424,7 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
           // is the difference between cloth and sheet metal on a rim light.
           vec3 Lv = normalize(uSunView);
           float bk = pow(clamp(dot(geometryViewDir, -normalize(-Lv + geometryNormal * 0.4)), 0.0, 1.0), 3.0);
-          reflectedLight.indirectDiffuse += uSunColor * uSunGlow * bk * 0.16
+          reflectedLight.indirectDiffuse += uSunColor * uSunGlow * bk * 0.10
             * diffuseColor.rgb * (1.0 - gfx);
           reflectedLight.indirectDiffuse *= 1.0 - 0.55 * vCrease - 0.25 * shade;
         }
@@ -393,13 +440,14 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
     roughness: 0.76,
     metalness: 0,
     normalMap: i.detail.weave,
-    anisotropy: 0.40,
+    anisotropy: 0.14,
     anisotropyRotation: Math.PI / 2,
-    sheen: 0.42,
-    sheenRoughness: 0.78,
+    specularIntensity: 0.38,
+    sheen: 0.24,
+    sheenRoughness: 0.80,
   });
   shorts.name = 'player.shorts';
-  shorts.sheenColor.copy(lin(cw.shorts)).lerp(new THREE.Color(1, 1, 1), 0.4);
+  shorts.sheenColor.copy(lin(cw.shorts)).lerp(new THREE.Color(1, 1, 1), 0.18);
 
   const hipCirc = 1.02 * (H / 1.8);
   const shortsUni = {
@@ -412,10 +460,11 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
 
   hook(shorts, (sh) => {
     Object.assign(sh.uniforms, shortsUni, i.shared.uniforms);
-    sh.vertexShader = VERT_PARS + sh.vertexShader.replace('void main() {', `void main() {\n${VERT_MAIN}`);
-    sh.fragmentShader = PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + FABRIC_PARS + /* glsl */`
+    sh.vertexShader = vertexPatch(sh.vertexShader);
+    sh.fragmentShader = prelude(sh.fragmentShader,
+      PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + FABRIC_PARS + /* glsl */`
       uniform vec3 uShortsBase, uShortsTrim;
-    ` + sh.fragmentShader;
+    `);
 
     sh.fragmentShader = at(sh.fragmentShader, 'map_fragment', {
       before: /* glsl */`

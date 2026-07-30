@@ -535,6 +535,11 @@ export class Frame {
   dirToLocal(wx: number, wz: number, out: THREE.Vector3): THREE.Vector3 {
     return out.set(wx * this.c - wz * this.s, 0, wx * this.s + wz * this.c);
   }
+
+  /** Rotate a rig-space direction out to world (no translation). */
+  dirToWorld(lx: number, ly: number, lz: number, out: THREE.Vector3): THREE.Vector3 {
+    return out.set(lx * this.c + lz * this.s, ly, -lx * this.s + lz * this.c);
+  }
 }
 
 export { _qa as QA, _qb as QB, _va as VA, _vb as VB };

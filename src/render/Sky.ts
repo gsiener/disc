@@ -57,10 +57,10 @@ interface TierCfg { cloudSteps: number; lightSteps: number; volume: number; env:
  * measured frame time, not guessed — the whole sky costs ~0.6 ms at `low`.
  */
 const TIERS: Record<QualityTier, TierCfg> = {
-  low: { cloudSteps: 24, lightSteps: 4, volume: 40, env: 64 },
-  medium: { cloudSteps: 30, lightSteps: 4, volume: 48, env: 96 },
-  high: { cloudSteps: 36, lightSteps: 5, volume: 64, env: 128 },
-  ultra: { cloudSteps: 48, lightSteps: 6, volume: 64, env: 128 },
+  low: { cloudSteps: 28, lightSteps: 4, volume: 40, env: 64 },
+  medium: { cloudSteps: 38, lightSteps: 4, volume: 48, env: 96 },
+  high: { cloudSteps: 52, lightSteps: 5, volume: 64, env: 128 },
+  ultra: { cloudSteps: 68, lightSteps: 6, volume: 64, env: 128 },
 };
 
 const _c0 = new THREE.Color();
@@ -205,6 +205,9 @@ export class SkySystem implements System {
     u.uSunE.value = st.sunE;
     u.uMieG.value = st.tuning.mieDirectionalG;
     u.uExposure.value = st.tuning.exposure * k;
+    // The night hemisphere is authored in absolute radiance, so it needs the
+    // same inverse-exposure basis the scattering term gets — see uNightGain.
+    u.uNightGain.value = k;
     u.uNight.value = st.night;
     u.uSunElev.value = st.sun.elevation;
     u.uCoverage.value = st.tuning.cloudCoverage;

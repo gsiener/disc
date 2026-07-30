@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { stepRate, dutyFactor, stanceHalfWidth, GAIT_MIN_SPEED } from '../../sim/move/Gait.ts';
-import { B, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
+import { B, angDelta, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
 import type { LocoLike, FieldLike } from './Types.ts';
 
 /**
@@ -82,10 +82,24 @@ export interface FootTrack {
   pitch: number;
   /** Absolute world yaw of the foot. */
   worldYaw: number;
+  /**
+   * The yaw this foot was planted at. HELD for the whole of stance.
+   *
+   * Pinning the position and then letting the yaw track `loco.facing` is a
+   * half-measure that reads exactly like a slide: the ankle stays put while the
+   * heel and toe sweep arcs around it, and on a hard change of direction — the
+   * moment the pin matters most — the planted foot spins under the athlete like
+   * a turntable. A real foot picks a heading at touchdown and keeps it until it
+   * leaves the ground; the body turns on top of it.
+   */
+  plantYaw: number;
   /** Roll about the foot's long axis — eversion on a brace. */
   roll: number;
   /** MTP (toe) extension, radians. */
   toe: number;
+  /** Metres the leg came up short of the ankle target last solve. Diagnostic:
+   *  anything non-zero while planted means the pin is being missed. */
+  overrun: number;
   /** Idle micro-step timer; < 0 when not stepping. */
   stepT: number;
   stepFrom: THREE.Vector3;
@@ -103,6 +117,17 @@ export interface FeetState {
   normal: THREE.Vector3;
   /** True while the legs are free — airborne or prone. The caller poses them. */
   free: boolean;
+  /**
+   * Ultimate's one universal rule: a thrower keeps a pivot. Set to +1 to lock
+   * the athlete's LEFT foot, -1 the right, 0 to release. While locked that foot
+   * neither moves nor turns — the body rotates about it and the free foot steps
+   * around, which is exactly what a pivot looks like from the sideline.
+   */
+  pivot: 1 | -1 | 0;
+  /** Latched: the pivot is engaged and `pivotYaw` is meaningful. */
+  pivotOn: boolean;
+  /** World yaw the pivot foot was frozen at when it engaged. */
+  pivotYaw: number;
 }
 
 function track(side: 1 | -1): FootTrack {
@@ -110,7 +135,7 @@ function track(side: 1 | -1): FootTrack {
     side,
     plant: new THREE.Vector3(), hard: false,
     pos: new THREE.Vector3(), land: new THREE.Vector3(),
-    u: 0, uStance: 0, contact: true, pitch: 0, worldYaw: 0, roll: 0, toe: 0,
+    u: 0, uStance: 0, contact: true, pitch: 0, worldYaw: 0, plantYaw: 0, roll: 0, toe: 0, overrun: 0,
     stepT: -1, stepFrom: new THREE.Vector3(),
   };
 }
@@ -122,6 +147,7 @@ export function makeFeet(): FeetState {
     wasMoving: false, wasFree: false, seeded: false,
     normal: new THREE.Vector3(0, 1, 0),
     free: false,
+    pivot: 0, pivotOn: false, pivotYaw: 0,
   };
 }
 
@@ -170,6 +196,9 @@ export function updateFeet(
       t.plant.set(f.pos.x, f.pos.y, f.pos.z);
       t.hard = f.hard;
       t.stepT = -1;
+      // The heading is latched HERE, at the touchdown, and held all of stance.
+      t.plantYaw = loco.facing
+        + (TOE_OUT + (f.hard && loco.state === 'cut' ? 0.22 : 0)) * t.side;
     }
   }
   // Starting to move: the sim's stale plant point is wherever this player last
@@ -177,6 +206,7 @@ export function updateFeet(
   if (moving && !st.wasMoving) {
     const t = f.planted === 'L' ? st.L : st.R;
     t.plant.copy(t.pos);
+    t.plantYaw = t.worldYaw;
     t.hard = false;
   }
   st.wasMoving = moving;
@@ -187,6 +217,22 @@ export function updateFeet(
   // over, which may be metres behind. Put the feet under the body again.
   if (st.wasFree && !st.free) seedStance(st, loco, field);
   st.wasFree = st.free;
+
+  // --- pivot ----------------------------------------------------------------
+  // Engaging latches the foot exactly where it already is, including its yaw.
+  // Freezing the yaw is the whole point: the athlete turns 120 degrees to break
+  // the mark and that one foot does not turn with them.
+  if (st.pivot !== 0 && !moving && !st.free) {
+    if (!st.pivotOn) {
+      const t = st.pivot === 1 ? st.L : st.R;
+      st.pivotOn = true;
+      st.pivotYaw = t.worldYaw;
+      t.plant.copy(t.pos);
+      t.stepT = -1;
+    }
+  } else {
+    st.pivotOn = false;
+  }
 
   // Filtered ground normal — a step onto a ridge should not snap the ankle.
   if (field?.normalAt) field.normalAt(loco.pos.x, loco.pos.z, _n);
@@ -248,7 +294,15 @@ export function updateFeet(
 
     // Toe-out, plus more on the braced outside foot of a hard cut.
     const cut = t.hard && loco.state === 'cut';
-    t.worldYaw = loco.facing + (TOE_OUT + (cut ? 0.22 : 0)) * t.side;
+    const yawTarget = loco.facing + (TOE_OUT + (cut ? 0.22 : 0)) * t.side;
+    if (t.contact) {
+      t.worldYaw = t.plantYaw;
+    } else {
+      // Swing: turn onto the new heading and ARRIVE on it, so the foot is
+      // already square when it lands and nothing has to rotate under load.
+      const sw = clamp01((u - ds) / (1 - ds));
+      t.worldYaw = t.plantYaw + angDelta(yawTarget, t.plantYaw) * smootherstep(sw);
+    }
     t.roll = cut ? -0.16 * t.side : 0;
     t.toe = clamp(-t.pitch, 0, TOE_EXT_MAX);
   }
@@ -263,7 +317,11 @@ function stancePitch(t: FootTrack, k: number, sp: number, dt: number): void {
   if (k < 0.28) pitch = lerp(strike, 0, smooth(k / 0.28));
   else if (k < 0.55) pitch = 0;
   else pitch = lerp(0, -TOE_OFF * (0.55 + 0.55 * sp), smooth((k - 0.55) / 0.45));
-  t.pitch = pitch + (t.pitch - pitch) * Math.exp(-40 * dt);
+  // Fast. The filter is here only to bridge the swing→stance handoff without a
+  // step; anything slower leaves a degree or two of residual pitch settling
+  // through mid-stance, and because the ankle is shifted to compensate for
+  // pitch, a settling pitch is a creeping sole.
+  t.pitch = pitch + (t.pitch - pitch) * Math.exp(-75 * dt);
 }
 
 /** Foot pitch across swing: finish push-off, dorsiflex to clear, then set. */
@@ -289,6 +347,7 @@ function seedStance(st: FeetState, loco: LocoLike, field: FieldLike | null): voi
     t.pos.copy(t.plant);
     t.contact = true;
     t.worldYaw = loco.facing + TOE_OUT * t.side;
+    t.plantYaw = t.worldYaw;
   }
 }
 
@@ -302,12 +361,36 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
   const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
   const rx = -fz, rz = fx;
   const wide = loco.state === 'shuffle' ? 0.20 : 0.115;
+  // The free foot of a pivoting thrower re-steps far sooner than a idling one:
+  // it is being walked around the plant, not holding a stance.
+  const trigger = st.pivotOn ? 0.085 : IDLE_STEP_TRIGGER;
+  const idleYaw = loco.facing;
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
     const sgn = t.side === 1 ? -1 : 1;
-    // A staggered stance: the trail foot sits a few centimetres back.
-    const wx = loco.pos.x + rx * wide * sgn - fx * 0.022 * sgn;
-    const wz = loco.pos.z + rz * wide * sgn - fz * 0.022 * sgn;
+
+    if (st.pivotOn && t.side === st.pivot) {
+      t.pos.copy(t.plant);
+      t.contact = true;
+      t.uStance = 0.4;
+      t.pitch += (0 - t.pitch) * (1 - Math.exp(-16 * dt));
+      t.u = 0;
+      t.hard = false;
+      t.worldYaw = st.pivotYaw;
+      t.plantYaw = st.pivotYaw;
+      t.roll = 0;
+      t.toe = 0;
+      continue;
+    }
+
+    // A staggered stance: the trail foot sits a few centimetres back. The free
+    // foot of a pivoting thrower is the exception — it is stepped OUT and
+    // forward, wide, which is what gives a throw its base and what a
+    // shoulder-width idle stance conspicuously does not have.
+    const w = st.pivotOn ? 0.31 : wide;
+    const ahead = st.pivotOn ? 0.20 : -0.022;
+    const wx = loco.pos.x + rx * w * sgn + fx * ahead * sgn;
+    const wz = loco.pos.z + rz * w * sgn + fz * ahead * sgn;
     const gy = groundAt(field, wx, wz, loco.groundY);
 
     if (t.stepT >= 0) {
@@ -322,14 +405,16 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
       t.pitch = 0.20 * Math.sin(Math.PI * s);
       t.contact = false;
       t.uStance = 1;
+      t.worldYaw = t.plantYaw + angDelta(idleYaw + TOE_OUT * t.side, t.plantYaw) * h;
       if (s >= 1) {
         t.stepT = -1;
         t.plant.set(wx, gy, wz);
         t.pos.copy(t.plant);
         t.contact = true;
         t.uStance = 0.4;
+        t.plantYaw = idleYaw + TOE_OUT * t.side;
       }
-    } else if (Math.hypot(t.plant.x - wx, t.plant.z - wz) > IDLE_STEP_TRIGGER) {
+    } else if (Math.hypot(t.plant.x - wx, t.plant.z - wz) > trigger) {
       t.stepT = 0;
       t.stepFrom.copy(t.pos);
     } else {
@@ -340,7 +425,11 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
     }
     t.u = 0;
     t.hard = false;
-    t.worldYaw = loco.facing + TOE_OUT * t.side;
+    // A standing foot keeps the heading it was put down on. Turning on the spot
+    // walks the ideal stance around the body, which trips the re-step above —
+    // so the feet shuffle round to face the new way instead of pivoting on the
+    // spot like a mannequin on a turntable.
+    if (t.stepT < 0) t.worldYaw = t.plantYaw;
     t.roll = 0;
     t.toe = 0;
   }
@@ -362,13 +451,52 @@ export function hipDrop(
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
     const hip = i === 0 ? hipL : hipR;
+    // Work in world space: distance is preserved by the rig transform, and it
+    // lets the plant be clamped where it lives.
+    frame.toWorld(hip.x, hip.y, hip.z, _hw);
     ankleWorld(t, kine, st.normal, _p);
-    frame.toLocal(_p.x, _p.y, _p.z, _tgt);
-    const need = _tgt.distanceTo(hip);
+    let need = _p.distanceTo(_hw);
+
+    /**
+     * PAST THE HIP DROP, THE PLANT ITSELF HAS TO GIVE.
+     *
+     * The sim holds `contact` for a fixed fraction of the step whatever the body
+     * did in the meantime, so a hard change of direction can leave the recorded
+     * plant further from the hip than the leg is long. `twoBone` then clamps the
+     * target to the chain's reach and the ankle lands wherever that falls —
+     * which tracks the hips, frame by frame, and reads as a skate. Measured on a
+     * reversing jogger it was 13 cm of shortfall and 17 mm of drift per frame,
+     * against 0.3 mm for the same code running straight.
+     *
+     * The failure has to be made explicit and bounded. Clamp against the HIP,
+     * not the centre of mass — the hip is up to a shoulder's width to the side
+     * and swings with the pelvis, and clamping against the COM (as this first
+     * did) simply never fires. Height is kept and only horizontal distance is
+     * surrendered, so the foot stays on the ground and skids by exactly the
+     * amount the leg cannot cover, which is what a dragged foot does.
+     */
+    const slack = 0.16;
+    if (t.contact && need > reach + slack) {
+      const dx = t.plant.x - _hw.x;
+      const dz = t.plant.z - _hw.z;
+      const dy = t.plant.y - _hw.y;
+      const flat = Math.hypot(dx, dz);
+      const want = Math.sqrt(Math.max(0.0025, (reach + slack) * (reach + slack) - dy * dy));
+      if (flat > want && flat > 1e-5) {
+        const k = want / flat;
+        t.plant.x = _hw.x + dx * k;
+        t.plant.z = _hw.z + dz * k;
+        t.pos.copy(t.plant);
+        ankleWorld(t, kine, st.normal, _p);
+        need = _p.distanceTo(_hw);
+      }
+    }
+
     if (need > reach) worst = Math.max(worst, need - reach);
   }
   return Math.min(worst, 0.16);
 }
+const _hw = new THREE.Vector3();
 
 /**
  * Write both legs. `lean` biases the knee pole forward so the knees track over
@@ -401,7 +529,7 @@ export function solveLegs(
       1 + lean * 1.4 + 0.35 * sp * swing,
     ).normalize();
 
-    solveLimb(kine, pose, rootB, midB, endB, _tgt, _pole, kine.thigh, kine.shin);
+    t.overrun = solveLimb(kine, pose, rootB, midB, endB, _tgt, _pole, kine.thigh, kine.shin);
 
     _quat.premultiply(_yawInv);
     kine.setWorldQuat(pose, endB, _quat);
@@ -428,14 +556,24 @@ function ankleWorld(t: FootTrack, kine: Kine, _normal: THREE.Vector3, out: THREE
 
   if (!t.contact) { out.set(t.pos.x, t.pos.y + ankleY, t.pos.z); return; }
 
-  // Two-point sole: whichever of heel/ball ends up lower sets the height.
-  const heelY = -ankleY * c + heelZ * s;
-  const ballY = -ankleY * c + ballZ * s;
-  const y = t.pos.y - Math.min(heelY, ballY);
-  // The pivot migrates heel → ball across stance; hold it still in the world.
-  const k = clamp01((t.uStance - 0.18) / 0.45);
-  const pz = lerp(heelZ, ballZ, smooth(k));
-  const shift = pz - (ankleY * s + pz * c);
+  /**
+   * Two-point sole. Which point is DOWN is a fact about the pitch, not about
+   * the clock: toes up puts the heel on the ground, toes down puts the ball on
+   * it. Choosing the pivot off a stance-phase timer instead — as this did — is
+   * right at a jogger's heel strike and wrong at a sprinter's forefoot strike,
+   * where the timer says "heel" for the first third of stance while the ball is
+   * the part actually touching. The height came from the geometry and the
+   * forward shift came from the timer, the two disagreed, and the difference
+   * came out as a few millimetres of skate per frame through early stance.
+   *
+   * Both now read the same discriminator. Blending it across |sin θ| < 0.09 is
+   * free: at θ = 0 the foot is flat and neither the height (ankleY·c − pz·s,
+   * with s = 0) nor the shift (pz·(1 − c), with c = 1) depends on the pivot.
+   */
+  const w = clamp01(0.5 + s * 5.5);
+  const pz = lerp(ballZ, heelZ, w);
+  const y = t.pos.y + ankleY * c - pz * s;
+  const shift = pz * (1 - c) - ankleY * s;
   out.set(t.pos.x + Math.sin(t.worldYaw) * shift, y, t.pos.z + Math.cos(t.worldYaw) * shift);
 }
 

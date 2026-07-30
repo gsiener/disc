@@ -134,13 +134,19 @@ export interface AnimatorOptions {
    * finger poses collapse to a single curl value and secondary motion halves.
    */
   detail?: number;
-  /** +1 right handed, -1 left handed. Per-handle override on `add()`. */
+  /**
+   * Which side the throwing hand is on, in RIG terms (+X is the athlete's
+   * left): **-1 = right-handed, +1 = left-handed**. Default -1. Per-handle
+   * override on `add()`; omitted there, roughly one athlete in nine is dealt a
+   * left hand from a hash of their id, deterministically.
+   */
   handed?: 1 | -1;
 }
 
 export interface AnimAddOptions {
   /** Player id — also the deterministic salt for idle phase and breathing. */
   id?: number;
+  /** -1 = right-handed, +1 = left-handed. See `AnimatorOptions.handed`. */
   handed?: 1 | -1;
   /** Extra deterministic salt. */
   seed?: number;

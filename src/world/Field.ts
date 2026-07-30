@@ -144,34 +144,78 @@ export class FieldSystem implements System {
     ctx.events.emit('field:ready', { field: this });
   }
 
-  /** Skid marks and cleat scars from the plays that "just happened". */
+  /**
+   * Traffic from the plays that "just happened".
+   *
+   * ## Why these are not the marks they used to be
+   *
+   * Round 2 read the pitch as carrying "salmon-pink streaks … scratches rather
+   * than turf wear", and this method drew them. Five layout skids of 0.55
+   * strength through a 42 × 20 cm ellipse, plus 130 randomly-oriented 30 × 15 cm
+   * stamps, produce exactly that: short, narrow, high-contrast marks pointing
+   * in every direction at once. Real wear on a grass pitch is *anisotropic and
+   * low-frequency* — it follows the lanes people run, it is broad, and it is a
+   * thinning rather than a scar.
+   *
+   * So: every mark is now at least twice as wide, well under half as strong,
+   * and oriented along a plausible line of play rather than uniformly on the
+   * circle. Cutters run up and down the field, so the trails are drawn as
+   * *runs* — a swept stroke with a heading biased to ±Z — and layout skids only
+   * happen where receivers actually lay out, which is at the front of an
+   * endzone, not scattered around the centre circle of a sport that has no
+   * centre circle.
+   */
   private seedPlayMarks(ctx: Ctx): void {
     const r = ctx.rand.fork(0x1a7017);
-    // layout skids near the centre (where the layout/turf shots look)
-    for (let i = 0; i < 5; i++) {
-      const x = r.range(-6, 6), z = r.range(-8, 8);
-      const a = r.range(0, Math.PI * 2);
-      const dx = Math.cos(a), dz = Math.sin(a);
-      const len = r.range(1.4, 3.0);
-      const steps = 14;
+
+    /** One swept run: a chain of overlapping soft stamps along a heading. */
+    const run = (
+      x0: number, z0: number, ang: number, len: number, strength: number,
+      major: number, minor: number, mud = 0,
+    ) => {
+      const dx = Math.sin(ang), dz = Math.cos(ang);
+      const steps = Math.max(4, Math.round(len / (minor * 0.9)));
       for (let s = 0; s < steps; s++) {
         const t = s / (steps - 1);
-        this.wear.stamp(x + dx * len * t, z + dz * len * t, dx, dz,
-          0.55 * (1 - t * 0.55), 0.42, 0.20, 0.5);
+        // taper both ends so a trail has no chisel tip
+        const w = Math.sin(Math.PI * Math.min(1, Math.max(0, t))) ** 0.4;
+        this.wear.stamp(x0 + dx * len * t, z0 + dz * len * t, dx, dz,
+          strength * w, major, minor, mud * w);
+      }
+    };
+
+    // Cutting lanes: long, soft, up-and-down the field, crowded toward the
+    // middle third where the disc actually moves.
+    for (let i = 0; i < 46; i++) {
+      const x = r.gauss() * 8.0;
+      const z = r.gauss() * 20.0;
+      // ±18° off the field's long axis, either direction
+      const ang = (r.next() < 0.5 ? 0 : Math.PI) + r.gauss() * 0.32;
+      run(x, z, ang, r.range(4.0, 11.0), r.range(0.055, 0.12), 0.95, 0.62);
+    }
+    // A few lateral swing lanes — handlers reset across the pitch.
+    for (let i = 0; i < 10; i++) {
+      const x = r.range(-12, 12), z = r.gauss() * 24;
+      const ang = Math.PI / 2 + r.gauss() * 0.28 + (r.next() < 0.5 ? 0 : Math.PI);
+      run(x, z, ang, r.range(3.0, 7.0), r.range(0.045, 0.09), 0.85, 0.55);
+    }
+    // Layout skids: at the front of each endzone, where receivers extend, and
+    // along the line of play rather than across it.
+    for (const gz of [FIELD.goalLine, -FIELD.goalLine]) {
+      for (let i = 0; i < 4; i++) {
+        const x = r.gauss() * 7;
+        const z = gz - Math.sign(gz) * r.range(0.5, 5.0);
+        const ang = (gz > 0 ? 0 : Math.PI) + r.gauss() * 0.30;
+        run(x, z, ang, r.range(1.8, 3.4), r.range(0.14, 0.22), 0.72, 0.40, 0.22);
       }
     }
-    // cleat trails criss-crossing the middle of the pitch
-    for (let i = 0; i < 130; i++) {
-      const x = r.gauss() * 9, z = r.gauss() * 22;
-      const a = r.range(0, Math.PI * 2);
-      this.wear.stamp(x, z, Math.cos(a), Math.sin(a), r.range(0.10, 0.30), 0.30, 0.15);
-    }
-    // pivot scars on the goal lines
+    // Pivot wear on the goal lines: broad and shallow, and it no longer eats
+    // the paint (see WearMap.stamp — the cut channel is gated to the collar).
     for (const gz of [FIELD.goalLine, -FIELD.goalLine]) {
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 26; i++) {
         const x = r.range(-FIELD.halfWidth, FIELD.halfWidth);
-        const z = gz + r.gauss() * 1.1;
-        this.wear.stamp(x, z, r.range(-1, 1), r.range(-1, 1), r.range(0.15, 0.45), 0.35, 0.18, 0.7);
+        const z = gz + r.gauss() * 1.5;
+        this.wear.stamp(x, z, r.range(-1, 1), r.range(-1, 1), r.range(0.07, 0.16), 0.72, 0.46, 0.25);
       }
     }
     this.wear.tex.needsUpdate = true;

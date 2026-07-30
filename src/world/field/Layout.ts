@@ -18,8 +18,17 @@ export const FIELD = {
   goalLine: 32,
   /** Brick marks: 18 m in from each goal line. */
   brick: 14,
-  /** Chalk half-width; regulation lines are ~10-12 cm. */
-  lineHalfWidth: 0.06,
+  /**
+   * Chalk half-width. WFDF marks lines "not more than 120 mm" wide, and a
+   * venue that expects a camera paints to the top of that allowance and then
+   * some — a 12 cm line seen from the broadcast position at z = -50 covers
+   * about two thirds of a pixel across, which is why Round 2 read the markings
+   * as "essentially missing at the wide angles". 15 cm is still regulation, is
+   * what a lining machine with a double pass actually lays down, and buys the
+   * far end line a full pixel of coverage. See `turfShade` for the other half
+   * of that fix — the filter width and the erosion term.
+   */
+  lineHalfWidth: 0.075,
 
   /** Mown turf extends well past the pitch so it never ends in a hard edge. */
   turfHalfX: 33,

@@ -34,8 +34,18 @@ const DAY_TARGET = 3.85;
  * strip to paper white. With the spill segmented and cut to a fifth, the solve
  * and the scene agree, and the pitch can be given the extra sixth of a stop it
  * was previously stealing from the highlights.
+ *
+ * Then 3.15 → 3.95, measured rather than guessed: mid-pitch turf was landing at
+ * 0.28 post-grade luma against a brief that asks for 0.30–0.40. Note what this
+ * number does and does not control. Because the meter and the rig are solved
+ * against each other, *turf brightness depends only on this target* — raising
+ * the floodlights alone moves nothing, it just closes the aperture by the same
+ * factor. What raising the floodlights moves is everything with a fixed
+ * emission (LED boards, lens glass), which is why the two numbers were changed
+ * together: the rig went up 2.5× and this went up 1.25×, so the turf gains a
+ * third of a stop and the boards lose a full stop.
  */
-const NIGHT_TARGET = 3.15;
+const NIGHT_TARGET = 3.95;
 
 const MIN_EXPOSURE = 0.35;
 /**

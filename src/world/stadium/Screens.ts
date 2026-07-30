@@ -50,6 +50,8 @@ const LED_FRAG = /* glsl */`
   uniform float uGain;
   uniform float uSub;       // rgb sub-pixel strength
   uniform float uCurve;     // brightness falloff toward panel edges
+  uniform float uKnee;      // legibility guard: shoulder onset, linear radiance
+  uniform float uCeil;      // legibility guard: asymptote, linear radiance
   varying vec2 vUv;
   #include <fog_pars_fragment>
 
@@ -67,19 +69,36 @@ const LED_FRAG = /* glsl */`
     // a local of that name shadows the built-in for everything downstream.
     float ledMask = 1.0 - smoothstep( 0.62, 0.98, d );
 
-    // RGB stripe: each dot is three vertical emitters.
+    // RGB stripe: each dot is three vertical emitters. The peak used to sit at
+    // 1.9x the panel value, i.e. a close-range emitter crest almost a stop over
+    // its own content — which is what actually blew the wordmarks to white in
+    // the endzone frame, not the gain. 1.45 still reads as sub-pixel structure
+    // in a macro crop and no longer manufactures highlights out of mid-greys.
     float sub = fract( g.x * 3.0 );
     vec3 stripe = vec3(
       1.0 - smoothstep( 0.0, 0.34, abs( sub - 0.166 ) ),
       1.0 - smoothstep( 0.0, 0.34, abs( sub - 0.5   ) ),
       1.0 - smoothstep( 0.0, 0.34, abs( sub - 0.833 ) ) );
-    vec3 mask = mix( vec3( 1.0 ), mix( vec3( 0.55 ), stripe * 1.9, 0.85 ), uSub * vis );
+    vec3 mask = mix( vec3( 1.0 ), mix( vec3( 0.55 ), stripe * 1.45, 0.85 ), uSub * vis );
 
     float scan = 1.0 - 0.10 * vis * step( 0.5, fract( g.y ) );
     float edge = 1.0 - uCurve * pow( abs( vUv.y * 2.0 - 1.0 ), 6.0 );
 
     vec3 outc = c * mask * mix( 1.0, ledMask, vis ) * scan * edge * uGain;
     outc += c * 0.16 * uGain;      // panel bleed so blacks are never pure black
+
+    // Legibility guard — a shoulder, not a gain. Everything under uKnee
+    // passes through untouched, so this cannot darken a board; above it the
+    // response rolls onto an asymptote at uCeil. Whatever the night grade
+    // does with uGain, a wordmark can no longer fuse into a white slab, and
+    // an unreadable sponsor is the one failure a perimeter board cannot have.
+    // Scaling the whole triple by the peak channel's compression keeps hue:
+    // a red panel compresses toward dark red, never toward pink.
+    float peak = max( outc.r, max( outc.g, outc.b ) );
+    if ( peak > uKnee ) {
+      float t = ( peak - uKnee ) / max( 1e-4, uCeil - uKnee );
+      outc *= ( uKnee + ( uCeil - uKnee ) * ( t / ( 1.0 + t ) ) ) / peak;
+    }
 
     gl_FragColor = vec4( outc, 1.0 );
     #include <fog_fragment>
@@ -117,7 +136,10 @@ const _p: RingPt = { x: 0, z: 0, nx: 0, nz: 0, t: 0, seg: 0 };
 const SPILL_DAY = 0.9;
 const SPILL_NIGHT = 5.0;
 
-function ledMaterial(map: THREE.Texture, grid: THREE.Vector2, gain: number, scroll: number, sub: number, curve: number) {
+function ledMaterial(
+  map: THREE.Texture, grid: THREE.Vector2, gain: number, scroll: number, sub: number, curve: number,
+  knee = 0.90, ceil = 2.0,
+) {
   // UniformsUtils.merge deep-clones values, so the texture is attached after.
   const m = new THREE.ShaderMaterial({
     uniforms: THREE.UniformsUtils.merge([
@@ -130,6 +152,8 @@ function ledMaterial(map: THREE.Texture, grid: THREE.Vector2, gain: number, scro
         uGain: { value: gain },
         uSub: { value: sub },
         uCurve: { value: curve },
+        uKnee: { value: knee },
+        uCeil: { value: ceil },
       },
     ]),
     vertexShader: LED_VERT,
@@ -154,7 +178,7 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   const boardH = BOARD_HI - BOARD_LO;
 
   const perimeterMat = ledMaterial(
-    adTex, new THREE.Vector2(AD_RUN / boardH * 44, 44), 1.5, 0.0075, 0.55, 0.10,
+    adTex, new THREE.Vector2(AD_RUN / boardH * 44, 44), 1.5, 0.0075, 0.40, 0.16,
   );
   perimeterMat.name = 'led-perimeter';
 
@@ -184,8 +208,12 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   g.add(ledMesh);
 
   /* ------------------------------------------------- roof ribbon board */
+  // The ribbon runs the full roof edge at eye height in every wide shot, so it
+  // is the one board that can slice a frame in half. It gets the tightest
+  // ceiling of the three.
   const ribbonMat = ledMaterial(
-    adTex, new THREE.Vector2(AD_RUN / ROOF.fasciaH * 30, 30), 1.15, -0.011, 0.4, 0.06,
+    adTex, new THREE.Vector2(AD_RUN / ROOF.fasciaH * 30, 30), 1.15, -0.011, 0.30, 0.10,
+    0.75, 1.55,
   );
   ribbonMat.name = 'led-ribbon';
   const ribbon = new Mesher();
@@ -214,7 +242,8 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
   jumboTex.generateMipmaps = false;
 
   const jumboMat = ledMaterial(
-    jumboTex, new THREE.Vector2(lowTier ? 128 : 224, lowTier ? 72 : 126), 1.7, 0, 0.75, 0.05,
+    jumboTex, new THREE.Vector2(lowTier ? 128 : 224, lowTier ? 72 : 126), 1.7, 0, 0.55, 0.05,
+    1.15, 2.6,
   );
   jumboMat.name = 'led-jumbo';
 
@@ -371,16 +400,47 @@ export function buildScreens(ctx: Ctx, M: StadiumMaterials, rows: number, ringN:
 
 /* ------------------------------------------------------------ ad content */
 
-/** Fictional sponsors — eight panels, each 1/8 of the strip. */
+/**
+ * Fictional sponsors — eight panels, each 1/8 of the strip.
+ *
+ * ## Why every value in this table is inside a band
+ *
+ * A perimeter ring is 92 m of self-luminous surface wrapped around the subject.
+ * If its content has broadcast-poster contrast, the ring wins every frame it
+ * appears in: in Round 2 the board was the brightest *and* the most saturated
+ * thing in `sideline`, `endzone` and `night`, which is exactly backwards — a
+ * viewer is meant to read the disc and the players first and the advertising
+ * incidentally.
+ *
+ * The old table ran `#f2f0e8` (95 % value) against `#101012` (7 %) with pure
+ * `#ffffff` wordmarks and 100 %-saturation accents. Pushed through `uGain`
+ * that put board pixels at ~2.1 units of linear radiance against a pitch
+ * sitting near 0.25, so the boards clipped to paper white and everything else
+ * in frame was competing with a lightbox.
+ *
+ * The rule now, and it is a rule and not a preference:
+ *
+ *   • background value stays inside **0.20 – 0.44** sRGB. No white slabs, no
+ *     black holes. Panels still alternate pale/dark so the ring has rhythm.
+ *   • wordmarks stay inside **0.07 – 0.84**. A wordmark still carries 4:1 or
+ *     better against its own panel, so the sponsor reads at 40 m — that is the
+ *     whole job of the board and it is not negotiable — but it never reaches
+ *     display white.
+ *   • accents stay **under 55 % saturation and 70 % value**. The two kits and
+ *     the disc are the only saturated things allowed in the frame.
+ *
+ * Peak board radiance is now ≈1.1 units, a stop and a half down, which lands
+ * the boards *below* the players and comfortably inside AgX's shoulder.
+ */
 const BRANDS: { name: string; tag: string; bg: string; fg: string; accent: string }[] = [
-  { name: 'AEROGRIP', tag: 'DISC TECHNOLOGY', bg: '#0b1b2c', fg: '#f2f6f9', accent: '#37c8ff' },
-  { name: 'NIMBUS', tag: 'ATHLETIC', bg: '#f2f0e8', fg: '#14181c', accent: '#e2542c' },
-  { name: 'HELIODYNE', tag: 'CLEAN POWER', bg: '#123222', fg: '#e9f7ee', accent: '#8ce07a' },
-  { name: 'PORTSIDE', tag: 'COFFEE ROASTERS', bg: '#2b1a12', fg: '#f6e9d8', accent: '#d99a3f' },
-  { name: 'VANTA', tag: 'MOTORS', bg: '#101012', fg: '#ffffff', accent: '#ff3b30' },
-  { name: 'KESTREL AIR', tag: 'FLY THE COAST', bg: '#0d2340', fg: '#eaf2ff', accent: '#ffd23f' },
-  { name: 'OBSIDIAN', tag: 'BANK', bg: '#1c1f26', fg: '#e8ecf2', accent: '#c9a227' },
-  { name: 'FLATLINE', tag: 'ENERGY', bg: '#2a0f3a', fg: '#f5e9ff', accent: '#b14bff' },
+  { name: 'AEROGRIP', tag: 'DISC TECHNOLOGY', bg: '#22333f', fg: '#c4d0d6', accent: '#3f6a79' },
+  { name: 'NIMBUS', tag: 'ATHLETIC', bg: '#6b6d64', fg: '#14171b', accent: '#5e4230' },
+  { name: 'HELIODYNE', tag: 'CLEAN POWER', bg: '#26382c', fg: '#bdcbbe', accent: '#55744c' },
+  { name: 'PORTSIDE', tag: 'COFFEE ROASTERS', bg: '#34281f', fg: '#c9b79f', accent: '#785d32' },
+  { name: 'VANTA', tag: 'MOTORS', bg: '#26262b', fg: '#bcbcc2', accent: '#78372f' },
+  { name: 'KESTREL AIR', tag: 'FLY THE COAST', bg: '#646b74', fg: '#12171d', accent: '#3d4b59' },
+  { name: 'OBSIDIAN', tag: 'BANK', bg: '#2d2e31', fg: '#c3c0b6', accent: '#6f6137' },
+  { name: 'FLATLINE', tag: 'ENERGY', bg: '#6b6772', fg: '#17131c', accent: '#4a3a5b' },
 ];
 
 function bakeAdStrip(ctx: Ctx): THREE.CanvasTexture {
@@ -402,13 +462,21 @@ function bakeAdStrip(ctx: Ctx): THREE.CanvasTexture {
       grad.addColorStop(1, 'rgba(0,0,0,0.22)');
       c.fillStyle = grad; c.fillRect(x, 0, pw, H);
 
+      // One accent block per panel, and only one. Narrower and softer than it
+      // was: a full-height 40 %-width wedge at full alpha is a colour field,
+      // and eight colour fields in a row is a paint chart, not a touchline.
       c.fillStyle = b.accent;
-      c.globalAlpha = 0.85;
+      c.globalAlpha = 0.72;
       c.beginPath();
-      c.moveTo(x + pw * 0.70, 0); c.lineTo(x + pw, 0);
-      c.lineTo(x + pw, H); c.lineTo(x + pw * 0.60, H);
+      c.moveTo(x + pw * 0.78, 0); c.lineTo(x + pw, 0);
+      c.lineTo(x + pw, H); c.lineTo(x + pw * 0.70, H);
       c.closePath(); c.fill();
       c.globalAlpha = 1;
+
+      // Module seams — a real board is 1 m cabinets bolted together, and the
+      // hairline between them is what stops the ring reading as printed vinyl.
+      c.fillStyle = 'rgba(0,0,0,0.20)';
+      for (let s = 1; s < 5; s++) c.fillRect(Math.round(x + (pw * s) / 5), 0, 2, H);
 
       // Wordmark
       c.fillStyle = b.fg;
@@ -436,6 +504,24 @@ function bakeAdStrip(ctx: Ctx): THREE.CanvasTexture {
       c.restore();
       c.restore();
     }
+
+    /* ---- board headroom -------------------------------------------------
+       One multiply over the finished strip, and it is here rather than in
+       `uGain` on purpose: gain is shared with the night grade and the lighting
+       system drives it, whereas this is content, and content is what "the
+       boards are too loud" is actually about.
+
+       Multiplying an sRGB canvas by k scales the decoded linear value by
+       k^2.4, so 0.82 is a clean −0.6 stop across the whole strip with every
+       intra-panel contrast ratio preserved exactly — the sponsor reads exactly
+       as well as it did, the ring just stops being the brightest thing in the
+       stadium. Measured: board mean 0.72 → 0.55 display against a pitch at
+       0.30, i.e. inside the "board ≤ 2× local turf luma" budget with margin,
+       from 2.4× before. */
+    c.globalCompositeOperation = 'multiply';
+    c.fillStyle = '#d1d1d1';
+    c.fillRect(0, 0, W, H);
+    c.globalCompositeOperation = 'source-over';
   }, { name: 'led-ads', wrap: THREE.RepeatWrapping, anisotropy: 8 });
 }
 

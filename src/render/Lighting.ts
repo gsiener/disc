@@ -360,7 +360,7 @@ export class LightingSystem implements System {
       }
     }
 
-    this.towers.update(sun.towers, this.ctx);
+    this.towers.update(sun.towers, this.ctx, sun.towersVisual);
 
     // Re-project the SH only when it would actually change.
     const moved = this.projectedDir.dot(sun.dir) < 0.99996

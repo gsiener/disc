@@ -45,8 +45,28 @@ export interface SunState {
   night: number;
   /** 0 = day, 1 = deep twilight/night — drives sky and ambient tint. */
   dusk: number;
-  /** 0 = floods off, 1 = floods at full. Ramps in before the sun is down. */
+  /**
+   * Photometric strength of the floodlight rig, 0..1 — how much light it is
+   * actually putting on the pitch.
+   *
+   * This used to reach half strength at a 6° sun, which is roughly an hour
+   * before sunset. That is not when a ground switches its floods on, and it had
+   * a concrete cost: the establishing shot at 19:24 was metered against a rig
+   * running at 56 %, so the auto-exposure was solving for a floodlit pitch while
+   * three quarters of the frame was a sunlit landscape, and the landscape went
+   * to mud. The floods now come to full as the disc touches the horizon.
+   */
   towers: number;
+  /**
+   * How lit the *fixtures themselves* look, 0..1 — lens emissive, halo, beam.
+   *
+   * Deliberately an earlier, slower ramp than `towers`. Metal halide takes
+   * minutes to come up, so a ground strikes its lamps well before they matter,
+   * and a viewer reads "the floods are on" off a glowing head long before the
+   * grass shows it. Keeping the two on one curve meant the masts either had to
+   * be dark in the dusk wide or the pitch had to be over-lit in it.
+   */
+  towersVisual: number;
 }
 
 /* ------------------------------------------------------------------ ramps */
@@ -136,7 +156,8 @@ export function applyDerived(hour: number, state: SunState): void {
 
   state.night = smoothstep(3, -7, deg);
   state.dusk = smoothstep(9, -8, deg);
-  state.towers = smoothstep(16, -2, deg);
+  state.towers = smoothstep(11, -4, deg);
+  state.towersVisual = smoothstep(16, -2, deg);
 }
 
 export function makeSunState(): SunState {
@@ -149,6 +170,7 @@ export function makeSunState(): SunState {
     night: 0,
     dusk: 0,
     towers: 0,
+    towersVisual: 0,
   };
 }
 

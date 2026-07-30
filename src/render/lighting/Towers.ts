@@ -573,16 +573,30 @@ export class TowerRig {
   /* -------------------------------------------------------------- tick */
 
   /**
-   * `factor` 0..1 is how "on" the rig is. Light *counts* never change, only
-   * their strength — see the class note.
+   * `factor` 0..1 is how much light the rig is putting on the pitch;
+   * `visual` 0..1 is how lit the fixtures themselves look. They are separate
+   * curves — see `SunState.towersVisual`. Light *counts* never change, only
+   * their strength; see the class note.
    */
-  update(factor: number, ctx: Ctx): void {
+  update(factor: number, ctx: Ctx, visual = factor): void {
     const f = clamp(factor, 0, 1);
-    const on = f > 0.004;
+    const vis = clamp(visual, 0, 1);
+    const on = vis > 0.004;
 
     // Candela: irradiance at the pitch is I / d^2 with decay 2, and the towers
-    // sit ~95 m out, so the numbers are necessarily large.
-    const perSpot = 6400 * f;
+    // sit ~103 m out, so the numbers are necessarily large.
+    //
+    // 6 400 cd was a stop and a half short of a floodlit pitch and it showed up
+    // in the one place it could not be argued with: the auto-exposure. The rig
+    // delivered ~1.3 irradiance units at pitch centre against a night target of
+    // 3.15, so the meter opened to 2.3× to compensate — and everything in the
+    // frame with a *fixed* emission, above all the LED ribbon, was multiplied by
+    // that same 2.3 and ran to the top of the range. Raising the rig instead
+    // lets the meter close down, which pulls the boards back into signage
+    // brightness without touching a single value in the board shader. 16 000 cd
+    // is ~4.1 units at the middle of the pitch, exposure lands near 1.1, and the
+    // turf sits where a floodlit pitch sits.
+    const perSpot = 16000 * f;
     for (let i = 0; i < this.spots.length; i++) {
       const s = this.spots[i];
       s.intensity = perSpot;
@@ -596,27 +610,30 @@ export class TowerRig {
         s.shadow.intensity = f;
         // Freeze the depth pass while the rig is dark; prime it for the first
         // couple of frames so the sampler always has a valid map bound.
-        s.shadow.autoUpdate = on || this.primed < 2;
+        s.shadow.autoUpdate = f > 0.004 || this.primed < 2;
       }
     }
     this.primed++;
 
     this.irradiance = (perSpot / this.throw2) * Math.min(this.spots.length, 4) * 0.62;
 
+    // Everything below is *how the fixture looks*, not what it delivers, so it
+    // runs off the visual ramp: struck lamps glowing on a dusk mast before the
+    // grass has any idea about it.
     if (this.lensMat) {
-      this.lensMat.emissiveIntensity = 26 * f;
+      this.lensMat.emissiveIntensity = 26 * vis;
       this.lensMat.roughness = 0.16;
     }
 
     const glowU = this.glowMat.uniforms;
     // When the stadium draws its own lit fixture clusters, this is a halo on
     // top of something already bright — a fraction of the standalone value.
-    glowU.uIntensity.value = (this.hosted ? 1.1 : 3.1) * f;
+    glowU.uIntensity.value = (this.hosted ? 1.1 : 3.1) * vis;
     glowU.uColor.value.copy(FLOOD_COLOR);
     this.glowMesh.visible = on;
 
     const beamU = this.beamMat.uniforms;
-    beamU.uIntensity.value = 0.30 * f * (ctx.quality.tier === 'low' ? 0.6 : 1);
+    beamU.uIntensity.value = 0.30 * vis * (ctx.quality.tier === 'low' ? 0.6 : 1);
     beamU.uColor.value.copy(FLOOD_COLOR);
     this.beamMesh.visible = on;
   }
@@ -680,9 +697,12 @@ function makeGlowMaterial(): THREE.ShaderMaterial {
         float r = length( p );
         float core = exp( -r * r * 11.0 );
         float halo = exp( -r * 3.1 ) * 0.30;
-        float star = pow( max( 0.0, 1.0 - abs( p.x ) * 6.0 ), 3.0 ) * exp( -abs( p.y ) * 4.0 )
-                   + pow( max( 0.0, 1.0 - abs( p.y ) * 6.0 ), 3.0 ) * exp( -abs( p.x ) * 4.0 );
-        float a = ( core + halo + star * 0.22 ) * uIntensity;
+        // No star-cross term. A four-armed flare drawn into the sprite is a
+        // sticker: it does not rotate with the camera roll, it does not scale
+        // with the fixture's apparent size, and it is identical on all 84
+        // heads. The bloom pass makes a real, exposure-aware halo out of a
+        // 16 000 cd lens on its own.
+        float a = ( core + halo ) * uIntensity;
         if ( a < 0.0015 ) discard;
         gl_FragColor = vec4( uColor * a, a );
         #include <tonemapping_fragment>

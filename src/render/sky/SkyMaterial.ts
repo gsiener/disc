@@ -52,6 +52,16 @@ uniform float uMs;
 uniform float uSunE;
 uniform float uMieG;
 uniform float uExposure;
+/*
+ * Exposure basis for the night hemisphere. atmosphere() carries uExposure,
+ * which the CPU side keeps inversely proportional to the camera's own exposure
+ * so a time of day reads as that time of day whatever the meter is doing. The
+ * night branch — twilight base, stars, moon — was the one part of the sky that
+ * did not, so it tracked the meter one-for-one: raising the floodlights (which
+ * closes the aperture) silently halved the night sky and took the stars with
+ * it. Same basis, same behaviour.
+ */
+uniform float uNightGain;
 uniform float uNight;
 uniform float uSunElev;
 uniform float uTime;
@@ -237,7 +247,19 @@ float heightGradient( float h, float type ) {
   return smoothstep( g.x, g.y, h ) * smoothstep( g.w, g.z, h );
 }
 
-float cloudDensity( vec3 p, float lod ) {
+/**
+ * @param ero  weight on the high-frequency erosion band, 0..1. This is a hand
+ *             rolled mip level, and it has to exist: the erosion was sampled at
+ *             8.5 tiles, which over a 13 km tile and a 64³ volume is a 24-metre
+ *             feature — under a tenth of the march's own step. Undersampling a
+ *             24 m field with an 80 m step and then jittering the start by a
+ *             full step does not produce cloud detail, it produces a rolling
+ *             dot screen, and that screen was drawn over every cloud in every
+ *             frame. The band is now three metres coarser than the step it is
+ *             sampled with, and it fades out entirely as the step grows toward
+ *             the horizon.
+ */
+float cloudDensity( vec3 p, float ero ) {
   float h = ( p.y - uCloudBottom ) / ( uCloudTop - uCloudBottom );
   if ( h < 0.0 || h > 1.0 ) return 0.0;
 
@@ -276,11 +298,11 @@ float cloudDensity( vec3 p, float lod ) {
   base = remap01( base, 1.0 - cov * 0.94, 1.0 );
   if ( base <= 0.0 ) return 0.0;
 
-  if ( lod < 0.5 ) {
-    vec3 d = texture( uDetail, uvw * 8.5 - wind * 4.0e-5 ).rgb;
+  if ( ero > 0.01 ) {
+    vec3 d = texture( uDetail, uvw * 1.8 - wind * 4.0e-5 ).rgb;
     float df = dot( d, vec3( 0.625, 0.25, 0.125 ) );
     df = mix( df, 1.0 - df, clamp( h * 4.0, 0.0, 1.0 ) );
-    base = remap01( base, df * 0.34, 1.0 );
+    base = remap01( base, df * 0.34 * ero, 1.0 );
   }
   return base * uCloudDensity * mix( 0.75, 1.15, wth.b );
 }
@@ -297,7 +319,7 @@ float lightMarch( vec3 p, vec3 L ) {
   vec3 q = p;
   for ( int i = 0; i < CLOUD_LIGHT_STEPS; i ++ ) {
     q += L * st + CONE[ i ] * st * 0.45;
-    tau += cloudDensity( q, 1.0 ) * st;
+    tau += cloudDensity( q, 0.0 ) * st;
     st *= 1.75;
   }
   return tau;
@@ -314,10 +336,31 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
   float t1 = shellDist( sp, rd, PLANET_R + uCloudTop );
   if ( t1 <= 0.0 ) return vec4( 0.0 );
   t0 = max( t0, 0.0 );
-  float span = min( t1 - t0, 62000.0 );
+  // 34 km, not 62. Past about thirty kilometres the aerial fade below has taken
+  // three quarters of the cloud's contrast anyway, and the only thing the extra
+  // span bought was a step size of nearly two kilometres along the horizon —
+  // which is where the march's dither turns into visible halftone. Halving the
+  // span halves the step at exactly the elevations a stadium camera looks at.
+  float span = min( t1 - t0, 34000.0 );
   if ( span <= 0.0 ) return vec4( 0.0 );
 
-  float dt = span / float( CLOUD_STEPS );
+  // Geometric step ladder, not a uniform one.
+  //
+  // The span runs from four kilometres looking up to thirty-four along the
+  // horizon, and a uniform step across that is the source of the venetian-blind
+  // banding lying over every low deck in the round-2 frames. Near the horizon
+  // t0 moves about 850 m per degree of elevation while the step is ~300 m, so
+  // the sample lattice slides two and a half whole steps every twenty pixels
+  // and beats against the density field; the march's dither is a screen-space
+  // pattern with its own period and it beats right back.
+  //
+  // Growing the step spends the samples where transmittance is still high —
+  // which is the only stretch of the ray that can contribute much — and lets
+  // the tail coarsen out where the aerial fade has taken the contrast anyway.
+  // Sum of a geometric series: dt0 · (gᴺ − 1)/(g − 1) = span.
+  const float GROW = 1.055;
+  float gN = pow( GROW, float( CLOUD_STEPS ) );
+  float dt = span * ( GROW - 1.0 ) / ( gN - 1.0 );
   float t = t0 + dt * dither;
 
   float cosT = dot( rd, L );
@@ -328,22 +371,25 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
   float tr = 1.0;
   float meanT = 0.0;
   float wsum = 0.0;
-  int empty = 0;
 
   for ( int i = 0; i < CLOUD_STEPS; i ++ ) {
     if ( tr < 0.015 ) break;
     vec3 p = ro + rd * t;
-    // Cheap probe first: skip the erosion fetch in empty space, once we are
-    // confidently outside any cloud, and past ~12 km where a 2 km step could
-    // not resolve the erosion band anyway.
-    float lod = ( empty > 1 || t > 12000.0 ) ? 1.0 : 0.0;
-    float d = cloudDensity( p, lod );
+    // Erosion weight from the *local* step, and off past 12 km. It used to be a
+    // binary flag that also flipped after two empty samples, which made the
+    // density field a function of the ray's own history: two neighbouring
+    // pixels, jittered half a step apart, could disagree about whether erosion
+    // applied at the same point in space, and that drew a regular dot screen
+    // over every cloud edge in the frame. It saved nothing either —
+    // cloudDensity returns before the erosion fetch whenever the base shape is
+    // empty, which is exactly the case the heuristic was trying to catch.
+    float ero = t > 12000.0 ? 0.0 : clamp( 300.0 / dt, 0.0, 1.0 );
+    float d = cloudDensity( p, ero );
     if ( d <= 0.0005 ) {
-      empty ++;
-      t += dt * ( empty > 2 ? 1.85 : 1.0 );
+      t += dt;
+      dt *= GROW;
       continue;
     }
-    empty = 0;
 
     float h = clamp( ( p.y - uCloudBottom ) / ( uCloudTop - uCloudBottom ), 0.0, 1.0 );
     float tau = lightMarch( p, L );
@@ -371,6 +417,7 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
     meanT += t * tr; wsum += tr;
     tr *= stepTr;
     t += dt;
+    dt *= GROW;
     if ( t > t0 + span ) break;
   }
 
@@ -388,10 +435,25 @@ vec4 marchClouds( vec3 ro, vec3 rd, vec3 L, vec3 skyCol, float dither ) {
   // most washed out. Letting a grey 30 km deck sit at full opacity across it
   // desaturates the one strip of sky in the frame — a dusk that should be amber
   // comes out neutral. Fade it out and the horizon keeps its own colour.
+  //
+  // The numbers below were, however, deleting the cloud layer from every frame
+  // this game actually ships. A stadium camera sees sky between about 0.2° and
+  // 3° above the stands; a 1 500 m cloud base seen at 2° is 43 km away, so the
+  // old 7e-5 fall-off left 0.7 % of the cloud's own contrast and the old
+  // smoothstep( -0.002, 0.055 ) alpha ramp then halved what survived. The sky
+  // in stadium, broadcast, endzone and crowd was therefore a bare
+  // scattering gradient with no weather in it at all — which is exactly the
+  // "flat card" the frames were showing.
+  //
+  // 3.6e-5 is ~28 km of e-folding — contrast transmission, which is much
+  // shorter than meteorological visibility — and the 0.15 floor is the
+  // honest observation that a cumulus deck on the horizon is washed out but
+  // never actually gone. The alpha ramp now finishes by 1°, because that is
+  // where the stands stop and the sky starts.
   float md = wsum > 0.0 ? meanT / wsum : t0;
-  float fade = exp( - md * 7.0e-5 );
-  scatter = mix( skyCol, scatter, clamp( fade + 0.06, 0.0, 1.0 ) );
-  alpha *= mix( 0.35, 1.0, fade ) * smoothstep( -0.002, 0.055, rd.y );
+  float fade = exp( - md * 3.6e-5 );
+  scatter = mix( skyCol, scatter, clamp( fade * 0.85 + 0.15, 0.0, 1.0 ) );
+  alpha *= mix( 0.55, 1.0, fade ) * smoothstep( -0.004, 0.018, rd.y );
   return vec4( scatter * alpha, alpha );
 }
 #endif
@@ -405,8 +467,8 @@ void main() {
   vec3 sky = atmosphere( rd, opa );
 
   if ( uNight > 0.001 ) {
-    sky = mix( sky, nightBase( rd ), uNight );
-    sky += ( stars( rd ) + moon( rd ) ) * uNight;
+    sky = mix( sky, nightBase( rd ) * uNightGain, uNight );
+    sky += ( stars( rd ) + moon( rd ) ) * uNight * uNightGain;
   }
 
   // Solar disc. Real angular radius is 0.267°; this runs a shade over life size
@@ -429,10 +491,22 @@ void main() {
       0.0060 * pow( max( sunCos, 0.0 ), 900.0 )
     + 0.0016 * pow( max( sunCos, 0.0 ), 90.0 ) );
 
-  // Ground half: the world's own geometry covers this in-frame, but the dome
-  // has to agree with it at the horizon or distant objects sit on a seam.
-  float below = smoothstep( 0.004, -0.014, rd.y );
-  sky = mix( sky, mix( uHorizon * 0.85, uGround, 0.72 ), below );
+  // Ground half.
+  //
+  // This is not "the world's own geometry covers it": in the establishing wide
+  // the modelled terrain runs out about 5° below the eye while the geometric
+  // horizon is at 0°, so the dome is what fills a 130-pixel band right across
+  // the frame. The previous version snapped to a fixed ground colour over one
+  // degree, which drew exactly that: a hard-edged flat olive card sitting on
+  // top of a pale sky, and it read as murk rather than as distance.
+  //
+  // atmosphere() clamps its optical depth at rd.y = 0, so the scattering term
+  // is already continuous across the horizon — the fix is simply to *keep* it
+  // and let the ground albedo take over gradually with depression angle, which
+  // is what recession into haze actually looks like. No seam is possible now
+  // because the near side of the blend is the sky's own horizon value.
+  float dip = clamp( - rd.y, 0.0, 1.0 );
+  sky = mix( sky, uGround, 0.86 * smoothstep( 0.0, 0.16, dip ) );
 
 #ifdef USE_CLOUDS
   // Interleaved-gradient noise, not a white-noise hash. The march is jittered by
@@ -455,7 +529,7 @@ void main() {
     vec3 p4 = cameraPosition + rd * ta;
     vec3 wth4 = texture( uWeather, ( p4.xz ) * 4.4e-5 ).rgb;
     vec4 s4 = texture( uShape, p4 * ( 1.0 / 13000.0 ) );
-    if ( SKY_DEBUG == 4 ) gl_FragColor = vec4( vec3( cloudDensity( p4, 0.0 ) ), 1.0 );
+    if ( SKY_DEBUG == 4 ) gl_FragColor = vec4( vec3( cloudDensity( p4, 1.0 ) ), 1.0 );
     if ( SKY_DEBUG == 5 ) gl_FragColor = vec4( wth4, 1.0 );
     if ( SKY_DEBUG == 6 ) gl_FragColor = vec4( s4.rgb, 1.0 );
     if ( SKY_DEBUG == 7 ) gl_FragColor = vec4( vec3( ta / 30000.0 ), 1.0 );
@@ -509,6 +583,7 @@ export function createSkyMaterial(opts: SkyMaterialOpts): THREE.ShaderMaterial {
       uSunE: { value: 1000 },
       uMieG: { value: 0.8 },
       uExposure: { value: 0.05 },
+      uNightGain: { value: 1 },
       uNight: { value: 0 },
       uSunElev: { value: 45 },
       uTime: { value: 0 },

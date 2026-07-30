@@ -130,19 +130,40 @@ interface Key extends SkyTuning { el: number }
  *  -1°  sunset         — maximum rayleigh, red belt on the horizon
  *  -18° night          — handled mostly by the night branch, kept dim here
  *
- * `exposure` climbs steeply as the sun drops because the physical radiance
- * collapses by two orders of magnitude between noon and sunset and a camera
- * operator would be opening up the whole way down.
+ * `exposure` climbs as the sun drops because the physical radiance collapses by
+ * two orders of magnitude between noon and sunset — but only *part* of the way,
+ * and that is a change from the first pass. The camera's own auto-exposure is
+ * already opening up two and a half stops between 16:30 and 19:24 (it is
+ * metering the pitch, which is what it should meter), and `EXPOSURE_TRACK` in
+ * Sky.ts cancels 85 % of that back out of the dome. Compensating a *second*
+ * time here is what put the 19:24 sky at 0.61 display luma — brighter than
+ * anything else in the establishing wide including the floodlit bowl it is
+ * supposed to be a backdrop for, and far enough up AgX's shoulder that it had
+ * lost most of its chroma and read as flat tan. Roughly a third of a stop has
+ * come out of the whole low-sun end of the table: the dusk sky now sits under
+ * the lit pitch, and it keeps the amber it is entitled to.
+ *
+ * `cloudCoverage` comes *down*, hard, and that is the single biggest change in
+ * this file. Rendering the dome with the cloud march switched off gave a clean
+ * dusk gradient — (0.32, 0.44, 0.61) at 40° up, (0.61, 0.54, 0.43) at the
+ * horizon — and switching it back on flattened the whole hemisphere to
+ * (0.38, 0.37, 0.41). That is not a cloud *layer*, it is overcast: at 0.36–0.42
+ * the field cleared its threshold nearly everywhere, so the sky was a
+ * full-hemisphere sheet of thin grey stratus with a couple of wisps at the
+ * edges where it happened to thin out. It is the "flat tan card" the round-2
+ * review is looking at. A summer-evening sky wants roughly a quarter of the
+ * hemisphere in cloud and the rest genuinely open, which is what these numbers
+ * now produce.
  */
 const KEYS: Key[] = [
-  { el: -18, turbidity: 2.4, rayleigh: 1.00, mieCoefficient: 0.0040, mieDirectionalG: 0.800, exposure: 0.175, msStrength: 0.075, cloudCoverage: 0.30, cloudDensity: 0.75, fogDensity: 0.0016 },
-  { el: -7, turbidity: 3.0, rayleigh: 1.90, mieCoefficient: 0.0052, mieDirectionalG: 0.820, exposure: 0.175, msStrength: 0.075, cloudCoverage: 0.33, cloudDensity: 0.85, fogDensity: 0.0019 },
-  { el: -1, turbidity: 4.4, rayleigh: 2.50, mieCoefficient: 0.0090, mieDirectionalG: 0.845, exposure: 0.165, msStrength: 0.085, cloudCoverage: 0.36, cloudDensity: 0.95, fogDensity: 0.0024 },
-  { el: 4, turbidity: 4.2, rayleigh: 2.40, mieCoefficient: 0.0084, mieDirectionalG: 0.840, exposure: 0.130, msStrength: 0.085, cloudCoverage: 0.37, cloudDensity: 1.0, fogDensity: 0.0022 },
-  { el: 10, turbidity: 3.7, rayleigh: 2.10, mieCoefficient: 0.0068, mieDirectionalG: 0.825, exposure: 0.100, msStrength: 0.085, cloudCoverage: 0.36, cloudDensity: 1.0, fogDensity: 0.0019 },
-  { el: 22, turbidity: 2.8, rayleigh: 1.75, mieCoefficient: 0.0044, mieDirectionalG: 0.790, exposure: 0.070, msStrength: 0.085, cloudCoverage: 0.34, cloudDensity: 1.0, fogDensity: 0.0015 },
-  { el: 42, turbidity: 2.4, rayleigh: 1.45, mieCoefficient: 0.0035, mieDirectionalG: 0.755, exposure: 0.052, msStrength: 0.085, cloudCoverage: 0.32, cloudDensity: 1.0, fogDensity: 0.0012 },
-  { el: 66, turbidity: 2.1, rayleigh: 1.28, mieCoefficient: 0.0029, mieDirectionalG: 0.725, exposure: 0.044, msStrength: 0.085, cloudCoverage: 0.30, cloudDensity: 1.0, fogDensity: 0.0010 },
+  { el: -18, turbidity: 2.4, rayleigh: 1.00, mieCoefficient: 0.0040, mieDirectionalG: 0.800, exposure: 0.122, msStrength: 0.075, cloudCoverage: 0.16, cloudDensity: 0.75, fogDensity: 0.0016 },
+  { el: -7, turbidity: 3.0, rayleigh: 1.90, mieCoefficient: 0.0052, mieDirectionalG: 0.820, exposure: 0.124, msStrength: 0.075, cloudCoverage: 0.19, cloudDensity: 0.85, fogDensity: 0.0019 },
+  { el: -1, turbidity: 4.4, rayleigh: 2.50, mieCoefficient: 0.0090, mieDirectionalG: 0.845, exposure: 0.110, msStrength: 0.085, cloudCoverage: 0.22, cloudDensity: 0.95, fogDensity: 0.0024 },
+  { el: 4, turbidity: 4.2, rayleigh: 2.40, mieCoefficient: 0.0084, mieDirectionalG: 0.840, exposure: 0.091, msStrength: 0.085, cloudCoverage: 0.23, cloudDensity: 1.0, fogDensity: 0.0022 },
+  { el: 10, turbidity: 3.7, rayleigh: 2.10, mieCoefficient: 0.0068, mieDirectionalG: 0.825, exposure: 0.076, msStrength: 0.085, cloudCoverage: 0.22, cloudDensity: 1.0, fogDensity: 0.0019 },
+  { el: 22, turbidity: 2.8, rayleigh: 1.75, mieCoefficient: 0.0044, mieDirectionalG: 0.790, exposure: 0.066, msStrength: 0.085, cloudCoverage: 0.20, cloudDensity: 1.0, fogDensity: 0.0015 },
+  { el: 42, turbidity: 2.4, rayleigh: 1.45, mieCoefficient: 0.0035, mieDirectionalG: 0.755, exposure: 0.052, msStrength: 0.085, cloudCoverage: 0.18, cloudDensity: 1.0, fogDensity: 0.0012 },
+  { el: 66, turbidity: 2.1, rayleigh: 1.28, mieCoefficient: 0.0029, mieDirectionalG: 0.725, exposure: 0.044, msStrength: 0.085, cloudCoverage: 0.16, cloudDensity: 1.0, fogDensity: 0.0010 },
 ];
 
 export function tuningForElevation(el: number): SkyTuning {
@@ -361,7 +382,12 @@ export class SkyState {
     // The disc. Deliberately far above white so bloom has a genuine highlight,
     // but built from the physical transmittance so a low sun is orange rather
     // than the tomato the artistic rayleigh would make of it.
-    const d = this.sunE * this.tuning.exposure * 1.35 * (1 - this.night);
+    //
+    // 1.35 → 1.9 to hold the disc where it was after a third of a stop came out
+    // of the low-sun `exposure` keys. The sky around it is meant to come down;
+    // the sun itself is meant to stay the one thing in an outdoor frame that is
+    // allowed to clip.
+    const d = this.sunE * this.tuning.exposure * 1.9 * (1 - this.night);
     this.sunDisc.setRGB(fex[0] * d, fex[1] * d, fex[2] * d, THREE.LinearSRGBColorSpace);
   }
 

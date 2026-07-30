@@ -65,7 +65,13 @@ const winFrac = (a: number, w: readonly [number, number]): number =>
  * in by the caller, so a left-handed athlete is the same table mirrored.
  *
  *   pelvis/chest  yaw relative to facing (+ = coiled AWAY from the target)
- *   sx/sy/sz      upper-arm bend / twist / abduction
+ *   sx/sy/sz      upper-arm bend / twist / abduction.
+ *                 SIGN, because it is easy to get backwards and it looks like a
+ *                 chicken wing when you do: `poseThrow` writes z as `sz * s`,
+ *                 while `poseArms` writes adduction as `-(adduct) * s`. So on
+ *                 BOTH sides, **negative sz adducts (arm in to the ribs) and
+ *                 positive sz abducts (arm out and up)**. Bind is a 46-degree
+ *                 A-pose, so sz = 0 is already a fair way off the body.
  *   elbow         forearm flexion
  *   twist         forearm pronation (the fore-arm twist bone takes 0.65 of it)
  *   wx/wy/wz      wrist
@@ -92,9 +98,13 @@ const THROWS: Record<ThrowKind, [ThrowKey, ThrowKey, ThrowKey]> = {
   // Backhand: coil until the off-shoulder points at the target, arm wrapped
   // across the chest, then unwind everything and finish across the body.
   backhand: [
-    K(0.42, 0.72, -0.28, -0.55, 1.02, 1.75, -0.85, 0.30, -0.75, 0.10, -0.62, 0.95, 0.055, -0.03),
-    K(-0.18, -0.30, 0.62, 0.30, 0.24, 0.42, 0.55, -0.16, 0.70, -0.05, -0.20, 0.55, 0.020, 0.075),
-    K(-0.34, -0.62, 0.95, 0.55, -0.10, 0.85, 0.80, -0.05, 0.95, 0.00, -0.10, 0.35, 0.010, 0.090),
+    // The coil is ACROSS the chest — elbow tucked at the ribs, forearm
+    // horizontal, disc at the far hip. sz was +1.02 here, 58 degrees of
+    // abduction on top of the A-pose, which lifted the whole arm out sideways
+    // and made a backhand windup look like a hammer.
+    K(0.42, 0.72, 0.22, -0.78, -0.72, 1.75, -0.85, 0.30, -0.75, 0.10, -0.62, 0.95, 0.055, -0.03),
+    K(-0.18, -0.30, 0.62, 0.30, 0.34, 0.42, 0.55, -0.16, 0.70, -0.05, -0.20, 0.55, 0.020, 0.075),
+    K(-0.34, -0.62, 0.95, 0.55, 0.10, 0.85, 0.80, -0.05, 0.95, 0.00, -0.10, 0.35, 0.010, 0.090),
   ],
   // Forehand: the shoulder barely moves. Elbow pinned at the ribs, forearm
   // cocked back and supinated, and the throw is forearm plus wrist.
@@ -106,20 +116,20 @@ const THROWS: Record<ThrowKind, [ThrowKey, ThrowKey, ThrowKey]> = {
   // Hammer: overhead. Arm cocked behind the head, disc inverted, then a
   // forward chop that finishes low across the body.
   hammer: [
-    K(-0.20, -0.42, 2.32, 0.55, -0.35, 1.95, 1.30, 0.55, 0.40, 0.00, -0.45, 0.60, 0.020, -0.06),
+    K(-0.20, -0.42, 2.11, 0.55, 1.02, 1.95, 1.30, 0.55, 0.40, 0.00, -0.45, 0.60, 0.020, -0.06),
     K(0.10, 0.20, 1.55, 0.20, -0.25, 0.55, 0.85, -0.35, 0.10, 0.00, -0.20, 0.40, 0.010, 0.070),
     K(0.20, 0.36, 0.70, -0.05, -0.15, 0.95, 0.40, -0.55, -0.10, 0.00, -0.10, 0.28, 0.006, 0.080),
   ],
   // Scoober: inverted, released above the shoulder on the backhand side, so
   // the arm crosses the body high and the chest opens late.
   scoober: [
-    K(0.34, 0.58, 0.55, -0.95, 0.92, 1.95, -1.15, 0.45, -0.55, 0.15, -0.55, 0.85, 0.045, -0.02),
+    K(0.34, 0.58, 2.47, -0.95, 0.34, 1.95, -1.15, 0.45, -0.55, 0.15, -0.55, 0.85, 0.045, -0.02),
     K(-0.10, -0.18, 1.62, -0.20, 0.35, 0.85, -0.30, -0.20, 0.30, 0.05, -0.20, 0.50, 0.018, 0.060),
     K(-0.22, -0.38, 1.90, 0.15, 0.10, 1.15, 0.05, -0.10, 0.55, 0.00, -0.10, 0.32, 0.008, 0.070),
   ],
   // Blade: a forehand thrown with the disc near-vertical, arm high and wide.
   blade: [
-    K(-0.30, -0.40, 0.95, 1.05, -0.95, 1.45, 1.25, 0.50, 1.20, -0.30, -0.40, 0.65, 0.050, -0.02),
+    K(-0.30, -0.40, 1.37, 1.05, 0.86, 1.45, 1.25, 0.50, 1.20, -0.30, -0.40, 0.65, 0.050, -0.02),
     K(0.16, 0.28, 1.25, 0.45, -0.72, 0.62, 0.45, -0.10, -0.10, 0.20, -0.15, 0.42, 0.022, 0.055),
     K(0.28, 0.46, 1.05, 0.10, -0.55, 1.00, 0.00, 0.00, -0.55, 0.24, -0.05, 0.28, 0.010, 0.065),
   ],
@@ -181,6 +191,15 @@ const _fw = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
 const _tmp2 = new THREE.Vector3();
+// `reachArm` runs twice for a two-handed catch and must not scribble on the two
+// vectors its caller is holding. These are its own; the aliasing that used to be
+// here silently fed the second hand a target of "wherever the first hand ended
+// up", which is a hard bug to see and an easy one to avoid.
+const _disc = new THREE.Vector3();
+const _appr = new THREE.Vector3();
+const _hand = new THREE.Vector3();
+const _grip = new THREE.Vector3();
+const _palm = new THREE.Vector3();
 
 /* ---------------------------------------------------------------- throws */
 
@@ -299,8 +318,17 @@ export function poseThrow(ts: ThrowState, dst: Pose, base: Pose, detail: number)
   const oe = mix('offE', LEAD.chest);
   const oua = s === 1 ? B.upperArm_R : B.upperArm_L;
   const ofa = s === 1 ? B.foreArm_R : B.foreArm_L;
-  dst.setEuler(oua, 0.18 + 0.25 * f, 0, oz);
+  // The off arm counterbalances, which means it goes BACK as the chest opens,
+  // not forward with it. Driving it forward through the follow-through put both
+  // arms out in front of the athlete at release — the pose reads as a zombie,
+  // and it is the opposite of the counter-rotation the throw is built on.
+  dst.setEuler(oua, 0.18 - 0.92 * f, 0, oz);
   dst.setBend(ofa, oe);
+  // The off-side girdle too. Not for the look — this layer is blended through a
+  // whole-arm mask, so a bone left at identity here actively erases whatever the
+  // running arms had put there.
+  const ocl = s === 1 ? B.clavicle_R : B.clavicle_L;
+  dst.setEuler(ocl, -0.04 + 0.05 * f, 0.06 * s, -0.06 * s);
 
   // Hands: the throwing hand grips until release, then opens through follow.
   const grip = ts.relT < 0 ? 1 : 1 - smooth(clamp01(ts.relT / 0.14));
@@ -356,26 +384,45 @@ export function poseCatch(
   // Approach direction: the disc arrives along its velocity, so the palms face
   // back down that line. Falling back to "toward the athlete" is fine for a
   // hovering disc, which is the only case that produces no velocity.
-  _fw.set(-(discVel?.x ?? 0), -(discVel?.y ?? 0), -(discVel?.z ?? 0));
-  if (_fw.lengthSq() < 1e-4) _fw.set(0, 0, -1);
-  _fw.normalize();
+  _appr.set(-(discVel?.x ?? 0), -(discVel?.y ?? 0), -(discVel?.z ?? 0));
+  if (_appr.lengthSq() < 1e-4) _appr.set(0, 0, -1);
+  _appr.normalize();
 
-  frame.toLocal(disc.x, disc.y, disc.z, _tmp);
+  frame.toLocal(disc.x, disc.y, disc.z, _disc);
   // As the catch completes, draw the disc in toward the sternum.
   if (cs.caught) {
     const k = smooth(clamp01(cs.caughtT / 0.42));
     const chest = B.chest * 3;
     _tmp2.set(kine.wp[chest], kine.wp[chest + 1] + 0.06, kine.wp[chest + 2] + 0.22);
-    _tmp.lerp(_tmp2, k * 0.8);
+    _disc.lerp(_tmp2, k * 0.8);
   }
 
   const two = cs.kind === 'pancake' || cs.kind === 'sky' || cs.kind === 'scoop';
   for (let si = 0; si < 2; si++) {
     const s: 1 | -1 = si === 0 ? 1 : -1;
     if (!two && s !== cs.hand) continue;
-    reachArm(kine, pose, frame, s, cs.kind, _tmp, _fw, w);
+    reachArm(kine, pose, frame, s, cs.kind, _disc, _appr, w);
     poseHand(pose, s, cs.caught ? 'grip' : 'open', detail, w);
   }
+}
+
+/**
+ * Rig-space position of the disc as it sits in the hand. Local +Y runs down the
+ * fingers and local +Z is the palm, so the disc centre is a palm's width along
+ * the fingers and a rim's thickness off the palm.
+ */
+export function discInHand(
+  kine: Kine, s: 1 | -1, outPos: THREE.Vector3, outNormal: THREE.Vector3,
+): void {
+  const hd = s === 1 ? B.hand_L : B.hand_R;
+  kine.worldQuat(hd, _wq);
+  _up.set(0, 1, 0).applyQuaternion(_wq);            // down the fingers
+  _palm.set(0, 0, 1).applyQuaternion(_wq);          // out of the palm
+  const o = hd * 3;
+  outPos.set(kine.wp[o], kine.wp[o + 1], kine.wp[o + 2])
+    .addScaledVector(_up, 0.085)
+    .addScaledVector(_palm, 0.032);
+  outNormal.copy(_palm);
 }
 
 /** Grip offsets, rig space, relative to the disc centre. */
@@ -409,17 +456,15 @@ function reachArm(
   kine.refresh(pose, cl);
   kine.refreshPos(ua);
 
-  gripOffset(kind, s, _tmp2);
-  _t.copy(discLocal).add(_tmp2);
+  gripOffset(kind, s, _grip);
+  _t.copy(discLocal).add(_grip);
   // Blend from wherever the arm already is toward the reach, so a catch that
   // starts mid-stride does not teleport the hand.
   if (w < 1) {
-    kine.worldPos(hd, _pole);
-    _t.lerp(_pole, 1 - w);
+    kine.worldPos(hd, _hand);
+    _t.lerp(_hand, 1 - w);
   }
 
-  const sh = B.upperArm_L === ua || B.upperArm_R === ua ? ua : ua;
-  kine.worldPos(sh, _pole);
   // Elbow below and outside the line to the disc; a high sky pulls it inward.
   const high = kind === 'sky';
   _pole.set(
@@ -434,8 +479,8 @@ function reachArm(
   frame.dirToLocal(approach.x, approach.z, _up);
   _up.y = approach.y;
   _up.normalize();
-  kine.worldPos(hd, _tmp);
-  _fw.subVectors(discLocal, _tmp);
+  kine.worldPos(hd, _hand);
+  _fw.subVectors(discLocal, _hand);
   if (_fw.lengthSq() < 1e-6) _fw.set(0, 0, 1);
   let palmX = 0, palmY = 0, palmZ = 0;
   switch (kind) {
@@ -444,10 +489,10 @@ function reachArm(
     case 'sky': palmX = -0.35 * s; palmY = -0.15; palmZ = 0; break;
     default: palmX = -0.30 * s; palmY = 0.15; break;
   }
-  _tmp2.set(palmX, palmY, palmZ);
-  if (_tmp2.lengthSq() < 1e-6) _tmp2.copy(_up);
-  else _tmp2.addScaledVector(_up, 0.55).normalize();
-  frameQuat(_fw, _tmp2, _wq);
+  _palm.set(palmX, palmY, palmZ);
+  if (_palm.lengthSq() < 1e-6) _palm.copy(_up);
+  else _palm.addScaledVector(_up, 0.55).normalize();
+  frameQuat(_fw, _palm, _wq);
   kine.setWorldQuat(pose, hd, _wq);
   pose.setTwist(faT, 0.45 * s);
 }
@@ -483,8 +528,17 @@ export function poseMark(pose: Pose, force: -1 | 1, w: number, detail: number): 
     const ua = s === 1 ? B.upperArm_L : B.upperArm_R;
     const fa = s === 1 ? B.foreArm_L : B.foreArm_R;
     const hd = s === 1 ? B.hand_L : B.hand_R;
-    blendEuler(pose, ua, low ? -0.25 : 0.62, 0, -(1.02 + (low ? 0.10 : -0.25)) * s, w);
-    blendBend(pose, fa, low ? 0.32 : 0.55, w);
+    // ABDUCTION, and the sign matters. `poseArms` writes adduction as
+    // `-(adduct) * s`, so a mark — which is arms OUT, filling the lanes — is
+    // `+ * s`. Written with the leading minus this put both arms across the
+    // chest, which is a shrug, not a mark.
+    //
+    // Bind is a 46-degree A-pose, so the z delta is measured from there: 1.55
+    // puts the high hand well above the shoulder, 0.15 leaves the low one at
+    // hip height and clear of the body. Flexion stays small on purpose — a mark
+    // spreads across the throwing lanes, it does not point at the thrower.
+    blendEuler(pose, ua, low ? 0.10 : 0.15, 0, (low ? 0.15 : 1.55) * s, w);
+    blendBend(pose, fa, low ? 0.26 : 0.58, w);
     blendEuler(pose, hd, low ? 0.25 : -0.15, 0.10 * s, 0, w);
     poseHand(pose, s, 'mark', detail, w);
   }

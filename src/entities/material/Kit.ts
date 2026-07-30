@@ -28,9 +28,14 @@ import type { Colourway } from './Tone.ts';
  * two atlases and fourteen strips, not fourteen of everything.
  */
 
+/**
+ * Reference atlas geometry. Every tier scales all three together, because the
+ * shader's SDF_RATE is CELL / (2 * SPREAD) and it is a compile-time constant —
+ * scale the cell without the spread and every glyph edge changes width.
+ */
 const ATLAS = 512;
-const CELL = 128; // 4 x 4 grid
-const SPREAD = 14; // SDF range in texels
+const CELL_DIV = 4;   // 4 x 4 grid
+const SPREAD_REF = 14; // SDF range in texels at ATLAS = 512
 
 const FONT = '"Helvetica Neue", Helvetica, Arial, sans-serif';
 
@@ -200,8 +205,11 @@ export interface KitAtlas {
  *   row 1   8 9 mark ·
  *   row 0   team code, drawn across all four cells
  */
-export function bakeKitAtlas(cw: Colourway): KitAtlas {
-  const cov = coverage(ATLAS, ATLAS, (c) => {
+export function bakeKitAtlas(cw: Colourway, size = ATLAS): KitAtlas {
+  const A = Math.max(128, Math.round(size / 4) * 4);
+  const CELL = A / CELL_DIV;
+  const SPREAD = SPREAD_REF * (A / ATLAS);
+  const cov = coverage(A, A, (c) => {
     for (let d = 0; d <= 9; d++) {
       const col = d % 4, row = Math.floor(d / 4);
       const x = col * CELL, y = row * CELL;
@@ -222,15 +230,15 @@ export function bakeKitAtlas(cw: Colourway): KitAtlas {
     c.restore();
     // Bottom row: the three-letter club code, tracked out across 512 px.
     c.save();
-    c.beginPath(); c.rect(0, 3 * CELL, ATLAS, CELL); c.clip();
-    fitText(c, cw.code, ATLAS * 0.5, 3 * CELL + CELL * 0.52, ATLAS * 0.86,
+    c.beginPath(); c.rect(0, 3 * CELL, A, CELL); c.clip();
+    fitText(c, cw.code, A * 0.5, 3 * CELL + CELL * 0.52, A * 0.86,
       Math.round(CELL * 0.62), 900, CELL * 0.10);
     c.restore();
   });
-  const sdf = coverageToSdf(cov, ATLAS, ATLAS, SPREAD);
+  const sdf = coverageToSdf(cov, A, A, SPREAD);
 
   const texture = bake((x, y, u, v, out, i) => {
-    out[i] = sdf[y * ATLAS + x] * 255;
+    out[i] = sdf[y * A + x] * 255;
     // Chenille twill: the fine looped pile a stitched-on number is made of.
     const loop = 0.5 + 0.5 * Math.sin((x * 0.9 + Math.sin(y * 0.55) * 2.0) * 1.7);
     out[i + 1] = (0.35 + 0.65 * loop) * 255;
@@ -239,39 +247,76 @@ export function bakeKitAtlas(cw: Colourway): KitAtlas {
     out[i + 3] = 255;
     void u; void v;
   }, {
-    size: ATLAS, colorSpace: THREE.NoColorSpace, wrap: THREE.ClampToEdgeWrapping,
+    size: A, colorSpace: THREE.NoColorSpace, wrap: THREE.ClampToEdgeWrapping,
     anisotropy: 8, name: `kit.${cw.id}`,
   });
 
+  // `coverage` reads the canvas back bottom-up, so canvas row r (counted from
+  // the top) becomes texture row 3 − r (counted from v = 0). Handing the shader
+  // the canvas row instead was worth two wrong glyphs on every shirt in the
+  // game: a squad number in the eighties printed as "4", and the club mark as a
+  // digit 6. The flip belongs here, once, next to the bake that causes it.
   const digitCell: THREE.Vector2[] = [];
   for (let d = 0; d <= 9; d++) {
     const col = d % 4, row = Math.floor(d / 4);
-    digitCell.push(new THREE.Vector2(col / 4, row / 4));
+    digitCell.push(new THREE.Vector2(col / 4, (3 - row) / 4));
   }
-  return { texture, digitCell, markCell: new THREE.Vector2(2 / 4, 2 / 4), bytes: texBytes(texture) };
+  return { texture, digitCell, markCell: new THREE.Vector2(2 / 4, 1 / 4), bytes: texBytes(texture) };
 }
 
 /* ------------------------------------------------------------ name strip */
 
-const NAME_W = 512, NAME_H = 64;
+const NAME_W = 512;
+/** Rows in a team strip. A 7-a-side squad plus one spare. */
+export const NAME_ROWS = 8;
 
-export function bakeNameStrip(name: string): THREE.DataTexture {
-  const text = name.toUpperCase();
-  const cov = coverage(NAME_W, NAME_H, (c) => {
-    fitText(c, text, NAME_W * 0.5, NAME_H * 0.54, NAME_W * 0.90,
-      Math.round(NAME_H * 0.72), 800, NAME_H * 0.055);
-  });
-  const sdf = coverageToSdf(cov, NAME_W, NAME_H, 9);
+/**
+ * v window of one squad member's row, as (origin, span). The 3-texel inset on
+ * each side keeps a bilinear tap from ever reaching the neighbouring row.
+ */
+export function NAME_ROW_V(slot: number): THREE.Vector2 {
+  const s = ((slot % NAME_ROWS) + NAME_ROWS) % NAME_ROWS;
+  const inset = 0.008;
+  return new THREE.Vector2(s / NAME_ROWS + inset, 1 / NAME_ROWS - inset * 2);
+}
+
+/**
+ * One strip per TEAM, one surname per row.
+ *
+ * Each row's distance field is solved on its own 512 × 48 tile and only then
+ * assembled, rather than running one transform across the whole strip. A single
+ * global transform lets the field of the name above reach down into this row's
+ * outline band — and the outline is exactly the part of an SDF that samples
+ * furthest from its glyph — so it surfaces as a ghost of somebody else's
+ * surname along the top of every jersey, which is a genuinely baffling thing to
+ * find in a render.
+ */
+export function bakeNameStrip(names: readonly string[], width = NAME_W): THREE.DataTexture {
+  const W = Math.max(128, Math.round(width / 8) * 8);
+  const ROW = Math.max(16, Math.round(48 * (W / NAME_W) / 4) * 4);
+  const H = ROW * NAME_ROWS;
+  const sdf = new Float64Array(W * H);
+  for (let r = 0; r < NAME_ROWS; r++) {
+    const text = (names[r] ?? names[names.length - 1] ?? '').toUpperCase();
+    const cov = coverage(W, ROW, (c) => {
+      if (!text) return;
+      fitText(c, text, W * 0.5, ROW * 0.54, W * 0.90,
+        Math.round(ROW * 0.70), 800, ROW * 0.055);
+    });
+    const rowSdf = coverageToSdf(cov, W, ROW, 7 * (W / NAME_W));
+    sdf.set(rowSdf, r * ROW * W);
+  }
   return bake((x, y, u, v, out, i) => {
-    out[i] = sdf[y * NAME_W + x] * 255;
+    out[i] = sdf[y * W + x] * 255;
+    // Chenille twill loop, and the vinyl grain of a heat-pressed transfer.
     const loop = 0.5 + 0.5 * Math.sin((x * 1.1 + Math.sin(y * 0.7) * 2.0) * 1.9);
     out[i + 1] = (0.35 + 0.65 * loop) * 255;
     out[i + 2] = (0.5 + 0.5 * (hash2(x >> 1, y >> 1, 5) - 0.5) * 0.9) * 255;
     out[i + 3] = 255;
     void u; void v; void smoothstep;
   }, {
-    size: NAME_W, height: NAME_H, colorSpace: THREE.NoColorSpace,
-    wrap: THREE.ClampToEdgeWrapping, anisotropy: 8, name: `kit.name.${text}`,
+    size: W, height: H, colorSpace: THREE.NoColorSpace,
+    wrap: THREE.ClampToEdgeWrapping, anisotropy: 8, name: 'kit.names',
   });
 }
 

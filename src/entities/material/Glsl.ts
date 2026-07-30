@@ -42,6 +42,26 @@ export function inMain(src: string, code: string): string {
   return src.replace('void main() {', `void main() {\n${code}`);
 }
 
+/**
+ * Splice a block of file-scope helper GLSL into a shader.
+ *
+ * It has to land AFTER `#include <common>` and not simply be prepended to the
+ * source. `PI`, `saturate`, `pow2` and the packing helpers are all defined in
+ * that chunk, the preprocessor runs strictly top-down, and a helper prepended
+ * ahead of it references `PI` before the `#define` exists. The failure is a
+ * bare "undeclared identifier" pointing at a line number in the concatenated
+ * source that corresponds to nothing in any file, which is a genuinely awful
+ * hour. Anchoring to `common` costs one function call and removes the class.
+ */
+export function prelude(src: string, code: string): string {
+  return at(src, 'common', { after: code });
+}
+
+/** Standard vertex patch: forward the rig's extra attributes. */
+export function vertexPatch(src: string): string {
+  return prelude(src, VERT_PARS).replace('void main() {', `void main() {\n${VERT_MAIN}`);
+}
+
 /* ------------------------------------------------------------- attributes */
 
 /**

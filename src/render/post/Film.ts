@@ -30,7 +30,30 @@ export class FilmPass extends QuadPass {
         // stands are a field of one-pixel crowd detail, and any wider than this
         // the fringe stops reading as a lens and starts reading as rainbow
         // speckle over every seat in the bowl.
-        uCa: { value: 0.7 },
+        uCa: { value: 0.55 },
+        /**
+         * Ceiling on how far CA is allowed to move a single channel, in
+         * display-referred units.
+         *
+         * This is the fix for the magenta/cyan speckle that was eating the
+         * top-left corner of `broadcast`. The upper bowl there is a field of
+         * seat backs whose lit edges are exactly one pixel tall against near
+         * black; shifting red one way and blue the other across an edge with a
+         * 0.6 contrast step does not produce a fringe, it produces a saturated
+         * red line above a saturated blue line, repeated a thousand times.
+         *
+         * The reason that is *wrong* and not merely ugly is optical: transverse
+         * chromatic aberration is a magnification difference between channels,
+         * and it lives in a lens whose MTF at one cycle per pixel is already
+         * near zero. An edge sharp enough to fringe that hard cannot survive
+         * the same lens that is doing the fringing. So the two taps are
+         * band-limited along the offset (which is what the blur would have
+         * done) and the residual per-channel excursion is clamped, which leaves
+         * smooth off-axis gradients — a floodlight halo, a shoulder against the
+         * sky, the roof line — fringing exactly as before, and stops the effect
+         * dead on aliased geometry.
+         */
+        uCaClamp: { value: 0.028 },
         uVignette: { value: 0.28 },
         uGrain: { value: 0.024 },
         uGrainScale: { value: 1.0 },
@@ -41,6 +64,7 @@ export class FilmPass extends QuadPass {
         uniform vec2  uResolution;
         uniform float uAspect;
         uniform float uCa;
+        uniform float uCaClamp;
         uniform float uVignette;
         uniform float uGrain;
         uniform float uGrainScale;
@@ -58,11 +82,19 @@ export class FilmPass extends QuadPass {
           // width regardless of aspect ratio or buffer resolution.
           float amt = uCa * smoothstep(0.35, 1.0, rad);
           vec2 off = (d / max(length(d), 1e-5)) * amt / uResolution;
-          vec3 col;
-          col.r = texture2D(tDiffuse, vUv + off).r;
           vec4 mid = texture2D(tDiffuse, vUv);
-          col.g = mid.g;
-          col.b = texture2D(tDiffuse, vUv - off).b;
+          // Two taps per fringing channel, at 0.55 and 1.0 of the offset. That
+          // is a 1-tap-wide box along the shift direction — the band limit a
+          // lens with this much lateral colour would impose anyway — and it is
+          // what stops a one-pixel edge from producing a full-contrast line.
+          float rA = texture2D(tDiffuse, vUv + off).r;
+          float rB = texture2D(tDiffuse, vUv + off * 0.55).r;
+          float bA = texture2D(tDiffuse, vUv - off).b;
+          float bB = texture2D(tDiffuse, vUv - off * 0.55).b;
+          vec3 col = mid.rgb;
+          // …and the excursion is clamped, so aliased geometry cannot fringe.
+          col.r += clamp((rA + rB) * 0.5 - mid.r, -uCaClamp, uCaClamp);
+          col.b += clamp((bA + bB) * 0.5 - mid.b, -uCaClamp, uCaClamp);
 
           // --- vignette
           float vig = 1.0 - uVignette * smoothstep(0.35, 1.12, rad);
