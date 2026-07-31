@@ -26,11 +26,17 @@ export class FilmPass extends QuadPass {
         tDiffuse: { value: null },
         uResolution: { value: new THREE.Vector2(width, height) },
         uAspect: { value: width / Math.max(1, height) },
-        // Pixels of fringing at the very corner. Under a pixel on purpose: the
-        // stands are a field of one-pixel crowd detail, and any wider than this
-        // the fringe stops reading as a lens and starts reading as rainbow
+        // Pixels of fringing at the very corner. Well under a pixel on purpose:
+        // the stands are a field of one-pixel crowd detail, and any wider than
+        // this the fringe stops reading as a lens and starts reading as rainbow
         // speckle over every seat in the bowl.
-        uCa: { value: 0.55 },
+        //
+        // 0.55 was over that line. Half a pixel of transverse colour is what a
+        // cheap zoom does wide open at the extreme corner, not what a broadcast
+        // prime does anywhere, and on a hero crop it reads as chroma subsampling
+        // rather than as glass. 0.30 is still visible on a floodlight halo and a
+        // shoulder against the sky and is invisible on everything else.
+        uCa: { value: 0.30 },
         /**
          * Ceiling on how far CA is allowed to move a single channel, in
          * display-referred units.
@@ -80,7 +86,13 @@ export class FilmPass extends QuadPass {
           // --- transverse chromatic aberration, off-axis only.
           // The offset is expressed in *pixels* so it stays a fixed optical
           // width regardless of aspect ratio or buffer resolution.
-          float amt = uCa * smoothstep(0.35, 1.0, rad);
+          //
+          // The onset sits at 0.45 rather than 0.35 of the corner radius. Lateral
+          // colour grows roughly as the cube of field height, so a lens that
+          // fringes half a pixel in the corner is already immeasurable at the
+          // centre of the frame — and the centre of the frame is where a portrait
+          // framing puts the subject.
+          float amt = uCa * smoothstep(0.45, 1.0, rad);
           vec2 off = (d / max(length(d), 1e-5)) * amt / uResolution;
           vec4 mid = texture2D(tDiffuse, vUv);
           // Two taps per fringing channel, at 0.55 and 1.0 of the offset. That

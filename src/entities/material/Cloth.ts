@@ -85,6 +85,32 @@ const FABRIC_PARS = /* glsl */`
   // join between two digits and the sampled value is not. Taking fwidth of the
   // latter draws a hairline down the middle of every two-digit number.
   #define SDF_RATE 4.5714
+
+  /**
+   * NUMERAL METRICS.
+   *
+   * The atlas bakes each digit centred in its own 128 px cell at about a third
+   * of the cell's width, which leaves a third of a cell of air on either side of
+   * every glyph. Map one cell across half the number box — which is what the
+   * obvious construction does — and two adjacent digits carry TWO of those
+   * sidebearings between them: half an em of white down the middle of every
+   * two-digit number, and each digit far too narrow for the space it is in.
+   *
+   * Kerning here means decoupling the two things that mapping conflated. The
+   * cell gets its OWN width, wider than the slot it sits in so the glyph fills
+   * out to a proper block-numeral proportion; and the pair gets its own centre
+   * separation, narrower than the slot's so the digits close up. The sidebearings
+   * fall outside the box and clamp harmlessly to "far outside the glyph".
+   *
+   * NUM_CELL is the half-width of one atlas cell and NUM_KERN half the digit
+   * centre separation, both in the box's own ±1 coordinate. Their difference is
+   * the tracking: at these values the twill outlines of the two digits come
+   * within about four texels of each other, which is where they sit on a real
+   * heat-set number.
+   */
+  #define NUM_CELL 0.83
+  #define NUM_KERN 0.40
+
   float sdfCoverage(float d, float w, float bias) {
     return smoothstep(0.5 + bias - w, 0.5 + bias + w, d);
   }
@@ -129,11 +155,15 @@ const NUMBER_BLOCK = /* glsl */`
     q = clamp(q, -1.0, 1.0);
     float two = step(1.5, uNumCfg.x);
     float side = step(0.0, q.x);
-    // One digit spans the whole box; two split it down the middle.
-    vec2 luv = vec2(mix(q.x * 0.5 + 0.5, q.x + 1.0 - side, two), q.y * 0.5 + 0.5);
+    // Both digits are set at the SAME cell width, so a single-digit number and
+    // one half of a two-digit number are the same numeral — which is how a kit
+    // is actually printed, and was not true before: a lone 7 came out at twice
+    // the width of the 7 in 47.
+    float centre = (side * 2.0 - 1.0) * NUM_KERN * two;
+    vec2 luv = vec2((q.x - centre) / (2.0 * NUM_CELL) + 0.5, q.y * 0.5 + 0.5);
     vec2 cell = mix(uDigit.xy, mix(uDigit.xy, uDigit.zw, side), two);
     float d = kitSdf(cell, luv);
-    float w = max(max(fwidth(q.x) * mix(0.5, 1.0, two), 0.5 * fwidth(q.y)) * SDF_RATE, 0.0018);
+    float w = max(max(fwidth(q.x) * (0.5 / NUM_CELL), 0.5 * fwidth(q.y)) * SDF_RATE, 0.0018);
     float fill = sdfCoverage(d, w, 0.0);
     float line = sdfCoverage(d, w, -0.155) - fill;
     float e = 0.010;
@@ -361,12 +391,34 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
         float tide = mfbm(uvF * vec2(9.0, 7.0) + uPattern.w * 31.0, 3);
         float wet = clamp((sweatZone * (0.65 + 0.8 * uSweat) - (1.05 - uSweat * 1.35) - (tide - 0.5) * 0.45) * 3.2, 0.0, 1.0);
         wet *= step(0.02, uSweat);
+
+        /* ---------------- pose compression ----------------------------- */
+        /**
+         * How hard the skinning is squeezing THIS fragment, from the one pair of
+         * derivatives that already exist.
+         *
+         * The bind-pose position and the view-space position of the same
+         * fragment differ by exactly the transform the skeleton applied, so the
+         * ratio of their screen-space derivatives is the local scale factor of
+         * that transform: 1 wherever the surface is merely being carried around
+         * rigidly, below 1 wherever two bones are folding the surface between
+         * them. That is the definition of where cloth gathers. No extra
+         * attribute, no CPU readback, no skinned normal to renormalise — two
+         * fwidths and a divide, and the jersey's folds now deepen when the torso
+         * twists and iron out when it does not, which is the whole difference
+         * between a wrinkle map and a garment.
+         */
+        float bindD = length(fwidth(vBind));
+        float viewD = length(fwidth(vViewPosition));
+        float squash = clamp((1.0 - viewD / max(bindD, 1e-5)) * 2.6, 0.0, 1.0);
       `,
       after: /* glsl */`
         vec3 cloth = base;
         // Yarn-to-yarn dye variation. Uniform colour is the plastic tell.
         cloth *= 0.94 + 0.12 * weave.a + (mhash12(floor(wuv * vec2(1.0, 14.0))) - 0.5) * 0.05;
-        cloth *= 1.0 - 0.22 * vCrease;
+        // The fold's own occlusion, baked into aCrease by rig/Cloth.ts, plus
+        // whatever the pose is adding to it right now.
+        cloth *= 1.0 - 0.26 * vCrease * (1.0 + 0.55 * squash);
         // Wet fabric darkens hard — the water fills the air gaps in the knit.
         cloth *= mix(1.0, 0.52, wet);
         // Stitching is a different yarn: denser, slightly off-shade.
@@ -403,10 +455,24 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
           // tenth of its rate: that prints a 13 mm waffle across the whole
           // shirt and reads as quilting, which is precisely what the first
           // pass did. A two-octave fbm gradient is a fold.
-          vec2 dsc = uvF * vec2(6.0, 4.5) + uPattern.w * 17.0;
+          //
+          // ISOTROPIC IS ALSO WRONG, though less obviously. A fbm sampled 6 x 4.5
+          // has no grain, and a surface with no grain is orange peel — which is
+          // what the last pass actually put on the shirt. Cloth is inextensible
+          // along the yarn and buckles across it, so a crease is long in one
+          // direction and short in the other. Sampling 4.5:1 anisotropic, along
+          // the wale, is the entire difference.
+          //
+          // And the amplitude is tied to aCrease, so the micro-wrinkles land in
+          // the folds the geometry already carved rather than spreading evenly
+          // over a panel that is under tension. A taut panel is smooth. That is
+          // most of why real cloth reads as cloth: not that it is wrinkled, but
+          // that it is wrinkled in some places and not in others.
+          vec2 dsc = uvF * vec2(19.0, 4.2) + uPattern.w * 17.0;
           float d0 = mfbm(dsc, 2);
-          kn += vec2(d0 - mfbm(dsc + vec2(0.012, 0.0), 2),
-                     d0 - mfbm(dsc + vec2(0.0, 0.012), 2)) * 5.5;` : ''}
+          kn += vec2(d0 - mfbm(dsc + vec2(0.016, 0.0), 2),
+                     d0 - mfbm(dsc + vec2(0.0, 0.016), 2))
+                * (2.4 + 7.0 * vCrease) * (1.0 + 0.7 * squash);` : ''}
           // Flat-lock seams stand proud, and the number is a pressed transfer
           // with a bevelled edge — that bevel is most of why it reads as applied.
           kn.y += stitchRelief * 0.75;

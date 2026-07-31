@@ -30,6 +30,34 @@ import { QuadPass, texel } from './Common';
  * every shipped title does it, because foreground mush destroys a frame in a way
  * background melt never does.
  */
+/** Background CoC ceiling as a fraction of frame height. See `maxRadius`. */
+const MAX_RADIUS = 0.013;
+/**
+ * Square pixels of gather per sample the pass refuses to go above.
+ *
+ * The tier hands this pass a tap count, but a tap count is meaningless without
+ * the area it is spread over — and that area lives here, in `maxRadius`. At the
+ * 14 px ceiling a 32-tap Vogel disc is one sample per 19 px², which is far too
+ * sparse to resolve what is behind it: over a roof truss of one-pixel diagonal
+ * members, every pixel's disc hits or misses the same struts as its neighbour's
+ * and the gather returns the struts' own orientation as a fixed diagonal
+ * cross-hatch stamped across the bokeh. That is the artefact, and no amount of
+ * dither cures it because it is not dither, it is undersampling.
+ *
+ * 6.5 px² per sample — 95 taps at the 1080p ceiling — is where the weave stops
+ * resolving and the truss becomes what a lens would actually show: a soft
+ * grey. Measured on `closeup` at high: 41.5 ms/frame at 32 taps, 43.0 at 96.
+ * One and a half milliseconds for the single most visible artefact in the
+ * frame is not a close call.
+ *
+ * Only `high` and `ultra` ever construct this pass (`quality.dof` is false
+ * below), so this is not a cost imposed on hardware that asked to be spared;
+ * and the 96 clamp keeps a 1.5× DPR panel from quadratically chasing its own
+ * ceiling.
+ */
+const PX2_PER_SAMPLE = 6.5;
+const MAX_TAPS = 96;
+
 export class DofPass extends QuadPass {
   /** Metres. */
   focus = 12;
@@ -68,7 +96,7 @@ export class DofPass extends QuadPass {
    * was below the floor. 0.013 is 14 px at 1080p, which is what the two macro
    * framings (`closeup`, `disc`) need before their backgrounds actually melt.
    */
-  maxRadius = 0.013;
+  maxRadius = MAX_RADIUS;
   /**
    * Foreground CoC, as a fraction of the background's scale and ceiling.
    *
@@ -84,10 +112,20 @@ export class DofPass extends QuadPass {
 
   private h = 1080;
 
+  /** Frame index for the sample dither, mod the temporal cycle. See `update`. */
+  private phase = 0;
+  private lastFocus = -1;
+  private lastAperture = -1;
+
   constructor(width: number, height: number, taps: number) {
+    // Taps the *ceiling of this pass* needs to be sampled densely enough to
+    // stop reading as a pattern; the tier's number is a floor under it, never a
+    // cap. See PX2_PER_SAMPLE.
+    const area = Math.PI * Math.pow(height * MAX_RADIUS, 2);
+    const dense = Math.min(MAX_TAPS, Math.round(area / PX2_PER_SAMPLE));
     super({
       name: 'DofPass',
-      defines: { TAPS: taps },
+      defines: { TAPS: Math.max(taps, dense) },
       uniforms: {
         tDiffuse: { value: null },
         tDepth: { value: null },
@@ -96,6 +134,7 @@ export class DofPass extends QuadPass {
         uCoCScale: { value: 0 },
         uMaxCoC: { value: 14 },
         uNear: { value: 0.45 },
+        uJitter: { value: 0 },
       },
       fragmentShader: /* glsl */`
         uniform sampler2D tDiffuse;
@@ -105,6 +144,7 @@ export class DofPass extends QuadPass {
         uniform float uCoCScale;
         uniform float uMaxCoC;
         uniform float uNear;
+        uniform float uJitter;
         varying vec2 vUv;
 
         float cocOf(float z) {
@@ -120,23 +160,43 @@ export class DofPass extends QuadPass {
           float cc = cocOf(zc);
           float r  = abs(cc);
 
-          // Below a pixel of blur the gather is a no-op and costs 32 taps.
+          // Below a pixel of blur the gather is a no-op and costs a full disc.
           if (r < 0.85) { gl_FragColor = vec4(centre, 1.0); return; }
 
           // Interleaved gradient noise rather than a hash: it is low-discrepancy
           // over any small neighbourhood, so a sparse gather over high-frequency
           // content (a stand full of one-pixel crowd) breaks up into a fine
           // ordered dither instead of white speckle.
-          float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+          //
+          // Two things are needed to keep "ordered" from becoming "visible".
+          //
+          // IGN is a *fixed screen-space pattern*. Left static it does not
+          // average out over time, it stands still and reads as a diagonal weave
+          // stamped over the bokeh — which is exactly what it was doing across
+          // the whole blurred stand in the hero framing. uJitter walks it by a
+          // golden 5.588238 px per rendered frame, the standard remedy, so in
+          // motion it integrates to grey instead of to a texture.
+          //
+          // And rotating the disc is not enough on its own. Every pixel shared
+          // the same radial ladder sqrt((i+0.5)/TAPS) and differed only in the
+          // angle it was rotated to, so neighbouring pixels gathered the same
+          // set of ring radii off the same neighbourhood — that shared ladder is
+          // the cross-hatch, and no tap count fixes it because adding taps only
+          // adds more shared rungs. rj is a decorrelated per-pixel offset that
+          // jitters each sample *within its own radial stratum*: the disc stays
+          // uniformly covered (the stratification is intact) but no two adjacent
+          // pixels sample the same circle any more.
+          float ign = fract(52.9829189 * fract(dot(gl_FragCoord.xy + uJitter, vec2(0.06711056, 0.00583715))));
           float ang = ign * 6.28318530718;
           float ca = cos(ang), sa = sin(ang);
+          float rj = hash13(vec3(gl_FragCoord.xy, uJitter + 19.0));
 
           vec3  sum = centre;
           float wsum = 1.0;
 
           for (int i = 0; i < TAPS; i++) {
             float fi = float(i) + 0.5;
-            float rr = sqrt(fi / float(TAPS));
+            float rr = sqrt((float(i) + rj) / float(TAPS));
             float th = fi * 2.39996322973;
             vec2  d  = vec2(cos(th), sin(th));
             d = vec2(d.x * ca - d.y * sa, d.x * sa + d.y * ca);
@@ -176,6 +236,25 @@ export class DofPass extends QuadPass {
     this.u.uCoCScale.value = s;
     this.u.uMaxCoC.value = this.h * this.maxRadius;
     this.u.uNear.value = this.nearFraction;
+
+    /* Advance the dither's temporal phase by one *rendered frame*.
+     *
+     * Deliberately not wall-clock: the capture rig steps the simulation by exact
+     * fixed dt and then renders, so counting frames here is the same counter
+     * `ctx.frame` keeps and the rig stays byte-deterministic. It re-seeds on a
+     * hard cut — a shot change moves focus and aperture discontinuously, the
+     * same signal the motion-blur pass resets on — so a staged frame is a pure
+     * function of its own settle count and not of whichever shots the rig
+     * happened to capture before it. Live play moves focus smoothly and never
+     * trips it. 64 frames is a bit over a second: long enough that the walk is
+     * not a visible cycle, short enough to stay in float precision. */
+    const ref = Math.max(this.focus, this.lastFocus);
+    const cut = Math.abs(this.focus - this.lastFocus) > 0.25 * ref
+      || Math.abs(this.aperture - this.lastAperture) > 1e-3;
+    this.phase = cut ? 0 : (this.phase + 1) % 64;
+    this.lastFocus = this.focus;
+    this.lastAperture = this.aperture;
+    this.u.uJitter.value = 5.588238 * this.phase;
 
     // If the largest plausible CoC in the scene is under a pixel, skip the pass:
     // the gather would early-out per fragment anyway and still cost a

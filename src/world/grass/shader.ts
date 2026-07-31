@@ -228,23 +228,59 @@ export const GRASS_VERT_BODY = /* glsl */`
 
   gPos = vec3(wxz.x, gGroundY(wxz, turfMask) + uGroundY, wxz.y) + bladeP;
   gNrm = normalize(face * cos(curlA) + wide * sin(curlA));
+  /* Past the far-LOD ramp a blade is one pixel of something that, at that
+     range, is simply turf — but its normal is still a randomly yawed, curled,
+     near-vertical face. One blade catching the sun edge-on beside one turned
+     away is a three-stop swing inside a square metre of otherwise flat ground,
+     and that, far more than albedo, is what fires a blade as a white or black
+     speck. So the normal converges on the ground normal as the blade stops
+     being an object. The *tangent* deliberately does not: the Kajiya-Kay sheen
+     that carries the mow stripes across the far half of the pitch runs off
+     vGrassWT and is untouched by this. */
+  gNrm = normalize(mix(gNrm, vec3(0.0, 1.0, 0.0), farLod * 0.85));
 
   /* ------------------------------------------------------------- shade */
   float paint = gPaint(wxz);
   vec3 col = mix(uColDry, uColLush, turf.x * mix(0.55, 1.25, tuft));
   col = mix(col, uColSoil, turf.y * 0.55);
-  col *= mix(0.86, 1.20, h2.y);
-  // Blade-to-blade hue drift within a tuft — a clump of identically coloured
-  // blades is the giveaway that this is instanced geometry.
-  col *= vec3(1.0 + (h1.x - 0.5) * 0.16, 1.0 + (h1.y - 0.5) * 0.10, 1.0 - (h1.x - 0.5) * 0.20);
+  /* Blade-to-blade tone and hue drift within a tuft — a clump of identically
+     coloured blades is the giveaway that this is instanced geometry. It is a
+     near-field cue only: the same ±17% spread that stops a tuft looking cloned
+     at two metres is, at forty, a field of isolated pixels each a sixth off the
+     ground they stand on, i.e. pepper. Both fade out with the rest of the
+     blade's identity. */
+  float jit = 1.0 - farLod;
+  col *= mix(1.0, mix(0.86, 1.20, h2.y), jit);
+  col *= mix(vec3(1.0),
+             vec3(1.0 + (h1.x - 0.5) * 0.16, 1.0 + (h1.y - 0.5) * 0.10, 1.0 - (h1.x - 0.5) * 0.20),
+             jit);
   col *= 1.0 + sSign * uStripeTint;
   /* Root shadowing is the strongest single cue that a blade is a solid object
      standing in a sward — and the fastest way to turn a distant blade into a
      dirt speck, because once it is six pixels tall the dark root is most of
      what you see. So it relaxes with distance: near blades are grounded, far
-     blades converge on the turf they are supposed to be dissolving into. */
-  col = mix(col * mix(0.44, 0.88, farLod), col * 1.14, smoothstep(0.0, 0.55, t));
+     blades converge on the turf they are supposed to be dissolving into — and
+     they converge on it *exactly*. 0.88 still left a far blade 12% darker than
+     its own ground, and a sub-pixel blade 12% down with thirty centimetres of
+     clean turf around it does not read as a blade, it reads as a dead pixel.
+     The tip lift goes the same way, for the same reason in the other
+     direction. */
+  float rootMul = mix(0.44, 1.0, farLod);
+  float tipMul  = mix(1.14, 1.0, farLod);
+  col = mix(col * rootMul, col * tipMul, smoothstep(0.0, 0.55, t));
   col = mix(col, mix(uColDry, uColLush, 0.62) * 1.12, farLod * 0.55);
+  /* Far-field luminance match, and the reason the previous two fades are safe.
+     Everything above was tuned against a blade that also carried a 0.13 root
+     occlusion and a randomly-yawed normal; with both of those gone a far blade
+     is finally shaded like the ground, and it is then plainly *brighter* than
+     the ground — this palette's far target sits about 40% above the turf
+     texture's own lush tone (world/field/TurfTextures.ts: 64,106,48 against a
+     0.62 dry/lush mix at 88,141,47). Measured on `broadcast`, a fully covered
+     far blade came out at luma 150 against turf at 89. One calibrated scalar,
+     applied only where the blade has stopped being an object, closes that: a
+     far blade is now invisible against its own ground in either direction,
+     which is the whole point. */
+  col *= mix(1.0, 0.62, farLod);
   col = mix(col, uColPaint, paint * smoothstep(0.12, 0.62, t) * 0.88);
 
   vGrassCol   = col;
@@ -253,8 +289,21 @@ export const GRASS_VERT_BODY = /* glsl */`
   vGrassWT    = tang;
   vGrassAux.x = t;
   vGrassAux.y = clamp(mix(0.28, 0.60, t) + turf.z * 0.22 + paint * 0.3, 0.05, 1.0);
-  vGrassAux.z = mix(0.18, 1.0, smoothstep(0.0, 0.42, t)) * mix(1.0, 0.72, tuft);
-  vGrassAux.w = mix(0.25, 1.0, t) * (1.0 - paint * 0.7);
+  /* Root occlusion is the darkest thing anywhere on a blade — 0.18 of albedo at
+     the base, 0.13 inside a dense tuft — and it multiplies straight into
+     diffuseColor. On a blade four pixels tall it is not a shadow at the root, it
+     *is* the blade, which is the real reason a 40 m blade rendered as a black
+     speck rather than as a 12%-darker one. It fades out with everything else
+     that distinguishes a blade from the ground it stands in. */
+  float rootAo = mix(0.18, 1.0, smoothstep(0.0, 0.42, t)) * mix(1.0, 0.72, tuft);
+  vGrassAux.z = mix(rootAo, 1.0, farLod);
+  /* Sheen mask. The Kajiya-Kay lobe is pow(..., 22) — tight enough that whether
+     a given blade fires at all is decided by its own randomised yaw, so at the
+     far LOD it is the last per-blade quantity left that can turn one blade into
+     a white pixel on flat ground. Damped rather than removed: the mow-stripe
+     anisotropy it carries is real, and what remains at 45% still reads across
+     the far half of the pitch on top of the albedo stripe tint. */
+  vGrassAux.w = mix(0.25, 1.0, t) * (1.0 - paint * 0.7) * mix(1.0, 0.45, farLod);
 `;
 
 export const GRASS_FRAG_DECL = /* glsl */`

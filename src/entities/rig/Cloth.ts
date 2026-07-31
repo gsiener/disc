@@ -70,6 +70,98 @@ function win(t: number, c: number, half: number): number {
   return dd >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * dd);
 }
 
+/**
+ * ============================================================================
+ *  FOLD STRUCTURE
+ * ============================================================================
+ *
+ * A jersey with a weave and a gradient on it is a balloon. What makes cloth read
+ * as cloth under a hero crop is not the thread — it is that the surface has a
+ * DIRECTION of failure. Cloth is inextensible along the yarn and free to buckle
+ * across it, so it gathers wherever the body underneath is shorter than the
+ * panel cut for it, and on a running athlete those places are never arbitrary.
+ * They are the same three, every time:
+ *
+ *   the armpit      the sleeve drags the front panel toward the shoulder, so a
+ *                   family of diagonal folds leaves each armpit and runs down
+ *                   and forward across the ribs.
+ *   the waist       an untucked shirt is cut straight and the body tapers under
+ *                   it, so the surplus hangs in vertical flutes that deepen
+ *                   toward the hem and iron out where the chest pulls taut.
+ *   the small of    the lumbar hollow is the deepest concavity on the trunk and
+ *   the back        cloth cannot follow it. It bridges, and the surplus gathers
+ *                   into two or three near-horizontal folds above the hip.
+ *
+ * All three are expressed as a modulation of the garment's OWN STANDOFF, never
+ * of its radius. That is the only formulation that cannot fail: a fold is cloth
+ * moving toward or away from the body, so it is bounded by the standoff on one
+ * side and by nothing on the other, and the shell can never be driven through
+ * the athlete however the amplitudes are tuned. It also scales itself for free —
+ * the hem hangs 34 mm off the body and flutes deeply, the shoulder hangs 9 mm
+ * off it and barely creases, which is exactly what cloth does.
+ *
+ * Every family's wavelength is chosen against the LOOP COUNT, not against the
+ * garment. A fold narrower than four segments is not a fold, it is aliasing with
+ * a sinusoid's name, and the jersey therefore lofts at 1.75x the torso's segment
+ * count (see `buildJersey`) so that a 12 cm drape fold has eight vertices across
+ * it instead of three.
+ */
+interface Fold {
+  /** Standoff multiplier offset: −1 presses the cloth flat, +1 doubles the gap. */
+  rel: number;
+  /** Occlusion riding in the trough, added to the ring's baked crease. */
+  shade: number;
+}
+
+function jerseyFold(u: number, t: number): Fold {
+  let rel = 0;
+  let shade = 0;
+
+  /* 1. ARMPIT DRAG. One family per armpit, at the same two azimuths
+   *    `buildTorso` puts its armpit hollow on. The phase advances in BOTH t and
+   *    u, which is what makes the folds diagonal — a fold that runs straight
+   *    around the ribs is a corrugation, and it reads as one instantly. */
+  const pit = smooth(0.50, 0.79, u) * smooth(1.035, 0.885, u);
+  if (pit > 0.004) {
+    for (let k = 0; k < 2; k++) {
+      const d = dt(t, k === 0 ? 0.05 : 0.45);
+      // The drag dies out a sixth of a turn from the pit: past that the panel is
+      // held flat by the pectoral in front and the scapula behind.
+      const reach = Math.exp(-Math.pow(d / 0.150, 2));
+      const c = Math.cos(Math.PI * 2 * (d / 0.170 - (u - 0.86) / 0.34));
+      rel += 0.40 * pit * reach * c;
+      shade += 0.34 * pit * reach * Math.max(0, -c);
+    }
+  }
+
+  /* 2. WAIST BLOUSE. Strictly NON-NEGATIVE, and that is a load-bearing choice
+   *    rather than an aesthetic one: this band is the band the shorts' waistband
+   *    runs up inside, and a trough here is the one way the two shells can be
+   *    made to intersect. A blouse only ever moves cloth away from the body. */
+  const blouse = smooth(0.46, 0.10, u);
+  if (blouse > 0.004) {
+    const c = 0.5 - 0.5 * Math.cos(Math.PI * 2 * (t * 6 + 0.28 + u * 0.55));
+    // Suppressed across the number panel. A heat-set transfer genuinely does
+    // stiffen the fabric it sits on, and it is also the one graphic the hero
+    // framing exists to read.
+    const clear = 1 - 0.70 * lobe(t, 0.25, 0.115);
+    rel += 0.44 * blouse * clear * c;
+    shade += 0.30 * blouse * clear * (1 - c);
+  }
+
+  /* 3. SMALL OF THE BACK. Near-horizontal, so this is the one family that needs
+   *    loops in u rather than segments in t — see the ring list in
+   *    `buildJersey`, which is twice as dense through this band as it was. */
+  const lum = smooth(0.09, 0.26, u) * smooth(0.62, 0.40, u) * lobe(t, 0.75, 0.185);
+  if (lum > 0.004) {
+    const c = Math.cos(Math.PI * 2 * (u - 0.235) / 0.235);
+    rel += 0.46 * lum * c;
+    shade += 0.40 * lum * Math.max(0, -c);
+  }
+
+  return { rel, shade };
+}
+
 const _ayTmp = new THREE.Vector3();
 /** World point on a ring at angle t, honouring `Ring.off`. */
 function ringPoint(R: Ring, t: number): Vec3 {
@@ -84,9 +176,23 @@ function ringPoint(R: Ring, t: number): Vec3 {
 
 /* ----------------------------------------------------------------- jersey */
 
+/**
+ * Torso-u at which the jersey stops. The SHORTS read this: everything above the
+ * line is under the shirt, and is drawn in to sit inside it — see `buildShorts`.
+ * Keeping the number in one place is the only reason the two garments cannot
+ * drift apart, which is what they had done.
+ */
+const JERSEY_HEM_U = -0.045;
+
 export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
   const H = a.H;
-  const seg = d.torsoSegs;
+  // A FOLD IS A SAMPLING PROBLEM BEFORE IT IS A MODELLING ONE. The torso's own
+  // 27 segments give a 12 cm drape fold three vertices across, which reconstructs
+  // as a triangular corrugation — so the jersey lofts finer than the body it
+  // covers. It is the cheapest geometry in the athlete: the whole increase is
+  // about 1,700 triangles on a hero-tier player.
+  const seg = d.level === 0 ? Math.round(d.torsoSegs * 1.75)
+    : d.level === 1 ? Math.round(d.torsoSegs * 1.35) : d.torsoSegs;
   // The hem must sit clearly OUTSIDE the shorts' waistband (0.0165) or the two
   // shells z-fight into a sawtooth right across the athlete's waist. Ultimate
   // jerseys are worn untucked, so flaring the hem is also the correct look.
@@ -100,13 +206,20 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
     // carries its own normal and detail relief, on the one band of the torso
     // where the section is a cornered slab. A jersey hangs off the chest; it
     // does not shrink-wrap the clavicles.
-    [0.76, 0.0130], [0.90, 0.0128], [1.0, 0.0122], [TORSO_TOP_U, 0.0092],
+    // Across the acromion the shell also has to LAP THE SLEEVE. The sleeve is a
+    // parallel offset of the deltoid and the body is a parallel offset of the
+    // shoulder girdle; where the two arrive at the same place with 13 mm each
+    // they meet tangentially and leave a knife-edge V between them that is in
+    // full shadow from every direction — the dark notch sitting on the point of
+    // the shoulder in every closeup. Two shells that INTERSECT have no notch;
+    // two that kiss always do. These millimetres buy the intersection.
+    [0.76, 0.0138], [0.90, 0.0152], [1.0, 0.0146], [TORSO_TOP_U, 0.0092],
   ]);
   // The hem sits at 0.523 H — mid-hip, and clear of the shorts' front rise. At
   // 0.508 H it hung an inch above the crotch and its turned-back underside drew
   // a dark slot straight across the athlete at exactly the height the shorts
   // needed to read.
-  const hemU = -0.045;
+  const hemU = JERSEY_HEM_U;
   /**
    * THE NECKLINE IS A SCOOP, NOT A RING.
    *
@@ -133,15 +246,21 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
     if (s < 1e-5) return undefined;
     return (t: number) => s * neckWin(t);
   };
+  // Loops through the lumbar and armpit bands are twice as dense as they were.
+  // The two fold families that run round the body rather than down it are
+  // resolved by these, not by `seg`, and at the old 0.10 spacing a 24 cm lumbar
+  // gather had two loops in it — which is a facet, not a fold.
   const us = d.level === 0
-    ? [hemU, 0.01, 0.09, 0.18, 0.28, 0.38, 0.49, 0.60, 0.70, 0.79, 0.858, 0.912, 0.952, 0.980, 1.004, 1.016, 1.030, 1.042, TORSO_TOP_U]
+    ? [hemU, -0.015, 0.02, 0.055, 0.09, 0.135, 0.18, 0.23, 0.28, 0.33, 0.38,
+      0.435, 0.49, 0.545, 0.60, 0.65, 0.70, 0.745, 0.79, 0.825, 0.858, 0.885,
+      0.912, 0.952, 0.980, 1.004, 1.016, 1.030, 1.042, TORSO_TOP_U]
     : d.level === 1
-      ? [hemU, 0.04, 0.22, 0.42, 0.62, 0.78, 0.90, 0.965, 1.012, TORSO_TOP_U]
+      ? [hemU, 0.02, 0.10, 0.19, 0.29, 0.40, 0.52, 0.64, 0.76, 0.86, 0.930, 0.986, 1.012, TORSO_TOP_U]
       : [hemU, 0.12, 0.42, 0.72, 0.95, TORSO_TOP_U];
 
   const shellRing = (u: number, extra = 0): Ring => {
     const base = torsoProfile(a, u);
-    const k = (off(u) + extra) * (H / 1.8);
+    const nominal = off(u);
     // Cloth does not follow anatomy exactly — it bridges the pec valley and the
     // spinal furrow. Blending the profile toward its own local mean is a cheap,
     // convincing drape.
@@ -159,6 +278,29 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       // shoulder facet, in one line of code.
       const yoke = smooth(0.62, 0.95, u) * smooth(1.09, 0.99, u);
       if (yoke > 0) mx *= 1 + yoke * 0.045 * Math.pow(Math.abs(Math.cos(t * Math.PI * 2)), 0.8);
+      /**
+       * THE SHOULDER SEAM LAP — measured, not guessed.
+       *
+       * On the reference 1.80 m athlete the trapezius collapses from 196 mm
+       * half-width at the acromion (y 1.472) to 84 mm at the neck root (y 1.502):
+       * 11 cm of lateral travel across 3 cm of rise. The sleeve's cap crown sits
+       * in the middle of that collapse — 185 mm out at y 1.490 — where the shell
+       * underneath it has already fallen back to 154 mm. Three centimetres apart,
+       * facing each other, at forty degrees: that is a wedge nothing can light,
+       * and it is the black notch sitting on the point of every shoulder in every
+       * closeup ever captured of this rig.
+       *
+       * A real shirt does not fall away from its own sleeve there, because the
+       * two are sewn together. Carrying the panel back out over the cap for the
+       * three loops that straddle it makes the surfaces INTERSECT, and an
+       * intersection has no wedge in it. It is narrow in azimuth (the sleeve
+       * subtends about ±35° of the loop) and it is gone by the neck root, so it
+       * cannot become the shoulder shelf this file has twice been rid of.
+       */
+      const seamLap = smooth(1.002, 1.016, u) * smooth(1.040, 1.020, u);
+      if (seamLap > 0) {
+        mx *= 1 + seamLap * 0.26 * Math.pow(Math.abs(Math.cos(t * Math.PI * 2)), 2.2);
+      }
       /**
        * CLOTH BRIDGES A HOLLOW; IT NEVER SINKS INTO THE BODY.
        *
@@ -181,6 +323,11 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       const rm = Math.hypot(mx, my);
       if (rm > 1e-6 && rm < r0) { const s = r0 / rm; mx *= s; my *= s; }
       const len = Math.hypot(mx, my) || 1e-6;
+      // The fold rides the STANDOFF, so no amplitude can put cloth inside skin.
+      // The floor is 3 mm, which is thinner than the garment and exists only so
+      // a pathological tuning cannot close the gap entirely.
+      const k = Math.max(nominal * (1 + jerseyFold(u, t).rel) + extra, 0.0030)
+        * (H / 1.8);
       return [mx + (mx / len) * k, my + (my / len) * k];
     };
     return {
@@ -193,8 +340,14 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       // under the cloth does not have.
       skinAt: (t: number) => torsoSkin(a, u, t),
       v: clamp01((u - hemU) / (TORSO_TOP_U + 0.02 - hemU)),
-      crease: (t: number) => 0.30 * smooth(0.06, -0.075, u)
-        + 0.25 * lobe(t, 0.25, 0.10) * smooth(0.55, 0.30, u),
+      // The fold's own occlusion goes in here rather than being left to the
+      // shading model. A trough between two folds is a slot a few millimetres
+      // wide, and no lighting rig resolves the bounce inside one — but the
+      // trough is exactly where the eye looks to decide whether it is looking at
+      // cloth. Baking it is the difference between a fold and a ripple.
+      crease: (t: number) => clamp01(0.30 * smooth(0.06, -0.075, u)
+        + 0.25 * lobe(t, 0.25, 0.10) * smooth(0.55, 0.30, u)
+        + 0.62 * jerseyFold(u, t).shade),
     };
   };
 
@@ -249,6 +402,27 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
     const suf = SIDE_SUFFIX[si];
     const UA = bi(`upperArm${suf}` as BoneName);
     const UT = bi(`upperArmTwist${suf}` as BoneName);
+    /**
+     * The two places a short sleeve actually gathers, as a multiple of the cloth
+     * thickness. Bounded well inside the standoff below, so the sleeve can no
+     * more reach the arm than the shell can reach the ribs.
+     */
+    const pitT = si === 0 ? 0.10 : 0.40;
+    const sleeveFold = (q: number, t: number): { rel: number; shade: number } => {
+      // Cuff. The hem band is a denser knit than the panel feeding it, so the
+      // surplus stacks into shallow flutes over the last four centimetres —
+      // which is the one place a sleeve is ALWAYS creased and the one place this
+      // sleeve was perfectly smooth.
+      const cuff = smooth(sleeveEnd - 0.28, sleeveEnd - 0.03, q);
+      const c = 0.5 - 0.5 * Math.cos(Math.PI * 2 * (t * 5 + 0.18));
+      let rel = 0.30 * cuff * c;
+      let shade = 0.26 * cuff * (1 - c);
+      // Underarm. The arm carried at the side pushes the panel into the pit.
+      const pit = smooth(-0.05, 0.14, q) * smooth(0.58, 0.26, q) * lobe(t, pitT, 0.13);
+      rel -= 0.48 * pit;
+      shade += 0.45 * pit;
+      return { rel, shade };
+    };
     const qs = d.level === 0
       ? [-0.335, -0.305, -0.265, -0.215, -0.155, -0.088, -0.015, 0.10, 0.24, 0.38, sleeveEnd]
       : d.level === 1
@@ -258,20 +432,36 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
     const push = (q: number, extra: number): Ring => {
       // Cloth hangs a little away from the arm below the deltoid and is pulled
       // tight over it, which is also what stops the sleeve reading as paint.
-      const drape = extra + CLOTH * (0.85 + 0.85 * smooth(0.05, 0.50, q));
+      // 7 mm across the deltoid, 12 mm by the cuff.
+      //
+      // The extra above the joint is the sleeve's half of the shoulder lap. The
+      // jersey shell comes out to meet it (see `off` above) and this comes up to
+      // meet the shell; between them the two surfaces cross instead of grazing,
+      // and the black V that used to sit on the point of the shoulder has no
+      // volume left to live in.
+      const lap = CLOTH * 0.62 * smooth(0.04, -0.26, q);
+      const drape = extra + lap + CLOTH * (0.97 + 0.73 * smooth(0.05, 0.50, q));
       const R = ring(si, q, drape);
       // Cloth bridges muscle detail rather than following it into the valleys.
       const soft = R.lobes.map((L) => ({ ...L, amp: L.amp * 0.45 }));
+      const shape = ellipse(R.ra, R.rb, soft);
+      const wrinkled: Profile = (t: number) => {
+        const [x, y] = shape(t);
+        const len = Math.hypot(x, y) || 1e-6;
+        const f = CLOTH * sleeveFold(q, t).rel;
+        return [x + (x / len) * f, y + (y / len) * f];
+      };
       return {
         o: R.o, ax: R.ax, az: R.az,
-        r: ellipse(R.ra, R.rb, soft),
+        r: wrinkled,
         // The arm's OWN binding, evaluated at the same q. The sleeve is a
         // parallel offset of `armSurface` and must be a parallel offset of its
         // skinning too, or the deltoid swings out through it.
         skin: armSkin(a, si, q, 0),
         skinAt: (t: number) => armSkin(a, si, q, t),
         v: clamp01((q + CAP_Q) / (sleeveEnd + CAP_Q)),
-        crease: 0.12 + 0.28 * smooth(0.28, 0.52, q),
+        crease: (t: number) => clamp01(0.12 + 0.28 * smooth(0.28, 0.52, q)
+          + 0.55 * sleeveFold(q, t).shade),
       };
     };
     for (const q of qs) sr.push(push(q, 0));
@@ -280,7 +470,10 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       sr.push(push(sleeveEnd - 0.010, -0.0030));
       sr.push(push(sleeveEnd - 0.050, -0.0052));
     }
-    m.group(GROUP.jersey).loft(sr, Math.max(10, d.limbSegs), {
+    // Same reason as the shell: five flutes round a sleeve need twenty-odd
+    // columns before they stop being a pentagon.
+    m.group(GROUP.jersey).loft(sr, Math.max(10, d.level === 0
+      ? Math.round(d.limbSegs * 1.5) : d.limbSegs), {
       part: PART.JERSEY, side: s, capStart: true,
     });
   }
@@ -383,10 +576,27 @@ export function buildShorts(m: RigMesh, a: Anthro, d: DetailSpec): void {
   };
   const yoke = (u: number, extra = 0): Ring => {
     const base = torsoProfile(a, u);
-    const k = K + extra * S4;
+    /**
+     * THE TUCK.
+     *
+     * The waistband is 18 cm of garment that nobody ever sees: the jersey hem
+     * ends at `JERSEY_HEM_U`, well below it, so everything above that line is
+     * under the shirt and the only thing it can do up there is fight it. And it
+     * did — laterally the two shells were 3 mm apart over the trochanter, which
+     * a pose or a fold closes instantly, and the shorts came through the shirt
+     * as a hard navy wedge across the hip in every frame that includes a waist.
+     *
+     * Drawing the hidden band in to 40 % of its thickness puts 7 mm of air back
+     * between them and costs nothing, because the band it thins is the band that
+     * is not in the picture. The ramp completes BELOW the hem so the waistband is
+     * already at full section by the time it emerges.
+     */
+    const tuck = lerp(1, 0.40, smooth(JERSEY_HEM_U - 0.030, JERSEY_HEM_U + 0.090, u));
+    const k = (K + extra * S4) * tuck;
     // Shorts drape over the trochanters and the tops of the thighs, so the lower
-    // loops widen laterally to the leg envelope and no further.
-    const fx = lerp(1, fxLow, smooth(0.16, uSplit, u));
+    // loops widen laterally to the leg envelope and no further — and the widening
+    // now starts below the hem too, for the same reason.
+    const fx = lerp(1, fxLow, smooth(JERSEY_HEM_U + 0.125, uSplit, u));
     return {
       o: torsoCentre(a, u),
       ax: V(1, 0, 0), az: V(0, 0, 1),

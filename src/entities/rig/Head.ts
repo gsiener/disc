@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { PART, GROUP } from './Types.ts';
 import type { FaceParams } from './Types.ts';
-import { SIDES, bi } from './Skeleton.ts';
+import { SIDES, bi, EYE_BONE } from './Skeleton.ts';
 import type { Anthro } from './Skeleton.ts';
 import {
   RigMesh, V, sk1, sk2, skMix, smooth, lerp, clamp01,
@@ -674,6 +674,13 @@ function buildEars(m: RigMesh, a: Anthro, hf: HeadFrame): void {
  * pole facing forward, so **uv.y = 1 is the corneal apex**. Iris ≈ uv.y > 0.86,
  * pupil ≈ uv.y > 0.955, sclera below that. uv.x is the roll around the axis and
  * carries no meaning.
+ *
+ * EACH GLOBE IS SKINNED TO ITS OWN JOINT, not to the head. Bound to the head
+ * the optical axis is welded to head-forward — the two eyes are permanently
+ * parallel, permanently aimed wherever the skull is aimed, and the only framing
+ * that can see an iris is one the head happens to be pointed at. The joints are
+ * at `EYE_BONE`, they sit exactly on these globe centres (see
+ * `Skeleton.ts buildSkeleton`), and `Animator.poseEyes` converges them.
  */
 function buildEyes(m: RigMesh, a: Anthro, hf: HeadFrame, d: DetailSpec): void {
   const er = hf.eye.r;
@@ -689,7 +696,7 @@ function buildEyes(m: RigMesh, a: Anthro, hf: HeadFrame, d: DetailSpec): void {
       // The (x,y,z) → (x,z,y) axis swap that points the pole forward is a
       // REFLECTION, so the winding has to be flipped with it or every eyeball
       // renders inside-out and is culled away.
-    }, () => sk1(bi('head')), { part: PART.EYE, side: SIDES[si], flip: true });
+    }, () => sk1(EYE_BONE[si]), { part: PART.EYE, side: SIDES[si], flip: true });
   }
 }
 
@@ -776,6 +783,29 @@ function buildHair(m: RigMesh, a: Anthro, hf: HeadFrame, d: DetailSpec): void {
     vol *= 1 + polar * (0.20 * Math.cos(thz * 3 + 0.7 + ph) * (0.4 + 0.6 * v)
       + 0.12 * Math.cos(thz * 5 - 1.4 + ph * 0.7)
       + 0.09 * Math.cos(v * 7.3 + thz * 2 + ph));
+    // …and a much finer, per-athlete radial jitter on top of them.
+    //
+    // Three harmonics at 3, 5 and 2 lobes describe a HEAD SHAPE, not a haircut:
+    // the shell keeps a smooth, twice-differentiable outline, and a lat-long
+    // grid over a smooth surface of revolution renders its own columns as a set
+    // of evenly spaced vertical ribs — which is the corduroy the last review
+    // read on every crown in the roster. These sit at 11–29 lobes, which is
+    // about a lock apiece and close to the rate the strand map in
+    // material/Hair.ts runs at, so the ribbing is broken at the scale the
+    // shading is already varying at rather than at the scale of the skull.
+    // Amplitudes are quoted against the SHELL THICKNESS, which is 8 mm on a
+    // crop — so a 5 % jitter is 0.4 mm and cannot be seen at any framing. These
+    // sum to ±0.34, i.e. ±2.7 mm of lump on a 234 mm head: about four pixels on
+    // the hero crop, which is the smallest thing that reads as a lock.
+    let jit = 0;
+    for (let k = 0; k < 3; k++) {
+      const f = 11 + k * 9;
+      jit += Math.cos(thz * f + h01(seed, 411 + k * 17) * 6.283) * (0.16 - k * 0.045);
+    }
+    // Locks lie tighter at the crown and fan out toward the ends, so the jitter
+    // grows down the shell — and it has to die at the pole for the same reason
+    // the harmonics above do (one vertex, many azimuths).
+    vol *= 1 + polar * jit * (0.35 + 0.65 * v);
     const n = p.clone().sub(hf.centre).normalize();
     out.copy(p).addScaledVector(n, t * vol);
   }, (p) => headSkin(a, p), { part: PART.HAIR, side: 0 });

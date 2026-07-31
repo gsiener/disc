@@ -35,8 +35,41 @@ export const SHOTS = {
     pos: [-26, 1.35, 12], target: [2, 1.5, 2], fov: 20, hour: 17.8, tableau: 'mark', focus: 27, aperture: 2.4,
   },
   closeup: {
+    // A HERO PORTRAIT, SOLVED RATHER THAN GUESSED.
+    //
+    // The old framing sat 3.66 m out on a 42° lens, which is a 2.81 m vertical
+    // field: a 235 mm head came out 117 px tall in a 1080 frame with the whole
+    // three-quarter figure in shot and the bottom third bare turf. Nothing this
+    // shot exists to judge — weave, stitching, hair fibre, iris — resolves at
+    // 117 px, so the framing was quietly excusing every character defect it was
+    // supposed to expose.
+    //
+    // The numbers below are derived from the rig's own measurements rather than
+    // dialled in. `Skeleton.ts` builds a 0.235 m head; the posed athlete's crown
+    // lands at y ≈ 1.57 and his eye line at y ≈ 1.44. Wanting the head at 40 %
+    // of frame height fixes the vertical field at 0.235 / 0.40 = 0.59 m, and
+    // 0.59 = 2·D·tan(fov/2) then fixes the distance once a focal length is
+    // chosen. 26° is the shortest lens that still reads as a portrait — 45°
+    // horizontal, about a 43 mm equivalent — and it puts the lens 1.38 m out.
+    //
+    // The camera sits AT the subject's eye height and tilts down 5.4°, which is
+    // the classic answer: the face is seen level (no nostril, no crown), while
+    // the axis dropping below the eye line puts the eyes on the upper third and
+    // spends the lower two-thirds on shoulder and chest. Frame top lands 6 cm
+    // over the crown, frame bottom at y ≈ 0.99 — the bottom of the ribcage.
+    // `Game.tableauPortrait` stands the athlete at `focus` down the view axis,
+    // so `focus` and the framing are the same number by construction.
+    //
+    // Aperture is NOT the old 3.4. `Dof.ts` scales the circle of confusion by
+    // 1/tan²(fov/2), so shortening the lens and closing to 1.38 m multiplies the
+    // CoC by 4.6 at the same aperture: 3.4 would put 11 px of blur 13 cm behind
+    // the focal plane and mush the far ear, the far shoulder and the hair mass —
+    // i.e. blur out most of what the shot is for. 0.6 holds ±5 cm inside the
+    // pass's own sub-pixel early-out (the whole face is genuinely resolved) and
+    // still runs the background to the 14 px blur ceiling, because at 1.38 m
+    // focus everything past 15 m is at the cap regardless.
     about: 'Character hero shot — chest-up on a receiver, judging skin, cloth, jersey weave, stitching, hair and eyes.',
-    pos: [2.1, 1.72, 3.0], target: [0, 1.62, 0], fov: 42, hour: 17.2, tableau: 'portrait', focus: 3.1, aperture: 3.4,
+    pos: [0.79, 1.44, 1.13], target: [0, 1.31, 0], fov: 26, hour: 17.2, tableau: 'portrait', focus: 1.38, aperture: 0.6,
   },
   layout: {
     about: 'Peak-action layout — receiver fully extended horizontal, disc at fingertips, turf spray, defender trailing.',
@@ -67,8 +100,33 @@ export const SHOTS = {
     pos: [4, 2.2, -46], target: [-1, 1.7, -54], fov: 36, hour: 18.9, tableau: 'score', focus: 9, aperture: 2.2,
   },
   night: {
+    // "BLOOM ON RIGS" NEEDS A RIG IN FRAME.
+    //
+    // The old camera — [-30, 11, 24] on a 34° lens aimed at the centre circle —
+    // put the entire top edge of the frame inside the far stand: no mast, no
+    // roofline, no sky at all. Half of what this shot claims to show was
+    // unachievable from that camera whatever the renderer did.
+    //
+    // The masts (`stadium/Layout.ts`) stand at (±44.5, ±74.6) with their fixture
+    // clusters at y 36.7. From anywhere on this touchline only the far-corner
+    // mast, tower 3 at (44.5, −74.6), is both in front of the lens and near the
+    // sightline — and it sits 25° above the pitch centre and ~10° to screen left
+    // of it. Fitting a 30° subject-to-mast separation needs the frame opened to
+    // 42° and the axis lifted until it clears the far roof.
+    //
+    // The camera cannot simply retreat to gain the angle: `Game.tableauFlow`
+    // composes the whole play at 37–46 m *down the view axis*, so a camera much
+    // further out than ~40 m from the centre spot pushes the arrangement off the
+    // sideline and into `at()`'s clamp. Distance is therefore held and the
+    // framing bought with fov and pitch instead: mast head in the top-left, the
+    // roof rim and the sky's glow dome across the top third, the four-shadow
+    // group in the lower right where the tableau already puts it.
+    //
+    // Aperture rises 1.6 → 2.4 only to keep the pass alive: `Dof.ts` skips
+    // itself when the worst CoC in frame is under a pixel, and the CoC scale
+    // carries 1/tan²(fov/2), so widening 34° → 42° costs 1.6 stops of blur.
     about: 'Night game under stadium lights — four-tower specular on skin and turf, long multi-shadows, bloom on rigs.',
-    pos: [-30, 11, 24], target: [0, 1.6, 0], fov: 34, hour: 21.5, tableau: 'flow', focus: 39, aperture: 1.6,
+    pos: [-35, 12, 27], target: [0.6, 9.9, 8.9], fov: 42, hour: 21.5, tableau: 'flow', focus: 40, aperture: 2.4,
   },
 } as const satisfies Record<string, Shot>;
 

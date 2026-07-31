@@ -41,6 +41,28 @@ export interface RingSpec {
 const SHARE = [0.55, 0.30, 0.15];
 const SEGMENTS = [4, 3, 1];
 
+/**
+ * Minimum blades per square metre the outer ring is allowed to thin to before
+ * it has to stop, rather than carry on to the tier's nominal draw distance.
+ *
+ * The outer ring takes 15% of the budget over ~90% of the covered area, so at
+ * `high` it was spreading 90 k blades from 15 m to 70 m: 2.4 blades/m², one
+ * blade every 65 cm. That is not sparse turf, it is isolated objects on a
+ * painted floor — and an isolated object rendered at 1.3 px wide is a speck of
+ * pepper, which is precisely how it read across the midfield. There is no tap
+ * count or colour match that rescues coverage that thin; the honest move is to
+ * stop while the ring is still dense enough to be a surface and let the turf
+ * texture, which is already carrying the mow stripes and the wear at that
+ * range, carry the rest.
+ *
+ * 26/m² is one blade per 20 cm. At `high` that lands the ring at ~36 m, where a
+ * blade is still ~1.7 px wide against a 10 px spacing, so the handover happens
+ * while the blades are objects rather than after they have become noise.
+ */
+const OUTER_DENSITY = 26;
+/** The outer ring never collapses to less than this much annulus. */
+const OUTER_MIN_SPAN = 6;
+
 export function planRings(budget: number, distance: number): RingSpec[] {
   const d = Math.max(12, distance);
   const r0 = Math.min(Math.max(d * 0.10, 2.2), 4.5);
@@ -53,7 +75,13 @@ export function planRings(budget: number, distance: number): RingSpec[] {
     const [ra, rb] = bounds[i];
     const band = (rb - ra) * 0.16;
     const inner = i === 0 ? 0 : ra - band * 0.9;
-    const outer = rb;
+    let outer = rb;
+    if (i === 2) {
+      // Radius at which this ring's share of the budget hits the density floor.
+      const maxArea = (budget * SHARE[i]) / OUTER_DENSITY;
+      const dense = Math.sqrt(maxArea / Math.PI + inner * inner);
+      outer = Math.min(rb, Math.max(dense, inner + OUTER_MIN_SPAN));
+    }
     const area = Math.PI * (outer * outer - inner * inner);
     const count = Math.max(256, Math.round(budget * SHARE[i]));
     const cell = Math.sqrt(area / count);
@@ -62,7 +90,11 @@ export function planRings(budget: number, distance: number): RingSpec[] {
       inner,
       outer,
       fadeIn: i === 0 ? 0 : band,
-      fadeOut: i === 2 ? Math.max(4, (outer - inner) * 0.22) : band,
+      // The outer ring is the only one with nothing behind it, so it dies over a
+      // third of its own span rather than a fifth: the last blades are the
+      // sparsest and the most likely to read as litter, and a wide ramp shrinks
+      // them to zero height before they get isolated enough to be noticed going.
+      fadeOut: i === 2 ? Math.max(4, (outer - inner) * 0.32) : band,
       cell,
       count,
       segments: SEGMENTS[i],

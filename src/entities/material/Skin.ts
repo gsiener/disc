@@ -160,6 +160,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float pHead = isPart(P_HEAD);
         float pEar = isPart(P_EAR);
         float pArm = isPart(P_UPPERARM);
+        float pFore = isPart(P_FOREARM);
         float pLeg = isPart(P_THIGH);
         float pHand = isPart(P_HAND) + isPart(P_FINGER);
         float pNeck = isPart(P_NECK);
@@ -184,12 +185,33 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         vec4 aux = auxTri(bp, bn, 9.0);
 
         /* ---- sun exposure: the tan line is where the kit stops -------- */
+        // THIS FIELD IS WHY THE ROSTER READ AS "A MASK OVER A LIGHTER SKULL".
+        //
+        // expo drives an 0.85 mix all the way to uToneTan, which on a fair
+        // athlete is most of a stop darker than base skin — so wherever this
+        // field steps, the ALBEDO steps, and a step in albedo across a
+        // continuous piece of skin does not read as a tan line, it reads as a
+        // different material. The previous version stepped in three places, and
+        // two of them are in shot on the hero framing:
+        //
+        //   • neck 0.88 against torso 0.08 — a 0.68-of-a-tan cliff at the
+        //     jugular notch, i.e. exactly the patch of chest a scoop neck
+        //     leaves bare. That is the light triangle under a dark head.
+        //   • the forearm was not in the sum AT ALL, so it sat at 0.0 while the
+        //     hand it runs into sat at 1.0: a bare arm two tones lighter than
+        //     its own hand, with the seam at the wrist.
+        //
+        // A tan line exists where the KIT ends, and there is no kit at the
+        // jugular notch or at the wrist. Ramps below are the hems the cloth
+        // actually has; everywhere else the field is continuous.
         float expo = clamp(
-            pHead + pEar + pHand
-          + pNeck * 0.88
+            pHead + pEar + pHand + pFore
+          + pNeck * (0.34 + 0.54 * smoothstep(0.12, 0.78, vLen))
           + pArm * smoothstep(0.28, 0.40, vLen)
           + pLeg * smoothstep(0.28, 0.37, vLen) * (1.0 - smoothstep(0.68, 0.74, vLen))
-          + pTorso * 0.08, 0.0, 1.0);
+            // The chest climbs to meet the neck under the collar rather than
+            // stopping dead at it.
+          + pTorso * (0.06 + 0.30 * smoothstep(0.86, 1.0, vLen)), 0.0, 1.0);
         // The boundary itself is never a ruled line — it follows the hem, and the
         // hem moves. A little noise across it is the whole tell.
         expo = clamp(expo + (aux.r - 0.5) * 0.35, 0.0, 1.0);
@@ -292,12 +314,30 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // should find — brow ridge, cheek, nose dorsum, chin ball — are left at
         // zero on purpose.
         float orbQ = qq;   // the aperture ellipse, shared with the lid margin
+        // ONE GATE FOR EVERY FRONT-OF-FACE LOBE, AND IT HAS NO EDGE.
+        //
+        // smoothstep(0.10, 0.30, hz) is a 0.2-wide ramp on the surface normal's
+        // own z, which means it completes at a FIXED SURFACE ANGLE and draws a
+        // contour line there — a soft-edged ring around the head at 72° off
+        // front, in the same place on all fourteen faces, that the eye traces
+        // instantly because nothing on a head has a boundary there. hz^1.5 has
+        // the same job (kill the term before it wraps onto the temple) with no
+        // level set to find: it is monotone from 0 to 1 with no ramp shoulder.
+        float faceFront = pow(clamp(hz, 0.0, 1.0), 1.5);
+        // Head lobes are clamped at 0.55, not 1.0. An occlusion term that
+        // reaches 1.0 says NO SKY REACHES THIS POINT, which is true at the back
+        // of a nostril and nowhere else on a face; at 1.0 the accumulator stops
+        // describing concavities and starts painting the front of the head.
         float cavity = pHead * clamp(
             // Orbit. Keyed to the palpebral ellipse the sculpt actually has, so
             // it lands in the socket on every face in the roster rather than on
             // whichever one the constants were fitted against. Deepest just
             // above the globe, where the supraorbital ridge overhangs it.
-            0.78 * exp(-pow((orbQ - 0.55) / 0.85, 2.0)) * smoothstep(0.10, 0.30, hz)
+            // Sigma 0.85 in qq units reached ±0.16 in |nx| BEYOND the aperture,
+            // which is the whole nasal bridge and both malar flats — a pair of
+            // painted goggles rather than two sockets. The aperture's own edge
+            // is qq = 1, so a socket is about half that wide again.
+            0.52 * exp(-pow((orbQ - 0.55) / 0.45, 2.0)) * faceFront
                  * (0.62 + 0.38 * smoothstep(-0.10, 0.16, hy))
             // Tear trough, running infero-medially from the inner canthus.
           + 0.30 * g1(hy, -0.150, 0.055) * g1(axf, uEyeGeo.x * 0.80, 0.130) * fr
@@ -321,7 +361,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           + 0.34 * g1(axf, 0.900, 0.075) * g1(hy, -0.230, 0.220) * smoothstep(0.30, -0.10, hz)
             // Submandibular. The one that separates a jaw from a neck, and the
             // only lobe here that is allowed to be big.
-          + 0.92 * smoothstep(jawNy + 0.11, jawNy - 0.26, hy), 0.0, 1.0);
+          + 0.92 * smoothstep(jawNy + 0.11, jawNy - 0.26, hy), 0.0, 0.55);
         // The concha of the ear is a bowl; the rig hands us its depth in vCrease,
         // but the whole ear also sits in the skull's shadow on its medial side.
         cavity += pEar * 0.30;
@@ -334,10 +374,10 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // seen from slightly below has no dark band under it at all and reads as
         // a smooth continuation into the neck. A jaw is legible because of the
         // shadow it CASTS, and that shadow belongs to the neck.
-        cavity += pNeck * smoothstep(0.30, 0.96, vLen) * 0.88;
+        cavity += pNeck * smoothstep(0.30, 0.96, vLen) * 0.55;
         // …and so does the hollow above the clavicles.
-        cavity += pTorso * smoothstep(0.94, 1.0, vLen) * 0.35;
-        cavity = clamp(cavity, 0.0, 1.0);
+        cavity += pTorso * smoothstep(0.94, 1.0, vLen) * 0.32;
+        cavity = clamp(cavity, 0.0, 0.55);
 
         /* ---- fine wrinkles --------------------------------------------- */
         // Crow's feet fan from the lateral canthus, forehead furrows run across
@@ -412,6 +452,23 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // They are a pigment concentration, not a different material.
         skin = mix(skin, skin * vec3(0.74, 0.60, 0.52), fk * 0.42);
         skin = mix(skin, uToneLip, lips * 0.92);
+        // A LIP READS AS A LIP BECAUSE IT IS REDDER AND DARKER THAN THE SKIN
+        // ROUND IT — and at the framing this project ships, colour is the only
+        // channel left. rig/Head.ts sculpts a cupid's bow, both vermilions, a
+        // lip line, two commissure pits and the philtrum columns, and every one
+        // of those is a one-to-two-millimetre displacement: on a 234 mm head at
+        // 430 px the whole vermilion roll is a third of a pixel of relief. It
+        // cannot be seen. It has never been seen.
+        //
+        // uToneLip on its own does not carry it either. It is the correct
+        // biophysical answer — the same dermis with four times the blood and
+        // 42 % of the epidermis over it — and correct puts it about 6 % off the
+        // surrounding cheek, which is under the mottle noise two lines above.
+        // A real vermilion is 15–25 % redder and ~10 % darker, and the extra
+        // comes from the fact that it is a MUCOSA: no stratum corneum, so it is
+        // wet, and wet drops the value on top of everything the pigment does.
+        skin = mix(skin, uToneFlush, lips * 0.30);
+        skin *= 1.0 - 0.085 * lips;
         // The white roll of the vermilion border, and the fine vertical creases
         // across the lip itself.
         skin *= 1.0 + 0.16 * lipBorder;

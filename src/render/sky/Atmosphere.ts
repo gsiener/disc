@@ -245,6 +245,40 @@ export const MS_DEPTH_HORIZON = 0.30;
 /** Luminance compression exponent. 1 = physical, 0.6 = flat. */
 export const COMPRESS = 0.72;
 
+/**
+ * THE GLOW DOME — the sky a lit stadium makes over its own bowl.
+ *
+ * The night branch below already carried a "city glow" term, and it was
+ * invisible in every frame that mattered. `exp(-h·22)` is a 2½° band hugging the
+ * skyline, and from a camera *inside* the bowl the skyline is buried behind
+ * twenty metres of stand and roof: the first sky the lens sees is 12–15° up,
+ * where that term has already fallen to three parts in a thousand. So the night
+ * frame rendered a flat black sky, and a flat black sky over a lit pitch is the
+ * loudest possible tell that this is a daylight scene with the exposure pulled
+ * down. Nowhere with 64 000 candela pointed at it has a black sky.
+ *
+ * The mechanism is not the town on the horizon, it is the venue: ~30 % of what
+ * the rig throws misses the pitch or bounces off it, goes up, and scatters back
+ * out of the boundary layer. That makes a dome centred overhead, not a band at
+ * the horizon — bright at the rim where the sightline runs the length of the
+ * haze, falling by two thirds at 30° and to near nothing at the zenith, and warm
+ * because it is metal-halide light through several kilometres of low air.
+ *
+ * `exp(-h·3.0)` is that dome: 1.0 at the rim, 0.36 at 24°, 0.05 straight up. The
+ * amplitude is chosen so the sky above the roof sits well *under* the lit turf —
+ * the turf around the disc stays the brightest square metre in the frame, which
+ * is what the art-direction brief demands — while the zenith keeps its residual
+ * twilight blue and only the band over the bowl goes amber.
+ *
+ * Held in linear radiance like the rest of the night hemisphere, so it rides the
+ * same `uNightGain` inverse-exposure basis and does not swim when the meter
+ * moves. Shared with `SkyMaterial.nightBase()` as compile-time constants, the
+ * same way BETA_RN and COMPRESS are — the dome and the env bake have to agree or
+ * the horizon shows a seam.
+ */
+export const GLOW_DOME: readonly [number, number, number] = [0.0260, 0.0176, 0.0092];
+export const GLOW_DOME_FALLOFF = 3.0;
+
 export function sunIntensityAt(zenithCos: number): number {
   const z = clamp(zenithCos, -1, 1);
   return EE * Math.max(0, 1 - Math.exp(-((CUTOFF_ANGLE - Math.acos(z)) / STEEPNESS)));
@@ -484,10 +518,13 @@ export class SkyState {
         * smoothstep(-15, -1, this.sun.elevation);
       const glow = [0.62, 0.24, 0.10];
       const city = Math.exp(-h * 22) * 0.85;
+      // …and the venue's own glow dome over the top of both. See GLOW_DOME.
+      const dome = Math.exp(-h * GLOW_DOME_FALLOFF);
       for (let i = 0; i < 3; i++) {
         const nightC = mix(hor[i], zen[i], Math.pow(h, 0.55))
           + glow[i] * tw
-          + [0.0125, 0.0072, 0.0032][i] * city;
+          + [0.0125, 0.0072, 0.0032][i] * city
+          + GLOW_DOME[i] * dome;
         out[i] = mix(out[i], nightC, n);
       }
     }

@@ -4,6 +4,7 @@ import type { LocoPlayer } from '../sim/move/Types.ts';
 import type { PlayerRig } from './rig/Types.ts';
 import { BONE_NAMES, BONE_INDEX } from './rig/Types.ts';
 import type { BoneName } from './rig/Types.ts';
+import { EYE_BONE_NAMES } from './rig/Skeleton.ts';
 
 import { B, Frame, Kine, Pose, clamp, clamp01, damp } from './anim/Kine.ts';
 import {
@@ -124,6 +125,38 @@ const _v2 = new THREE.Vector3();
 const _hipL = new THREE.Vector3();
 const _hipR = new THREE.Vector3();
 const _gaze: GazeTarget = { x: 0, y: 0, z: 0 };
+/** Eye solve scratch — see `poseEyes`. Module-scoped, like everything else here. */
+const _eTgt = new THREE.Vector3();
+const _eDir = new THREE.Vector3();
+const _ePos = new THREE.Vector3();
+const _eHeadP = new THREE.Vector3();
+const _qHead = new THREE.Quaternion();
+const _qRest = new THREE.Quaternion();
+const _qEye = new THREE.Quaternion();
+const _eEul = new THREE.Euler(0, 0, 0, 'YXZ');
+
+/* ------------------------------------------------------------------- gaze */
+
+/**
+ * OCULOMOTOR RANGE. A human eye reaches about 45° of yaw in its socket before
+ * the sclera runs out, but nobody holds it there: past ~35° the head goes with
+ * it. Pitch is asymmetric and much smaller — the upper lid gets in the way.
+ * These are the clamp; whatever is left over is the head's problem.
+ */
+const EYE_YAW_MAX = 0.61;      // 35°
+const EYE_PITCH_MAX = 0.35;    // 20°
+/**
+ * How much of the gaze the EYES are allowed to take off the neck.
+ *
+ * This is the number that decides whether the hero framing sees a face or an
+ * ear. `Secondary.poseGaze` gives the head the first 43° of any turn, so an
+ * athlete watching something 35° off the camera axis presents a three-quarter
+ * skull to the lens and the whole eye material renders edge-on. People do not
+ * work that way: the eyes go first and the head follows only what the eyes
+ * cannot cover. Held a little under `EYE_YAW_MAX` so the solve is never pinned
+ * against its own clamp, which is what makes eyes look glued.
+ */
+const EYE_RELIEF_YAW = 0.52;   // 30°
 /** The throw layer, evaluated once per athlete and blended through two masks. */
 const _layer = new Pose();
 /** Reused stance intent — one object for the whole roster, written per athlete. */
@@ -179,6 +212,15 @@ export class AnimHandle {
   readonly kine: Kine;
   readonly pose = new Pose();
   readonly frame = new Frame();
+  /**
+   * The two eye joints, and their bind-pose LOCAL rotations. Not part of the
+   * `Kine` pose buffers — see `rig/Skeleton.ts EYE_BONE`. Null on a rig built
+   * before this existed, which is the only reason the solve is guarded.
+   */
+  readonly eyeBone: (THREE.Bone | null)[] = [null, null];
+  readonly eyeBind: THREE.Quaternion[] = [new THREE.Quaternion(), new THREE.Quaternion()];
+  /** Current [yawL, pitchL, yawR, pitchR], radians in each eye's rest frame. */
+  readonly eyeAim = new Float32Array(4);
   readonly body: BodyState;
   readonly feet: FeetState;
   readonly throwing: ThrowState;
@@ -214,6 +256,11 @@ export class AnimHandle {
       : (-handed as 1 | -1);
     this.footPhase = hash01(id * 8171 + 313) * Math.PI * 2;
     this.kine = new Kine(rig.bones, rig.measure);
+    for (let si = 0; si < 2; si++) {
+      const b = rig.skeleton.getBoneByName(EYE_BONE_NAMES[si]) ?? null;
+      this.eyeBone[si] = b;
+      if (b) this.eyeBind[si].copy(b.quaternion);
+    }
     this.body = makeBody(id);
     this.feet = makeFeet();
     this.throwing = makeThrow(handed);
@@ -478,10 +525,12 @@ export class Animator {
     // a tripod. Half weight leaves the gaze solver in charge of the direction
     // and leaves `poseIdleHead` room to put a scan on top, which is what a
     // player with nothing to look at actually does.
-    const watching = h.gaze ?? this.gaze;
+    const watching = this.watched(h);
     const target = watching ?? this.travelGaze(loco);
     poseGaze(h.secondary, kine, pose, h.frame, target,
       watching ? h.gazeWeight : h.gazeWeight * 0.45, dt);
+    // …then give the neck back everything the eyes are about to cover.
+    this.eyeRelief(h, pose);
     poseIdleHead(h.secondary, pose, bs);
     const breathScale = h.detail < 0.6 ? 0.5 : 1;
     h.signals.breath = poseBreath(h.secondary, pose, loco, bs, dt, breathScale);
@@ -490,6 +539,9 @@ export class Animator {
     /* 11 — FK again: the spine, neck, head and both arms all moved. */
     kine.fk(pose);
     this.counters.fk++;
+
+    /* 11b — the eyes, off the head orientation the FK just produced. */
+    this.poseEyes(h, target, dt);
 
     /* 12 — the hands meet the disc where the disc actually is. */
     stepCatch(h.catching, dt);
@@ -512,6 +564,107 @@ export class Animator {
     if (camera) {
       h.rig.root.updateMatrixWorld(true);
       h.rig.lod.update(camera);
+    }
+  }
+
+  /* ------------------------------------------------------------------ gaze */
+
+  /**
+   * What this athlete is actually looking at, or null for "nothing in
+   * particular" (which drops the caller onto `travelGaze` at reduced weight).
+   *
+   * YOU DO NOT LOOK AT THE DISC YOU ARE HOLDING. `PlayersSystem` publishes the
+   * disc as the roster-wide gaze target, and for thirteen of the fourteen
+   * athletes that is exactly right. For the fourteenth it aims the gaze solver
+   * at a point 45 cm from their own sternum, so the handler stands on the mark
+   * staring into their own hand with their chin on their chest — which is what
+   * every `closeup` and `sideline` frame has been rendering, because both of
+   * those tableaux are built around a player holding the disc. A thrower looks
+   * DOWNFIELD; the disc is the one thing on the pitch they already know the
+   * position of.
+   */
+  private watched(h: AnimHandle): GazeTarget | null {
+    if (h.gaze) return h.gaze;
+    if (h.carrying && !h.catching.active) return null;
+    return this.gaze;
+  }
+
+  /**
+   * Take the yaw the eyes are about to cover back off the head and the neck.
+   *
+   * `poseGaze` splits a turn head-first (43°), then neck (29°), then chest. That
+   * is the right split for a rig with no eye joints and the wrong one for a rig
+   * with them: a person tracking something 30° off their shoulder moves their
+   * EYES and leaves the skull alone. Without this the hero framing gets a
+   * three-quarter-rear head every time the disc is not sitting on the lens axis,
+   * and `poseEyes` then aims the globes even further round.
+   *
+   * Composes exactly rather than approximately: `poseGaze` wrote the yaw as the
+   * innermost factor of an 'XZY' Euler (R = Rx·Rz·Ry), so post-multiplying a
+   * pure yaw here lands on Rx(−hP)·Ry(hY·rest) with no cross-talk into pitch.
+   */
+  private eyeRelief(h: AnimHandle, pose: Pose): void {
+    const ss = h.secondary;
+    const tot = ss.hY + ss.nY + ss.cY;
+    const mag = Math.abs(tot);
+    if (mag < 1e-4) return;
+    const cut = 1 - Math.max(0, mag - EYE_RELIEF_YAW) / mag;
+    if (cut < 1e-3) return;
+    pose.addEuler(B.head, 0, -ss.hY * cut, 0);
+    pose.addEuler(B.neck, 0, -ss.nY * cut, 0);
+  }
+
+  /**
+   * Aim both globes at the gaze target. Runs after the second FK pass, on the
+   * head orientation the pose actually produced, and writes the two eye joints
+   * directly — they carry no `Pose` delta and no `Kine` slot (see
+   * `rig/Skeleton.ts EYE_BONE`).
+   *
+   * CONVERGENCE IS NOT A PARAMETER HERE. Each eye is aimed from its own centre
+   * at the one world point, so a disc at arm's length gets about six degrees of
+   * vergence and a receiver at forty metres gets none — the geometry produces
+   * it. Parallel eyes are the single loudest "these are two spheres with
+   * textures on them" cue a face can send, and they are what you get from any
+   * solve that computes one direction and copies it to both sockets.
+   */
+  private poseEyes(h: AnimHandle, target: GazeTarget | null, dt: number): void {
+    const bL = h.eyeBone[0], bR = h.eyeBone[1];
+    if (!bL || !bR) return;
+    const kine = h.kine;
+    kine.worldQuat(B.head, _qHead);
+    kine.worldPos(B.head, _eHeadP);
+    // Share the gaze solver's own smoothed attention, so the eyes and the head
+    // never disagree about whether there is anything worth watching.
+    const w = target ? h.secondary.attend : 0;
+    if (target) h.frame.toLocal(target.x, target.y, target.z, _eTgt);
+    // A saccade is 30–60 ms. This is not a limb and it must not be sprung like
+    // one — a lagging eye reads as a drugged one.
+    const k = 1 - Math.exp(-26 * dt);
+    for (let si = 0; si < 2; si++) {
+      const b = si === 0 ? bL : bR;
+      let yaw = 0, pitch = 0;
+      if (w > 0.001) {
+        _ePos.copy(b.position).applyQuaternion(_qHead).add(_eHeadP);
+        _eDir.subVectors(_eTgt, _ePos);
+        if (_eDir.lengthSq() > 1e-8) {
+          // Into the eye's REST frame — where that globe would point with zero
+          // deviation — so the clamp below is an oculomotor limit rather than a
+          // limit against some arbitrary world axis.
+          _qRest.copy(_qHead).multiply(h.eyeBind[si]).invert();
+          _eDir.normalize().applyQuaternion(_qRest);
+          const flat = Math.hypot(_eDir.x, _eDir.z);
+          yaw = clamp(Math.atan2(_eDir.x, _eDir.z), -EYE_YAW_MAX, EYE_YAW_MAX) * w;
+          pitch = clamp(Math.atan2(_eDir.y, Math.max(1e-4, flat)),
+            -EYE_PITCH_MAX, EYE_PITCH_MAX) * w;
+        }
+      }
+      const o = si * 2;
+      h.eyeAim[o] += (yaw - h.eyeAim[o]) * k;
+      h.eyeAim[o + 1] += (pitch - h.eyeAim[o + 1]) * k;
+      // Bind is the identity in mesh space, so +Z is the optical axis and +Y is
+      // up: Ry(yaw)·Rx(−pitch) sends (0,0,1) exactly where the solve asked.
+      _eEul.set(-h.eyeAim[o + 1], h.eyeAim[o], 0);
+      b.quaternion.copy(h.eyeBind[si]).multiply(_qEye.setFromEuler(_eEul));
     }
   }
 

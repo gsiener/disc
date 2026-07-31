@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { BETA_RN, COMPRESS } from './Atmosphere';
+import { BETA_RN, COMPRESS, GLOW_DOME, GLOW_DOME_FALLOFF } from './Atmosphere';
 
 /**
  * The sky dome shader: the scattering model from Atmosphere.ts, a raymarched
@@ -138,6 +138,11 @@ vec3 nightBase( vec3 rd ) {
     * smoothstep( -15.0, -1.0, uSunElev );
   c += vec3( 0.62, 0.24, 0.10 ) * tw;
   c += vec3( 0.0125, 0.0072, 0.0032 ) * exp( - h * 22.0 ) * 0.85;   // city glow
+  // The venue's own glow dome. exp(-h*22) above is a 2.5-degree skyline band and
+  // from inside the bowl the skyline is behind the stand, so it never reached a
+  // frame; this is the part of the rig's output that goes up and scatters back.
+  // Constants shared with Atmosphere.GLOW_DOME — see the note there.
+  c += vec3( GLOW_DOME_R, GLOW_DOME_G, GLOW_DOME_B ) * exp( - h * GLOW_DOME_K );
   return c;
 }
 
@@ -559,6 +564,10 @@ export function createSkyMaterial(opts: SkyMaterialOpts): THREE.ShaderMaterial {
     BETA_RN_X: f(BETA_RN[0]),
     BETA_RN_Y: f(BETA_RN[1]),
     COMPRESS_P: f(COMPRESS),
+    GLOW_DOME_R: f(GLOW_DOME[0]),
+    GLOW_DOME_G: f(GLOW_DOME[1]),
+    GLOW_DOME_B: f(GLOW_DOME[2]),
+    GLOW_DOME_K: f(GLOW_DOME_FALLOFF),
   };
   if (opts.clouds) defines.USE_CLOUDS = '';
   const dbg = Number(new URLSearchParams(location.search).get('skyDebug') || 0);

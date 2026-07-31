@@ -5,6 +5,7 @@ import { bake, heightField, heightToNormal, linearColor, packORM } from '../../u
 import { clamp, fbm2, smoothstep, worley2 } from '../../util/Noise';
 import { FLOOD_COLOR } from './Solar';
 import { FLOODLIGHT_TOWERS } from '../../world/stadium/Layout';
+import { FIELD, MOW_STRIPE } from '../../world/field/Layout';
 
 /**
  * The night rig: four corner floodlight towers.
@@ -265,8 +266,10 @@ export class TowerRig {
   private lensMat!: THREE.MeshStandardMaterial;
   private glowMat!: THREE.ShaderMaterial;
   private beamMat!: THREE.ShaderMaterial;
+  private sheenMat!: THREE.ShaderMaterial;
   private glowMesh!: THREE.Mesh;
   private beamMesh!: THREE.Mesh;
+  private sheenMesh!: THREE.Mesh;
   private tier!: TowerTier;
   private disposables: Array<{ dispose(): void }> = [];
   private primed = 0;
@@ -390,6 +393,58 @@ export class TowerRig {
     this.group.add(this.beamMesh);
     for (const g of beams) g.dispose();
     this.disposables.push(this.beamMat, this.beamMesh.geometry);
+
+    this.buildSheen();
+  }
+
+  /**
+   * THE WET-GRASS SHEEN — the one thing in a night frame that says "floodlit".
+   *
+   * A floodlit pitch does not read as floodlit because it is bright. It reads as
+   * floodlit because the sward carries four long anisotropic highlights, one per
+   * tower, banded by the mow and strongest where the sightline grazes. Take that
+   * away and you have a green field at a low exposure, which is exactly what the
+   * round-5 review saw: "no visible specular kick on skin or turf anywhere in the
+   * frame".
+   *
+   * It is missing for a structural reason, not an artistic one. The near-field
+   * grass in `world/grass/shader.ts` has a full Kajiya-Kay sheen — and it is
+   * wired to `uSunDir`/`uSunCol`, which at 21:30 is a 0.24-intensity blue moon,
+   * so the sheen is off by three stops exactly when it matters. The far pitch is
+   * `TurfMaterial`, an isotropic MeshStandardMaterial at roughness 0.82–0.92:
+   * the four spots do reach it, but a GGX lobe that broad puts the specular at
+   * ~15 % of the diffuse, which is a modulation, not a highlight. And the
+   * ultra-only `GroundSsrPass` — the pass that actually mirrors a wet pitch — is
+   * gated off at every tier the critics capture at.
+   *
+   * So the rig delivers its own. One additive pass over the mown turf: for each
+   * of the four real heads, a Kajiya–Kay lobe about a blade tangent that tilts
+   * ±X with the mow lay (the same `MOW_STRIPE` the turf albedo and the grass
+   * lean read), inverse-square weighted off the real head positions, gated on a
+   * grazing view because that is when wet grass mirrors and a top-down look at
+   * the same grass does not. Zero when the rig is dark, so it costs one draw
+   * call and contributes literally nothing to any daylight frame.
+   *
+   * The quad is flat at y = 0.10. The pitch is crowned 1 % and its surface lives
+   * between −0.06 and +0.04, so this clears it everywhere without needing the
+   * height field in a lighting file; 10 cm of parallax on a gradient that is
+   * metres wide is not a visible error, and the depth test still hides the sheen
+   * behind every body on the pitch.
+   */
+  private buildSheen(): void {
+    const g = new THREE.PlaneGeometry(FIELD.turfHalfX * 2, FIELD.turfHalfZ * 2, 1, 1);
+    g.rotateX(-Math.PI / 2);
+    g.translate(0, 0.10, 0);
+
+    this.sheenMat = makeSheenMaterial(this.slots.map((s) => s.head));
+    this.sheenMesh = new THREE.Mesh(g, this.sheenMat);
+    this.sheenMesh.name = 'towers.sheen';
+    this.sheenMesh.frustumCulled = false;
+    this.sheenMesh.renderOrder = 18;
+    this.sheenMesh.castShadow = false;
+    this.sheenMesh.receiveShadow = false;
+    this.group.add(this.sheenMesh);
+    this.disposables.push(this.sheenMat, g);
   }
 
   private buildLights(_ctx: Ctx): void {
@@ -558,7 +613,18 @@ export class TowerRig {
     }
   }
 
-  /** A short, soft scatter cone hanging off each head. */
+  /**
+   * A short, soft scatter cone hanging off each head.
+   *
+   * Carries the beam's own axis per vertex. The old shader had only the cone's
+   * surface normal to work with, so all it could compute was a rim term — which
+   * draws the *outline* of a cone and nothing inside it, and reads as a wireframe
+   * rather than as lit air. With the axis in hand the fragment shader can run a
+   * real Henyey-Greenstein phase on the angle between the beam and the eye, and
+   * that is the whole effect: a floodlight aimed near the lens is spectacular and
+   * one aimed away is invisible, which is also what selects the two towers that
+   * matter in any given frame without a per-tower CPU sort.
+   */
   private buildBeam(slot: TowerSlot): THREE.BufferGeometry {
     const len = Math.min(46, slot.head.distanceTo(slot.aim) * 0.42);
     const g = new THREE.ConeGeometry(len * Math.tan(0.36), len, 22, 1, true);
@@ -567,6 +633,13 @@ export class TowerRig {
     _q.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
     _m.compose(slot.head.clone(), _q, new THREE.Vector3(1, 1, 1));
     g.applyMatrix4(_m);
+
+    const n = g.getAttribute('position').count;
+    const axis = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      axis[i * 3] = dir.x; axis[i * 3 + 1] = dir.y; axis[i * 3 + 2] = dir.z;
+    }
+    g.setAttribute('aAxis', new THREE.BufferAttribute(axis, 3));
     return g;
   }
 
@@ -628,14 +701,28 @@ export class TowerRig {
     const glowU = this.glowMat.uniforms;
     // When the stadium draws its own lit fixture clusters, this is a halo on
     // top of something already bright — a fraction of the standalone value.
-    glowU.uIntensity.value = (this.hosted ? 1.1 : 3.1) * vis;
+    // 1.1 → 1.7 now that a framing exists which actually contains a mast head:
+    // the halo is what bloom has to bite on, and at 130 m a 24-lamp cluster is
+    // sixty pixels of frame that has to survive the night exposure.
+    glowU.uIntensity.value = (this.hosted ? 1.7 : 3.1) * vis;
     glowU.uColor.value.copy(FLOOD_COLOR);
     this.glowMesh.visible = on;
 
+    // 0.30 → 1.15. The old number was set against a rim-only term that drew the
+    // cone's outline; the phase function below concentrates the same energy into
+    // the beams pointing near the lens and leaves the rest almost dark, so the
+    // peak has to come up for the near ones to read as lit air at all.
     const beamU = this.beamMat.uniforms;
-    beamU.uIntensity.value = 0.30 * vis * (ctx.quality.tier === 'low' ? 0.6 : 1);
+    beamU.uIntensity.value = 1.15 * vis * (ctx.quality.tier === 'low' ? 0.55 : 1);
     beamU.uColor.value.copy(FLOOD_COLOR);
     this.beamMesh.visible = on;
+
+    const sheenU = this.sheenMat.uniforms;
+    // Rides `f`, not `vis`: this is light *on the grass*, so it appears with the
+    // irradiance and not with the lamps warming up.
+    sheenU.uIntensity.value = 1.0 * f;
+    sheenU.uColor.value.copy(FLOOD_COLOR);
+    this.sheenMesh.visible = f > 0.004;
   }
 
   dispose(): void {
@@ -724,11 +811,14 @@ function makeBeamMaterial(): THREE.ShaderMaterial {
       uColor: { value: FLOOD_COLOR.clone() },
     },
     vertexShader: /* glsl */`
+      attribute vec3 aAxis;
       varying vec3 vN;
       varying vec3 vW;
+      varying vec3 vAxis;
       varying float vT;
       void main() {
         vN = normalize( mat3( modelMatrix ) * normal );
+        vAxis = normalize( mat3( modelMatrix ) * aAxis );
         vec4 w = modelMatrix * vec4( position, 1.0 );
         vW = w.xyz;
         vT = 1.0 - uv.y;
@@ -740,12 +830,42 @@ function makeBeamMaterial(): THREE.ShaderMaterial {
       uniform vec3 uColor;
       varying vec3 vN;
       varying vec3 vW;
+      varying vec3 vAxis;
       varying float vT;
+
+      /** Henyey-Greenstein, normalised so the forward peak is 1. */
+      float hg( float c, float g ) {
+        float g2 = g * g;
+        float p = ( 1.0 - g2 ) / pow( max( 1.0 + g2 - 2.0 * g * c, 1e-4 ), 1.5 );
+        return p * ( ( 1.0 - g ) * ( 1.0 - g ) / ( 1.0 + g ) );
+      }
+
       void main() {
         vec3 N = normalize( vN );
         vec3 V = normalize( cameraPosition - vW );
-        float rim = 1.0 - abs( dot( N, V ) );
-        float a = pow( rim, 1.8 ) * pow( 1.0 - vT, 2.4 ) * uIntensity;
+
+        /* How much lit air the sightline crossed.
+           The cone is drawn back-face only, so this fragment is the far wall and
+           the ray has just come through the interior. That chord is longest
+           looking down the axis and shortest at the silhouette — the exact
+           opposite of the rim term this used to be — but the silhouette is also
+           where the phase function is weakest, so the two together still give a
+           cone with a soft bright edge and a filled body instead of an outline. */
+        float ndv = abs( dot( N, V ) );
+        float chord = mix( 0.30, 1.0, pow( 1.0 - ndv, 1.4 ) );
+
+        /* Forward scatter. Aerosol is strongly forward-peaked, which is why a
+           floodlight aimed near the lens is a solid shaft of light and the one
+           on the opposite mast is invisible. This is also what picks out the two
+           towers that read in any given frame at zero CPU cost. */
+        float phase = hg( dot( normalize( vAxis ), V ), 0.62 );
+
+        // Density falls away from the head, and the haze itself is extincted
+        // over the hundred-plus metres from a corner mast to this camera.
+        float fall = pow( 1.0 - vT, 2.0 );
+        float atten = 1.0 / ( 1.0 + distance( cameraPosition, vW ) * 0.009 );
+
+        float a = chord * phase * fall * atten * uIntensity;
         a *= smoothstep( 0.0, 0.16, vT );
         if ( a < 0.0008 ) discard;
         gl_FragColor = vec4( uColor * a, a );
@@ -757,5 +877,107 @@ function makeBeamMaterial(): THREE.ShaderMaterial {
     transparent: true,
     depthWrite: false,
     side: THREE.BackSide,
+  });
+}
+
+/**
+ * The turf sheen pass. See `TowerRig.buildSheen` for why it exists.
+ *
+ * Head positions are baked in as a uniform array rather than re-derived, so the
+ * highlight runs at the mast the viewer can see and moves correctly with the
+ * camera. Everything is evaluated per fragment from world position — the quad is
+ * two triangles.
+ */
+function makeSheenMaterial(heads: THREE.Vector3[]): THREE.ShaderMaterial {
+  const pad: THREE.Vector3[] = [];
+  for (let i = 0; i < 4; i++) pad.push((heads[i] ?? heads[0] ?? new THREE.Vector3(0, 40, 0)).clone());
+  return new THREE.ShaderMaterial({
+    defines: {
+      SHEEN_N: Math.max(1, Math.min(4, heads.length)),
+      STRIPE_W: MOW_STRIPE.toFixed(3),
+      HALF_X: FIELD.turfHalfX.toFixed(2),
+      HALF_Z: FIELD.turfHalfZ.toFixed(2),
+    },
+    uniforms: {
+      uHeads: { value: pad },
+      uIntensity: { value: 0 },
+      uColor: { value: FLOOD_COLOR.clone() },
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vW;
+      void main() {
+        vec4 w = modelMatrix * vec4( position, 1.0 );
+        vW = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uHeads[ 4 ];
+      uniform float uIntensity;
+      uniform vec3 uColor;
+      varying vec3 vW;
+
+      float hash21( vec2 p ) {
+        return fract( sin( dot( p, vec2( 41.7, 289.1 ) ) ) * 24634.6345 );
+      }
+      float vnoise( vec2 p ) {
+        vec2 i = floor( p ), f = fract( p );
+        f = f * f * ( 3.0 - 2.0 * f );
+        return mix( mix( hash21( i ), hash21( i + vec2( 1.0, 0.0 ) ), f.x ),
+                    mix( hash21( i + vec2( 0.0, 1.0 ) ), hash21( i + vec2( 1.0, 1.0 ) ), f.x ), f.y );
+      }
+
+      void main() {
+        vec3 V = normalize( cameraPosition - vW );
+        vec3 N = vec3( 0.0, 1.0, 0.0 );
+
+        /* Mow lay. Passes run the length of the pitch, banded in X, and a pass
+           of bent grass presents its blade faces to one side — so the tangent
+           the sheen is built about tilts ±X and flips every stripe. Same
+           MOW_STRIPE the turf albedo bands on and the grass system leans by; if
+           these two disagree the painted stripe and the lit stripe drift apart
+           and the pitch stops reading as one surface. */
+        float lay = clamp( cos( 3.14159265 * vW.x / STRIPE_W ) * 2.2, -1.0, 1.0 );
+        // A little wander so the bands are not laser-straight at 60 m.
+        lay *= 0.82 + 0.30 * vnoise( vW.xz * vec2( 0.05, 0.010 ) );
+        vec3 T = normalize( vec3( 1.0, lay * 0.55, 0.0 ) );
+
+        float acc = 0.0;
+        for ( int i = 0; i < SHEEN_N; i ++ ) {
+          vec3 d = uHeads[ i ] - vW;
+          float d2 = max( dot( d, d ), 1.0 );
+          vec3 L = d * inversesqrt( d2 );
+          vec3 H = normalize( L + V );
+          // Kajiya-Kay: a fibre reflects into the cone about its own tangent, so
+          // the lobe peaks where the half-vector is perpendicular to the blade.
+          float th = dot( T, H );
+          float sp = pow( max( 0.0, 1.0 - th * th ), 26.0 );
+          acc += sp * max( 0.0, L.y ) * ( 11000.0 / d2 );
+        }
+
+        /* Grazing only. Wet grass mirrors along the sightline and does nothing
+           seen from above, which is what keeps this off the macro framings and
+           concentrates it on the far half of a broadcast or night angle — where
+           a real floodlit pitch puts it. */
+        float graze = pow( clamp( 1.0 - dot( N, V ), 0.0, 1.0 ), 2.6 );
+
+        // Break-up, and a fade so the quad has no edge of its own.
+        float mott = 0.72 + 0.56 * vnoise( vW.xz * 0.09 );
+        float edge = ( 1.0 - smoothstep( HALF_X - 6.0, HALF_X - 0.5, abs( vW.x ) ) )
+                   * ( 1.0 - smoothstep( HALF_Z - 6.0, HALF_Z - 0.5, abs( vW.z ) ) );
+
+        float a = acc * graze * mott * edge * uIntensity;
+        if ( a < 0.0015 ) discard;
+        a = min( a, 0.85 );
+        gl_FragColor = vec4( uColor * a, a );
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.FrontSide,
   });
 }

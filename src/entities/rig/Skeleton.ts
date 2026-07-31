@@ -3,6 +3,7 @@ import { BONE_NAMES, BONE_INDEX, FINGERS } from './Types.ts';
 import type { BodyParams, BoneName, NamedBones, Measure } from './Types.ts';
 import { V, frameQuat, lerp } from './Build.ts';
 import type { Vec3 } from './Build.ts';
+import { headFrame } from './Head.ts';
 
 /**
  * Anthropometry → 60-bone skeleton.
@@ -284,9 +285,37 @@ export const PHALANX = [0.45, 0.31, 0.24];
  */
 export const FINGER_SPAN = 2.35;
 
+/**
+ * THE TWO JOINTS THAT ARE NOT IN `BONE_NAMES`.
+ *
+ * `BONE_NAMES` is a shared, ordered API — animation masks, `Kine`'s flat pose
+ * buffers and every `skinIndex` in every LOD are all indexed off it, and three
+ * other modules import it. The eyes do not belong in it: they are never posed by
+ * the FK/IK stack, never blended through a mask and never carry a delta in a
+ * `Pose`. They are two leaf joints hung off the head, written once per frame by
+ * an aiming solve that runs *after* the pose has been committed.
+ *
+ * So they are appended AFTER the 60 named bones. `skeleton.bones` is therefore
+ * 62 long while `BONE_NAMES.length` stays 60, every existing index keeps its
+ * meaning, and nothing that walks the named array ever sees them.
+ *
+ * WHY THEY HAVE TO EXIST AT ALL. `material/Eyes.ts` recovers the optical axis
+ * from `skinMatrix * vec3(0,0,1)` — the bind-space forward direction pushed
+ * through whatever the skin did to it. Weld both globes to the head bone and
+ * that axis is the head's forward vector by construction: three hundred lines of
+ * refracted-parallax iris, trabecular fibre, limbal ring and catchlight can only
+ * ever be seen when the head itself happens to be pointed at the lens, and the
+ * gaze solver's whole job is to point it somewhere else.
+ */
+export const EYE_BONE_NAMES = ['eye_L', 'eye_R'] as const;
+/** Indices into `skeleton.bones` / a mesh's `skinIndex`. 0 = left. */
+export const EYE_BONE = [BONE_NAMES.length, BONE_NAMES.length + 1] as const;
+
 export interface SkeletonResult {
   skeleton: THREE.Skeleton;
   bones: NamedBones;
+  /** `[left, right]`, parented to `head`. Not in `bones`, not in `BONE_NAMES`. */
+  eyes: THREE.Bone[];
   rootBone: THREE.Bone;
   measure: Measure;
 }
@@ -402,6 +431,34 @@ export function buildSkeleton(a: Anthro): SkeletonResult {
     byName[sp.parent].add(b);
   }
 
+  /* --- eye joints ------------------------------------------------------- */
+  // The globe centre is SOLVED against the finished face in `Head.ts headFrame`
+  // — it is hung off the sampled lower lid margin, not guessed — so this asks
+  // that function rather than re-deriving it. A bone rotates about its own
+  // origin, so an eye joint a few millimetres off the globe's centre makes the
+  // eyeball translate in its socket as it looks around, which is a lens, not an
+  // eye. `headFrame` is pure and deterministic in `Anthro`, so the centre it
+  // returns here is byte-identical to the one `buildEyes` skins the mesh to.
+  const hfE = headFrame(a);
+  const headQ = worldQ.get('head')!;
+  const headP = worldP.get('head')!;
+  const invHead = headQ.clone().invert();
+  const eyes: THREE.Bone[] = [];
+  for (let si = 0; si < 2; si++) {
+    const b = new THREE.Bone();
+    b.name = EYE_BONE_NAMES[si];
+    // BIND WORLD ORIENTATION IS THE IDENTITY, deliberately. The eye material
+    // reads its optical axis as `skinMatrix * (0,0,1)` — a bind-space direction
+    // carried through the skin — and bind space has the athlete facing +Z. An
+    // identity bind frame makes the joint's local rotation the eye's rotation
+    // from straight ahead, with no basis to unpick at either end.
+    b.quaternion.copy(invHead);
+    b.position.copy(hfE.eye.pos[si]).sub(headP).applyQuaternion(invHead);
+    byName.head.add(b);
+    bones.push(b);
+    eyes.push(b);
+  }
+
   const rootBone = byName.root;
   rootBone.updateMatrixWorld(true);
   const skeleton = new THREE.Skeleton(bones);
@@ -423,7 +480,7 @@ export function buildSkeleton(a: Anthro): SkeletonResult {
     bind, axis,
   };
 
-  return { skeleton, bones: byName as NamedBones, rootBone, measure };
+  return { skeleton, bones: byName as NamedBones, eyes, rootBone, measure };
 }
 
 /** Convenience for the mesh builders — index of a bone by name. */

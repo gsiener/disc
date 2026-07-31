@@ -161,14 +161,29 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
 
         diffuseColor.rgb *= hair;
 
-        // Erode the shell's silhouette into strands. Only at grazing angles, and
-        // only against the strand field, so the interior stays solid and the
-        // outline gains the ragged edge a modelled cap can never have. The
-        // hairline row goes with it, which is what stops the cap ending in the
-        // moulded lip that gave the first pass its swim-cap look.
+        // Erode the shell's silhouette into strands, so the outline gains the
+        // ragged edge a modelled cap can never have. The hairline row goes with
+        // it, which is what stops the cap ending in the moulded lip that gave
+        // the first pass its swim-cap look.
+        //
+        // THE WINDOW USED TO CLOSE AT ndv 0.46 — i.e. 63° off the silhouette —
+        // which sounds generous and is not. On the one framing that is ABOUT a
+        // head, the crown is very nearly face-on: ndv runs 0.85–1.0 over most of
+        // the cap, graze is zero there, and the only erosion left anywhere in
+        // the shader is the fringe band at the hairline. That is a solid dome
+        // with a razor cut in it, which is a description of a swim cap. 0.30 →
+        // 0.85 keeps break-up alive well into the interior and still retires it
+        // where the shell faces the lens dead on.
         float ndv = abs(dot(normalize(vNormal), normalize(vViewPosition)));
-        float graze = 1.0 - smoothstep(0.12, 0.46, ndv);
+        float graze = 1.0 - smoothstep(0.30, 0.85, ndv);
         float fibre = st.a * 0.55 + sc.a * 0.45;
+        // THE GAIN HAS TO CLEAR THE ALPHA TEST OR NONE OF THIS EXISTS.
+        // alphaTest is 0.42, so a fragment only disappears once cut passes
+        // 0.58. The strand map's dissolve channel is a near-Gaussian centred on
+        // 0.5, so at the old gain of 0.90 the very best a fully grazing fragment
+        // could do was 0.90 * (1 - 0.36) = 0.576 — and 0.576 is under 0.58. The
+        // erosion was mathematically incapable of removing a single pixel, at
+        // any angle, on any athlete. It only ever dimmed an alpha nobody read.
         // Each column of the cap ends where ITS strand ends, between 4 % and
         // 20 % up the shell. Fading the whole boundary band out together — the
         // first attempt — just moves the ruled line up the forehead; giving
@@ -191,7 +206,29 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // shot from forty metres.
         float strandPx = max(fwidth(suv.x), fwidth(suv.y));
         float erode = 1.0 - smoothstep(0.30, 0.85, strandPx);
-        float cut = max(graze * (1.0 - fibre) * 0.90, fringe) * erode;
+        // …and a second erosion at CLUMP scale that is not gated on view angle
+        // at all. A head of hair has holes in the middle of it — parting gaps,
+        // the scalp between locks, the space a crop leaves everywhere — not
+        // only at its edge. Everything above this line only ever cuts the
+        // outline, which is why the interior has stayed a moulded shell through
+        // three passes of increasingly good fibre shading. One centimetre is the
+        // right size: the lock, not the strand and not the head.
+        //
+        // Sampled on huv at INTEGER u repeats, not on suv. The strand map is
+        // tileable by construction, so an integer count round the azimuth is
+        // seamless — and 2 repeats of a 26-cell dissolve field is ~52 locks
+        // round an adult skull, which is the centimetre this wants. suv itself
+        // carries 220 repeats and would have put the gaps at a fifth of a
+        // millimetre, i.e. under a pixel at every framing in the shot list.
+        float lock = texture2D(uStrand, vec2(huv.x * 2.0, huv.y * 1.1 + 0.37)).a * 0.72
+                   + texture2D(uStrand, vec2(huv.x * 7.0, huv.y * 2.3 + 0.11)).a * 0.28;
+        // Denser toward the hairline and thinner over the crown, because that is
+        // where a head actually shows scalp, and because a perforated crown on a
+        // long style reads as mange rather than as hair. The window sits on the
+        // dissolve field's own lower quantile so a KNOWN fraction of the cap —
+        // about a seventh — falls through the alpha test.
+        float holes = smoothstep(0.47, 0.33, lock) * (0.74 + 0.16 * (1.0 - tip));
+        float cut = max(max(graze * (1.0 - fibre) * 1.25, holes), fringe) * erode;
         diffuseColor.a *= 1.0 - clamp(cut, 0.0, 1.0);
 
         gSheen = uSheen * mix(1.0, 1.5, uHairCtl.x);
