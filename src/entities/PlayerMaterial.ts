@@ -239,8 +239,11 @@ export class PlayerMaterialLibrary {
     const eyes = makeEyeMaterial({
       iris, shared: this.shared, quality: this.quality,
       // Iris 11.7 mm across a 24 mm globe is 0.49 of the globe RADIUS. The
-      // first pass had it at 0.43 and every athlete looked startled.
-      irisR: 0.455 + rand.next() * 0.050,
+      // first pass had it at 0.43 and every athlete looked startled. 0.455 was
+      // the same mistake at half the size, and it was compounding with a globe
+      // that was itself 1 mm under: the pair rendered a 10.4 mm iris. Real
+      // irides run 10.2–13.0 mm, so this spans that and nothing wider.
+      irisR: 0.478 + rand.next() * 0.050,
       pupilR: 0.135 + rand.next() * 0.030,
       seed,
     });

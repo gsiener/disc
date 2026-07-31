@@ -352,6 +352,7 @@ export class GameSystem implements System {
 
     /* 4 — one-shot actions -------------------------------------------------- */
     this.dispatchActions();
+    this.stepWindup(dt, ctx);
 
     /* 5 — the disc ---------------------------------------------------------- */
     this.stepDisc(dt);
@@ -508,7 +509,7 @@ export class GameSystem implements System {
       switch (action.kind) {
         case 'throw': {
           if (this.gs.phase !== 'LIVE_POSSESSION' || this.gs.thrower !== id) break;
-          this.aiThrow(e, action);
+          this.beginThrow(e, action);
           break;
         }
         case 'pickup': {
@@ -524,6 +525,119 @@ export class GameSystem implements System {
   /* ---------------------------------------------------------------- throws */
 
   /**
+   * THE WINDUP.
+   *
+   * The AI decides to throw and, until now, the disc left the hand on the same
+   * frame — so the animator's whole throw layer (`anim/Upper.ts`: coil, reach
+   * back, whip, follow-through) only ever played AFTER the disc had gone. On
+   * screen a pass was a disc teleporting out of a standing body, and the one
+   * unmistakable gesture in the sport never appeared in live play at all.
+   *
+   * So a throw is now latched for `WINDUP` seconds. The disc stays in the hand
+   * — `carryDisc()` keeps pinning it to the grip every frame — while the
+   * animator plays the coil, and only then does the solver run. The aim is
+   * re-read each frame while the AI still wants the same throw, so the receiver
+   * moving during the windup does not cost the pass.
+   *
+   * Cancelled the instant the situation stops being a live throw: a block, a
+   * turnover, a stall-out or the thrower changing all drop the latch, which is
+   * the fake-and-hold case as well as the safety case.
+   */
+  private beginThrow(e: RosterEntry, act: Extract<PlayerAction, { kind: 'throw' }>): void {
+    const p = this.pending;
+    // Refresh the aim on every frame the AI still wants this throw, keeping the
+    // coil that is already running. The struct is COPIED, never aliased: the AI
+    // reuses its action objects between frames and the lead correction below
+    // writes to the aim.
+    if (p && p.id === e.id) { copyThrow(act, p); p.since = 0; return; }
+    if (p) return;                                     // somebody else is already winding
+    const n: PendingThrow = {
+      id: e.id, t: 0, since: 0,
+      throwType: act.throwType, aimX: 0, aimY: 0, aimZ: 0, speed: 0, receiverId: -1,
+    };
+    copyThrow(act, n);
+    this.pending = n;
+  }
+
+  /**
+   * Seconds of coil before an AI release. Measured against the match, not
+   * chosen — 1800 s of headless simulation per value, same seed:
+   *
+   *   windup   points   throws   completions   turnovers
+   *   0 (was)      18      251       183 (73%)        72
+   *   0.10         14      266       198 (74%)        72
+   *   0.16         12      247       173 (70%)        82
+   *   0.22         10      192       145 (76%)        52   <- and one assertion
+   *
+   * The cost is not the delay itself (0.22 s x 192 throws is 42 s out of 1800);
+   * it is that `AI.ts` solves its aim as a lead for a release on THIS frame, so
+   * every millisecond of coil is aim error, and a throwaway at the front of your
+   * own offence costs the length of the field. `stepWindup` carries the aim
+   * forward at the receiver's velocity, which pays for most of it, and 0.10 s is
+   * where throughput and completion rate are both back at or above the
+   * no-windup baseline. Twelve fixed steps is still a coil the eye reads, and
+   * the follow-through — which is most of what a throw looks like — runs on
+   * after the release regardless of how long the windup was.
+   */
+  private static readonly WINDUP = 0.10;
+
+  private pending: PendingThrow | null = null;
+
+  /**
+   * Advance a latched windup, publish the charge the animator poses off, and
+   * fire when the coil is complete. Runs after the actions are dispatched so a
+   * throw decided this frame gets its first slice of windup on this frame.
+   */
+  private stepWindup(dt: number, ctx: Ctx): void {
+    const p = this.pending;
+    if (!p) return;
+    const e = this.byId.get(p.id);
+    if (!e || this.gs.phase !== 'LIVE_POSSESSION' || this.gs.thrower !== p.id) {
+      this.cancelWindup(ctx);
+      return;
+    }
+    /**
+     * NOT cancelled when the AI stops asking.
+     *
+     * The obvious safety valve — "if the AI has withdrawn the throw, retract it
+     * as a pump fake" — was measured and is wrong, because `AI.ts` emits a throw
+     * as a ONE-SHOT decision on a single frame and never re-asserts it. Gating
+     * on a re-assertion cancelled 159 throws out of 160 over half an hour of
+     * match and the whole game became stall-outs. The staleness is instead paid
+     * for by keeping the coil short and by tracking the receiver through it.
+     */
+    p.since += dt;
+    p.t += dt;
+    const full = GameSystem.WINDUP;
+    // Track the receiver through the coil. The AI's aim point is a lead solved
+    // for a release THIS frame; carrying it forward at the receiver's current
+    // velocity keeps it a lead for the release that actually happens.
+    const rcv = p.receiverId >= 0 ? this.byId.get(p.receiverId) : undefined;
+    if (rcv) { p.aimX += rcv.loco.vel.x * dt; p.aimZ += rcv.loco.vel.z * dt; }
+    if (p.t < full) {
+      // `Animator.bindEvents` turns this into `AnimHandle.setCharge`, which is
+      // the same struct the human input system pushes — one windup path for
+      // both, so a controlled thrower and an AI thrower coil identically.
+      ctx.events.emit('disc:charge', {
+        playerId: p.id, active: true, hold: p.t, power: clampNum(p.speed / 22, 0.15, 1),
+        type: p.throwType, tilt: 0,
+        aimYaw: Math.atan2(p.aimX - e.loco.pos.x, p.aimZ - e.loco.pos.z),
+        targetHold: full, maxHold: full * 1.6,
+      });
+      return;
+    }
+    this.pending = null;
+    this.aiThrow(e, p);
+  }
+
+  private cancelWindup(ctx: Ctx, fake = false): void {
+    if (!this.pending) return;
+    const id = this.pending.id;
+    this.pending = null;
+    ctx.events.emit('disc:charge', { playerId: id, active: false, fake, hold: 0, power: 0 });
+  }
+
+  /**
    * Solve the release for an AI throw.
    *
    * The AI hands us a point it wants the disc to arrive at. A disc is not a
@@ -533,7 +647,7 @@ export class GameSystem implements System {
    * Two outer passes is enough to land inside a receiver's catch radius, and it
    * costs a couple of milliseconds on the frame a throw is released.
    */
-  private aiThrow(e: RosterEntry, act: Extract<PlayerAction, { kind: 'throw' }>): void {
+  private aiThrow(e: RosterEntry, act: ThrowIntent): void {
     const type = THROW_MAP[act.throwType] ?? 'backhand';
     const hand: 'R' | 'L' = e.ai.handed === 'left' ? 'L' : 'R';
     this.releaseOrigin(e, _from);
@@ -991,6 +1105,7 @@ export class GameSystem implements System {
   /** Everyone onto their own goal line, ready for the pull. */
   private lineUpForPull(): void {
     const gs = this.gs;
+    this.pending = null;
     for (const e of this.roster) {
       const dir = gs.attackDir[e.team];
       const z = -dir * FIELD.GOAL_LINE + dir * 0.5;
@@ -1203,6 +1318,7 @@ export class GameSystem implements System {
    */
   private applyTableau(tableau: string, shot: string, ctx: Ctx, cam?: Shot): void {
     this.posed = true;
+    this.pending = null;
     this.poseName = tableau;
     this.poseHold = 2.5;
     const r = new Rng((this.seed ^ hashName(tableau + shot)) >>> 0);
@@ -1329,6 +1445,77 @@ export class GameSystem implements System {
   private of(team: TeamId, slot: number): RosterEntry { return this.roster[team * 7 + slot]; }
 
   /**
+   * Which hand this athlete throws with, as the ANIMATOR decided it: `+1` left,
+   * `-1` right. One athlete in nine is dealt a left hand from a hash of their
+   * id inside `Animator.add()`, and the rig's throwing arm — and therefore the
+   * side the disc hangs off — follows that, not anything the simulation knows.
+   * Read off the peer, defaulting to right-handed when there is no character
+   * system (headless tests, a stubbed peer).
+   */
+  private handedOf(id: number): 1 | -1 {
+    const peer = this.sysRef?.['players'] as
+      { get?(i: number): { handle?: { handed?: number } } | undefined } | undefined;
+    let h: number | undefined;
+    try { h = peer?.get?.(id)?.handle?.handed; } catch { h = undefined; }
+    return h === 1 ? 1 : -1;
+  }
+
+  /**
+   * Yaw for a body that must be seen holding the disc.
+   *
+   * A thrower is normally pointed at whatever he is looking at, and roughly half
+   * the time that puts his throwing shoulder on the far side of his own torso
+   * from the lens — so the disc, the one object in the frame the art direction
+   * says must always read, is eclipsed by the body carrying it. Both candidate
+   * yaws (the look direction swung either way) are legal, plausible open stances
+   * for a handler; this picks whichever one carries the throwing side toward the
+   * camera. `at` is where the body stands, `look` the direction it wants to face.
+   */
+  private discToCamera(id: number, at: { x: number; z: number }, look: number, swing = 0.62): number {
+    const s = this.handedOf(id);                       // +1 left-handed
+    const cl = Math.hypot(this.frame.c.x - at.x, this.frame.c.z - at.z) || 1;
+    const cx = (this.frame.c.x - at.x) / cl, cz = (this.frame.c.z - at.z) / cl;
+    let best = look, bestScore = -Infinity;
+    /**
+     * Two competing wants, and only scoring both stops one from destroying the
+     * other. Maximising "throwing side toward the lens" alone is satisfied just
+     * as well by turning a body's BACK to the camera as its front — which is
+     * exactly what it did on the first pass: the `sideline` handler and the
+     * `endzone` scorer both ended up shot from behind with a jersey number where
+     * a face should be. Weighting the chest toward the lens at three-quarters of
+     * the disc term picks the three-quarter-open stance that shows both, and the
+     * small penalty on |swing| keeps the body pointed at what it is looking at
+     * when neither term cares.
+     */
+    for (let i = 0; i <= 12; i++) {
+      const d = -swing + (i / 12) * 2 * swing;
+      const y = look + d;
+      // The rig's local +X is the athlete's LEFT; in world that is (cos y, -sin y).
+      const side = (Math.cos(y) * cx - Math.sin(y) * cz) * s;
+      const fwd = Math.sin(y) * cx + Math.cos(y) * cz;
+      const score = side + 0.75 * fwd - 0.30 * Math.abs(d);
+      if (score > bestScore) { bestScore = score; best = y; }
+    }
+    return best;
+  }
+
+  /**
+   * A world XZ offset expressed in the CAMERA's axes: `right` metres across the
+   * frame, `depth` metres further from the lens. Two bodies separated by a world
+   * offset can still land on the same pixels — which is what put four athletes
+   * in a single silhouette on the right of the `sideline` frame. Separated on
+   * the screen-right axis they cannot.
+   */
+  private screenOff(right: number, depth: number): { x: number; z: number } {
+    const f = this.frame;
+    const dl = Math.hypot(f.d.x, f.d.z) || 1;
+    return {
+      x: f.r.x * right + (f.d.x / dl) * depth,
+      z: f.r.z * right + (f.d.z / dl) * depth,
+    };
+  }
+
+  /**
    * A pair: an offensive player and the defender on him, positioned by a
    * cushion and a shade so the matchup reads at a glance.
    */
@@ -1381,18 +1568,35 @@ export class GameSystem implements System {
 
     // Handler and his mark. Force forehand, so the mark stands on the +X
     // (backhand) shoulder, a shade over a metre off — a legal, real mark.
-    this.placeBody(thrower, T.x, T.z, Math.atan2(catchAt.x - T.x, catchAt.z - T.z), { state: 'idle' });
+    // Open to the cut, swung so the throwing side — and the disc — is the side
+    // the lens can see. At 45 m the disc is ten pixels across; behind the torso
+    // it is none.
+    this.placeBody(thrower, T.x, T.z,
+      this.discToCamera(thrower.id, T, Math.atan2(catchAt.x - T.x, catchAt.z - T.z), 0.55),
+      { state: 'idle' });
     // Downfield-and-a-shade-across: at 46 m the only offset that separates two
     // silhouettes at all is the one aligned with the camera's own screen axis,
     // and for this angle that is straight down the field.
     this.placeBody(this.of(1, 0), T.x + 0.30, T.z - 1.15, Math.atan2(-0.30, 1.15),
       { state: 'shuffle', speed: 0.55 });
 
-    // Dump reset, behind the disc on the break side, with his defender denying
-    // the up-line.
-    const R = this.at(46.4, 0.755);
+    /**
+     * The dump reset — and it goes BEHIND the disc, which is both the rule of
+     * the sport and the fix for this framing.
+     *
+     * A reset handler stands upfield of the thrower, on the break side, so the
+     * thrower always has a backwards option; parking him at 46.4 m put him a
+     * metre and a half DOWNFIELD of the disc, which is a second cutter in the
+     * lane, not a dump. Behind the disc from this camera means *nearer the
+     * lens*, and that has a second payoff: the elevated sideline angle spends
+     * its bottom four hundred pixels on bare turf between 23 and 45 m, and this
+     * is the one body a vertical stack legitimately puts there. He fills the
+     * near field, he is the largest athlete in the frame, and he gives the
+     * composition a foreground.
+     */
+    const R = this.at(37.5, 0.815);
     this.duo(1, R, Math.atan2(T.x - R.x, T.z - R.z), { state: 'idle', speed: 0.9 },
-      { x: -0.9, z: -1.8 }, { state: 'shuffle', speed: 1.0 });
+      this.screenOff(-1.1, -1.5), { state: 'shuffle', speed: 1.0 });
 
     // The live cutter.
     this.duo(2, C, cFace,
@@ -1434,31 +1638,48 @@ export class GameSystem implements System {
     this.setAttack(-1);
     const thrower = this.of(0, 0);
     const T = this.at(27.0, 0.44);
-    // Downfield is -Z for this team, and from this camera that reads left, so
-    // the mark separates cleanly from his man instead of eclipsing him.
-    const M = { x: T.x - 0.62, z: T.z - 1.06 };
-    this.placeBody(thrower, T.x, T.z, Math.atan2(M.x - T.x, M.z - T.z) + 0.55, { state: 'idle' });
+
+    /**
+     * The mark stands IN FRONT of the thrower — between him and the field he is
+     * throwing into — not off to one side, and at a disc-space: the rules say
+     * no closer than one disc diameter, and every real mark plays as tight to
+     * that as it can. 1.05 m, offset a third of a metre to the screen side so
+     * the two bodies do not become one silhouette at this focal length.
+     */
+    const nudge = this.screenOff(-0.36, 0);
+    const md = norm2(nudge.x, -1 + nudge.z);          // downfield is -Z here
+    const M = { x: T.x + md.x * 1.05, z: T.z + md.z * 1.05 };
+
+    // Face the mark, swung to whichever side brings the throwing shoulder — and
+    // therefore the disc — around to the lens.
+    const look = Math.atan2(M.x - T.x, M.z - T.z);
+    this.placeBody(thrower, T.x, T.z, this.discToCamera(thrower.id, T, look, 0.72), { state: 'idle' });
     this.placeBody(this.of(1, 0), M.x, M.z, Math.atan2(T.x - M.x, T.z - M.z),
       { state: 'shuffle', speed: 0.6 });
 
-    // Everything else sits behind the plane of the mark: a cut coming back, a
-    // stack, and a deep pair, all inside the frame and all softening with
-    // distance. Depths chosen so nothing lands on the far sideline.
+    /**
+     * Everything else sits behind the plane of the mark: a reset behind the
+     * disc, a cut coming back, the stack, and a deep pair. Every defender is
+     * offset along the CAMERA's right axis rather than by a world vector, which
+     * is what stops four bodies at the same depth from stacking into a single
+     * blob — the previous arrangement put six of them inside two silhouettes on
+     * the right of the frame.
+     */
     const back: [number, number, number, number, number][] = [
-      // slot, depth, x%, offence speed, defender screen-side offset
-      [1, 29.5, 0.66, 0.9, -1.7],   // the reset, just past the pivot
-      [2, 31.0, 0.30, 6.6, +1.9],
-      [3, 34.5, 0.68, 0.8, -1.8],
-      [4, 37.5, 0.24, 1.0, +1.7],
-      [5, 40.0, 0.74, 7.4, -2.1],
-      [6, 42.5, 0.46, 1.2, +1.6],
+      // slot, depth, x%, offence speed, defender screen-right offset (m)
+      [1, 30.5, 0.70, 0.9, -2.0],   // the reset, behind and break side
+      [2, 33.0, 0.26, 6.6, +2.2],   // a cut coming back to the disc
+      [3, 36.5, 0.63, 0.8, -2.1],   // stack
+      [4, 40.0, 0.18, 1.0, +2.0],   // stack
+      [5, 44.0, 0.79, 7.4, -2.4],   // deep threat
+      [6, 48.0, 0.42, 1.2, +1.9],   // last body in the stack
     ];
     for (const [slot, depth, xp, sp, side] of back) {
       const o = this.at(depth, xp);
       const dir = sp > 4 ? norm2(T.x - o.x, T.z - o.z) : { x: 0, z: -1 };
       this.duo(slot, o, Math.atan2(dir.x, dir.z),
         { speed: sp, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : sp > 2 ? 'run' : 'idle' },
-        { x: side, z: sp > 4 ? -1.6 : 0.6 },
+        this.screenOff(side, sp > 4 ? 1.7 : -0.7),
         { speed: sp * 0.92, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : sp > 2 ? 'run' : 'shuffle' });
     }
 
@@ -1483,7 +1704,17 @@ export class GameSystem implements System {
     const eye = 1.62;
     const H = this.at(dist, 0.5, eye);
     const toCam = Math.atan2(f.c.x - H.x, f.c.z - H.z);
-    this.placeBody(hero, H.x, H.z, toCam - 0.42, { state: 'idle' });
+    /**
+     * Three-quarter to the lens, and turned so the throwing side is the side we
+     * see — because he is holding the disc. An "athlete at rest" in this sport
+     * is a player standing on the disc, and the art direction is explicit that
+     * the kits and the disc are the only three saturated things in any frame:
+     * a character hero shot with none of the three in it beyond the jersey is
+     * leaving the cheapest read on the table. It also exercises the whole carry
+     * chain — stance, pivot, grip, plate orientation — at a crop where every
+     * one of those is visible.
+     */
+    this.placeBody(hero, H.x, H.z, this.discToCamera(hero.id, H, toCam, 0.46), { state: 'idle' });
     hero.loco.foot.contact = true;
 
     // Bodies far behind for the bokeh field, none close enough to crowd him.
@@ -1494,10 +1725,12 @@ export class GameSystem implements System {
       this.placeBody(others[i], Math.sin(a) * d, -Math.cos(a) * d - 6, a + Math.PI,
         { speed: r.range(2, 7) });
     }
-    this.gs.thrower = null;
-    this.discRuntime.mode = 'ground';
-    _v.set(-9, 0, -18);
-    this.discRuntime.settle(_v);
+    this.gs.thrower = hero.id;
+    this.gs.stallCount = 2;
+    this.discRuntime.mode = 'held';
+    this.discRuntime.holderId = hero.id;
+    this.carryDisc();
+    this.discRuntime.wear = 0.5;
   }
 
   /**
@@ -1558,7 +1791,11 @@ export class GameSystem implements System {
     // rather than a man falling over near a frisbee.
     this.stageFlight(
       new THREE.Vector3(R.x + across.x * 0.82, rec.loco.pos.y + 0.10, R.z + across.z * 0.82),
-      'forehand', 0.60, 0.04, 0.9, Math.atan2(across.x, across.z), 0.50, 0.30);
+      // Banked hard: this camera sits two degrees above the disc, so a disc
+      // flying flat presents a 13 mm edge and renders as a white splinter at the
+      // fingertips. A disc fading away outside-in is banked, it is the shape a
+      // receiver has to lay out for in the first place, and it shows a plate.
+      'forehand', 0.60, 0.04, 0.9, Math.atan2(across.x, across.z), 0.50, 0.86);
     this.discRuntime.wear = 0.6;
     void r;
   }
@@ -1614,7 +1851,10 @@ export class GameSystem implements System {
     this.setAttack(1);
 
     const S = this.at(4.2, 0.60);
-    this.placeBody(scorer, S.x, S.z, Math.atan2(this.frame.c.x - S.x, this.frame.c.z - S.z),
+    // Turned to the crowd behind the lens, and swung so the disc he has just
+    // caught is on the side the camera can see rather than behind his back.
+    this.placeBody(scorer, S.x, S.z,
+      this.discToCamera(scorer.id, S, Math.atan2(this.frame.c.x - S.x, this.frame.c.z - S.z), 0.40),
       { state: 'idle' });
 
     // Two teammates arriving from the open side of the frame.
@@ -1644,12 +1884,21 @@ export class GameSystem implements System {
         { speed: r.range(0.8, 2.4), state: 'jog' });
     }
 
-    // The disc, just caught, still on the fingertips.
-    const lp = scorer.loco;
-    _v.set(lp.pos.x + 0.24, lp.groundY + lp.hipHeight * 1.55, lp.pos.z + 0.30);
-    _norm.set(0.35, 0.68, 0.64).normalize();
-    this.discRuntime.hold(scorer.id, _v, _norm, 1.1);
+    /**
+     * The disc, just caught, still in the hand.
+     *
+     * This used to hang it off a hard-coded hip offset — 24 cm across and 1.55
+     * hip-heights up — which in the rendered frame was a frisbee hovering in
+     * mid-air beside the scorer, attached to nothing. Route it through the same
+     * path every other tableau uses: mark him as the thrower and let
+     * `carryDisc()` probe the rig's grip anchor, so the disc sits in the hand
+     * the animator actually posed and stays there while the capture rig advances
+     * its hundred and fifty settle frames.
+     */
     this.gs.thrower = scorer.id;
+    this.discRuntime.mode = 'held';
+    this.discRuntime.holderId = scorer.id;
+    this.carryDisc();
     this.discRuntime.wear = 0.7;
     this.gs.score[0] = 9; this.gs.score[1] = 9;
     this.gs.teams[0].score = 9; this.gs.teams[1].score = 9;
@@ -1709,6 +1958,7 @@ export class GameSystem implements System {
     this.posed = false;
     this.poseName = '';
     this.poseHold = 0;
+    this.pending = null;
     // Some tableaux park the disc mid-flight with no thrower, which is not a
     // state the rules machine can step out of. Anything not cleanly resumable
     // restarts the point from a pull — the fastest way back to real play.
@@ -1741,6 +1991,37 @@ function clampNum(v: number, lo: number, hi: number): number {
 function norm2(x: number, z: number): { x: number; z: number } {
   const l = Math.hypot(x, z) || 1;
   return { x: x / l, z: z / l };
+}
+
+/**
+ * The subset of a `PlayerAction` of kind `'throw'` the release solver needs.
+ * Stated separately so a latched windup can carry a COPY — the AI reuses its
+ * action objects frame to frame, and the windup writes a lead correction into
+ * the aim.
+ */
+interface ThrowIntent {
+  throwType: AIThrowType;
+  aimX: number;
+  aimY: number;
+  aimZ: number;
+  speed: number;
+  receiverId: number;
+}
+
+/** A throw the animator is still coiling for. */
+interface PendingThrow extends ThrowIntent {
+  id: number;
+  /** Seconds of coil elapsed. */
+  t: number;
+  /** Seconds since the AI last re-asserted that it wants this throw. */
+  since: number;
+}
+
+function copyThrow(src: Extract<PlayerAction, { kind: 'throw' }>, dst: ThrowIntent): void {
+  dst.throwType = src.throwType;
+  dst.aimX = src.aimX; dst.aimY = src.aimY; dst.aimZ = src.aimZ;
+  dst.speed = src.speed;
+  dst.receiverId = src.receiverId;
 }
 
 /** Options `placeBody` understands. Named so the tableaux read as English. */

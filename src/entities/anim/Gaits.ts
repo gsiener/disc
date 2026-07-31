@@ -227,7 +227,9 @@ function stateLeanBias(loco: LocoLike, bs: BodyState): number {
   // A mark leans over its toes whatever the sim calls the state — it is the
   // single most recognisable body shape in the sport.
   const still = stanceW(bs);
-  const stance = still * (0.30 * bs.mark + 0.105 * bs.alert + 0.055 * bs.handler);
+  // The handler is over the disc, not stood behind it — chest forward of the
+  // hips, the same shape as the mark opposite him but about half as extreme.
+  const stance = still * (0.30 * bs.mark + 0.105 * bs.alert + 0.140 * bs.handler);
   switch (loco.state) {
     case 'backpedal': return 0.20 + stance * 0.5;  // chest over the toes
     case 'shuffle': return 0.13 + stance;
@@ -241,9 +243,19 @@ function stateLeanBias(loco: LocoLike, bs: BodyState): number {
 function stateCrouch(loco: LocoLike, bs: BodyState): number {
   const H = 1;
   const still = stanceW(bs);
-  // Knees bent, hips down, ready to move: the mark most, a live cutter some, a
-  // handler a little (he is balanced over a pivot, not sitting in a stance).
-  const stance = still * (0.115 * bs.mark + 0.050 * bs.alert + 0.028 * bs.handler);
+  /**
+   * Knees bent, hips down, ready to move: the mark most, a live cutter some,
+   * and the handler nearly as much as the mark.
+   *
+   * The handler term used to be 0.028 m — two and a half centimetres, which is
+   * inside the noise of the breathing bob and reads on screen as a man standing
+   * upright holding a frisbee. A thrower with a defender inside a metre is
+   * *low*: he is balanced over a fixed pivot foot with a wide base and has to be
+   * able to step either way through the mark without moving his weight first.
+   * 0.085 m is a real knee bend that still stops well short of the mark's
+   * sit-in-a-stance crouch, so the two shapes stay distinguishable.
+   */
+  const stance = still * (0.115 * bs.mark + 0.050 * bs.alert + 0.085 * bs.handler);
   switch (loco.state) {
     case 'backpedal': return 0.055 * H + stance * 0.6;
     case 'shuffle': return 0.095 * H + stance;

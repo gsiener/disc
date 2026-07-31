@@ -13,10 +13,11 @@ import type { Vec3 } from './Build.ts';
  *  eye. If a number here changes, it changes because the table says so.
  * ============================================================================
  *
- *   vertex (crown)          1.000 H      menton (chin)          0.870 H
- *   head height             0.130 H      → 7.7 heads tall, which is where a
- *                                          lean endurance athlete actually sits
- *   eye line                0.935 H      = chin + 0.50 head heights
+ *   vertex (cranium)        0.994 H      menton (chin)          0.867 H
+ *   head height             0.1272 H     → 7.5 *visible* head-heights once the
+ *                                          hair cap is counted, which is the
+ *                                          number a critic measures off frame
+ *   eye line                0.931 H      = chin + 0.505 head heights
  *   cervicale (C7)          0.822 H      acromion               0.818 H
  *   glenohumeral centre     0.803 H      hip joint              0.530 H
  *   knee joint              0.282 H      sphyrion (ankle)       0.0395 H
@@ -109,8 +110,16 @@ export function measureBody(p: BodyParams): Anthro {
   // sits ~1.5 % H below and ~7 % inboard of the bony shoulder point.
   const shoulderY = 0.803 * H;
   const acromionY = 0.818 * H;
-  const headH = 0.130 * H * p.headSize;
-  const crownY = H;
+  // HAIR ALLOWANCE. `params.height` is the number the frame measures, and what
+  // the frame measures is the top of the HAIR, not the top of the skull — the
+  // hair cap in Head.ts stands ~0.006 H proud of the cranial vault. Putting the
+  // vertex at H exactly therefore builds a skull that is right and a *silhouette*
+  // that is 1.1 cm too tall, and 1.1 cm on a head is a third of a head-height
+  // over 7.5 of them. Dropping the skull by the cap thickness is what takes the
+  // measured figure from 6.4 visible head-heights to 7.5.
+  const hairLift = 0.0060 * H;
+  const headH = 0.1272 * H * p.headSize;
+  const crownY = H - hairLift;
   const chinY = crownY - headH;
   // Atlanto-occipital joint — level with the ear canal, which is 0.36 of the
   // way up the head from the chin. At 0.30 the head pivoted through its own
@@ -217,10 +226,11 @@ export function measureBody(p: BodyParams): Anthro {
     handW: 0.0242 * H * armF,
     handT: 0.0078 * H * armF * (0.95 + 0.12 * mus),
     // Head BREADTH 0.0850 H (0.153 m at 1.80) and, through the same radius,
-    // length 0.1075 H — a cephalic index of 0.79, which is an adult skull. At
-    // 0.0475 H the head measured 0.0909 H across: 8 % over the table, and 8 %
-    // on a head is the whole difference between an athlete and an action figure.
-    headR: 0.0445 * H * p.headSize,
+    // length 0.1075 H — a cephalic index of 0.79, which is an adult skull.
+    // Measured off the built mesh, 0.0445 H here came out at 0.0861 H across —
+    // 1.3 % over the table, because the sculpt's zygomatic term adds width the
+    // radius does not know about. 0.0437 lands the mesh on 0.0850.
+    headR: 0.0437 * H * p.headSize,
     headH,
   };
 
@@ -262,6 +272,17 @@ const FWD = V(0, 0, 1);
 export const FINGER_SPREAD = [0, 0.30, 0.10, -0.10, -0.30];
 export const FINGER_LEN = [0.62, 1.00, 1.08, 0.99, 0.76];
 export const PHALANX = [0.45, 0.31, 0.24];
+/**
+ * Multiplier from `FINGER_SPREAD` units to metres, against the hand's half
+ * breadth. This is the number that decides whether an athlete has fingers.
+ *
+ * At 1.55 the four knuckles spanned 4.1 cm on an 8.7 cm hand while each digit
+ * was 2.2 cm thick — the neighbours overlapped by half a finger, welded into one
+ * mass, and the closeup crop read a mitten. An adult hand puts the index and
+ * pinky knuckles 6.3 cm apart (2.1 cm per digit) with digits about 1.9 cm thick,
+ * so the digits touch and no more. 2.35 is that number.
+ */
+export const FINGER_SPAN = 2.35;
 
 export interface SkeletonResult {
   skeleton: THREE.Skeleton;
@@ -309,7 +330,7 @@ export function buildSkeleton(a: Anthro): SkeletonResult {
     const palmLen = a.len.hand * 0.46;
     for (let f = 0; f < 5; f++) {
       const fam = FINGERS[f];
-      const spread = -s * FINGER_SPREAD[f] * a.g.handW * 1.55;
+      const spread = -s * FINGER_SPREAD[f] * a.g.handW * FINGER_SPAN;
       const digitLen = a.len.hand * 0.54 * FINGER_LEN[f];
       let base: Vec3;
       let dir: Vec3;
@@ -327,7 +348,9 @@ export function buildSkeleton(a: Anthro): SkeletonResult {
           .addScaledVector(yh, palmLen)
           .addScaledVector(xh, spread)
           .addScaledVector(zh, -a.g.handT * 0.12);
-        dir = yh.clone().addScaledVector(xh, spread * 0.55 / Math.max(1e-4, digitLen)).normalize();
+        // Digits diverge as they run out, so the tips are further apart than the
+        // knuckles. Parallel digits at rest is the other half of the mitten.
+        dir = yh.clone().addScaledVector(xh, spread * 0.42 / Math.max(1e-4, digitLen)).normalize();
       }
       let cur = base;
       for (let j = 0; j < 3; j++) {

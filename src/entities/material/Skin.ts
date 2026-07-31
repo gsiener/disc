@@ -77,7 +77,13 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
     sheenRoughness: 0.85,
   });
   m.name = 'player.skin';
-  m.sheenColor.setRGB(i.tones.subsurface.r, i.tones.subsurface.g, i.tones.subsurface.b);
+  // Vellus hair is a scattering fuzz over the skin, so it takes its hue from the
+  // skin and its LEVEL from being a thin dielectric fibre — which is to say, low.
+  // `subsurface` is a unit-luminance rotation whose largest channel sits at 1.34
+  // (see Tone.ts), and feeding a >1 colour to sheenColor is energy-adding: it put
+  // a saturated red halo round every grazing edge on the roster.
+  m.sheenColor.setRGB(i.tones.subsurface.r, i.tones.subsurface.g, i.tones.subsurface.b)
+    .multiplyScalar(0.34);
 
   const u = {
     uPore: { value: i.detail.pore },
@@ -164,7 +170,9 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float axf = abs(hx);
         float fr = clamp(hz, 0.0, 1.0);
         // Same mandibular border rig/Head.ts sculpts — see jawLine() there.
-        float jawNy = -0.72 - 0.40 * clamp(hz * 2.4, 0.0, 1.0) + 0.40 * clamp(-hz * 1.6, 0.0, 1.0);
+        // If these two drift apart the submandibular shadow lands on the jaw
+        // instead of under it, so move one and move the other.
+        float jawNy = -0.80 - 0.34 * clamp(hz * 2.4, 0.0, 1.0) + 0.42 * clamp(-hz * 1.6, 0.0, 1.0);
 
         // 30 repeats per metre of athlete puts one micro-relief cell at 0.7 mm,
         // which is what skin measures. The first pass sampled at 118 — a 0.18 mm
@@ -201,7 +209,13 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // line rig/Head.ts sculpts. If these drift apart the lip colour lands
         // on the chin, which is exactly what a "painted on" mouth looks like.
         float mw = uFaceGeo.x;
-        float lipX = smoothstep(mw * 1.06, mw * 0.62, axf);
+        // The COLOUR of the lip has to reach as far as the SCULPT of the lip.
+        // Ramping out at 0.62 of the half-width painted a vermilion two thirds
+        // the width of the mouth the geometry has, so a 45 mm mouth rendered as
+        // a 28 mm pucker — and a small central mouth is one of the two or three
+        // cues that reads a face as juvenile, which is exactly the note this
+        // roster keeps getting. The sculpt fades over 1.10 → 0.55; match it.
+        float lipX = smoothstep(mw * 1.08, mw * 0.80, axf);
         float lips = clamp(pHead * lipX * clamp(hz * 1.6 - 0.38, 0.0, 1.0)
           * (g1(hy, -0.598, 0.033) + g1(hy, -0.716, 0.040)), 0.0, 1.0);
         // The vermilion BORDER is a pale ridge one millimetre wide, and it is
@@ -225,9 +239,19 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // Individual hairs, combed outward along the arch rather than sampled
         // from an isotropic follicle field — the isotropic version rendered as
         // dirt thrown at the forehead, which is a fair description of it.
-        vec2 bco = vec2(axf * 30.0 + hy * 5.0, (hy - browY) * 260.0);
-        float browN = vnoise(bco) * 0.62 + vnoise(bco * 2.7 + 11.0) * 0.38;
-        float brow = browMask * mix(0.70, 1.18, smoothstep(0.28, 0.74, browN));
+        //
+        // The cross-arch rate came down from 260 to 88. At 260 one noise cell
+        // spanned 0.004 of a head unit — a third of a millimetre, well under a
+        // pixel at every framing in the shot list — so the brow could only ever
+        // resolve as a spray of speckles over the whole orbital region rather
+        // than as a mass with an edge. A brow is ~35 hairs deep, not 900.
+        vec2 bco = vec2(axf * 34.0 + hy * 5.0, (hy - browY) * 88.0);
+        float browN = vnoise(bco) * 0.66 + vnoise(bco * 2.4 + 11.0) * 0.34;
+        // The mass has to stay solid through its middle and only break up at its
+        // edges, or it is not a brow, it is stubble on a forehead.
+        float browCore = exp(-pow((hy - browY) / (browTh * 0.62), 2.0));
+        float brow = browMask * mix(mix(0.42, 1.15, smoothstep(0.26, 0.72, browN)),
+                                    1.10, browCore * 0.72);
 
         float ddx = axf - uEyeGeo.x;
         float apV = hy > 0.0 ? uEyeGeo.z : uEyeGeo.w;
@@ -247,23 +271,70 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           * exp(-pow((qq - 1.18) / 0.10, 2.0)) * smoothstep(0.52, 0.86, lashDir) * 0.55;
 
         /* ---- facial cavity ---------------------------------------------- */
-        // aCrease carries the sculpted folds, but the shadows that actually
-        // give a face its VALUE STRUCTURE are broad smooth regions — the orbit,
-        // the submalar hollow, the shelf under the nose, the trough under the
-        // lower lip, the temple, and above all the submandibular shadow that
-        // separates a jaw from a neck. Without them a face at golden hour is a
-        // uniform pink field with features drawn on it, which is what every
-        // frame in this project rendered up to now: the sculpt was there and
-        // the image could not see it.
+        // This is an AMBIENT OCCLUSION MAP written analytically, and it is worth
+        // more than every other term in this file at the framing the shot list
+        // actually delivers: a head is ninety pixels tall in the closeup, so what
+        // survives to the viewer is the VALUE STRUCTURE — the dark mass of the
+        // orbits, the shelf under the nose, the trough under the lower lip and
+        // the submandibular shadow — and not one pore.
+        //
+        // The previous version was the right idea at the wrong SIZE. Its orbital
+        // lobe alone ran 0.85 deep across ±0.25 in ny and 0.15–0.65 in |nx|,
+        // which is not an eye socket, it is the entire mid-face including both
+        // cheekbones and the bridge of the nose. Summed with five more lobes of
+        // the same generosity the mask saturated over most of the front of every
+        // head, so the face came back a flat dark card that read *less* like a
+        // face than no occlusion at all — the neck and the ears, which are not
+        // in the mask, ended up brighter than the features.
+        //
+        // An occlusion term has to be NARROW to be information. Every lobe below
+        // is sized to the concavity it stands for, and the convexities the light
+        // should find — brow ridge, cheek, nose dorsum, chin ball — are left at
+        // zero on purpose.
+        float orbQ = qq;   // the aperture ellipse, shared with the lid margin
         float cavity = pHead * clamp(
-            0.85 * g1(hy, 0.020, 0.125) * g1(axf, 0.400, 0.210) * fr
-          + 0.40 * g1(hy, -0.490, 0.150) * g1(axf, 0.560, 0.200) * fr
-          + 0.34 * g1(hy, -0.760, 0.060) * g1(axf, 0.000, 0.250) * fr
-          + 0.45 * g1(hy, uFaceGeo.y - 0.085, 0.048) * g1(axf, 0.0, 0.190) * fr
-          + 0.30 * g1(hy, 0.440, 0.220) * smoothstep(0.56, 0.86, axf)
-          + 0.95 * smoothstep(jawNy + 0.13, jawNy - 0.24, hy), 0.0, 1.0);
-        // The top of the neck lives in the jaw's shadow whatever the sun does.
-        cavity += pNeck * smoothstep(0.42, 1.0, vLen) * 0.62;
+            // Orbit. Keyed to the palpebral ellipse the sculpt actually has, so
+            // it lands in the socket on every face in the roster rather than on
+            // whichever one the constants were fitted against. Deepest just
+            // above the globe, where the supraorbital ridge overhangs it.
+            0.78 * exp(-pow((orbQ - 0.55) / 0.85, 2.0)) * smoothstep(0.10, 0.30, hz)
+                 * (0.62 + 0.38 * smoothstep(-0.10, 0.16, hy))
+            // Tear trough, running infero-medially from the inner canthus.
+          + 0.30 * g1(hy, -0.150, 0.055) * g1(axf, uEyeGeo.x * 0.80, 0.130) * fr
+            // Nasal side wall and the alar crease at the foot of it — the groove
+            // that stops a nose being part of the cheek.
+          + 0.34 * g1(axf, 0.115, 0.055) * g1(hy, uFaceGeo.y + 0.055, 0.130) * fr
+          + 0.42 * g1(hy, uFaceGeo.y - 0.035, 0.045) * g1(axf, 0.190, 0.048) * fr
+            // Nostril sill: the face steps back hard under the lobule and this
+            // is the darkest square centimetre on a lit face.
+          + 0.52 * g1(hy, uFaceGeo.y - 0.075, 0.032) * g1(axf, 0.0, 0.115) * fr
+            // Nasolabial fold, commissure pit, and the trough under the lower
+            // lip. Three narrow lines that between them ARE a mouth at distance.
+          + 0.40 * g1(hy, -0.590, 0.090) * g1(axf, 0.260, 0.045) * fr
+          + 0.34 * g1(hy, -0.655, 0.030) * g1(axf, 0.0, 0.230) * fr
+          + 0.36 * g1(hy, -0.795, 0.038) * g1(axf, 0.0, 0.210) * fr
+            // Submalar hollow. Broad, but shallow — it is a plane turning away,
+            // not a hole.
+          + 0.20 * g1(hy, -0.430, 0.130) * g1(axf, 0.545, 0.170) * fr
+            // Temple, and the gutter where the ear meets the skull.
+          + 0.16 * g1(hy, 0.360, 0.190) * smoothstep(0.62, 0.88, axf)
+          + 0.34 * g1(axf, 0.900, 0.075) * g1(hy, -0.230, 0.220) * smoothstep(0.30, -0.10, hz)
+            // Submandibular. The one that separates a jaw from a neck, and the
+            // only lobe here that is allowed to be big.
+          + 0.92 * smoothstep(jawNy + 0.11, jawNy - 0.26, hy), 0.0, 1.0);
+        // The concha of the ear is a bowl; the rig hands us its depth in vCrease,
+        // but the whole ear also sits in the skull's shadow on its medial side.
+        cavity += pEar * 0.30;
+        // THE SHADOW UNDER THE CHIN IS ON THE NECK, NOT ON THE HEAD.
+        //
+        // jawLine() runs to −1.14 at the front, which is below the bottom of the
+        // ellipsoid, so the head's own submandibular lobe correctly contributes
+        // nothing at the midline — the chin IS the bottom of the head there. The
+        // consequence, which the last three renders all showed, is that a chin
+        // seen from slightly below has no dark band under it at all and reads as
+        // a smooth continuation into the neck. A jaw is legible because of the
+        // shadow it CASTS, and that shadow belongs to the neck.
+        cavity += pNeck * smoothstep(0.30, 0.96, vLen) * 0.88;
         // …and so does the hollow above the clavicles.
         cavity += pTorso * smoothstep(0.94, 1.0, vLen) * 0.35;
         cavity = clamp(cavity, 0.0, 1.0);
@@ -358,23 +429,24 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // Wet skin is darker: the water film removes the air/keratin interface.
         skin *= 1.0 - 0.16 * wet;
 
-        // TEMP-DEBUG-BANDS
-        if (pHead > 0.5) {
-          if (abs(hy - 0.0) < 0.012) skin = vec3(1.0, 0.0, 0.0);
-          else if (abs(hy + 0.465) < 0.012) skin = vec3(0.0, 1.0, 0.0);
-          else if (abs(hy + 0.655) < 0.012) skin = vec3(0.0, 0.3, 1.0);
-          else if (abs(hy + 0.900) < 0.012) skin = vec3(1.0, 1.0, 0.0);
-          else if (abs(hy - 0.440) < 0.012) skin = vec3(1.0, 0.0, 1.0);
-        }
         diffuseColor.rgb *= skin;
 
         gSss = uSss;
         // Red wraps furthest because it is the least absorbed in the dermis; this
-        // ratio is the whole reason a terminator on skin goes orange.
-        gWrap = vec3(0.42, 0.20, 0.11) * mix(1.0, 0.55, expo * 0.5);
-        gThin = clamp(0.08 + pEar * 0.62 + isPart(P_FINGER) * 0.42 + pNeck * 0.14
-          + pHead * fr * (0.70 * g1(hy, -0.44, 0.10) * g1(axf, 0.0, 0.24)
-                        + 0.30 * g1(hy, -0.90, 0.14) * g1(axf, 0.0, 0.26)), 0.0, 1.0);
+        // ratio is the whole reason a terminator on skin goes orange. The widths
+        // came down from (0.42, 0.20, 0.11): at that spread the red channel of
+        // the terminator band ran 2.8:1 over blue on top of an albedo already at
+        // 3:1, and 8:1 is not a warm terminator, it is a red one.
+        gWrap = vec3(0.30, 0.16, 0.10) * mix(1.0, 0.62, expo * 0.5);
+        // Thin tissue means TISSUE THAT IS THIN — an ear, a nostril wing, the web
+        // of a hand — not "skin". The old 0.08 floor put a shadow-map-independent
+        // glow on every square centimetre of every athlete, which is a wash, and
+        // a wash is exactly what you cannot afford from a term that ignores
+        // shadowing.
+        gThin = clamp(0.022 + pEar * 0.70 + isPart(P_FINGER) * 0.46 + pNeck * 0.10
+          + pHead * fr * (0.62 * g1(hy, uFaceGeo.y - 0.05, 0.075) * g1(axf, 0.135, 0.075)
+                        + 0.34 * g1(hy, -0.44, 0.09) * g1(axf, 0.0, 0.20)
+                        + 0.26 * g1(hy, -0.90, 0.13) * g1(axf, 0.0, 0.24)), 0.0, 1.0);
         gTrans = 1.0;
       `,
     });
@@ -441,13 +513,20 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
             inout ReflectedLight reflectedLight) {
           float dotNL = dot(geometryNormal, directLight.direction);
           // Normalised per-channel wrapped diffuse. The wrap width is the mean
-          // free path of the channel in dermis, so red bleeds a quarter of a
-          // radian past the terminator and blue barely bleeds at all.
+          // free path of the channel in dermis, so red bleeds furthest past the
+          // terminator and blue barely bleeds at all.
           vec3 w = gWrap;
           vec3 diff = clamp((vec3(dotNL) + w) / ((1.0 + w) * (1.0 + w)), 0.0, 1.0);
           float hard = saturate(dotNL);
-          vec3 tint = mix(vec3(1.0), gSss, clamp((diff - vec3(hard)) * 4.0, 0.0, 1.0));
-          reflectedLight.directDiffuse += directLight.color * diff * tint
+          // ONLY the light the wrap adds past the geometric terminator has been
+          // through the dermis, so only that part carries the dermis's colour.
+          // The first pass tinted the whole lobe by gSss, which reddens the fully
+          // lit side as well — that is not scattering, it is a paint job, and
+          // together with the same tint on the indirect term it is what took the
+          // roster's arms and legs to maroon.
+          vec3 gain = max(diff - vec3(hard), vec3(0.0));
+          vec3 lit = diff + gain * (gSss - vec3(1.0)) * 0.65;
+          reflectedLight.directDiffuse += directLight.color * max(lit, vec3(0.0))
             * BRDF_Lambert(material.diffuseContribution);
           #ifdef USE_SHEEN
             sheenSpecularDirect += hard * directLight.color
@@ -475,23 +554,48 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           vec3 LT = normalize(-Lv + geometryNormal * 0.24);
           float bk = pow(clamp(dot(geometryViewDir, -LT), 0.0, 1.0), 4.5);
           float shaded = clamp(0.55 - 0.75 * dot(geometryNormal, Lv), 0.0, 1.0);
+          // Transmitted light is the SKIN's colour, warmed by the path it took —
+          // never a free-floating red. Written as albedo × a bounded rotation it
+          // cannot out-saturate the surface it is glowing through, which the old
+          // old mix(albedo, gSss * 0.9, 0.65) very much could: gSss ran to 2.24
+          // in red and this term ignores the shadow map, so it laid an
+          // unshadowed red wash over every athlete on the pitch.
           reflectedLight.indirectDiffuse += uSunColor * uSunGlow * bk * gThin * shaded
-            * mix(diffuseColor.rgb, gSss * 0.9, 0.65) * 0.80;
+            * diffuseColor.rgb * gSss * 1.25;
           // Skin's diffuse albedo is dominated by MULTIPLE scattering, and
           // multiple scattering is red: sky light that goes in blue comes back
-          // out warm. Without this the shadow side of every face at golden hour
-          // is a neutral blue-grey mask — which is exactly what the closeup
-          // rendered, and it is the single loudest failure at that crop, well
-          // ahead of anything in the sculpt. gSss is normalised to unit
-          // luminance in Tone.ts, so this rotates hue and costs no brightness.
-          reflectedLight.indirectDiffuse *= mix(vec3(1.0), gSss, 0.50);
+          // out warm. But the albedo ALREADY encodes that, so this is a small
+          // hue rotation on the ambient and nothing more — at 0.50 of an
+          // uncapped gSss it was a second albedo, applied on top of the first.
+          reflectedLight.indirectDiffuse *= mix(vec3(1.0), gSss, 0.30);
+
+          // THE SHADOW SIDE OF A FACE IS NOT ONE COLOUR. It is lit from above by
+          // a cool sky and from below by whatever the subject is standing on,
+          // and at golden hour on a green pitch that is a warm bounce off the
+          // turf. Splitting the ambient across the horizon is what gives a
+          // backlit portrait its modelling — a forehead that goes cool and a jaw
+          // that goes warm reads as a head in space; the same face under one
+          // ambient colour reads as a mask, which is exactly what the closeup
+          // rendered and what the previous pass tried to fix by dumping red into
+          // every term it could reach.
+          //
+          // It is a REDISTRIBUTION, not an addition: the two tints average to
+          // unity, so the ambient budget Ambient.ts set survives untouched and
+          // the key:fill ratio in lightReport() does not move.
+          vec3 wUp = normalize(mat3(viewMatrix) * vec3(0.0, 1.0, 0.0));
+          float hemi = dot(geometryNormal, wUp) * 0.5 + 0.5;
+          reflectedLight.indirectDiffuse *=
+            mix(vec3(1.12, 1.05, 0.84), vec3(0.90, 0.97, 1.14), hemi);
+
           // Sky occlusion. It is the indirect term this has to cut: the key is
           // already directional, so darkening the direct light as well would
           // just flatten the terminator it is meant to be shaping.
-          reflectedLight.indirectDiffuse *= 1.0 - 0.62 * cavity;
-          reflectedLight.indirectSpecular *= 1.0 - 0.55 * cavity;
-          // The rig's baked cavity term stands in for an AO map.
-          reflectedLight.indirectDiffuse *= 1.0 - 0.66 * vCrease;
+          reflectedLight.indirectDiffuse *= 1.0 - 0.55 * cavity;
+          reflectedLight.indirectSpecular *= 1.0 - 0.48 * cavity;
+          // The rig's baked cavity term stands in for an AO map. It and this cavity
+          // overlap along every fold the sculpt has, and multiplying two AO
+          // terms that agree with each other is how a crease turns into a hole.
+          reflectedLight.indirectDiffuse *= 1.0 - 0.48 * vCrease;
         }
       `,
     });

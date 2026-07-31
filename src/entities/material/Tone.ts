@@ -120,19 +120,50 @@ export function skinTones(bio: SkinBio): SkinTones {
     ...bio, blood: Math.min(0.22, bio.blood * 4.0), oxygenation: 0.55,
     epidermis: bio.epidermis * 0.42, melanin: bio.melanin * 0.72,
   });
-  const sss = base.sss;
-  // Normalise the subsurface tint to unit luminance: it is a *hue*, applied on
-  // top of the albedo, not a second albedo. Left un-normalised it doubles the
-  // brightness of every backlit edge.
-  const lum = 0.2126 * sss[0] + 0.7152 * sss[1] + 0.0722 * sss[2];
-  const k = lum > 1e-5 ? 1 / lum : 1;
   return {
     albedo: col(base.r),
     tanned: col(tan.r),
     flush: col(flush.r),
     lip: col(lip.r),
-    subsurface: col(sss.map((v) => v * k)),
+    subsurface: col(subsurfaceTint(base.sss)),
   };
+}
+
+/**
+ * The single most damaging number in this file, so it gets its own function.
+ *
+ * `sss` as it comes out of `reflectance` is a RATIO of transmitted to incident
+ * light, and in a melanised dermis that ratio is wildly red-dominant: at the deep
+ * end of the roster it is (0.32, 0.10, 0.02), i.e. sixteen to one red over blue.
+ * Normalising it to unit luminance — which the first pass did, and stopped —
+ * hands the shader a colour of (2.24, 0.72, 0.17).
+ *
+ * That colour is then multiplied onto light that has ALREADY been multiplied by
+ * the diffuse albedo, and the diffuse albedo of skin is itself the multiple-
+ * scattering result. Applying the ratio twice is what turned every shadow side,
+ * every terminator and every backlit rim on the roster into dark saturated
+ * red-brown — the "maroon arms and legs" the art direction explicitly forbids
+ * (skin is H 20–35°, S 20–35%). The physics was right; the composition was
+ * double-counted.
+ *
+ * So: keep the HUE, which is real and is why a terminator on skin goes orange,
+ * and bound the CHROMA, because this quantity is a rotation applied on top of an
+ * albedo and not a second albedo. Unit luminance first (so it never changes
+ * exposure), then compress toward white until the largest channel sits at `CAP`.
+ * Every tone on the roster therefore lands at the same tint STRENGTH and differs
+ * only in direction, which is also what makes the fourteen faces relight
+ * consistently instead of the dark ones glowing hardest.
+ */
+const SSS_CAP = 1.34;
+
+function subsurfaceTint(sss: readonly number[]): number[] {
+  const lum = 0.2126 * sss[0] + 0.7152 * sss[1] + 0.0722 * sss[2];
+  const k = lum > 1e-5 ? 1 / lum : 1;
+  const n = sss.map((v) => v * k);
+  const peak = Math.max(n[0], n[1], n[2]);
+  // s = 1 leaves it untouched, s = 0 is white. Solved so max(mix(1, n, s)) = CAP.
+  const s = peak > SSS_CAP ? (SSS_CAP - 1) / (peak - 1) : 1;
+  return n.map((v) => 1 + (v - 1) * s);
 }
 
 interface RandLike { next(): number; range(lo: number, hi: number): number; gauss(): number; }

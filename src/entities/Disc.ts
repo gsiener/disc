@@ -234,12 +234,26 @@ function bakeAlbedo(seed: number): THREE.Texture {
       const cx = S * 0.5;
       const rad = S * UVR;
 
-      // Base plastic. Slightly cooler and lighter on the plate than the rim.
+      /**
+       * Base plastic.
+       *
+       * The art direction pins the disc at `#fafafa` and calls it "the highest
+       * value object on the pitch in every daylight frame" — it is one of the
+       * three things in the whole scene allowed to sing. The old ramp ran
+       * `#e9edf1 → #b9bfc6`: a blue-grey that, once the rotational blur had
+       * averaged it and a cool sky fill had lit it, rendered as a pale
+       * blue-grey lollipop in the `disc` framing rather than a white disc.
+       *
+       * So: neutral hue (r = g = b within a point), and only about a fifth of
+       * a stop of fall-off from plate centre to rim, which is all the shading
+       * a 2 mm crown of white polyethylene actually has. The rim shadow comes
+       * from the geometry and the ORM map, not from painting it grey.
+       */
       const g = c.createRadialGradient(cx, cy, rad * 0.05, cx, cy, rad);
-      g.addColorStop(0.00, isTop ? '#e9edf1' : '#dfe3e7');
-      g.addColorStop(0.62, isTop ? '#e4e8ed' : '#d8dce1');
-      g.addColorStop(0.86, isTop ? '#d6dae0' : '#ccd1d7');
-      g.addColorStop(1.00, '#b9bfc6');
+      g.addColorStop(0.00, isTop ? '#fbfbfa' : '#f2f2f1');
+      g.addColorStop(0.62, isTop ? '#f8f8f7' : '#eeeeed');
+      g.addColorStop(0.86, isTop ? '#f0f0ef' : '#e6e6e5');
+      g.addColorStop(1.00, '#dcdcdb');
       c.fillStyle = g;
       c.beginPath(); c.arc(cx, cy, rad, 0, Math.PI * 2); c.fill();
 
@@ -716,7 +730,13 @@ export class DiscSystem implements System {
   private uSpinBlur = { value: 0 };
   private uWear = { value: null as unknown as THREE.Texture };
   private uWearAmt = { value: 0 };
-  private uScatter = { value: new THREE.Color(1.35, 1.30, 1.18) };
+  /**
+   * Forward-scatter tint and gain. Warm, because what comes through 1.2 mm of
+   * white polyethylene at golden hour is the key, not the sky — and strong
+   * enough that a backlit disc is the brightest object on the pitch, which is
+   * what `docs/art-direction.md` requires of it in every daylight frame.
+   */
+  private uScatter = { value: new THREE.Color(1.62, 1.52, 1.34) };
 
   init(ctx: Ctx): void {
     const game = ctx.sys['game'] as unknown as { discRuntime?: DiscRuntime } | undefined;
@@ -914,7 +934,19 @@ export class DiscSystem implements System {
               sampledDiffuseColor.rgb * vec3(0.62, 0.72, 0.42), gStain * 0.60);
             diffuseColor *= sampledDiffuseColor;
             float rUv = length(vMapUv - dCentre) / ${UVR.toFixed(4)};
-            gThin = smoothstep(0.86, 1.0, rUv) + 0.55 * smoothstep(0.90, 0.86, rUv) * smoothstep(0.80, 0.86, rUv);
+            /**
+             * WHICH PART OF A DISC IS THIN.
+             *
+             * This had it inverted: the term fired at rUv > 0.86, i.e. on the
+             * RIM. The rim is the thick part — that is where the 175 g lives, a
+             * solid bead of polyethylene 6-7 mm through. The FLIGHT PLATE is the
+             * membrane: about 1.2 mm across its whole span, which is why holding
+             * a white disc up against the sky lights the middle and leaves the
+             * rim a dark ring. Backlighting the plate is the entire reason a
+             * disc reads as white at golden hour, and the huck framing at
+             * 18.2 h is lit from directly behind the subject.
+             */
+            gThin = 0.30 + 0.70 * smoothstep(0.80, 0.42, rUv);
           #endif
         `)
         .replace('#include <roughnessmap_fragment>', /* glsl */`
@@ -933,7 +965,10 @@ export class DiscSystem implements System {
             // and opaque across the plate.
             vec3 Vd = normalize(vViewPosition);
             float fres = pow(1.0 - abs(dot(normalize(normal), Vd)), 2.2);
-            gScatter = gThin * (0.22 + 0.78 * fres) * (1.0 - 0.5 * gStain);
+            // Across the plate the scatter is broad and view-independent (light
+            // coming through a membrane); at the rim it is a grazing-angle
+            // effect only. Hence the fixed floor plus the fresnel lobe.
+            gScatter = gThin * (0.52 + 0.48 * fres) * (1.0 - 0.5 * gStain);
           }
         `)
         .replace('#include <lights_fragment_end>', /* glsl */`
@@ -1060,8 +1095,8 @@ export class DiscSystem implements System {
 
       const age = (i + 1) / count;                   // 0 oldest .. 1 newest
       const taper = age * age;
-      const w = DISC.diameter * (0.02 + 0.30 * taper) * (0.45 + 0.55 * gain);
-      const a = taper * age * 0.34 * gain;
+      const w = DISC.diameter * (0.02 + 0.38 * taper) * (0.45 + 0.55 * gain);
+      const a = taper * age * 0.52 * gain;
 
       const k = i * 6, kc = i * 8;
       pos[k] = s.x - _v3.x * w; pos[k + 1] = s.y - _v3.y * w; pos[k + 2] = s.z - _v3.z * w;

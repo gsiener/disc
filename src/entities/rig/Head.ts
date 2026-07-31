@@ -32,8 +32,21 @@ import type { DetailSpec } from './Body.ts';
  * eye level, and a sideline camera is always below eye level.
  */
 
-/** Head-to-neck funnel radius, as a multiple of the neck loft's own radius. */
-export const FUNNEL_R = 1.26;
+/**
+ * Head-to-neck funnel radius, as a multiple of the neck loft's own radius.
+ *
+ * 1.26 was too generous by a long way. `buildNeck` tops out at `neckA * 1.02`,
+ * so a 1.26 funnel puts the underside of the head 14 mm OUTSIDE the neck it is
+ * supposed to be landing on — the head stops being a head somewhere around the
+ * gonion and becomes a column wider than the jaw above it. That is the whole of
+ * "the roster has no jawline": there was a mandible sculpted in `faceSurface`
+ * and then this threw a wider cylinder over the bottom of it.
+ *
+ * 1.10 keeps 8 % of clearance, which is ample — the failure the old number was
+ * defending against was the two surfaces matching EXACTLY, where they z-fought
+ * and shattered the jaw into shards. Eight per cent is not exactly.
+ */
+export const FUNNEL_R = 1.10;
 
 const g1 = (v: number, c: number, w: number) => {
   const d = (v - c) / w;
@@ -53,7 +66,12 @@ function jawLine(nz: number): number {
   // linear term put the funnel 70 % of the way in at the chin itself and pulled
   // the mental protuberance 27 mm down into the neck. That is precisely what
   // "the roster has no chin and no jawline" looked like.
-  return -0.72 - 0.40 * clamp01(nz * 2.4) + 0.40 * clamp01(-nz * 1.6);
+  //
+  // The lateral value came down from −0.72 to −0.80 for the other half of the
+  // same complaint: the gonion sits at about ny −0.78, so a border at −0.72 was
+  // starting the funnel ABOVE the jaw angle and eating the one landmark that
+  // makes a jaw read as a jaw from ten metres.
+  return -0.80 - 0.34 * clamp01(nz * 2.4) + 0.42 * clamp01(-nz * 1.6);
 }
 
 /* ------------------------------------------------------------- variation */
@@ -152,7 +170,12 @@ export function headFrame(a: Anthro): HeadFrame {
   const centre = V(0, a.chinY + hh * 0.50, -0.006 * a.H);
   const rx = R * 0.955;
   const rz = R * 1.10 * (0.96 + 0.10 * a.p.face.skull);
-  const er = R * 0.145;
+  // Globe radius. An adult eyeball is 24 mm across almost regardless of stature,
+  // but everything on this head is quoted in `R` so it has to be expressed that
+  // way; 0.152 R lands at 23.9 mm on the reference athlete. At 0.145 it was
+  // 22.8 mm, which then forced a 10.4 mm iris — a millimetre and a half under
+  // life size, and the eye read small in its own socket.
+  const er = R * 0.152;
   const eyeN = clamp01(R * (0.345 + 0.070 * a.p.face.eyeW) / rx);
   const hf: HeadFrame = {
     centre, rx, ry, rz, R, eyeN, vr,
@@ -165,21 +188,102 @@ export function headFrame(a: Anthro): HeadFrame {
     eye: { pos: [V(0, 0, 0), V(0, 0, 0)], r: er },
   };
 
-  // Globe placement is solved against the finished surface, not guessed. Sample
-  // the sculpted face straight down the aperture's axis, then sink the globe
-  // behind that point: the cornea then breaks the skin over a chord of roughly
-  // 1.6 radii ≈ 20 mm, which is a human eye. Guessing this analytically buried
-  // the eyeball on the first three attempts.
-  const dir = V(eyeN, 0, Math.sqrt(Math.max(0, 1 - eyeN * eyeN)));
+  // Globe placement is solved against the finished surface, not guessed.
+  //
+  // THE REFERENCE PLANE IS THE LID MARGIN, NOT THE FLOOR OF THE SOCKET. This is
+  // the whole bug the first pass had. `faceSurface` sampled down the aperture's
+  // own axis returns the deepest point of the sculpted recess — the aperture cut
+  // and the orbital cavity together take ~20 mm out of the face there — and
+  // sinking the globe a further 0.46 r *behind that* put the cornea about 10 mm
+  // inside the skull. Every athlete on the roster rendered with two dark pits
+  // and a crescent of sclera, which is what "the eyes read as holes" was.
+  //
+  // On an open eye the corneal apex sits essentially level with the lid margins.
+  // So sample the LOWER MARGIN, one aperture-radius below the axis and outside
+  // the cut, and hang the globe off that. It re-solves itself for every face in
+  // the roster instead of depending on a constant fitted to one of them.
+  const nzC = Math.sqrt(Math.max(0, 1 - eyeN * eyeN));
+  const dir = V(eyeN, 0, nzC);
   const p = V();
   faceSurface(a, hf, a.p.face, dir, p);
-  // Sink it straight back in Z, NOT along the surface normal. Along the normal
-  // the globe also travels medially, into a part of the face that stands
-  // further forward, and it disappears inside the skull — which is exactly what
-  // happened, twice.
-  hf.eye.pos[0].set(p.x, p.y, p.z - 0.46 * er);
-  hf.eye.pos[1].set(-p.x, p.y, p.z - 0.46 * er);
+
+  // `p` is the floor of a 16 mm recess, so it is the one place on the face that
+  // must NOT be used as a reference. Subtract the orbit's own displacement back
+  // off it and the un-recessed cheek/brow plane falls out exactly.
+  const zPlane = p.z - orbitDz(hf, hf.vr, eyeN, 0, nzC);
+  // The lower lid margin, one aperture radius below the axis. On an open eye the
+  // corneal apex sits essentially level with the margins — a hair behind, never
+  // in front, or the globe bulges out of its own lids.
+  const my = -1.15 * hf.apD;
+  const nzM = Math.sqrt(Math.max(0.01, 1 - eyeN * eyeN - my * my));
+  const apexZ = zPlane + orbitDz(hf, hf.vr, eyeN, my, nzM) - 0.02 * er;
+  // Move it straight in Z, NOT along the surface normal. Along the normal the
+  // globe also travels medially, into a part of the face that stands further
+  // forward, and it disappears inside the skull — which happened twice.
+  hf.eye.pos[0].set(p.x, p.y, apexZ - er);
+  hf.eye.pos[1].set(-p.x, p.y, apexZ - er);
   return hf;
+}
+
+/**
+ * The orbit, the palpebral aperture and both lid margins, as PURE DEPTH.
+ *
+ * That it is pure depth is load-bearing. A radial socket also drags the surface
+ * inward in x, so the un-recessed skin just outboard of it stays further forward
+ * and forms an overhang that swallows the eyeball whole. It did, for four
+ * iterations. Sculpting the lids into the face also beats building them as their
+ * own shell: at 11 mm of globe radius there is no gap to put a separate lid in.
+ *
+ * It lives in its own function so `headFrame` can evaluate the SAME numbers when
+ * it places the globe. Placing an eyeball against a re-derived guess at how deep
+ * this recess is has now failed twice in two different directions — once buried
+ * a centimetre inside the skull, once burst out through the lower lid — and both
+ * times the fix was a constant fitted against one face out of fourteen. Reading
+ * the displacement back out of the sculpt itself cannot drift.
+ */
+function orbitDz(hf: HeadFrame, W: FaceVar, nx: number, ny: number, nz: number): number {
+  if (nz <= 0.10) return 0;
+  const R = hf.R;
+  const ax = Math.abs(nx);
+  // Canthal tilt: the whole aperture rotates about the eye centre, so the outer
+  // corner rides above (or below) the inner one.
+  const ddx = ax - hf.eyeN;
+  const nyT = ny - ddx * W.tilt / Math.max(1e-4, hf.apW) * hf.apU * 1.4;
+  const q = (ddx * ddx) / (hf.apW * hf.apW)
+    + (nyT * nyT) / (nyT > 0 ? hf.apU * hf.apU : hf.apD * hf.apD);
+  const qq = Math.sqrt(q);
+  const fz = clamp01(nz * 1.7 - 0.10);
+  let dz = 0;
+  // Orbital cavity: a broad recess the brow overhangs. Centred ON the eye it
+  // buried the upper lid and every athlete squinted; the cavity's deepest point
+  // is above the globe, not on it — so it is centred on the SUB-BROW hollow.
+  // Depth came down from 0.108 R: 8.5 mm of recess at the eye line puts both lid
+  // margins that far behind the cheek, and a globe whose apex is level with the
+  // cheek then stands 3 mm proud of its own lower lid. Which is what a bulging,
+  // lidless, staring eye is.
+  dz -= R * 0.070 * g1(nyT, 0.115, 0.185) * g1(ax, 0.400, 0.280) * fz;
+  // Tear trough / infraorbital groove under the lower lid.
+  dz -= R * 0.030 * g1(nyT, -hf.apD * 2.6, hf.apD * 1.5) * g1(ax, hf.eyeN * 0.78, 0.150) * fz;
+  if (qq < 3.2) {
+    // The aperture: cut the skin back behind the corneal plane so the globe is
+    // exposed over a real chord. A soft ramp here is what gave the first pass a
+    // 12 mm slit in a 24 mm eye.
+    dz -= R * 0.155 * smooth(1.14, 0.80, qq) * fz;
+    // Lid margins — a rolled edge just outboard of the aperture, thicker above,
+    // and both of them proud of the skin around them.
+    const mUp = nyT > 0 ? 1.0 : 0.62;
+    const mk = (qq - 1.15) / 0.17;
+    dz += R * 0.052 * mUp * Math.exp(-mk * mk) * fz;
+    // Supratarsal crease. A hooded lid buries it; an open one shows 8 mm of
+    // tarsal platform under it.
+    const ck = (qq - (1.62 + 0.34 * W.hood)) / (0.24 + 0.14 * W.hood);
+    dz -= R * (0.046 - 0.022 * W.hood) * Math.exp(-ck * ck) * clamp01(nyT * 6.0) * fz;
+    // Epicanthic / medial canthus — the inner corner sits deeper than the outer
+    // one on every face.
+    const kk = (qq - 1.0) / 0.55;
+    dz -= R * 0.030 * Math.exp(-kk * kk) * smooth(hf.eyeN * 0.55, hf.eyeN * 0.05, ax) * fz;
+  }
+  return dz;
 }
 
 /** Radius/displacement field. `out` receives the world-space surface point. */
@@ -274,20 +378,33 @@ export function faceSurface(a: Anthro, hf: HeadFrame, F: FaceParams, dir: Vec3, 
     const ridge = Math.pow(smooth(0.075 + nY, NT + 0.03, ny), 0.62)
       * smooth(NB - 0.055, NT - 0.010, ny);
     const wD = lerp(0.060, 0.092 + 0.028 * F.noseW, smooth(0.055 + nY, NT, ny));
-    const proj = R * (0.130 + 0.115 * F.nose);
+    // Projection came down from 0.130 + 0.115. That was measured as if it were
+    // the alar-base-to-tip distance, but it is added on top of an ellipsoid that
+    // is ALREADY curving forward through the mid-face, so the two compounded:
+    // the reference athlete — whose `nose` parameter is 0.50, dead centre —
+    // rendered a dorsum that dominated every crop and hung over the upper lip.
+    const proj = R * (0.108 + 0.098 * F.nose);
     out.z += proj * ridge * g1(nx, 0, wD) * f1;
     // Dorsal hump / scoop. One number, and it is most of what separates a
     // Roman nose from a snub one.
-    out.z += R * 0.032 * W.hook * g1(ny, (NT + 0.085), 0.060) * g1(nx, 0, wD * 1.1) * f1;
+    out.z += R * 0.022 * W.hook * g1(ny, (NT + 0.085), 0.060) * g1(nx, 0, wD * 1.1) * f1;
     // Supratip break, then the lobule proper: a ball wider than the dorsum,
     // standing further forward than anything else on the face.
     out.z -= R * 0.020 * g1(ny, NT + 0.068, 0.030) * g1(nx, 0, wD * 0.9) * f1;
     const lob = g1(ny, NT, 0.048) * g1(nx, 0, 0.082 + 0.024 * F.noseW);
     out.z += R * (0.044 + 0.040 * F.nose) * lob * f1;
-    out.y -= R * 0.060 * lob * f1 * (0.5 + 0.5 * clamp01(W.hook));
-    // Alae. Radial, not axial: a nostril wing wraps the cheek.
-    const ala = g1(ny, NT - 0.050, 0.050) * g1(ax, alaX, 0.052) * clamp01(nz * 1.6 - 0.20);
-    d += R * (0.058 + 0.052 * F.noseW) * ala;
+    // Ptosis of the tip. 0.060 R is 4.7 mm of droop applied on top of a lobule
+    // that already projects 15 mm, and the pair read as a beak hanging over the
+    // mouth — the nose finished level with the upper lip instead of 20 mm above
+    // it. A nasal tip does drop, but by a couple of millimetres, and only on the
+    // aquiline end of the range.
+    out.y -= R * 0.026 * lob * f1 * (0.35 + 0.65 * clamp01(W.hook));
+    // Alae. Radial, not axial: a nostril wing wraps the cheek. Kept NARROW in
+    // ny — at a 0.050 half-width the wing spanned 11 mm vertically and spread
+    // out onto the cheek as a soft pad rather than sitting as a wing with a
+    // crease behind it.
+    const ala = g1(ny, NT - 0.048, 0.034) * g1(ax, alaX, 0.044) * clamp01(nz * 1.6 - 0.20);
+    d += R * (0.048 + 0.044 * F.noseW) * ala;
     // Alar crease — the groove that separates the wing from the cheek, and the
     // thing that makes a nose stop being part of the face. Wide enough that it
     // reads as a fold; at 1.5 mm it cut the nose into a pinched snout.
@@ -350,49 +467,7 @@ export function faceSurface(a: Anthro, hf: HeadFrame, F: FaceParams, dir: Vec3, 
   }
 
   /* --- orbit, palpebral aperture and both lid margins -------------------- */
-  // These are applied as PURE DEPTH, after the radial pass, and that distinction
-  // is load-bearing. A radial socket also drags the surface inward in x, so the
-  // un-recessed skin just outboard of it stays further forward and forms an
-  // overhang that swallows the eyeball whole. It did, for four iterations.
-  // Sculpting the lids into the face also beats building them as their own
-  // shell: at 12 mm of globe radius there is no gap to put a separate lid in.
-  if (nz > 0.10) {
-    // Canthal tilt: the whole aperture rotates about the eye centre, so the
-    // outer corner rides above (or below) the inner one.
-    const ddx = ax - hf.eyeN;
-    const nyT = ny - ddx * W.tilt / Math.max(1e-4, hf.apW) * hf.apU * 1.4;
-    const q = (ddx * ddx) / (hf.apW * hf.apW)
-      + (nyT * nyT) / (nyT > 0 ? hf.apU * hf.apU : hf.apD * hf.apD);
-    const qq = Math.sqrt(q);
-    const fz = clamp01(nz * 1.7 - 0.10);
-    let dz = 0;
-    // Orbital cavity: a broad recess the brow overhangs. Centred ON the eye it
-    // buried the upper lid and every athlete squinted; the cavity's deepest
-    // point is above the globe, not on it.
-    dz -= R * 0.108 * g1(nyT, 0.060, 0.185) * g1(ax, 0.400, 0.280) * fz;
-    // Tear trough / infraorbital groove under the lower lid.
-    dz -= R * 0.034 * g1(nyT, -hf.apD * 2.6, hf.apD * 1.5) * g1(ax, hf.eyeN * 0.78, 0.150) * fz;
-    if (qq < 3.2) {
-      // The aperture: cut the skin back behind the corneal plane so the globe is
-      // exposed over a real chord. A soft ramp here is what gave the first pass
-      // a 12 mm slit in a 24 mm eye.
-      dz -= R * 0.155 * smooth(1.14, 0.80, qq) * fz;
-      // Lid margins — a rolled edge just outboard of the aperture, thicker
-      // above, and both of them proud of the skin around them.
-      const mUp = nyT > 0 ? 1.0 : 0.62;
-      const mk = (qq - 1.15) / 0.17;
-      dz += R * 0.052 * mUp * Math.exp(-mk * mk) * fz;
-      // Supratarsal crease. A hooded lid buries it; an open one shows 8 mm of
-      // tarsal platform under it.
-      const ck = (qq - (1.62 + 0.34 * W.hood)) / (0.24 + 0.14 * W.hood);
-      dz -= R * (0.046 - 0.022 * W.hood) * Math.exp(-ck * ck) * clamp01(nyT * 6.0) * fz;
-      // Epicanthic / medial canthus — the inner corner sits deeper than the
-      // outer one on every face.
-      const kk = (qq - 1.0) / 0.55;
-      dz -= R * 0.030 * Math.exp(-kk * kk) * smooth(hf.eyeN * 0.55, hf.eyeN * 0.05, ax) * fz;
-    }
-    out.z += dz;
-  }
+  out.z += orbitDz(hf, W, nx, ny, nz);
 
   /* --- below the jawline the head funnels into the neck ----------------- */
   // The jawline is not a level ring: it sits at the chin in front, rises to the
@@ -645,8 +720,18 @@ function hairline(u: number, style: string, F: FaceParams, seed: number): number
   return Math.min(1.98, phi * (0.98 + 0.04 * F.skull));
 }
 
+/**
+ * Shell lift over the skull, in units of `headR`.
+ *
+ * These came down by about 40 %. At 0.155 a `crop` put 12 mm of shell on the
+ * skull before the crown-volume multiplier, and that multiplier peaks near 1.9,
+ * so the silhouette gained 23 mm on top of a 234 mm head — a tenth of a head
+ * height of hair, which reads as a swim cap AND is a large part of why the
+ * roster's heads look oversized. A crop is 15–20 mm of hair lying flat, and it
+ * only stands proud at the crown.
+ */
 const HAIR_THICK: Record<string, number> = {
-  buzz: 0.035, short: 0.085, crop: 0.155, ponytail: 0.105, bun: 0.115, long: 0.135, locs: 0.150,
+  buzz: 0.022, short: 0.052, crop: 0.092, ponytail: 0.066, bun: 0.072, long: 0.086, locs: 0.098,
 };
 
 function buildHair(m: RigMesh, a: Anthro, hf: HeadFrame, d: DetailSpec): void {
@@ -674,15 +759,23 @@ function buildHair(m: RigMesh, a: Anthro, hf: HeadFrame, d: DetailSpec): void {
     // into a speckled sawtooth. A real haircut has a visible edge anyway.
     const t = th0 * (0.35 + 0.65 * smooth(1.0, 0.55, v)) * (0.30 + 0.70 * smooth(1.0, 0.86, v));
     // Crown volume: hair is thickest on top and at the back, not at the temples.
-    let vol = 1 + 0.28 * clamp01(ny) - 0.22 * Math.abs(nx);
+    let vol = 1 + 0.22 * clamp01(ny) - 0.20 * Math.abs(nx);
     // Three harmonics of lift. Without them the cap is a moulded swim cap, which
     // is exactly what the first pass looked like — a mass of hair has a lumpy
     // outline even when it is short. The phases are per-athlete so two players
     // with the same cut do not part their hair identically.
+    //
+    // They have to DIE AT THE POLE. `sphereish` collapses every azimuth onto one
+    // vertex at the crown, so an azimuthal harmonic evaluated there is
+    // multi-valued: the pole vertex takes whatever u = 0 gave it while the ring
+    // below takes the full range, and the mesh pulls into a spike or a dimple.
+    // Every athlete had a visible pucker in the middle of the crown, which is
+    // the first thing an overhead broadcast angle sees.
     const ph = h01(seed, 307) * 6.283;
-    vol *= 1 + 0.22 * Math.cos(thz * 3 + 0.7 + ph) * (0.4 + 0.6 * v)
-      + 0.13 * Math.cos(thz * 5 - 1.4 + ph * 0.7)
-      + 0.10 * Math.cos(v * 7.3 + thz * 2 + ph);
+    const polar = Math.min(1, phi / 0.42);
+    vol *= 1 + polar * (0.20 * Math.cos(thz * 3 + 0.7 + ph) * (0.4 + 0.6 * v)
+      + 0.12 * Math.cos(thz * 5 - 1.4 + ph * 0.7)
+      + 0.09 * Math.cos(v * 7.3 + thz * 2 + ph));
     const n = p.clone().sub(hf.centre).normalize();
     out.copy(p).addScaledVector(n, t * vol);
   }, (p) => headSkin(a, p), { part: PART.HAIR, side: 0 });

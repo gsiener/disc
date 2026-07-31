@@ -199,7 +199,14 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         // two 0.5-albedo discs at that size read as googly eyes stuck on a dark
         // face. A sclera in a socket measures well under half display white even
         // in open sun; this is the value that survives BOTH crops.
-        vec3 sclera = vec3(0.395, 0.368, 0.340);
+        // Checked against a shadowed face in the delivered closeup shot, which is
+        // the only test that counts: at 0.395 the two scleras were the brightest
+        // pixels in the frame — brighter than the skin around them, brighter
+        // than the jersey — which is the exact "two white bars on a shadowed
+        // face" failure this file's own header warns about. A sclera is a bright
+        // material sitting at the bottom of a socket, so what reaches the camera
+        // is well under its albedo, and the socket is not modelled here.
+        vec3 sclera = vec3(0.315, 0.293, 0.270);
         float toCanthus = smoothstep(0.30, 0.85, abs(lp.x));
         sclera *= 1.0 - 0.16 * toCanthus;
         // Vasculature: ridged, radial, thickening outward from the limbus.
@@ -214,7 +221,11 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         // white plastic, which is exactly the ping-pong-ball stare this file
         // opens by warning about.
         vessel *= smoothstep(irisR * 1.00, irisR * 1.62, sr) * (0.30 + 0.90 * toCanthus);
-        sclera = mix(sclera, vec3(0.40, 0.080, 0.070), clamp(vessel, 0.0, 1.0) * 0.62);
+        // 0.62 of a hard red drew a diagram of a bloodshot eye. A vessel is a
+        // 40 µm capillary under a translucent membrane: at any framing this
+        // project ships it is a warm cast on the sclera, not a line you can
+        // follow. Halved, and desaturated toward the sclera it sits on.
+        sclera = mix(sclera, vec3(0.315, 0.150, 0.132), clamp(vessel, 0.0, 1.0) * 0.34);
         // Conjunctival shading at both corners: the sclera curves away into the
         // canthus and never catches the key there.
         sclera *= 1.0 - 0.26 * smoothstep(0.42, 0.92, sr);
@@ -222,15 +233,24 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         /* ---- lid occlusion ---------------------------------------------- */
         // The upper lid overhangs; the globe under it is in shadow even when the
         // face is not. Without this the eye is a bright disc stuck in a socket.
+        //
+        // But this is ONE occlusion, and it was being spent twice: once here as
+        // a multiplier on the albedo and again below on indirectDiffuse. Squared,
+        // it took the top of the sclera to 0.08 of its own value and the whole
+        // eye read as an empty hole — which at the closeup framing, where a
+        // globe is eight pixels across, is the entire eye. Split it: a little of
+        // it is genuinely pigment (the conjunctiva IS duskier under the lid) and
+        // the rest is light that never arrives.
         float lidUp = smoothstep(-0.16, 0.40, lp.y);
         float lidLo = smoothstep(-0.02, 0.36, -lp.y);
-        float lidAo = 1.0 - 0.82 * lidUp - 0.38 * lidLo;
+        float lidTint = clamp(1.0 - 0.42 * lidUp - 0.18 * lidLo, 0.34, 1.0);
+        float lidAo = clamp(1.0 - 0.58 * lidUp - 0.26 * lidLo, 0.20, 1.0);
 
         /* ---- compose ---------------------------------------------------- */
         vec3 iris = irisField(iNorm, clamp(ir, 0.0, 1.05), uEyeSeed);
         vec3 eye = mix(sclera, iris, limbus);
         eye = mix(eye, vec3(0.012, 0.010, 0.010), pupil * limbus);
-        eye *= clamp(lidAo, 0.10, 1.0);
+        eye *= lidTint;
         diffuseColor.rgb *= eye;
       `,
     });
@@ -267,10 +287,13 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
           // to be occluded with the diffuse or the tear film keeps mirroring a
           // full hemisphere. Skipping this is why two white bars stayed the
           // brightest thing on a shadowed face at broadcast range.
-          float sock = clamp(lidAo, 0.10, 1.0);
-          reflectedLight.indirectDiffuse *= sock;
-          reflectedLight.indirectSpecular *= 0.28 + 0.72 * sock;
-          reflectedLight.directSpecular *= 0.45 + 0.55 * sock;
+          reflectedLight.indirectDiffuse *= lidAo;
+          reflectedLight.indirectSpecular *= 0.28 + 0.72 * lidAo;
+          // The catchlight is the point of the whole material and it lives on
+          // the cornea, which is the LEAST occluded part of the globe — it is
+          // the bit that stands proud of the lids. Occluding it with the sclera
+          // is what turns a wet eye into a matte bead.
+          reflectedLight.directSpecular *= mix(0.45 + 0.55 * lidAo, 1.0, limbus * 0.8);
         }
       `,
     });

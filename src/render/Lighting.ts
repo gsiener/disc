@@ -235,8 +235,22 @@ export class LightingSystem implements System {
       // the depth bias stays near zero. Scaled by 1/sin(elevation) because a
       // low sun stretches the depth gradient across the same texel.
       const graze = clamp(1 / Math.max(0.22, Math.abs(this.sun.dir.y)), 1, 3.4);
-      l.shadow.normalBias = clamp(texel * 1.15 * graze, 0.006, 0.30);
-      l.shadow.bias = -0.000008 * (1 + i * 0.6);
+      /**
+       * The ceiling used to be 0.30 m and the multiplier 1.15, and with the far
+       * cascades allocated at half resolution that is what the broadcast frame
+       * was actually running: a 0.13 m texel × 1.15 × 1.71 (a 36° sun) is a
+       * 25 cm normal offset, and 25 cm at a 46 m subject is eight screen pixels
+       * of clean turf between a shoe and its own shadow. Every player in the
+       * primary angle was floating. Contact is the one thing the brief says
+       * matters more than the big shadow, so the offset is now sized to the
+       * thing it has to ground — a foot — rather than to whatever the cascade
+       * happened to be allocated: 0.11 m hard ceiling, and the multiplier down
+       * to 0.80, which the doubled far-cascade resolution in `fitCascadesToShot`
+       * pays for. Acne is held off by the normal offset still scaling with
+       * texel size and by the depth bias below, which does the last millimetre.
+       */
+      l.shadow.normalBias = clamp(texel * 0.80 * graze, 0.005, 0.11);
+      l.shadow.bias = -0.000012 * (1 + i * 0.6);
       // Keep the world-space penumbra from exploding on the far cascades: they
       // cover ten times the ground, so a constant texel radius is ten times the
       // blur, and a 60 cm-soft shadow under a player's foot reads as fog.

@@ -551,6 +551,35 @@ export class Animator {
    */
   bindEvents(events: { on(evt: string, fn: (p: any) => void): () => void }): () => void {
     const offs = [
+      /**
+       * The windup. `sim/Game.ts` latches an AI throw for a third of a second
+       * and publishes the charge every frame of it, in exactly the shape the
+       * input system pushes for a human — so `stepThrow` runs one code path and
+       * a controlled thrower and an AI thrower coil identically. Without this
+       * the coil, reach-back and whip only ever played *after* the disc had
+       * already left, and a pass in live play was a disc teleporting out of a
+       * body that never moved.
+       */
+      events.on('disc:charge', (p: {
+        playerId?: number; active?: boolean; fake?: boolean; hold?: number; power?: number;
+        type?: string; tilt?: number; aimYaw?: number; targetHold?: number; maxHold?: number;
+      }) => {
+        const h = p?.playerId != null ? this.byId.get(p.playerId) : undefined;
+        if (!h) return;
+        // A withdrawn throw retracts rather than snapping to idle — that is a
+        // pump fake, and it is a gesture the sport has a name for.
+        if (!p.active) { if (p.fake) h.fake(); else h.setCharge(null); return; }
+        h.setCharge({
+          active: true,
+          hold: p.hold ?? 0,
+          power: p.power ?? 0.6,
+          type: asThrowKind(p.type ?? 'backhand'),
+          tilt: p.tilt ?? 0,
+          aimYaw: p.aimYaw ?? 0,
+          targetHold: p.targetHold ?? 0.34,
+          maxHold: p.maxHold ?? 0.55,
+        });
+      }),
       events.on('disc:released', (p: { playerId?: number; throwType?: string; power?: number }) => {
         const h = p?.playerId != null ? this.byId.get(p.playerId) : this.thrower();
         h?.release(p?.throwType
@@ -595,12 +624,16 @@ export class Animator {
    */
   private stance(h: AnimHandle, bs: BodyState): void {
     const f = h.feet;
-    const a = bs.alert, m = bs.mark;
-    f.stanceWide = 0.104 + 0.042 * a + 0.115 * m;
+    const a = bs.alert, m = bs.mark, hd = bs.handler;
+    f.stanceWide = 0.104 + 0.042 * a + 0.115 * m + 0.048 * hd;
     // A defender squares up; everyone else stands with one foot ahead. Which
-    // foot is a fixed habit per athlete, hashed off the id.
-    f.stanceStagger = (0.052 + 0.030 * a) * (1 - 0.85 * m);
-    f.heelLift = clamp01(0.55 * a + 0.95 * m);
+    // foot is a fixed habit per athlete, hashed off the id. A thrower exaggerates
+    // it — the pivot is behind and the free foot steps out in front of it, which
+    // is where a throw's base comes from.
+    f.stanceStagger = (0.052 + 0.030 * a + 0.075 * hd) * (1 - 0.85 * m);
+    // Weight onto the balls of the feet. A thrower who can be beaten either side
+    // of the mark is not stood back on his heels.
+    f.heelLift = clamp01(0.55 * a + 0.95 * m + 0.45 * hd);
     f.stanceLead = h.leadFoot;
     f.phase = h.footPhase;
   }

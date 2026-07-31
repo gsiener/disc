@@ -22,7 +22,13 @@ import type { DetailSpec } from './Body.ts';
  * LOD switch is a change of smoothness rather than a change of shape.
  */
 
-const FING_R = [0.30, 0.255, 0.265, 0.245, 0.210];
+/**
+ * Digit radius as a fraction of the hand's half breadth. With the knuckles now
+ * 2.1 cm apart (see `FINGER_SPAN` in Skeleton.ts) a 0.255 index — 2.2 cm thick —
+ * still swallowed its neighbours. An adult index finger is 1.9 cm across at the
+ * proximal phalanx, which on an 8.7 cm hand is 0.222.
+ */
+const FING_R = [0.285, 0.222, 0.230, 0.212, 0.185];
 
 function palmFrame(a: Anthro, si: number): { y: Vec3; z: Vec3; x: Vec3 } {
   const y = a.handDir[si].clone();
@@ -46,17 +52,23 @@ export function buildHands(m: RigMesh, a: Anthro, meas: Measure, d: DetailSpec):
     // Palm — flat, with a thenar mass on the thumb side and a hypothenar pad on
     // the other. A round-sectioned hand is a glove full of air.
     const rings: Ring[] = [];
-    const qs = d.fingers ? [0, 0.24, 0.52, 0.78, 1.0, 1.10]
-      : [0, 0.24, 0.52, 0.80, 1.06, 1.42, 1.76, 1.96, 2.05];
+    // The palm starts a third of a palm-length BEHIND the wrist, inside the
+    // forearm. The arm loft stops 1.5 % short of the wrist and neither surface
+    // is capped there, so butting them left an open 4 mm band all the way round
+    // every wrist — a black ring in any crop that includes a hand.
+    const qs = d.fingers ? [-0.20, -0.06, 0.10, 0.32, 0.58, 0.80, 1.0, 1.10]
+      : [-0.20, -0.04, 0.20, 0.50, 0.80, 1.06, 1.42, 1.76, 1.96, 2.05];
     for (const q of qs) {
       const along = q * palmLen;
       const o = wrist.clone().addScaledVector(yh, along);
-      // Past the knuckle line the mitt closes; before it, the palm widens.
+      // Past the knuckle line the mitt closes; before it, the palm widens. The
+      // proximal loops are a cuff over the end of the forearm, so they have to
+      // be wider than the forearm is there, not narrower.
       const wid = q <= 1.10
-        ? lerp(g.wristA * 1.02, g.handW, smooth(0, 0.55, q)) * (1 - 0.10 * smooth(0.9, 1.1, q))
+        ? lerp(g.wristA * 1.14, g.handW, smooth(-0.10, 0.55, q)) * (1 - 0.10 * smooth(0.9, 1.1, q))
         : g.handW * (1 - 0.62 * smooth(1.10, 2.05, q) ** 1.5);
       const thick = q <= 1.10
-        ? lerp(g.wristB * 1.10, g.handT * 1.30, smooth(0, 0.5, q)) * (1 - 0.18 * smooth(0.7, 1.1, q))
+        ? lerp(g.wristB * 1.22, g.handT * 1.30, smooth(-0.10, 0.5, q)) * (1 - 0.18 * smooth(0.7, 1.1, q))
         : g.handT * 1.10 * (1 - 0.55 * smooth(1.10, 2.05, q) ** 1.5);
       const lobes: Lobe[] = [];
       const thenar = smooth(0.05, 0.35, q) * smooth(1.15, 0.80, q);
@@ -75,8 +87,10 @@ export function buildHands(m: RigMesh, a: Anthro, meas: Measure, d: DetailSpec):
       rings.push({
         o, ax: xh, az: zh,
         r: ellipse(wid, thick, lobes),
-        skin: q < 0.30 ? sk2(FT, smooth(0.30, 0, q) * 0.55, HB, 1 - smooth(0.30, 0, q) * 0.55) : sk1(HB),
-        v: clamp01(q / 2.05),
+        skin: q < 0.34
+          ? sk2(FT, smooth(0.34, -0.16, q) * 0.88, HB, 1 - smooth(0.34, -0.16, q) * 0.88)
+          : sk1(HB),
+        v: clamp01((q + 0.20) / 2.25),
         crease: (t: number) => 0.22 * lobe(t, 0.25, 0.22) * smooth(0.2, 0.9, q),
       });
     }

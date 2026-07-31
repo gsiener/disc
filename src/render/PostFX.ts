@@ -315,6 +315,7 @@ export class PostFXSystem implements System {
       const u = this.grade.material.uniforms;
       u.uContrast.value = 1; u.uSat.value = 1; u.uPostSat.value = 1; u.uPunch.value = 0;
       u.uGreenPush.value = 0; u.uGreenSat.value = 1; u.uSkinGuard.value = 1;
+      u.uSkinHue.value = 0; u.uFloat.value = 0; u.uShadowDesat.value = 0;
       (u.uLift.value as THREE.Vector3).set(0, 0, 0);
       (u.uGain.value as THREE.Vector3).set(1, 1, 1);
       (u.uShadowTint.value as THREE.Vector3).set(1, 1, 1);

@@ -29,7 +29,7 @@ import {
 import type { HudFrame, HudWidget, Side, TeamBrand } from './Model.ts';
 
 /** Stall arc geometry, in the gauge's own 40×40 user space. */
-const GA = { cx: 20, cy: 20, r: 15.2, w: 3.0 };
+const GA = { cx: 20, cy: 20, r: 15.0, w: 3.7 };
 const CIRC = 2 * Math.PI * GA.r;
 
 interface TeamCells {
@@ -65,6 +65,8 @@ export class Scorebug implements HudWidget {
   private stallPulse = new Clip();
   private stallArcM = new Motion(0, 11);
   private lastStall = -1;
+  /** Set once `stall:tick` has been heard, after which polling stops pulsing. */
+  private ticked = false;
   private path = new PathBuilder();
 
   constructor(parent: HTMLElement, brands: [TeamBrand, TeamBrand]) {
@@ -158,6 +160,20 @@ export class Scorebug implements HudWidget {
     return p.build();
   }
 
+  /* -------------------------------------------------------------- stall tick */
+
+  /**
+   * An authoritative increment from the rules machine. Once this has been heard
+   * the frame poll in `update()` stops firing pulses of its own, so a game system
+   * that raises the event and one that only exposes `stallCount` both animate —
+   * neither double-pulses.
+   */
+  tick(count: number, now: number): void {
+    this.ticked = true;
+    if (count > this.lastStall) this.stallPulse.fire(now, 0.52);
+    this.lastStall = count;
+  }
+
   /* ----------------------------------------------------------------- staging */
 
   restage(f: HudFrame): void {
@@ -247,8 +263,11 @@ export class Scorebug implements HudWidget {
     }
 
     /* stall -------------------------------------------------------------- */
+    // Value is polled; the beat is not. `tick()` owns the pulse as soon as a real
+    // `stall:tick` has arrived — this branch is the fallback for a game system
+    // that publishes the count but not the event.
     if (f.stall !== this.lastStall) {
-      if (f.stall > this.lastStall) this.stallPulse.fire(f.t, 0.52);
+      if (!this.ticked && f.stall > this.lastStall) this.stallPulse.fire(f.t, 0.52);
       this.lastStall = f.stall;
     }
     const frac = f.stallMax > 0 ? clamp01(f.stall / f.stallMax) : 0;
@@ -259,6 +278,7 @@ export class Scorebug implements HudWidget {
     const hot = f.stall >= 8;
     const warn = f.stall >= 6;
     setFlag(this.stallCell, 'hot', hot);
+    setFlag(this.stallCell, 'warn', warn && !hot);
     // Three discrete states, not a ramp. Interpolating blue→amber in RGB passes
     // straight through grey, which is exactly the wrong colour for a count that
     // has to be read without looking at it.

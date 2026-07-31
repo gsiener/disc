@@ -4,10 +4,13 @@ import type { BoneName } from './Types.ts';
 import { SIDES, SIDE_SUFFIX, bi } from './Skeleton.ts';
 import type { Anthro } from './Skeleton.ts';
 import {
-  RigMesh, V, ellipse, lobe, sk1, sk2, skN, skMix, smooth, lerp, clamp01,
+  RigMesh, V, ellipse, lobe, dt, sk2, skN, skMix, smooth, lerp, clamp01,
 } from './Build.ts';
-import type { Ring, Skin, Vec3, Lobe, Profile } from './Build.ts';
-import { torsoCentre, torsoProfile, torsoSkin, curve, armSurface, CAP_Q } from './Body.ts';
+import type { Ring, Skin, Vec3, Profile } from './Build.ts';
+import {
+  torsoCentre, torsoProfile, torsoSkin, curve, armSurface, armSkin, legSkin,
+  CAP_Q, TORSO_TOP_U,
+} from './Body.ts';
 import type { DetailSpec } from './Body.ts';
 
 /**
@@ -28,31 +31,55 @@ import type { DetailSpec } from './Body.ts';
  * overlap are weighted differently, a raised arm or a lifted knee shears them
  * apart and opens a hole straight through the athlete — which is exactly what
  * the first pass did on every layout pose.
+ *
+ * THIS FILE NO LONGER AUTHORS ANY OF THOSE WEIGHTS. It used to keep private
+ * copies — `shoulderSkin`, `hipSkin`, `waistSkin` — and every one of them had
+ * drifted from the body underneath:
+ *
+ *   • The jersey shell took `torsoSkin(a,u,t)`, which ALREADY blends the
+ *     shoulder corner onto the clavicle, and then blended a second 42/38/20
+ *     mix on top of it with a different exponent (2.0 vs 1.6), a different
+ *     weight (0.8 vs 0.62) and a different release (1.075→1.0 vs
+ *     TORSO_TOP_U→1.005). The garment therefore carried upper-arm weight the
+ *     chest under it did not have.
+ *   • The sleeve ramped `smooth(0.02, 0.50, q)` while the arm inside it ramps
+ *     `smooth(0.10, -0.34, q)`. At q = 0.10 the arm is 100 % humerus and the
+ *     sleeve was 93 % clavicle-mix — a quarter-turn of shoulder apart.
+ *   • The shorts yoke double-blended over `torsoSkin`'s own femur term, and
+ *     `hipSkin` was 54 % femur against the body's `hipBind` at 32 %.
+ *
+ * The visible result is the one `deltoidBind` predicts: the skin does not tear
+ * the cloth, it simply arrives in front of it, and the closeup renders a bare
+ * deltoid and a bare upper chest sitting proud of an intact jersey.
+ *
+ * Every garment now binds by CALLING the body's own function for the surface it
+ * covers — `torsoSkin`, `armSkin`, `legSkin` — so the two cannot disagree even
+ * in principle.
  */
-function shoulderSkin(si: number, lat: number): Skin {
-  const suf = SIDE_SUFFIX[si];
-  return skN([
-    [bi(`clavicle${suf}` as BoneName), 0.42],
-    [bi(`upperArm${suf}` as BoneName), 0.38],
-    [bi('chest'), 0.20],
-  ]);
-}
-
-function hipSkin(si: number): Skin {
-  const suf = SIDE_SUFFIX[si];
-  return skN([[bi('pelvis'), 0.46], [bi(`thigh${suf}` as BoneName), 0.54]]);
-}
 
 /**
- * The top of a shorts leg tube runs up INSIDE the waistband, and the waistband
- * is bound to the pelvis. If that overlap is 54 % femur — as `hipSkin` is — then
- * 66 degrees of hip flexion swings the tube out from under the yoke and tears
- * the two apart at the front of the hip. The overlap has to be pelvis-dominant
- * and hand over to the femur only once it is clear of the waistband.
+ * Raised-cosine window over a loop, centred at `c` and exactly zero (with zero
+ * slope) beyond `half`. Used wherever a garment edge has to be somewhere other
+ * than the plane of its own loop — a scooped neckline, the front rise of a pair
+ * of shorts. A Gaussian is the wrong tool for both: it leaks a fifth of its
+ * amplitude a quarter-turn away, which drags the shoulder seam down with the
+ * collar and the hip down with the crotch.
  */
-function waistSkin(si: number): Skin {
-  const suf = SIDE_SUFFIX[si];
-  return skN([[bi('pelvis'), 0.80], [bi(`thigh${suf}` as BoneName), 0.20]]);
+function win(t: number, c: number, half: number): number {
+  const dd = Math.abs(dt(t, c)) / half;
+  return dd >= 1 ? 0 : 0.5 + 0.5 * Math.cos(Math.PI * dd);
+}
+
+const _ayTmp = new THREE.Vector3();
+/** World point on a ring at angle t, honouring `Ring.off`. */
+function ringPoint(R: Ring, t: number): Vec3 {
+  const [x, y] = R.r(t);
+  const p = R.o.clone().addScaledVector(R.ax, x).addScaledVector(R.az, y);
+  if (R.off) {
+    const ay = R.ay ?? _ayTmp.crossVectors(R.ax, R.az).normalize();
+    p.addScaledVector(ay, R.off(t));
+  }
+  return p;
 }
 
 /* ----------------------------------------------------------------- jersey */
@@ -68,17 +95,49 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
   // the shirt in exactly the band a broadcast camera frames.
   const off = curve([
     [-0.10, 0.0360], [0.05, 0.0310], [0.30, 0.0216], [0.55, 0.0128],
-    [0.76, 0.0092], [0.90, 0.0088], [1.0, 0.0105],
+    // …and a few more millimetres across the shoulder girdle than the 0.0088 it
+    // used to carry. That was 8.8 mm of standoff against a skin surface that
+    // carries its own normal and detail relief, on the one band of the torso
+    // where the section is a cornered slab. A jersey hangs off the chest; it
+    // does not shrink-wrap the clavicles.
+    [0.76, 0.0130], [0.90, 0.0128], [1.0, 0.0122], [TORSO_TOP_U, 0.0092],
   ]);
-  const hemU = -0.075;
-  // The last three rings climb the trapezius with it. Stopping at 0.968 and
-  // jumping straight to the collar drew a 12 cm horizontal annulus across each
-  // shoulder — the same plate the sleeve used to make, now made by the body.
+  // The hem sits at 0.523 H — mid-hip, and clear of the shorts' front rise. At
+  // 0.508 H it hung an inch above the crotch and its turned-back underside drew
+  // a dark slot straight across the athlete at exactly the height the shorts
+  // needed to read.
+  const hemU = -0.045;
+  /**
+   * THE NECKLINE IS A SCOOP, NOT A RING.
+   *
+   * The garment has to be at 0.847 H where it meets the neck at the SIDE (that
+   * is where the trapezius stops) and at 0.824 H at the front (that is where a
+   * crew neck sits, a centimetre above the jugular notch). Those are the same
+   * loop. Building them as two loops one above the other is what put the collar
+   * 3 cm too high and left 1.5 cm of visible neck on a figure that should show
+   * eight — which is most of what "the neck is too short" was.
+   *
+   * `Ring.off` displaces along the loop's normal, so one loop does both.
+   */
+  // Gate the drop on the LOOP'S OWN WIDTH, never on u. A loop 20 cm across is
+  // the shoulder and must not move a millimetre; a loop 6 cm across is the
+  // neckline and is free to drop 4 cm. Ramping on u instead takes the whole
+  // upper chest and both trapezii down with the collar and puts the athlete in
+  // a boat neck with bare shoulders — which is exactly what it did.
+  const latHalf = (u: number) => Math.abs(torsoProfile(a, u)(0)[0]);
+  const scoop = (u: number) =>
+    0.0190 * H * smooth(a.g.chestA * 1.05, a.g.neckA * 1.15, latHalf(u));
+  const neckWin = (t: number) => win(t, 0.25, 0.175) + 0.40 * win(t, 0.75, 0.200);
+  const scoopAt = (u: number) => {
+    const s = scoop(u);
+    if (s < 1e-5) return undefined;
+    return (t: number) => s * neckWin(t);
+  };
   const us = d.level === 0
-    ? [hemU, -0.03, 0.06, 0.16, 0.27, 0.38, 0.49, 0.60, 0.70, 0.79, 0.858, 0.905, 0.948, 0.978, 1.0, 1.011, 1.021]
+    ? [hemU, 0.01, 0.09, 0.18, 0.28, 0.38, 0.49, 0.60, 0.70, 0.79, 0.858, 0.912, 0.952, 0.980, 1.004, 1.016, 1.030, 1.042, TORSO_TOP_U]
     : d.level === 1
-      ? [hemU, 0.02, 0.20, 0.40, 0.60, 0.78, 0.90, 0.96, 1.0, 1.021]
-      : [hemU, 0.12, 0.42, 0.72, 0.95, 1.021];
+      ? [hemU, 0.04, 0.22, 0.42, 0.62, 0.78, 0.90, 0.965, 1.012, TORSO_TOP_U]
+      : [hemU, 0.12, 0.42, 0.72, 0.95, TORSO_TOP_U];
 
   const shellRing = (u: number, extra = 0): Ring => {
     const base = torsoProfile(a, u);
@@ -91,29 +150,49 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       const [xa, ya] = base(t + 0.035);
       const [xb, yb] = base(t - 0.035);
       let mx = (x0 * 0.5 + xa * 0.25 + xb * 0.25);
-      const my = (y0 * 0.5 + ya * 0.25 + yb * 0.25);
+      let my = (y0 * 0.5 + ya * 0.25 + yb * 0.25);
       // Shoulder yoke. The torso's trapezius ramp now reaches the acromion on
       // its own (see Body.ts `torsoProfile`), so this is a few millimetres of
       // drape over the shoulder seam — NOT the 42 % inflation it used to be.
       // That inflation put the jersey's shoulder edge 4 cm outboard and 3 cm
       // above the deltoid, which is a plate with a crease along it: the
       // shoulder facet, in one line of code.
-      const yoke = smooth(0.62, 1.0, u);
+      const yoke = smooth(0.62, 0.95, u) * smooth(1.09, 0.99, u);
       if (yoke > 0) mx *= 1 + yoke * 0.045 * Math.pow(Math.abs(Math.cos(t * Math.PI * 2)), 0.8);
+      /**
+       * CLOTH BRIDGES A HOLLOW; IT NEVER SINKS INTO THE BODY.
+       *
+       * The three-tap blend above is a drape approximation, and a blend is only
+       * one-sided where the surface is convex. Body.ts now carries a
+       * supraclavicular fossa — two w = 0.055 lobes at amp −0.115, about 18 mm
+       * deep on a 0.16 m section — and a section power of 2.55 across the
+       * shoulder girdle, which is very nearly a slab with corners. Averaging
+       * across either of those pulls the sampled radius BELOW the body's own:
+       * measured either side of the fossa the blend lost 5–7 mm against a cloth
+       * offset of 8.8 mm, so the jersey passed through the athlete and the
+       * closeup rendered two patches of bare chest flanking the throat, plus a
+       * skin wash over both shoulder tops.
+       *
+       * Clamping the blended radius to the anatomical one keeps every bridge the
+       * blend was written for — a hollow still fills, because filling raises the
+       * radius — and removes the only direction in which it can be wrong.
+       */
+      const r0 = Math.hypot(x0, y0);
+      const rm = Math.hypot(mx, my);
+      if (rm > 1e-6 && rm < r0) { const s = r0 / rm; mx *= s; my *= s; }
       const len = Math.hypot(mx, my) || 1e-6;
       return [mx + (mx / len) * k, my + (my / len) * k];
     };
     return {
       o: torsoCentre(a, u), ax: V(1, 0, 0), az: V(0, 0, 1),
       r: smoothed,
+      off: scoopAt(u),
       skin: torsoSkin(a, u, 0),
-      skinAt: (t: number) => {
-        const base = torsoSkin(a, u, t);
-        const lat = Math.cos(t * Math.PI * 2);
-        const w = smooth(0.82, 1.0, u) * Math.pow(Math.abs(lat), 2.0) * 0.8;
-        return w > 0.01 ? skMix(base, shoulderSkin(lat > 0 ? 0 : 1, lat), w) : base;
-      },
-      v: clamp01((u - hemU) / (1.05 - hemU)),
+      // Verbatim. `torsoSkin` already carries the shoulder-corner clavicle
+      // blend and the hip's femur term; anything added here is weight the chest
+      // under the cloth does not have.
+      skinAt: (t: number) => torsoSkin(a, u, t),
+      v: clamp01((u - hemU) / (TORSO_TOP_U + 0.02 - hemU)),
       crease: (t: number) => 0.30 * smooth(0.06, -0.075, u)
         + 0.25 * lobe(t, 0.25, 0.10) * smooth(0.55, 0.30, u),
     };
@@ -128,26 +207,22 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
   }
   for (const u of us) rings.push(shellRing(u));
 
-  // Collar. A crew neck's band sits AT the base of the neck — its top edge is
-  // level with the cervicale, around 0.826 H. The previous ring topped out at
-  // 0.834 H, which is 3 cm higher, and 3 cm is the entire visible neck: the
-  // collar met the underside of the jaw and the head appeared to sit straight
-  // on the shoulders. That is most of what "the neck is too short" was.
-  const nkY = a.neckBaseY;
-  const collar = (rr: number, y: number, v: number, cr: number): Ring => ({
-    o: V(0, y, -0.004 * H), ax: V(1, 0, 0), az: V(0, 0, 1),
-    r: ellipse(a.g.neckA * rr, a.g.neckB * rr),
-    skin: sk2(bi('chest'), 0.7, bi('neck'), 0.3),
+  // Collar — a short rib band riding the same scoop as the loop under it, so it
+  // is a continuation of the garment rather than a disc laid on top of one.
+  const topO = torsoCentre(a, TORSO_TOP_U);
+  const sTop = scoop(TORSO_TOP_U);
+  const collar = (ra: number, rb: number, dy: number, k: number, v: number, cr: number): Ring => ({
+    o: V(0, topO.y + dy * H, topO.z), ax: V(1, 0, 0), az: V(0, 0, 1),
+    r: ellipse(a.g.neckA * ra, a.g.neckB * rb),
+    off: (t: number) => sTop * k * neckWin(t),
+    skin: sk2(bi('chest'), 0.42, bi('neck'), 0.58),
     v, crease: cr,
   });
-  // Three rings, not two, and 2.5 cm of rise between the last body ring and the
-  // collar's top edge. Without that rise the trapezius shelf is dead level and
-  // the collar reads as a plate edge laid across the chest.
-  rings.push(collar(1.32, nkY + 0.0082 * H, 0.972, 0.15));
-  rings.push(collar(1.17, nkY + 0.0108 * H, 0.996, 0.15));
+  rings.push(collar(1.230, 1.190, 0.0036, 1.00, 0.975, 0.15));
+  rings.push(collar(1.170, 1.132, 0.0095, 1.015, 0.998, 0.16));
   if (d.clothFold) {
-    rings.push(collar(1.115, nkY + 0.0086 * H, 1.0, 0.55));
-    rings.push(collar(1.17, nkY + 0.0040 * H, 1.0, 0.75));
+    rings.push(collar(1.116, 1.080, 0.0078, 1.015, 1.0, 0.55));
+    rings.push(collar(1.146, 1.108, 0.0034, 1.00, 1.0, 0.75));
   }
 
   m.group(GROUP.jersey).loft(rings, seg, { part: PART.JERSEY, side: 0 });
@@ -187,13 +262,14 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       const R = ring(si, q, drape);
       // Cloth bridges muscle detail rather than following it into the valleys.
       const soft = R.lobes.map((L) => ({ ...L, amp: L.amp * 0.45 }));
-      const w = smooth(0.02, 0.50, q);
       return {
         o: R.o, ax: R.ax, az: R.az,
         r: ellipse(R.ra, R.rb, soft),
-        // Identical binding to the jersey's shoulder corner at the overlap,
-        // then a clean ramp down the humerus.
-        skin: skMix(shoulderSkin(si, s), sk2(UA, 0.35, UT, 0.65), w),
+        // The arm's OWN binding, evaluated at the same q. The sleeve is a
+        // parallel offset of `armSurface` and must be a parallel offset of its
+        // skinning too, or the deltoid swings out through it.
+        skin: armSkin(a, si, q, 0),
+        skinAt: (t: number) => armSkin(a, si, q, t),
         v: clamp01((q + CAP_Q) / (sleeveEnd + CAP_Q)),
         crease: 0.12 + 0.28 * smooth(0.28, 0.52, q),
       };
@@ -213,80 +289,125 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
 /* ----------------------------------------------------------------- shorts */
 
 /**
- * THE CROTCH.
+ * THE CROTCH — a real Y-junction, not three surfaces hoping to overlap.
  *
- * What was there: the yoke's rings were nipped 52 % inward at the front and the
- * back as they approached u = −0.175, and the resulting peanut was closed with a
- * FAN CAP — a flat, downward-facing disc with two concave notches in it, sitting
- * in the middle of the athlete's shorts. That is the hard geometric V the critic
- * read as a mesh seam failure, and it is exactly what it looks like: a mesh seam
- * failure. Under it, two leg tubes crossed the midline by 2 cm and intersected
- * as raw cylinders, and their medial-flattening lobe was on the WRONG SIDE — it
- * flattened the outside of each leg (`at: si === 0 ? 0.5 : 0`, and for a leg
- * ring `ax` points to −X, so t = 0.5 is lateral, not medial).
+ * What was there: a waistband tube, two thigh tubes pushed up inside it, and a
+ * cone ("the bowl") shrinking the waistband's bottom loop to a point at the
+ * crotch. Every one of those three pieces failed, and they failed for the same
+ * reason — a stack of horizontal loops cannot describe a tube that splits.
+ *   • The thigh tubes started 7 cm ABOVE the hip joint, where the waistband is
+ *     still a waist: their top loops stood 3.5 cm proud of it, so each leg
+ *     emerged from the side of the shorts as a flat open-ended sleeve. That is
+ *     the pair of hard trapezoidal flaps in every hip-height frame.
+ *   • The bowl swept 18 cm of lateral travel across 5 cm of drop, so its outer
+ *     half was a horizontal blade hanging in mid-air outboard of both legs.
+ *   • Its last loop was fan-capped: a flat downward disc at the inseam. THE
+ *     NOTCH.
  *
- * What is there now:
- *   • The yoke has no pinch and no cap. It stops just below the hip line and its
- *     open bottom is covered from underneath, which is what a waistband does.
- *   • Each leg tube runs up INSIDE the yoke and is inflated front-to-back at the
- *     top so it covers the yoke's rim rather than leaving a slot at it.
- *   • Below the crotch each tube's medial face is softly clamped to a plane a
- *     centimetre off the midline. Two planes facing each other meet tangentially;
- *     two cylinders meet in a V. That is the whole difference between an inseam
- *     and a notch.
- *   • A gusset — a small vertical wedge — closes the slot between those two
- *     planes from inside the yoke down to the crotch point at 0.485 H, and is
- *     capped below, where nothing can see it.
- * The hem stays a full ellipse around each thigh at every ring, so it falls as a
- * cylinder instead of pinching to a point.
+ * What is there now is how a pair of trousers is actually built. The waistband
+ * is one closed tube down to a split loop 3 cm above the crotch. Its bottom
+ * opening is divided by a CROTCH SEAM — a chord of shared vertices running from
+ * the front midline, dipping to 0.485 H under the body, to the back midline —
+ * and each half of that opening continues into a leg. The seam vertices belong
+ * to both legs, so the inseam is continuous by construction: there is no overlap
+ * to misjudge and no cap to see. Below the junction each leg morphs from its
+ * half of the hip section into a round tube over 5 cm, and the hem is a full
+ * ellipse at every loop, so it falls as a cylinder round each thigh.
+ *
+ * The medial faces are still softly clamped a few millimetres off the midline
+ * between crotch and mid-thigh — two planes facing each other meet tangentially,
+ * two cylinders meet in a V — and the clamp releases toward the hem, where the
+ * legs are furthest apart and the hem has to stay round.
  */
 export function buildShorts(m: RigMesh, a: Anthro, d: DetailSpec): void {
   const H = a.H;
-  const S = H / 1.8;
-  const waistU = 0.30;
-  // The yoke stops just under the hip joint line. Everything below that is legs
-  // and gusset — there is no fabric on the midline below the crotch, and trying
-  // to model some is what produced the notch.
-  const yokeBottomU = -0.055;
-  const seg = d.torsoSegs;
-  const us = d.level === 0
-    ? [waistU, 0.235, 0.17, 0.105, 0.045, -0.005, yokeBottomU]
-    : d.level === 1 ? [waistU, 0.18, 0.06, -0.01, yokeBottomU] : [waistU, 0.10, yokeBottomU];
+  const S4 = H / 1.8;
+  const g = a.g;
+  // Waist loop segments, forced to a multiple of four: the front, back and both
+  // lateral points must be real vertices, because the crotch seam is anchored on
+  // the front and back ones and the split is anchored on all four.
+  const S = Math.max(12, 4 * Math.round(d.torsoSegs / 4));
+  // Seam vertices, front to back inclusive. S/2 + 1 makes every leg loop exactly
+  // S vertices at a uniform angular step — the leg tube below the junction is a
+  // plain S-segment cylinder with no coarse patch on the inside of the thigh.
+  const M = S / 2 + 1;
 
+  const waistU = 0.30;
+  const crotchY = 0.485 * H;
+  const ySplit = crotchY + 0.017 * H;
+  const uSplit = (ySplit - a.hipY) / a.torsoSpan;
+  const hem = d.level === 0 ? 0.46 : 0.44;
+  const K = 0.0165 * S4;
+
+  /* ------------------------------------------------------- leg geometry */
+  const legAxes = (si: number) => {
+    const dir = a.legDir[si];
+    const az = V(0, 0, 1).addScaledVector(dir, -dir.z).normalize();
+    const ax = new THREE.Vector3().crossVectors(dir, az);
+    return { dir, ax, az };
+  };
+  const legO = (si: number, q: number) =>
+    a.hip[si].clone().addScaledVector(a.legDir[si], a.len.thigh * q);
+  const legRad = curve([
+    [-0.05, g.thighA * 1.02], [0.12, g.thighA * 0.99],
+    [0.30, g.thighA * 0.93], [0.52, g.thighA * 0.86],
+  ]);
+  const legR = (q: number) => legRad(q) + lerp(0.0125, 0.0205, smooth(0.02, 0.44, q)) * S4;
+  const legDeep = g.thighB / g.thighA;
+
+  // q at which a leg loop sits at the split height, and how wide the waistband
+  // must be there to contain both of them. The waistband is derived FROM the
+  // legs, which is the invariant the old code lacked.
+  const qSplit = clamp01((a.hipY - ySplit)
+    / Math.max(1e-4, a.len.thigh * Math.abs(a.legDir[0].y)));
+  const Wlow = Math.abs(legO(0, qSplit).x) + legR(qSplit);
+
+  /* ---------------------------------------------------------- waistband */
+  const latAt = (u: number) => Math.abs(torsoProfile(a, u)(0)[0]);
+  const fxLow = Wlow / Math.max(1e-4, latAt(uSplit) + K);
+  /**
+   * THE FRONT RISE. The split loop is horizontal at ySplit, 3 cm above the
+   * crotch, and the two legs part company at whatever height it hands them over
+   * — so with a flat loop they parted 3 cm too high, and everyone looking at the
+   * athlete from the front saw a dark wedge of gusset through the gap. On a real
+   * pair of shorts the fabric on the midline runs all the way down to the crotch
+   * and the legs only separate below it. `Ring.off` drops the loop's front and
+   * back midlines to the crotch while the sides stay up at the leg openings,
+   * which is that shape exactly, in one loop.
+   */
+  const rise = (u: number) => (ySplit - crotchY - 0.0030 * H) * smooth(0.07, uSplit, u);
+  const riseAt = (u: number) => {
+    const s = rise(u);
+    if (s < 1e-5) return undefined;
+    return (t: number) => s * (win(t, 0.25, 0.115) + 0.94 * win(t, 0.75, 0.130));
+  };
   const yoke = (u: number, extra = 0): Ring => {
     const base = torsoProfile(a, u);
-    const k = (0.0165 + extra) * S;
-    // Shorts hang away from the pelvis and over the tops of the thighs, so the
-    // lower rings flare laterally. Without it the leg tubes are wider than the
-    // yoke they emerge from and the transition steps outward.
-    const flare = 1 + 0.030 * smooth(0.08, yokeBottomU, u);
+    const k = K + extra * S4;
+    // Shorts drape over the trochanters and the tops of the thighs, so the lower
+    // loops widen laterally to the leg envelope and no further.
+    const fx = lerp(1, fxLow, smooth(0.16, uSplit, u));
     return {
       o: torsoCentre(a, u),
       ax: V(1, 0, 0), az: V(0, 0, 1),
+      off: riseAt(u),
       r: (t: number) => {
         const [x0, y0] = base(t);
         const len = Math.hypot(x0, y0) || 1e-6;
-        const lat = Math.abs(Math.cos(t * Math.PI * 2));
-        const f = 1 + (flare - 1) * lat;
-        return [(x0 + (x0 / len) * k) * f, (y0 + (y0 / len) * k)];
+        return [(x0 + (x0 / len) * k) * fx, y0 + (y0 / len) * k];
       },
       skin: torsoSkin(a, u, 0),
-      skinAt: (t: number) => {
-        const b = torsoSkin(a, u, t);
-        const lat = Math.cos(t * Math.PI * 2);
-        const w = smooth(0.12, yokeBottomU - 0.10, u) * Math.pow(Math.abs(lat), 1.1);
-        return w > 0.01 ? skMix(b, hipSkin(lat > 0 ? 0 : 1), w) : b;
-      },
-      v: clamp01((waistU - u) / (waistU - yokeBottomU)) * 0.35,
-      crease: 0.15 + 0.30 * smooth(0.05, yokeBottomU, u),
+      // Verbatim, same reason as the jersey shell — `torsoSkin` already hands
+      // the hip ring over to the femurs below u = 0.06.
+      skinAt: (t: number) => torsoSkin(a, u, t),
+      v: clamp01((waistU - u) / (waistU - uSplit)) * 0.35,
+      crease: 0.15 + 0.30 * smooth(0.05, uSplit, u),
     };
   };
 
-  const g = a.g;
-  const hem = d.level === 0 ? 0.46 : 0.44;
-  // Crotch height, 0.485 H off the table — where the medial clamp is fully in.
-  const crotchY = 0.485 * H;
-
+  const us = d.level === 0
+    ? [waistU, 0.245, 0.19, 0.135, 0.082, 0.032, -0.014, -0.055, uSplit]
+    : d.level === 1 ? [waistU, 0.20, 0.09, -0.01, uSplit] : [waistU, 0.10, uSplit];
   const rings: Ring[] = [];
   if (d.clothFold) {
     rings.push({ ...yoke(waistU - 0.055, -0.006), v: 0 });
@@ -294,43 +415,59 @@ export function buildShorts(m: RigMesh, a: Anthro, d: DetailSpec): void {
   }
   for (const u of us) rings.push(yoke(u));
 
-  // THE GUSSET, as a continuation of the yoke rather than a separate piece.
-  // The yoke's bottom rings keep their SHAPE and shrink toward the crotch
-  // point, so the waistband closes into a rounded bowl. Everything outboard of
-  // ±1.5 cm is buried inside a leg tube; only the midline strip is ever seen,
-  // and that strip is the inseam. It is scaled from the yoke's own profile so
-  // the transition is continuous, and it is weighted to the pelvis with a
-  // little of each femur, so a 42° stride cannot swing a leg tube off it and
-  // open the hole the fan cap used to hide badly.
-  const bottom = yoke(yokeBottomU);
-  const bowlN = d.level === 0 ? 5 : d.level === 1 ? 4 : 3;
-  const bowlSkin = skN([[bi('pelvis'), 0.52], [bi('thigh_L'), 0.24], [bi('thigh_R'), 0.24]]);
-  for (let i = 1; i <= bowlN; i++) {
-    const t = i / bowlN;
-    const ea = Math.pow(t, 0.85);
-    const y = lerp(bottom.o.y, crotchY - 0.005 * H, Math.pow(t, 1.2));
-    const sa = lerp(1, 0.11, ea);
-    const sb = lerp(1, 0.26, ea);
-    rings.push({
-      o: V(0, y, bottom.o.z + 0.006 * H * t),
-      ax: V(1, 0, 0), az: V(0, 0, 1),
-      r: (tt: number) => {
-        const [x0, y0] = bottom.r(tt);
-        return [x0 * sa, y0 * sb];
-      },
-      skin: bowlSkin,
-      v: 0.35,
-      crease: 0.45 + 0.45 * t,
-    });
-  }
-  m.group(GROUP.shorts).loft(rings, seg, { part: PART.SHORTS, side: 0, capEnd: true });
+  m.group(GROUP.shorts);
+  // `flip`, because this stack runs DOWNWARD while every other ax = +X loft in
+  // the rig (torso, jersey) runs upward, and the winding follows the stacking
+  // direction. Without it the waistband's normals point at the athlete: the
+  // garment is backface-culled away entirely and what the camera sees through
+  // the hole is the athlete's own hip, plus the inside of the far wall of the
+  // shorts as a pale sheet and the inverted crotch as a black wedge. That is
+  // the single defect behind most of what the shorts looked like.
+  const base = m.loft(rings, S, { part: PART.SHORTS, side: 0, flip: true });
+  // Last row of the loft — the split loop. `loft` writes S + 1 columns per row
+  // (the last duplicates the first for uv), so column j < S is the real vertex.
+  const rowBase = base + (rings.length - 1) * (S + 1);
+  const wv = (j: number) => rowBase + (((j % S) + S) % S);
 
-  /* --------------------------------------------------------- leg tubes */
-  const thighDrop = a.len.thigh * Math.abs(a.legDir[0].y);
-  const crotchQ = clamp01((a.hipY - crotchY) / Math.max(1e-4, thighDrop));
-  // Half the slot the two clamped medial faces leave between them.
-  const GAP = 0.0095 * S;
-  const SOFT = 0.020 * S;
+  const split = rings[rings.length - 1];
+  const PF = ringPoint(split, 0.25);      // front midline of the split loop
+  const PB = ringPoint(split, 0.75);      // back midline
+
+  /* -------------------------------------------------------- crotch seam */
+  // Weighted pelvis-dominant with a share of each femur: a 66° stride swings one
+  // leg without dragging the seam off the other.
+  const seamSkin = skN([[bi('pelvis'), 0.46], [bi('thigh_L'), 0.27], [bi('thigh_R'), 0.27]]);
+  const cs: number[] = new Array(M);
+  const csP: Vec3[] = new Array(M);
+  cs[0] = wv(3 * S / 4); csP[0] = PB;
+  cs[M - 1] = wv(S / 4); csP[M - 1] = PF;
+  for (let mi = 1; mi <= M - 2; mi++) {
+    const z = mi / (M - 1);
+    // A soft-shouldered bump, not a wedge: the exponent under 1 leaves the seam
+    // dropping almost vertically out of the front and back midlines, so the
+    // inseam reads as an arch and never as the V it used to be.
+    const dip = Math.pow(Math.sin(Math.PI * z), 0.62);
+    const p = V(
+      0,
+      lerp(lerp(PB.y, PF.y, z), crotchY, dip),
+      lerp(PB.z, PF.z, z) * (1 - 0.26 * dip),
+    );
+    csP[mi] = p;
+    cs[mi] = m.vert(p, 0.5, 0.35, seamSkin, PART.SHORTS, 0, 0.55 + 0.35 * dip, 0.35);
+  }
+
+  /* ------------------------------------------------------------- legs */
+  /**
+   * Half the slot the two clamped medial faces leave between them — and it must
+   * be ZERO immediately under the crotch. Holding the tubes 1.4 cm apart there
+   * left a slot you could see into: the medial walls, the seam above them and
+   * the athlete's own skin behind, all of it facing sideways in full shadow,
+   * which renders as a hard black wedge sitting in the inseam. Real inner
+   * thighs touch at the crotch and part lower down, so the clamp now ramps IN
+   * as the legs separate rather than out.
+   */
+  const GAP = 0.0105 * S4;
+  const SOFT = 0.020 * S4;
   /** One-sided soft clamp — C1 at the join, asymptotic at the limit, so the
    *  flattened medial face blends into the round part with no crease. */
   const softLo = (x: number, lim: number): number => {
@@ -343,63 +480,119 @@ export function buildShorts(m: RigMesh, a: Anthro, d: DetailSpec): void {
     const suf = SIDE_SUFFIX[si];
     const TH = bi(`thigh${suf}` as BoneName);
     const TT = bi(`thighTwist${suf}` as BoneName);
-    const qs = d.level === 0
-      ? [-0.16, -0.10, -0.04, 0.03, 0.10, 0.18, 0.27, 0.37, hem]
-      : d.level === 1 ? [-0.16, -0.05, 0.08, 0.24, 0.38, hem] : [-0.16, 0.06, 0.26, hem];
-    const rad = curve([
-      [-0.22, g.thighA * 1.10], [-0.10, g.thighA * 1.06], [0.10, g.thighA * 1.00],
-      [0.30, g.thighA * 0.93], [0.50, g.thighA * 0.86],
-    ]);
-    const leg = (q: number, extra: number, flare: number): Ring => {
-      const dir = a.legDir[si];
-      const az = V(0, 0, 1).addScaledVector(dir, -dir.z).normalize();
-      const ax = new THREE.Vector3().crossVectors(dir, az);
-      const o = a.hip[si].clone().addScaledVector(dir, a.len.thigh * q);
-      // Cloth clearance grows down the leg: shorts sit close over the hip (where
-      // they have to stay inside the waistband) and hang loose at the hem.
-      const slack = lerp(0.0100, 0.0175, smooth(-0.02, 0.24, q));
-      const rr = rad(q) + (slack + extra + flare) * S;
-      // Front-to-back the tube is inflated where it runs up inside the yoke:
-      // there it is not a tube around a thigh, it is the front and back panel of
-      // the shorts, and it has to reach past the yoke's rim or leave a slot.
-      const deep = (g.thighB / g.thighA) * (1 + 0.24 * smooth(0.30, -0.10, q));
-      const w = smooth(0.05, 0.45, q);
-      // Medial clamp ramps in through the crotch, then RELEASES toward the hem:
-      // the legs are furthest apart there and the brief is explicit that the hem
-      // must fall as a cylinder around each thigh, not pinch to a point.
-      const clamped = smooth(crotchQ - 0.24, crotchQ + 0.06, q)
-        * lerp(1, 0.34, smooth(0.26, hem, q));
-      const lim = s > 0 ? o.x - GAP : o.x + GAP;
-      const base = ellipse(rr, rr * deep);
-      return {
-        o, ax, az,
-        r: clamped < 0.01 ? base : (t: number) => {
-          const [x0, y0] = base(t);
-          // ax points at −X on both sides, so world x ≈ o.x − x0.
-          const cl = s > 0 ? softLo(x0, lim) : -softLo(-x0, -lim);
-          return [lerp(x0, cl, clamped), y0];
-        },
-        skin: skMix(
-          skMix(waistSkin(si), hipSkin(si), smooth(-0.14, 0.04, q)),
-          sk2(TH, 1 - w * 0.72, TT, w * 0.72), smooth(0.02, 0.24, q),
-        ),
-        v: 0.35 + 0.65 * clamp01((q + 0.16) / (hem + 0.16)),
-        crease: (t: number) => clamp01(
-          0.24 * smooth(0.1, -0.1, q) + 0.18 * smooth(0.2, 0.45, q)
-          // Inseam shadow down the medial face.
-          + 0.45 * clamped * lobe(t, si === 0 ? 0.0 : 0.5, 0.10),
-        ),
-      };
-    };
-    const lr: Ring[] = [];
-    for (const q of qs) lr.push(leg(q, 0, 0.010 * smooth(0.15, hem, q)));
-    if (d.clothFold) {
-      lr.push(leg(hem - 0.012, -0.0035, 0.010));
-      lr.push(leg(hem - 0.055, -0.0065, 0.006));
-    }
-    m.group(GROUP.shorts).loft(lr, Math.max(10, d.limbSegs), { part: PART.SHORTS, side: s });
-  }
+    // Rotate the loop's index origin onto the MEDIAL side so the duplicated uv
+    // seam column hides between the thighs on both legs.
+    const rot = si === 0 ? 0 : S / 2;
 
+    /** Junction-loop vertex for slot k (τ = k/S around the leg). */
+    const juncV = (k: number): number => {
+      const arc = si === 0
+        ? (k >= S / 4 && k <= 3 * S / 4)
+        : (k <= S / 4 || k >= 3 * S / 4);
+      if (arc) return wv(S / 2 - k);
+      return si === 0
+        ? cs[(((k - 3 * S / 4) % S) + S) % S]
+        : cs[3 * S / 4 - k];
+    };
+    const juncP = (k: number): Vec3 => {
+      const arc = si === 0
+        ? (k >= S / 4 && k <= 3 * S / 4)
+        : (k <= S / 4 || k >= 3 * S / 4);
+      if (arc) return ringPoint(split, ((((S / 2 - k) % S) + S) % S) / S);
+      return si === 0
+        ? csP[(((k - 3 * S / 4) % S) + S) % S]
+        : csP[3 * S / 4 - k];
+    };
+
+    /** The leg's own round section at chain parameter q, angle τ. */
+    const legPt = (q: number, tau: number, out: Vec3): Vec3 => {
+      const { ax, az } = legAxes(si);
+      const o = legO(si, q);
+      const rr = legR(q);
+      const th = tau * Math.PI * 2;
+      const x0 = rr * Math.cos(th);
+      const y0 = rr * legDeep * Math.sin(th);
+      const clamped = smooth(qSplit + 0.02, qSplit + 0.17, q)
+        * lerp(1, 0.55, smooth(0.30, hem, q));
+      let xc = x0;
+      if (clamped > 0.01) {
+        // `ax` points at −X on both sides, so world x ≈ o.x − x0.
+        const lim = s > 0 ? o.x - GAP : o.x + GAP;
+        const cl = s > 0 ? softLo(x0, lim) : -softLo(-x0, -lim);
+        xc = lerp(x0, cl, clamped);
+      }
+      return out.copy(o).addScaledVector(ax, xc).addScaledVector(az, y0);
+    };
+
+    /**
+     * The thigh's own binding. `qSplit` lands at q ≈ 0.114 — well BELOW the
+     * body's hip cap, which releases at q = 0.06 — so every loop of this tube
+     * covers a stretch of femur that is bound essentially 100 % to the femur.
+     * The old `waistSkin` held it at 80 % pelvis for the whole tube, which is a
+     * near-total disagreement with the leg inside it: 66° of hip flexion swung
+     * the thigh straight through the shorts, and that is why the shorts read as
+     * detached rings on the running players rather than as a garment.
+     */
+    const legSkinAt = (q: number, t: number): Skin => legSkin(a, si, q, t);
+
+    /* junction loop — shared vertices, so the inseam cannot open */
+    const junction: number[] = [];
+    for (let i = 0; i <= S; i++) {
+      if (i === S) {
+        const p = juncP(rot % S);
+        const dup = m.vert(p, 1, 0.35, seamSkin, PART.SHORTS, s, 0.5, 0.35);
+        junction.push(dup);
+        m.seam(junction[0], dup);
+      } else junction.push(juncV((i + rot) % S));
+    }
+
+    const qs = d.level === 0
+      ? [qSplit + 0.026, qSplit + 0.058, qSplit + 0.098, 0.255, 0.315, 0.380, hem]
+      : d.level === 1 ? [qSplit + 0.045, qSplit + 0.11, 0.28, 0.38, hem]
+        : [qSplit + 0.07, 0.30, hem];
+    // Hem turned back under itself, so the shorts have a readable inside edge
+    // instead of a knife-thin boundary. The number is a fraction of the loop's
+    // own radius, which keeps the fold proportional across the roster.
+    const folds: [number, number][] = d.clothFold
+      ? [[hem - 0.012, 0.050], [hem - 0.052, 0.092]] : [];
+
+    const tmp = V();
+    let prev = junction;
+    const emit = (q: number, shrink: number, vv: number): void => {
+      const beta = smooth(qSplit, qSplit + 0.085, q);
+      const drop = a.len.thigh * (q - qSplit);
+      const cr = clamp01(0.22 * smooth(qSplit + 0.10, qSplit - 0.06, q)
+        + 0.18 * smooth(0.22, 0.46, q));
+      const row: number[] = [];
+      for (let i = 0; i <= S; i++) {
+        const k = (i + rot) % S;
+        legPt(q, k / S, tmp);
+        if (shrink !== 0) {
+          // Hem turn-back: pull the loop toward its own centre.
+          const c = legO(si, q);
+          tmp.lerp(c, shrink);
+        }
+        if (beta < 0.999) {
+          // Morph out of the athlete's hip section into a round thigh tube.
+          const j = juncP(k).clone().addScaledVector(a.legDir[si], drop);
+          tmp.lerpVectors(j, tmp, beta);
+        }
+        // Inseam shadow rides the medial face on both sides.
+        const inseam = 0.42 * lobe(k / S, si === 0 ? 0 : 0.5, 0.11)
+          * smooth(qSplit + 0.02, qSplit + 0.12, q);
+        row.push(m.vert(tmp, i / S, vv, legSkinAt(q, k / S), PART.SHORTS, s,
+          clamp01(cr + inseam), vv));
+      }
+      m.seam(row[0], row[S]);
+      for (let j = 0; j < S; j++) m.quad(prev[j], row[j], row[j + 1], prev[j + 1]);
+      prev = row;
+    };
+
+    for (const q of qs) {
+      emit(q, 0, 0.35 + 0.65 * clamp01((q - qSplit) / (hem - qSplit)));
+    }
+    for (const [q, sh] of folds) emit(q, sh, 1);
+  }
 }
 
 /* ------------------------------------------------------------------ socks */

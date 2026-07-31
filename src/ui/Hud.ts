@@ -248,6 +248,15 @@ export class HudSystem implements System, HudSource {
       if (tableau === 'score') this.queueTableauGoal();
     });
 
+    // The count is *polled* off `gs.stallCount` every frame for its value, but the
+    // beat it pulses on comes from the rules machine's own tick. That matters:
+    // GameState raises this inside `update()`, one or more frames' worth of
+    // simulation before the HUD's `lateUpdate()` reads state, and a marker who
+    // regains a legal position mid-frame can advance the count twice in one step.
+    // Polling would collapse both into a single late pulse; the event gives each
+    // increment its own, on the sim instant it actually happened.
+    on('stall:tick', (p) => this.bug?.tick(p?.count ?? 0, this.ctx.time));
+
     on('score', (p) => this.onScore(p));
     on('turnover', (p) => this.onTurnover(p));
     on('state:changed', (p) => this.onStateChanged(p));

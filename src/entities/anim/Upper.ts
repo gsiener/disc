@@ -210,6 +210,8 @@ const _appr = new THREE.Vector3();
 const _hand = new THREE.Vector3();
 const _grip = new THREE.Vector3();
 const _palm = new THREE.Vector3();
+/** Hand-local +X in rig space — across the knuckles, i.e. the thumb axis. */
+const _thumb = new THREE.Vector3();
 
 /* ---------------------------------------------------------------- throws */
 
@@ -428,11 +430,31 @@ export function discInHand(
   kine.worldQuat(hd, _wq);
   _up.set(0, 1, 0).applyQuaternion(_wq);            // down the fingers
   _palm.set(0, 0, 1).applyQuaternion(_wq);          // out of the palm
+  _thumb.set(1, 0, 0).applyQuaternion(_wq);         // across the knuckles
   const o = hd * 3;
+  /**
+   * THE FACE NORMAL IS THE THUMB AXIS, NOT THE PALM.
+   *
+   * A grip on a disc puts the fingers curled UNDER the rim and the thumb flat on
+   * the flight plate — so the plate contains the finger direction (the rim runs
+   * away from the wrist along +Y, which is why the centre is offset along it)
+   * and its normal is the thumb. Reporting the palm instead put the plate at
+   * ninety degrees to where it physically is: from any camera off to the side —
+   * which is every camera in `Shots.ts` — a carried disc presented a 3 mm edge
+   * and vanished. `broadcast` and `sideline` are both *about* a handler on the
+   * disc and neither of them had a visible disc in it.
+   *
+   * Sign: rig +X is the athlete's LEFT, and `s` is +1 for a left-hander, so
+   * `n.x * s > 0` is the face turned out to the throwing side. That is the way
+   * a handler holds it while he reads the field, and it is the orientation that
+   * shows a full plate to a sideline lens.
+   */
+  if (_thumb.x * s < 0) _thumb.multiplyScalar(-1);
   outPos.set(kine.wp[o], kine.wp[o + 1], kine.wp[o + 2])
     .addScaledVector(_up, 0.085)
-    .addScaledVector(_palm, 0.032);
-  outNormal.copy(_palm);
+    .addScaledVector(_palm, 0.020)
+    .addScaledVector(_thumb, 0.014);
+  outNormal.copy(_thumb);
 }
 
 /** Grip offsets, rig space, relative to the disc centre. */
@@ -533,10 +555,19 @@ export function poseCarry(
    * z is signed: `poseArms` writes adduction as `-(adduct) * s`, so on both
    * sides a NEGATIVE `z * s` product adducts and a positive one abducts.
    */
-  const abduct = lerp(-0.42, 0.26, out) - 0.30 * sp;
-  blendEuler(pose, ua, 0.30 + 0.10 * sp + 0.16 * out, -0.20 * s, abduct * s, w);
-  blendBend(pose, fa, lerp(1.28, 1.16, out) - 0.12 * sp, w);
-  blendEuler(pose, hd, -0.18, 0.55 * s, 0.15 * s, w);
+  /**
+   * The extended hold has to be MEASURABLY different from the tuck or the two
+   * blend into one indeterminate arm. At out = 1 the elbow opens from 73 to 33
+   * degrees and the shoulder both flexes and abducts, which puts the disc a
+   * clear 30-35 cm outside the silhouette of the torso — the difference between
+   * a disc a sideline camera can see and a disc pressed against a sternum, which
+   * is what `sideline` and `broadcast` were both showing.
+   */
+  const abduct = lerp(-0.42, 0.50, out) - 0.30 * sp;
+  blendEuler(pose, ua, 0.30 + 0.10 * sp + 0.24 * out, -0.20 * s, abduct * s, w);
+  blendBend(pose, fa, lerp(1.28, 0.62, out) - 0.12 * sp, w);
+  // Wrist cocked so the plate stands up rather than lying flat in the palm.
+  blendEuler(pose, hd, -0.18 - 0.18 * out, (0.55 + 0.30 * out) * s, 0.15 * s, w);
   pose.setTwist(faT, lerp(0, 0.72 * s, w));
   poseHand(pose, s, 'grip', detail, w);
   // The off hand comes across as a screen on a standing hold — a handler does

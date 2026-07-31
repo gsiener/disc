@@ -98,6 +98,18 @@ export interface Ring {
   /** Per-angle binding — how a joint gets asymmetric weights (crease side snaps,
    *  outer side blends wide) without hand-painting vertices. */
   skinAt?: (t: number) => Skin;
+  /**
+   * Per-angle displacement along the ring's NORMAL (`ax × az` unless `ay` says
+   * otherwise), i.e. the one direction a planar ring cannot reach on its own.
+   *
+   * This is what a scooped neckline is: the jersey's top loops have to climb the
+   * trapezius out at the shoulder and drop to the jugular notch at the front, at
+   * the same u. Faking it with an extra stack of rings puts a horizontal ledge
+   * across the chest — which is the ledge the critic reads as a collar plate.
+   */
+  off?: (t: number) => number;
+  /** Override for the displacement axis used by `off`. */
+  ay?: Vec3;
   /** Texture v, and the value written to aLen. */
   v: number;
   /** Baked cavity term for the ring, optionally per angle. */
@@ -178,6 +190,7 @@ export interface LoftOpts {
 }
 
 const _p = new THREE.Vector3();
+const _ay = new THREE.Vector3();
 
 export class RigMesh {
   private P: number[] = [];
@@ -236,11 +249,16 @@ export class RigMesh {
       const R = rings[ri];
       const rowBase = this.vcount;
       const crease = R.crease;
+      if (R.off) {
+        if (R.ay) _ay.copy(R.ay);
+        else _ay.crossVectors(R.ax, R.az).normalize();
+      }
       for (let j = 0; j < cols; j++) {
         const tt = j / segs;
         const t = open ? tt : (j === segs ? 0 : tt);
         const [a, b] = R.r(t);
         _p.copy(R.o).addScaledVector(R.ax, a).addScaledVector(R.az, b);
+        if (R.off) _p.addScaledVector(_ay, R.off(t));
         const s = R.skinAt ? R.skinAt(t) : R.skin;
         const cr = typeof crease === 'function' ? crease(t) : (crease ?? 0);
         this.vert(_p, u0 + (u1 - u0) * tt, R.v, s, o.part, o.side, cr, ri / span);

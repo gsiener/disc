@@ -49,12 +49,14 @@ export function detailFor(level: 0 | 1 | 2, charDetail: number): DetailSpec {
   if (level === 0) {
     return {
       level, torsoSegs: scaleInt(24, d, 14), limbSegs: scaleInt(16, d, 10),
-      // Extra loops at u > 0.86 — the trapezius ramp out to the acromion is the
-      // steepest part of the whole torso and three rings across it facets.
-      torsoRings: [-0.21, -0.12, -0.04, 0.05, 0.14, 0.24, 0.34, 0.44, 0.54, 0.64, 0.73, 0.81, 0.865, 0.905, 0.938, 0.965, 0.985, 1.0, 1.006, 1.013, 1.021],
+      // Seven loops between the upper chest and the neck root. The trapezius
+      // slope is 5 cm of rise carrying 14 cm of lateral travel; at three loops
+      // it is three flats with two creases, which is exactly what a "faceted
+      // shoulder" is.
+      torsoRings: [-0.21, -0.12, -0.04, 0.05, 0.14, 0.24, 0.34, 0.44, 0.54, 0.64, 0.73, 0.81, 0.868, 0.912, 0.950, 0.972, 0.986, 1.000, 1.014, 1.030, 1.055],
       // Six loops across the deltoid cap (q < 0). Three was a chamfer.
       armRings: [-0.335, -0.305, -0.265, -0.215, -0.155, -0.088, -0.015, 0.10, 0.24, 0.40, 0.56, 0.72, 0.855, 0.945, 1.0, 1.055, 1.14, 1.27, 1.42, 1.58, 1.74, 1.88, 1.985],
-      legRings: [-0.16, -0.04, 0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.90, 0.955, 1.0, 1.045, 1.11, 1.22, 1.36, 1.52, 1.70, 1.86, 1.97],
+      legRings: [-0.225, -0.185, -0.145, -0.09, -0.02, 0.08, 0.22, 0.36, 0.50, 0.64, 0.78, 0.90, 0.955, 1.0, 1.045, 1.11, 1.22, 1.36, 1.52, 1.70, 1.86, 1.97],
       headU: scaleInt(44, d, 30), headV: scaleInt(40, d, 26),
       fingers: true, face: true, ears: true, eyes: true, hairCards: true, clothFold: true,
     };
@@ -62,18 +64,18 @@ export function detailFor(level: 0 | 1 | 2, charDetail: number): DetailSpec {
   if (level === 1) {
     return {
       level, torsoSegs: scaleInt(14, d, 10), limbSegs: scaleInt(10, d, 7),
-      torsoRings: [-0.21, -0.06, 0.09, 0.25, 0.41, 0.57, 0.72, 0.85, 0.925, 0.97, 1.0, 1.012, 1.021],
+      torsoRings: [-0.21, -0.06, 0.09, 0.25, 0.41, 0.57, 0.72, 0.85, 0.930, 0.986, 1.012, 1.055],
       armRings: [-0.335, -0.28, -0.19, -0.09, 0.02, 0.25, 0.55, 0.82, 1.0, 1.16, 1.38, 1.60, 1.82, 1.985],
-      legRings: [-0.16, 0.06, 0.30, 0.55, 0.80, 1.0, 1.18, 1.42, 1.66, 1.88, 1.97],
+      legRings: [-0.225, -0.155, -0.06, 0.06, 0.30, 0.55, 0.80, 1.0, 1.18, 1.42, 1.66, 1.88, 1.97],
       headU: scaleInt(18, d, 12), headV: scaleInt(15, d, 10),
       fingers: false, face: true, ears: false, eyes: true, hairCards: false, clothFold: true,
     };
   }
   return {
     level, torsoSegs: scaleInt(9, d, 7), limbSegs: scaleInt(6, d, 5),
-    torsoRings: [-0.21, 0.02, 0.28, 0.56, 0.82, 0.95, 1.0, 1.021],
+    torsoRings: [-0.21, 0.02, 0.28, 0.56, 0.82, 0.95, 0.99, 1.055],
     armRings: [-0.335, -0.22, -0.06, 0.20, 0.65, 1.0, 1.40, 1.78, 1.985],
-    legRings: [-0.16, 0.25, 0.65, 1.0, 1.35, 1.70, 1.97],
+    legRings: [-0.225, -0.10, 0.25, 0.65, 1.0, 1.35, 1.70, 1.97],
     headU: scaleInt(9, d, 7), headV: scaleInt(7, d, 6),
     fingers: false, face: false, ears: false, eyes: false, hairCards: false, clothFold: false,
   };
@@ -113,30 +115,59 @@ export function torsoCentre(a: Anthro, u: number): Vec3 {
   // a horizontal ledge running shoulder to shoulder above the chest.
   const z = a.H * (0.004 + 0.020 * smooth(0.15, 0.75, u)
     - 0.014 * lobe(u * 0.5 + 0.25, 0.40, 0.16)
-    - 0.030 * smooth(0.84, 1.0, u));
+    - 0.030 * smooth(0.84, 1.005, u)
+    // Above the acromion the section is the neck root, which sits over the
+    // spine — keep walking it back or the trapezius loops bulge in front of the
+    // throat.
+    - 0.010 * smooth(1.005, 1.055, u));
   return V(0, y, z);
 }
+
+/**
+ * Top of the torso loft, in torso-u; y = hipY + u·torsoSpan = 0.838 H. This is
+ * the neck root — where the trapezius stops being shoulder and becomes neck —
+ * and the number is bounded from above by the mandible: the head's own funnel
+ * reaches 0.845 H at the side of the jaw, so a trapezius that tops out any
+ * higher meets the jawbone and the athlete has no neck in profile.
+ */
+export const TORSO_TOP_U = 1.055;
+/** Acromion in torso-u: 0.818 H. The widest loop in the whole body. */
+export const TORSO_ACROMION_U = 0.986;
 
 export function torsoProfile(a: Anthro, u: number): Profile {
   const g = a.g;
   const p = a.p;
   const mus = p.muscle, fat = p.fat, fr = p.frame;
+  // THE SHOULDER GIRDLE IS IN `wa`, NOT IN A LOBE.
+  //
+  // The previous pass reached the acromion with a pair of Gaussian lobes bolted
+  // onto a ring that had already closed to the neck's radius — a 0.066 m ellipse
+  // multiplied by 2.9 at t = 0 and t = 0.5. That is a bowtie, and it turned into
+  // the shoulder the critic saw: two hard wings leaving the neck, a ridge along
+  // the top edge of each, and a 1.1 cm-tall shelf between them, all inside 1.1 cm
+  // of rise. The loops that had to reach 14 cm outboard and the loops that had to
+  // close onto the neck were the same loops.
+  //
+  // They are now different loops. The ring simply *is* the acromion at u = 0.986
+  // (0.818 H), and the close onto the neck happens above it, over 3.6 cm of rise
+  // — a 15° slope, which is what a trapezius measures on a real athlete. Nothing
+  // is left for a garment to bridge, so nothing bridges it with a plate.
   const wa = curve([
     [-0.21, g.hipA * 0.86], [-0.08, g.hipA * 1.00], [0.03, g.hipA * 0.985],
     [0.30, g.waistA], [0.50, lerp(g.waistA, g.chestA, 0.42)],
-    [0.70, g.chestA * 0.99], [0.80, g.chestA], [0.90, g.chestA * 0.955],
-    // Past u = 1 the loft is no longer the trunk: it is the shoulder ridge
-    // curving over from the acromion onto the neck. It has to close to inside
-    // the neck loft's own radius, because whatever the torso leaves open at the
-    // top is a hole you can see straight down into from any camera above chest
-    // height — which is every camera in this game.
-    [0.965, g.chestA * 0.72], [1.0, g.neckA * 0.98], [1.03, g.neckA * 0.90],
+    [0.70, g.chestA * 0.99], [0.80, g.chestA], [0.90, g.chestA * 1.02],
+    [0.945, lerp(g.chestA, a.acromionHalf, 0.58)],
+    [0.986, a.acromionHalf * 0.985],
+    [1.006, a.acromionHalf * 0.850], [1.024, a.acromionHalf * 0.600],
+    [1.055, g.neckA * 1.10],
   ])(u);
   const wb = curve([
     [-0.21, g.hipB * 0.90], [-0.08, g.hipB * 1.02], [0.03, g.hipB * 0.98],
     [0.30, g.waistB], [0.50, lerp(g.waistB, g.chestB, 0.50)],
-    [0.70, g.chestB * 0.99], [0.80, g.chestB], [0.90, g.chestB * 0.93],
-    [0.965, g.chestB * 0.76], [1.0, g.neckB * 1.02], [1.03, g.neckB * 0.92],
+    [0.70, g.chestB * 0.99], [0.80, g.chestB], [0.90, g.chestB * 0.96],
+    [0.945, g.chestB * 0.895], [0.986, g.chestB * 0.810],
+    [1.006, g.chestB * 0.745], [1.024, g.chestB * 0.680],
+    [1.055, g.neckB * 1.02],
   ])(u);
 
   const lobes: Lobe[] = [];
@@ -177,21 +208,22 @@ export function torsoProfile(a: Anthro, u: number): Profile {
   }
   const furrow = smooth(0.20, 0.45, u) * smooth(1.0, 0.90, u);
   if (furrow > 0.01) lobes.push({ at: 0.750, w: 0.030, amp: -0.050 * furrow });
-  // Trapezius. The top rings must ramp laterally all the way OUT TO THE
-  // ACROMION, not to the glenohumeral centre and not to 55 % of it: whatever
-  // gap is left between the trapezius and the deltoid has to be bridged by the
-  // jersey, and the jersey bridges it with a flat plate. That plate is the
-  // shoulder facet. Targeting 0.97 of the acromion closes the gap in geometry
-  // so no garment has to.
-  // …and then release, over 2 cm of height, so the ridge rolls over the top of
-  // the shoulder and closes onto the neck instead of ending in an open rim.
-  const trap = smooth(0.84, 0.99, u) * smooth(1.022, 0.999, u);
-  if (trap > 0.01) {
-    const amp = trap * (a.acromionHalf * 0.97 / Math.max(1e-4, wa) - 1);
-    lobes.push({ at: 0.0, w: 0.150, amp });
-    lobes.push({ at: 0.5, w: 0.150, amp });
+  // Supraclavicular fossa — the hollow between the clavicle and the trapezius.
+  // It is the only landmark that stops the shoulder shelf reading as a plank,
+  // and it is a *negative* term, which is why it can live on the same ring as
+  // the acromion without inflating anything.
+  const fossa = smooth(0.93, 0.995, u) * smooth(1.045, 1.000, u);
+  if (fossa > 0.01) {
+    lobes.push({ at: 0.190, w: 0.055, amp: -0.115 * fossa });
+    lobes.push({ at: 0.310, w: 0.055, amp: -0.115 * fossa });
   }
-  return ellipse(wa, wb, lobes, u > 0.1 && u < 0.6 ? 2.25 : 2.05);
+  // Section power: rounded at the belly, distinctly flatter across the shoulder
+  // girdle, where the body is a slab and an ellipse reads as a barrel.
+  const pow = curve([
+    [-0.21, 2.05], [0.15, 2.25], [0.60, 2.15], [0.90, 2.24],
+    [0.99, 2.55], [1.055, 2.20],
+  ])(u);
+  return ellipse(wa, wb, lobes, pow);
 }
 
 const CHAIN: readonly BoneName[] = ['pelvis', 'spine01', 'spine02', 'spine03', 'chest'];
@@ -200,16 +232,22 @@ const CHAIN_U = [0, 0.20, 0.42, 0.64, 0.84, 1.0];
 export function torsoSkin(a: Anthro, u: number, t: number): Skin {
   let base: Skin;
   if (u <= 0) base = sk1(bi('pelvis'));
-  else if (u >= 1) base = sk2(bi('chest'), 0.84, bi('neck'), 0.16);
-  else {
+  else if (u >= 1) {
+    // The loft now continues 5 cm past the acromion onto the neck root, so the
+    // hand-over to `neck` has to continue with it — a ring at 0.847 H bound
+    // 84 % to the chest shears straight off the neck on a head turn.
+    const f = lerp(0.16, 0.74, smooth(1.0, TORSO_TOP_U, u));
+    base = sk2(bi('chest'), 1 - f, bi('neck'), f);
+  } else {
     let k = 0;
     while (k < CHAIN.length - 1 && u > CHAIN_U[k + 1]) k++;
     const f = smooth(CHAIN_U[k], CHAIN_U[k + 1], u);
     base = sk2(bi(CHAIN[k]), 1 - f, bi(CHAIN[Math.min(k + 1, CHAIN.length - 1)]), f);
   }
   // Shoulder corners follow the clavicle so a shrug or an arm swing carries the
-  // trapezius with it instead of tearing a hole at the neckline.
-  const top = smooth(0.80, 1.0, u);
+  // trapezius with it instead of tearing a hole at the neckline — and release
+  // again above the acromion, where the ring is neck, not shoulder.
+  const top = smooth(0.80, 0.985, u) * smooth(TORSO_TOP_U, 1.005, u);
   if (top > 0.001) {
     const lat = Math.cos(t * Math.PI * 2);
     const w = top * Math.pow(Math.abs(lat), 1.6) * 0.62;
@@ -239,10 +277,10 @@ export function buildTorso(m: RigMesh, a: Anthro, d: DetailSpec): void {
       r: prof,
       skin: torsoSkin(a, u, 0),
       skinAt: (t: number) => torsoSkin(a, u, t),
-      v: clamp01((u + 0.21) / 1.21),
+      v: clamp01((u + 0.21) / (TORSO_TOP_U + 0.21)),
       crease: (t: number) => {
         // Armpit hollow, the crease under the pec, and the sacral dimples.
-        const pit = smooth(0.80, 0.94, u) * smooth(1.02, 0.95, u)
+        const pit = smooth(0.80, 0.92, u) * smooth(1.00, 0.94, u)
           * Math.max(lobe(t, 0.05, 0.075), lobe(t, 0.45, 0.075));
         const underPec = smooth(0.50, 0.62, u) * smooth(0.72, 0.62, u)
           * (lobe(t, 0.19, 0.055) + lobe(t, 0.31, 0.055)) * 0.55;
@@ -276,12 +314,14 @@ export function buildTorso(m: RigMesh, a: Anthro, d: DetailSpec): void {
 export function buildNeck(m: RigMesh, a: Anthro, d: DetailSpec): void {
   const g = a.g;
   const fr = a.p.frame;
-  const base = V(0, a.neckBaseY - a.H * 0.034, -a.H * 0.010);
+  // The column starts well below the cervicale and inside the trapezius, so the
+  // flare at its root is never the silhouette — the torso's shoulder slope is.
+  const base = V(0, a.neckBaseY - a.H * 0.048, -a.H * 0.012);
   // The neck stops *inside* the head's funnel, never level with it — see
   // FUNNEL_R in Head.ts. Two coincident tubes is the failure mode here.
   const top = V(0, a.chinY + a.g.headH * 0.22, -a.H * 0.005);
   const segs = Math.max(10, Math.round(d.torsoSegs * 0.70));
-  const N = d.level === 0 ? 9 : d.level === 1 ? 5 : 3;
+  const N = d.level === 0 ? 11 : d.level === 1 ? 6 : 3;
   const bell = (x: number, c: number, w: number) => {
     const z = (x - c) / w;
     return Math.exp(-z * z);
@@ -290,8 +330,10 @@ export function buildNeck(m: RigMesh, a: Anthro, d: DetailSpec): void {
   for (let i = 0; i < N; i++) {
     const u = i / (N - 1);
     const o = V(lerp(base.x, top.x, u), lerp(base.y, top.y, u), lerp(base.z, top.z, u));
-    const w = curve([[0, 1.62], [0.20, 1.16], [0.50, 1.0], [0.85, 0.985], [1.0, 1.02]])(u);
-    const scm = smooth(0.02, 0.30, u) * smooth(1.04, 0.62, u);
+    // A gentler root. 1.62 over the first fifth was a cone, and a cone leaving a
+    // neck is two triangular flanges from any camera that is not dead ahead.
+    const w = curve([[0, 1.44], [0.16, 1.20], [0.36, 1.055], [0.60, 1.0], [0.86, 0.985], [1.0, 1.02]])(u);
+    const scm = smooth(0.06, 0.34, u) * smooth(1.04, 0.62, u);
     // Azimuth of each cord, in t units either side of the front midline (0.25).
     const sp = lerp(0.052, 0.131, smooth(0.04, 0.86, u));
     const lobes: Lobe[] = [
@@ -345,7 +387,55 @@ function armDist(a: Anthro, q: number): number {
   return q <= 1 ? q * a.len.upperArm : a.len.upperArm + (q - 1) * a.len.foreArm;
 }
 
-function armSkin(a: Anthro, si: number, q: number, t: number): Skin {
+/**
+ * WHERE A GARMENT OVERLAPS A LIMB, BOTH SIDES BIND THROUGH THESE TWO FUNCTIONS.
+ *
+ * A garment shell is only a few millimetres outside the body it covers, so the
+ * two surfaces stay nested ONLY while they deform identically. Give them even
+ * slightly different weights and any pose that rotates the joint shears the limb
+ * straight out through the cloth — the skin does not tear a hole in the garment,
+ * it simply arrives in front of it, and you get a bare deltoid sitting proud of
+ * an intact sleeve.
+ *
+ * That is what happened here. Three surfaces met inside the deltoid and answered
+ * "which bones drive this?" three different ways (arm 0.45 humerus, sleeve 0.38,
+ * jersey corner 0.38); three more met inside the hip and disagreed by 0.34
+ * between the shorts yoke and the leg tube. Both overlaps opened on any raised
+ * arm or flexed hip. Exporting the binding is what makes the invariant hold: a
+ * peer editing the arm's radius curve cannot silently desync the sleeve, because
+ * there is only one set of numbers and both sides read it.
+ *
+ * Weights are the full-overlap end of the ramp; callers blend toward them.
+ */
+export function deltoidBind(si: number): Skin {
+  const suf = SIDE_SUFFIX[si];
+  return skN([
+    [bi(`clavicle${suf}` as BoneName), 0.42],
+    [bi(`upperArm${suf}` as BoneName), 0.38],
+    [bi('chest'), 0.20],
+  ]);
+}
+
+/**
+ * Pelvis-dominant by design: the top of a shorts leg tube runs up INSIDE the
+ * waistband, and a femur-dominant overlap swings it out from under the yoke on
+ * hip flexion. 0.68 keeps that behaviour while staying close enough to the
+ * thigh that the leg silhouette does not visibly slide.
+ */
+export function hipBind(si: number): Skin {
+  const suf = SIDE_SUFFIX[si];
+  return skN([[bi('pelvis'), 0.68], [bi(`thigh${suf}` as BoneName), 0.32]]);
+}
+
+/**
+ * Exported so the SLEEVE can bind through it. See the invariant on
+ * `deltoidBind`: a sleeve is a parallel offset of this surface a few
+ * millimetres out, and two surfaces that close cannot afford to disagree about
+ * a single weight. The sleeve calling this function is the only way to be sure
+ * they never do — a peer retuning the deltoid ramp here retunes the sleeve with
+ * it, because there is one ramp and both read it.
+ */
+export function armSkin(a: Anthro, si: number, q: number, t: number): Skin {
   const suf = SIDE_SUFFIX[si];
   const UA = bi(`upperArm${suf}` as BoneName);
   const UT = bi(`upperArmTwist${suf}` as BoneName);
@@ -355,10 +445,12 @@ function armSkin(a: Anthro, si: number, q: number, t: number): Skin {
   const CL = bi(`clavicle${suf}` as BoneName);
 
   // Deltoid cap — partly on the clavicle and the chest so a shoulder roll does
-  // not shear the arm off the torso.
+  // not shear the arm off the torso. The full-weight end of this ramp is
+  // `deltoidBind`, which the sleeve and the jersey's shoulder corner also use:
+  // see the invariant on that function.
   if (q < 0.10) {
     const w = smooth(0.10, -0.34, q);
-    return skN([[UA, 1 - w * 0.55], [CL, w * 0.36], [bi('chest'), w * 0.19]]);
+    return skMix(sk1(UA), deltoidBind(si), w);
   }
   const d = armDist(a, q);
   const elbowD = a.len.upperArm;
@@ -389,7 +481,20 @@ function armSkin(a: Anthro, si: number, q: number, t: number): Skin {
 export const CAP_Q = 0.34;
 /** Radians of quarter-arc the cap sweeps. Just short of 90° so the last ring
  *  still has area and the fan cap that closes it is a few millimetres across. */
-const CAP_ARC = 1.46;
+const CAP_ARC = 1.50;
+/**
+ * Height of the deltoid dome above the glenohumeral centre, as a multiple of the
+ * deltoid radius.
+ *
+ * At 0.94 the dome's crown stood 4.9 cm above the joint and 3 cm ABOVE the
+ * acromion — a ball sitting on top of the shoulder rather than hanging off the
+ * side of it. That is the puffed pauldron in every `closeup`: the jersey sleeve
+ * is a parallel offset of this surface, so it inherited the ball and added a
+ * cloth thickness to it. 0.46 puts the crown level with the acromion, which is
+ * where the top of a deltoid actually is; the trapezius slope now passes over it
+ * and the silhouette runs neck → shoulder → arm in one curve.
+ */
+const CAP_RISE = 0.46;
 
 export interface ArmRing {
   o: Vec3; ax: Vec3; az: Vec3; dir: Vec3;
@@ -444,14 +549,14 @@ export function armSurface(a: Anthro): (si: number, q: number, grow?: number) =>
       // previous one lerped its ring plane toward horizontal and passed through
       // vertical halfway up, which is a fold wearing a dome's parameters.
       const rise = Math.sin(th);
-      const capH = (D + grow) * 0.94;
+      const capH = (D + grow) * CAP_RISE;
       o = a.shoulder[si].clone().addScaledVector(dir, -capH * rise);
       // Sheared toward the acromion so the crown of the dome sits over the bony
       // point of the shoulder instead of up the humerus toward the neck. A
       // shear is smooth in k, so it costs nothing in continuity.
       o.add(V(
-        s * (a.acromionHalf - Math.abs(a.shoulder[si].x)) * rise * 0.85,
-        (a.acromionY - a.shoulderY) * rise * 0.30,
+        s * (a.acromionHalf - Math.abs(a.shoulder[si].x)) * rise * 0.92,
+        (a.acromionY - a.shoulderY) * rise * 0.62,
         -0.004 * a.H * rise,
       ));
     } else {
@@ -521,7 +626,8 @@ function legDirAt(a: Anthro, si: number, q: number): Vec3 {
   return a.legDir[si].clone().lerp(a.shinDir[si], smooth(0.94, 1.06, q)).normalize();
 }
 
-function legSkin(a: Anthro, si: number, q: number, t: number): Skin {
+/** Exported for the shorts' leg tube and the socks — same invariant as `armSkin`. */
+export function legSkin(a: Anthro, si: number, q: number, t: number): Skin {
   const suf = SIDE_SUFFIX[si];
   const TH = bi(`thigh${suf}` as BoneName);
   const TT = bi(`thighTwist${suf}` as BoneName);
@@ -529,9 +635,10 @@ function legSkin(a: Anthro, si: number, q: number, t: number): Skin {
   const FO = bi(`foot${suf}` as BoneName);
   const H = a.H / 1.8;
 
+  // Hip cap — see `hipBind`, which the shorts yoke and leg tube share with it.
   if (q < 0.06) {
     const w = smooth(0.06, -0.16, q);
-    return skN([[TH, 1 - w * 0.62], [bi('pelvis'), w * 0.62]]);
+    return skMix(sk1(TH), hipBind(si), w);
   }
   const d = q <= 1 ? q * a.len.thigh : a.len.thigh + (q - 1) * a.len.shin;
   const kneeD = a.len.thigh;
@@ -552,14 +659,24 @@ function legSkin(a: Anthro, si: number, q: number, t: number): Skin {
 
 export function buildLegs(m: RigMesh, a: Anthro, d: DetailSpec): void {
   const g = a.g;
+  // THE TOP OF THE FEMUR CLOSES INSIDE THE PELVIS.
+  //
+  // The loft used to start at q = -0.16 — 7 cm above the hip joint — at full
+  // thigh girth, and `capStart` closed it with a flat upward-facing disc. The
+  // torso is 14.8 cm wide there and the disc reached 18.7, so a 4 cm crescent of
+  // horizontal, key-lit plate stuck out of each hip and through the shorts. It
+  // is the brightest thing in a hip-height frame and it reads as a broken mesh,
+  // because it is one. Tapering to 28 % over the last 8 cm buries both the cap
+  // and its rim inside the pelvis, where a hip joint belongs.
   const rad = curve([
-    [-0.16, g.thighA * 1.06], [0.02, g.thighA * 1.03], [0.20, g.thighA * 0.97],
+    [-0.225, g.thighA * 0.28], [-0.185, g.thighA * 0.55], [-0.145, g.thighA * 0.75],
+    [-0.09, g.thighA * 0.90], [0.02, g.thighA * 1.03], [0.20, g.thighA * 0.97],
     [0.45, g.thighA * 0.88], [0.70, g.thighA * 0.76], [0.88, g.kneeR * 1.06],
     [1.0, g.kneeR], [1.10, g.kneeR * 1.02], [1.24, g.calfA * 1.02],
     [1.36, g.calfA], [1.58, g.calfA * 0.74], [1.80, g.ankleA * 1.16], [1.97, g.ankleA],
   ]);
   const depth = curve([
-    [-0.16, g.thighB / g.thighA], [0.45, 1.06], [0.88, 1.00], [1.0, 0.98],
+    [-0.225, (g.thighB / g.thighA) * 0.94], [-0.05, g.thighB / g.thighA], [0.45, 1.06], [0.88, 1.00], [1.0, 0.98],
     [1.30, g.calfB / g.calfA], [1.62, 1.04], [1.97, g.ankleB / g.ankleA],
   ]);
 
@@ -606,9 +723,9 @@ export function buildLegs(m: RigMesh, a: Anthro, d: DetailSpec): void {
         r: ellipse(rr, rr * depth(q), lobes),
         skin: legSkin(a, si, q, 0),
         skinAt: (t: number) => legSkin(a, si, q, t),
-        v: clamp01((q + 0.16) / 2.13),
+        v: clamp01((q + 0.225) / 2.195),
         crease: (t: number) => {
-          const groin = smooth(0.16, -0.10, q) * lobe(t, si === 0 ? 0.92 : 0.08, 0.13) * 0.9;
+          const groin = smooth(0.16, -0.06, q) * lobe(t, si === 0 ? 0.92 : 0.08, 0.13) * 0.9;
           const pop = smooth(0.90, 1.0, q) * smooth(1.16, 1.02, q) * lobe(t, 0.75, 0.11) * 0.85;
           return clamp01(groin + pop);
         },

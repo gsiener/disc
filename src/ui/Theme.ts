@@ -87,8 +87,11 @@ export const HUD_CSS = `
 }
 .ug-bug .tm.on .chip{opacity:1;box-shadow:0 -.3em .85em -.25em var(--c);}
 /* Code over timeouts, score to the right: two reading columns instead of one
-   long run of glyphs, so the pips never get mistaken for part of the number. */
-.ug-bug .idc{display:flex;flex-direction:column;gap:.52em;align-items:flex-start;}
+   long run of glyphs, so the pips never get mistaken for part of the number.
+   The pips are taken *out of flow* so the column's height is the code row alone
+   and the code therefore centres against the score digit rather than riding
+   half a pip-row above it. */
+.ug-bug .idc{position:relative;display:flex;align-items:center;}
 .ug-bug .idr{display:flex;align-items:center;gap:.42em;height:.86em;}
 .ug-bug .code{
   font-size:.82em; font-weight:700; letter-spacing:.155em;
@@ -100,12 +103,25 @@ export const HUD_CSS = `
   width:.68em; height:.36em; border-radius:50%; flex:none; opacity:0;
   background:var(--c); box-shadow:0 0 .55em .02em var(--c),inset 0 .06em 0 rgba(255,255,255,.6);
 }
-.ug-bug .tos{display:flex;gap:.3em;}
+/* Timeouts as upright tally ticks, not lozenges.
+
+   They were horizontal bars at text weight sitting on the code's baseline, and
+   two of those read as "--" — which in every sports graphic on earth is the
+   glyph for "no data". Standing them up removes the typographic reading
+   entirely: a tick is a tally, and a spent tick is its ghost.
+
+   Indented past the possession disc so they hang under the *code* rather than
+   under the glyph; at left:0 they orphaned in the corner of the cell. The disc
+   keeps its box when possession is elsewhere (it fades, it does not un-lay-out),
+   so this offset holds for both clubs at all times. */
+.ug-bug .tos{
+  position:absolute;top:calc(100% + .28em);left:1.1em;display:flex;gap:.26em;
+}
 .ug-bug .tos i{
-  display:block;width:.46em;height:.23em;border-radius:.115em;
+  display:block;width:.185em;height:.48em;border-radius:.09em;
   background:rgba(232,242,255,.95);
 }
-.ug-bug .tos i.spent{background:rgba(232,242,255,.16);}
+.ug-bug .tos i.spent{background:rgba(232,242,255,.13);box-shadow:inset 0 0 0 1px rgba(232,242,255,.10);}
 
 .ug-bug .num{
   font-size:1.9em; height:1.16em; line-height:1.16em; overflow:hidden;
@@ -128,18 +144,39 @@ export const HUD_CSS = `
 }
 
 /* Stall: an arc gauge, because a bare integer is the one element on a sports
-   bug that has to be readable in peripheral vision. */
+   bug that has to be readable in peripheral vision.
+
+   It is deliberately the second-largest number in the package — the score is
+   1.9em, this is 1.62em, and everything else is under 1em. That ordering is the
+   whole argument: the score is what the match is, but the stall count is the
+   only number on the bar that is *running out*, and it is the one a viewer
+   tracks without moving their eyes off the disc. It carries no label because it
+   is the only ringed element and it counts in front of you; a static label would
+   cost the ring the diameter that makes it legible. */
 .ug-bug .stall{
-  display:flex;align-items:center;justify-content:center;padding:0 .85em;
+  display:flex;align-items:center;justify-content:center;padding:0 .78em;
   background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.012));
   position:relative;
 }
-.ug-bug .stall .gwrap{position:relative;width:2.6em;height:2.6em;will-change:transform;}
+/* Warm/hot wash the whole terminal cell, so 8+ is visible in the corner of the
+   eye before the digit itself is resolved. */
+.ug-bug .stall::after{
+  content:'';position:absolute;inset:0;opacity:0;
+  background:radial-gradient(120% 120% at 50% 50%,rgba(255,95,69,.30),rgba(255,95,69,0) 70%);
+}
+.ug-bug .stall.hot::after{opacity:1;}
+.ug-bug .stall.warn::after{
+  opacity:.55;
+  background:radial-gradient(120% 120% at 50% 50%,rgba(244,198,87,.26),rgba(244,198,87,0) 70%);
+}
+.ug-bug .stall .gwrap{position:relative;width:3.06em;height:3.06em;will-change:transform;}
 .ug-bug .stall .gauge{width:100%;height:100%;display:block;overflow:visible;}
 .ug-bug .stall .gn{
   position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
-  font-size:1.05em;font-weight:700;color:var(--ug-ink);letter-spacing:-.04em;
+  font-size:1.62em;font-weight:700;color:var(--ug-ink);letter-spacing:-.05em;
+  text-shadow:0 .03em .12em rgba(0,0,0,.55);
 }
+.ug-bug .stall.warn .gn{color:var(--ug-live);}
 .ug-bug .stall.hot .gn{color:var(--ug-hot);}
 
 /* =========================================================== lower third == */
@@ -153,7 +190,11 @@ export const HUD_CSS = `
 .ug-l3 .plate{
   width:3.95em;flex:none;display:flex;align-items:center;justify-content:center;
   background:linear-gradient(160deg,var(--cRaw),rgba(0,0,0,.42)),var(--cRaw);
-  position:relative;z-index:2;box-shadow:.5em 0 1.1em -.55em rgba(0,0,0,.8);
+  position:relative;z-index:2;
+  /* The rail carries the kit colour and sits immediately left of this plate. For
+     a white kit the two are the same value and the rail disappears into it, so
+     the plate keeps a hairline of its own to divide them. */
+  box-shadow:.5em 0 1.1em -.55em rgba(0,0,0,.8),inset 1px 0 0 rgba(0,0,0,.3);
 }
 .ug-l3 .plate::after{
   content:'';position:absolute;inset:0;
@@ -165,7 +206,7 @@ export const HUD_CSS = `
 }
 .ug-l3 .body{display:flex;align-items:center;gap:1.05em;padding:0 1.05em 0 .95em;
   will-change:transform;position:relative;z-index:1;}
-.ug-l3 .who{display:flex;flex-direction:column;gap:.42em;min-width:8.2em;}
+.ug-l3 .who{display:flex;flex-direction:column;gap:.42em;min-width:7.4em;}
 .ug-l3 .who .nm{font-size:1.12em;font-weight:650;letter-spacing:.005em;color:#fff;white-space:nowrap;}
 .ug-l3 .who .sub{font-size:.55em;font-weight:600;letter-spacing:.17em;color:var(--ug-ink2);text-transform:uppercase;white-space:nowrap;}
 .ug-l3 .tag{
@@ -174,9 +215,27 @@ export const HUD_CSS = `
   color:#0b0e13;background:var(--ug-live);box-shadow:0 .2em .8em -.3em var(--ug-live);
 }
 .ug-l3 .tag.d{background:var(--ug-good);box-shadow:0 .2em .8em -.3em var(--ug-good);}
-.ug-l3 .stats{display:flex;align-items:flex-end;gap:.9em;}
-.ug-l3 .st{display:flex;flex-direction:column;align-items:center;gap:.36em;}
-.ug-l3 .st .v{font-size:1.02em;font-weight:650;color:#fff;}
+/* Three single-digit stats set side by side in tabular figures do not read as
+   three stats — "1 0 0" reads as one hundred, and the key row underneath is too
+   small and too far away to break the run. So each column is boxed by a hairline
+   and its own value/key pair is tightened until the pair binds more strongly to
+   itself than the values bind to each other. */
+.ug-l3 .stats{display:flex;align-items:stretch;gap:0;}
+.ug-l3 .st{
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:.26em;padding:0 .56em;min-width:2.16em;position:relative;
+}
+/* The rule has to be strong enough to actually cut the run of digits. At the
+   panel's own hairline alpha it was invisible and "1 0 0" still read as one
+   hundred, so this one is roughly twice that — it is doing work, not edging. */
+.ug-l3 .st + .st::before{
+  content:'';position:absolute;left:0;top:.1em;bottom:.1em;width:1px;
+  background:linear-gradient(180deg,transparent,rgba(178,208,248,.24) 26%,rgba(178,208,248,.24) 74%,transparent);
+}
+.ug-l3 .st:last-child{padding-right:0;}
+.ug-l3 .st .v{font-size:1.02em;font-weight:650;color:#fff;line-height:1;}
+/* Keys carry the disambiguation, so they stay at body-text contrast rather than
+   dropping to the faintest ink in the palette. */
 .ug-l3 .st .k{font-size:.53em;font-weight:700;letter-spacing:.2em;color:var(--ug-ink2);}
 
 /* ============================================================== summary === */

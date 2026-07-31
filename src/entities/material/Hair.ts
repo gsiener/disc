@@ -177,7 +177,13 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // on a 1.16 rad shell moves the visible hairline 25 mm up the forehead —
         // and a 25 mm brow extension is the difference between an athlete and a
         // cartoon. rig/Head.ts overshoots the shell by exactly this much.
-        float tipEnd = 0.012 + 0.058 * sLen;
+        // Widened from 0.012–0.070 to 0.008–0.115. The narrow band gave every
+        // column almost the same end point, so the fringe was a ruled line with
+        // a serration filed into it — a bowl cut. A real hairline varies by a
+        // centimetre across a forehead and that is what stops it reading as a
+        // moulded edge; the band is still short enough that the visible
+        // hairline does not climb the forehead (see rig/Head.ts hairline()).
+        float tipEnd = 0.008 + 0.107 * sLen;
         float fringe = 1.0 - smoothstep(tipEnd - 0.008, tipEnd + 0.008, vLen);
         // Retire the whole erosion once one strand covers less than a pixel.
         // An alpha test against a sub-pixel mask does not read as fine hair at

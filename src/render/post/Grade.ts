@@ -56,9 +56,52 @@ export class GradePass extends QuadPass {
         // work upstream was worth doing, without touching the shoulder — the
         // contrast happens in log space, so highlights ride into AgX intact.
         uContrast: { value: 1.14 },
-        uLift: { value: new THREE.Vector3(-0.0042, -0.0014, 0.0052) },
+        /**
+         * ASC-CDL offset — now zero, and it has to stay near zero here.
+         *
+         * An offset of ±0.005 is an ordinary grading number when it is applied
+         * to a 0–1 video signal. This shader applies it to *scene-linear
+         * radiance*, where a deep shadow is 0.01–0.02, so the same number is a
+         * 30–40 % channel move down there and nothing at all in the highlights.
+         * The measured consequence: at `night`, a stand pixel arrived at roughly
+         * (0.015, 0.015, 0.015) scene-linear, left as (0.011, 0.014, 0.020)
+         * after the offset, and the frame's whole seating bowl rendered at
+         * S 91 % blue with a median luma of 0.010 — 90 % of its pixels above the
+         * 50 % saturation ceiling the brief sets for everything that is not a
+         * kit or the disc. `broadcast` showed the same signature more weakly
+         * (far stands S 69 %, near stands S 54 %, against players at S 30 %):
+         * the frame's saturation hierarchy was exactly inverted, and the eye
+         * landed on the advertising and the seating deck rather than the play.
+         *
+         * Shadow *colour* is now carried entirely by `uShadowTint`, which is
+         * multiplicative and therefore cannot drive a channel to zero, and the
+         * shadow *floor* by `uFloat` below, which is additive but positive on
+         * all three channels. Between them they do the job this offset was
+         * reaching for without the hue inversion.
+         */
+        uLift: { value: new THREE.Vector3(0, 0, 0) },
         uGain: { value: new THREE.Vector3(1.034, 1.000, 0.966) },
         uInvGamma: { value: new THREE.Vector3(1, 1, 1) },
+        /**
+         * Veiling floor — the black point the bowl actually has.
+         *
+         * A stadium interior is a box full of scattering air and a hundred
+         * bright surfaces; nothing inside it is ever at zero. Measured before
+         * this existed, `broadcast` put its far stands (120 m) at a 5th-
+         * percentile luma of 0.009 and its near stands (25 m) at 0.024 — the
+         * far ones *darker* and more crushed than the near ones, which is the
+         * opposite of what distance does. The scene's aerial-perspective term
+         * is not reaching them (see the note in PostFX about the crowd), so the
+         * grade at least has to stop the tone curve's toe from eating what is
+         * there.
+         *
+         * Added after the CDL and before the hue work so the tone curve sees a
+         * signal with a floor, exactly like a print with a base density. Tinted
+         * with the scene's own haze colour rather than neutral grey, which is
+         * what makes it read as air instead of as a lifted black.
+         */
+        uFloat: { value: 0.0042 },
+        uFloatTint: { value: new THREE.Vector3(0.90, 1.00, 1.03) },
         uSat: { value: 1.05 },
         /**
          * Turf hue and chroma — the two numbers that decide whether the
@@ -91,13 +134,59 @@ export class GradePass extends QuadPass {
          */
         uGreenPush: { value: 0.30 },
         uGreenSat: { value: 0.84 },
-        uSkinGuard: { value: 0.58 },
+        /**
+         * Skin, now that there are faces in the frame.
+         *
+         * The brief pins the roster at H 20–35°, S 20–35 %. Measured on
+         * `closeup` before this pass: forearm `#83664f` (H 26°, S 39 %) and
+         * face `#573f36` (H 16°, S 38 %) — the arm just outside the saturation
+         * ceiling, the face four degrees *below* the hue floor, i.e. pink
+         * rather than tan. The guard at 0.58 was a ceiling nothing on a face
+         * ever reached, so it was doing nothing; it now sits just above the
+         * band so it catches a hot cheek without touching a normal one.
+         *
+         * `uSkinHue` is the new half: a pull toward 25.7°, which brings the
+         * face's 16° up to about 21° and settles a 32° shoulder back to 30°,
+         * so the roster converges on the band from both sides instead of only
+         * being clipped from above. The window still opens at H 10°, which is
+         * above the away kit's `#b3372e` trim at 5.4° — that stays full
+         * saturation, as one of the three things in the frame allowed to be.
+         */
+        uSkinGuard: { value: 0.44 },
+        uSkinHue: { value: 0.45 },
         uSatCeil: { value: 0.72 },
         // Teal shadows, warm highlights — the split every sports broadcast
         // truck runs, kept to ~7 % so it reads as a look and not as a filter.
         uShadowTint: { value: new THREE.Vector3(0.938, 0.992, 1.072) },
-        uHighTint: { value: new THREE.Vector3(1.058, 1.008, 0.938) },
+        // Warm-highlight half of the split, softened from (1.058, 1.008, 0.938).
+        // It lands hardest on the brightest chromatic thing in a close shot,
+        // which is now a lit cheekbone, and it was part of why the face metered
+        // four degrees below the hue floor.
+        uHighTint: { value: new THREE.Vector3(1.045, 1.006, 0.950) },
         uPostSat: { value: 1.10 },
+        /**
+         * Shadow chroma rolloff, display-referred.
+         *
+         * Stated in the units the measurements are in — *encoded* luma, i.e.
+         * what a pixel picker reads off the PNG, which is why the shader
+         * gamma-encodes the luma before testing it. This pass emits
+         * display-referred **linear** (OutputPass does the sRGB encode), and
+         * getting that wrong is a factor of three on the knee: the first
+         * version of this used the sRGB numbers directly against linear luma
+         * and desaturated the pitch from S 34 % to S 21 % along with the bowl.
+         *
+         * The knee is set from the histogram rather than by eye — mid-pitch
+         * turf sits at 0.34–0.39, a lit kit at 0.21–0.54, and the crushed
+         * seating bowl at 0.01–0.10, so 0.045→0.22 catches the bowl and
+         * nothing else. Two of the three things the brief allows to be
+         * saturated are lit by the key when they matter; the third is white.
+         *
+         * It is also true, which is why it is defensible at this strength: the
+         * eye loses chroma discrimination in the dark, and veiling glare inside
+         * a bright bowl washes the darkest surfaces toward the mean.
+         */
+        uShadowKnee: { value: new THREE.Vector2(0.045, 0.22) },
+        uShadowDesat: { value: 0.62 },
         uPunch: { value: 0.13 },
         uCurve: { value: CURVE_AGX },
       },
@@ -108,14 +197,19 @@ export class GradePass extends QuadPass {
         uniform vec3  uLift;
         uniform vec3  uGain;
         uniform vec3  uInvGamma;
+        uniform float uFloat;
+        uniform vec3  uFloatTint;
         uniform float uSat;
         uniform float uGreenPush;
         uniform float uGreenSat;
         uniform float uSkinGuard;
+        uniform float uSkinHue;
         uniform float uSatCeil;
         uniform vec3  uShadowTint;
         uniform vec3  uHighTint;
         uniform float uPostSat;
+        uniform vec2  uShadowKnee;
+        uniform float uShadowDesat;
         uniform float uPunch;
         uniform int   uCurve;
         varying vec2 vUv;
@@ -237,6 +331,9 @@ export class GradePass extends QuadPass {
           // slope / offset / power
           c = pow(max(c * uGain + uLift, vec3(0.0)), uInvGamma);
 
+          // veiling floor — a bowl full of air has no true black in it
+          c += uFloat * uFloatTint;
+
           // hue-selective shaping
           vec3 hsv = rgb2hsv(c);
           float h = hsv.x;
@@ -255,6 +352,9 @@ export class GradePass extends QuadPass {
           float skin  = smoothstep(0.028, 0.046, h) * (1.0 - smoothstep(0.090, 0.135, h)) * chromatic;
           hsv.x = mix(hsv.x, 0.282, green * uGreenPush);
           hsv.y *= mix(1.0, uGreenSat, green);
+          // Skin: pull the hue into the 20–35 deg band from either side, then
+          // cap the chroma. 0.0715 is 25.7 deg, the middle of the band.
+          hsv.x = mix(hsv.x, 0.0715, skin * uSkinHue);
           hsv.y = mix(hsv.y, min(hsv.y, uSkinGuard), skin);
           // Saturation shoulder. Without it a strongly lit turf albedo runs
           // straight into the gamut wall and reads as electric lime rather than
@@ -279,6 +379,13 @@ export class GradePass extends QuadPass {
           // display-referred trim
           float y2 = luma(c);
           c = sat3(vec3(y2) + (c - vec3(y2)) * uPostSat);
+          // …then take the chroma back out of the deep shadows, so the seating
+          // bowl cannot out-saturate the two kits and the disc. Gated on the
+          // gamma-encoded luma because that is the space the knee is quoted in
+          // and the space the eye judges — this buffer is still linear.
+          float shade = 1.0 - smoothstep(uShadowKnee.x, uShadowKnee.y,
+                                         pow(max(y2, 0.0), 0.4545));
+          c = mix(c, vec3(y2), shade * uShadowDesat);
           c = mix(c, c * c * (3.0 - 2.0 * c), uPunch);
 
           gl_FragColor = vec4(c, 1.0);

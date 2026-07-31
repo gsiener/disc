@@ -22,8 +22,20 @@ import type { SunState } from './Solar';
  * against about half the light it was actually receiving.
  */
 
-/** Irradiance that should map to a well-exposed daylight frame. */
-const DAY_TARGET = 3.85;
+/**
+ * Irradiance that should map to a well-exposed daylight frame.
+ *
+ * 3.85 → 4.95, measured against the contract this file states in its own first
+ * paragraph. With characters in the frame the day shots were metering mid-pitch
+ * turf at 0.35 encoded luma (broadcast 0.352, layout 0.364) — the *same* place
+ * the night shot meters, which cannot be right: `NIGHT_TARGET` exists precisely
+ * so a floodlit pitch reads a stop under a sunlit one, and instead the two were
+ * landing on top of each other and the golden-hour frames read as overcast.
+ * Middle grey is 0.466 encoded; "a little under" is 0.40–0.44, and this is the
+ * number that puts them there without touching the key:fill ratio, which
+ * `lightReport()` still returns at 4.5:1 on a vertical surface.
+ */
+const DAY_TARGET = 4.95;
 /**
  * Same, at night — lower, so the floodlit pitch keeps its contrast.
  *

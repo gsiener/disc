@@ -310,7 +310,11 @@ export class GameplayLayer implements HudWidget {
 
     const e = easeOut(vis);
     setStyle(this.meter, 'transform', `translate3d(-50%,${((1 - e) * 1.6).toFixed(3)}em,0) scale(${(0.96 + 0.04 * e).toFixed(4)})`);
-    setStyle(this.meter, 'opacity', (e * (f.charging ? 1 : 0.82)).toFixed(3));
+    // Idle, the meter is a standing affordance, not a readout — it exists so the
+    // perfect window is learnable before the first press. At 0.82 it competed
+    // with the bug for the eye in every still; 0.55 keeps it legible and stops it
+    // reading as live data when the power bar is empty.
+    setStyle(this.meter, 'opacity', (e * (f.charging ? 1 : 0.55)).toFixed(3));
 
     this.power.target = f.charging ? f.chargePower : 0;
     this.quality.target = f.charging ? f.chargeQuality : 0;
@@ -337,9 +341,18 @@ export class GameplayLayer implements HudWidget {
     setStyle(this.mBand, 'width', `${Math.max(0.6, (hi - lo) * 100).toFixed(2)}%`);
     setStyle(this.mCaret, 'left', `${(((lo + hi) * 0.5) * 100).toFixed(2)}%`);
 
+    // The green window is the most saturated thing the HUD ever draws, and the
+    // art direction reserves saturation for the kits and the disc. It earns that
+    // while a throw is being charged; sitting idle behind an empty track it does
+    // not, so it drops back to a hint of itself.
+    setStyle(this.mBand, 'opacity', f.charging ? '1' : '0.45');
+    setStyle(this.mCaret, 'opacity', f.charging ? '1' : '0.45');
+
     setText(this.mType, f.chargeType);
     setText(this.mQual, f.charging ? qualityWord(f.chargeQuality) : 'Ready');
-    setText(this.mPower, `${Math.round(pw * 100)}%`);
+    // An idle meter reporting "0%" reads as a live measurement that happens to be
+    // zero. An em dash reads as "not yet", which is what it means.
+    setText(this.mPower, f.charging || pw > 0.004 ? `${Math.round(pw * 100)}%` : '—');
     void this.brands;
   }
 
