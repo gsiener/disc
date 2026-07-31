@@ -195,13 +195,26 @@ export class PlayerMaterialLibrary {
       ? 0.72 + rand.next() * 0.14 : 1.0;
     const bodyHair = masc * (0.25 + rand.next() * 0.6);
 
-    /* ---- eye geometry, straight off the rig's own sculpt -------------- */
+    /* ---- face geometry, straight off the rig's own sculpt ------------- */
+    // Every mask in the skin shader — brow, lash, vermilion, stubble line — is
+    // placed in the head's own sculpt coordinates. Reading the landmarks off
+    // `headFrame` rather than repeating the numbers is what keeps a lip on the
+    // lip of a 1.62 m athlete with a wide mouth and a 2.03 m one with a narrow
+    // one, instead of on whichever face the constants were tuned against.
     const hf = headFrame(measureBody(params));
+    const fp = params.face;
 
     const skin = makeSkinMaterial({
       tones, hair: hairCol, detail: this.detail, shared: this.shared,
       quality: this.quality,
       eye: { n: hf.eyeN, apW: hf.apW, apU: hf.apU, apD: hf.apD },
+      face: {
+        mouthW: (0.278 + 0.050 * fp.lips) * hf.vr.mouth,
+        noseTip: -0.325 + hf.vr.noseY,
+        ala: -0.372 + hf.vr.noseY,
+        brow: fp.brow,
+        hood: hf.vr.hood,
+      },
       height: params.height, seed, stubble, freckle, bodyHair,
     });
 

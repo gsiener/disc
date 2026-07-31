@@ -195,7 +195,11 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         // Not white. An eye rendered at paper albedo is the single loudest
         // "this is a doll" cue there is; a real sclera in a socket measures
         // closer to half that even in open sun.
-        vec3 sclera = vec3(0.500, 0.470, 0.435);
+        // At the closeup framing the whole eye is about eight pixels across, and
+        // two 0.5-albedo discs at that size read as googly eyes stuck on a dark
+        // face. A sclera in a socket measures well under half display white even
+        // in open sun; this is the value that survives BOTH crops.
+        vec3 sclera = vec3(0.395, 0.368, 0.340);
         float toCanthus = smoothstep(0.30, 0.85, abs(lp.x));
         sclera *= 1.0 - 0.16 * toCanthus;
         // Vasculature: ridged, radial, thickening outward from the limbus.
@@ -204,15 +208,23 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         float vn2 = vnoise(vec2(vth * 19.0 + uEyeSeed * 11.0, sr * 9.0));
         float vessel = pow(clamp(1.0 - abs(vn - 0.5) * 5.6, 0.0, 1.0), 3.0) * 0.7
           + pow(clamp(1.0 - abs(vn2 - 0.5) * 7.5, 0.0, 1.0), 3.0) * 0.4;
-        vessel *= smoothstep(irisR * 0.96, irisR * 2.2, sr) * (0.35 + 0.85 * toCanthus);
-        sclera = mix(sclera, vec3(0.42, 0.085, 0.075), clamp(vessel, 0.0, 1.0) * 0.55);
+        // The exposed sclera only ever reaches sr ≈ 0.75 of a globe radius, so
+        // a ramp that did not finish until 2.2 × irisR put the entire vascular
+        // network outside the visible aperture — the eye rendered as clean
+        // white plastic, which is exactly the ping-pong-ball stare this file
+        // opens by warning about.
+        vessel *= smoothstep(irisR * 1.00, irisR * 1.62, sr) * (0.30 + 0.90 * toCanthus);
+        sclera = mix(sclera, vec3(0.40, 0.080, 0.070), clamp(vessel, 0.0, 1.0) * 0.62);
+        // Conjunctival shading at both corners: the sclera curves away into the
+        // canthus and never catches the key there.
+        sclera *= 1.0 - 0.26 * smoothstep(0.42, 0.92, sr);
 
         /* ---- lid occlusion ---------------------------------------------- */
         // The upper lid overhangs; the globe under it is in shadow even when the
         // face is not. Without this the eye is a bright disc stuck in a socket.
-        float lidUp = smoothstep(-0.12, 0.42, lp.y);
+        float lidUp = smoothstep(-0.16, 0.40, lp.y);
         float lidLo = smoothstep(-0.02, 0.36, -lp.y);
-        float lidAo = 1.0 - 0.78 * lidUp - 0.34 * lidLo;
+        float lidAo = 1.0 - 0.82 * lidUp - 0.38 * lidLo;
 
         /* ---- compose ---------------------------------------------------- */
         vec3 iris = irisField(iNorm, clamp(ir, 0.0, 1.05), uEyeSeed);
@@ -251,6 +263,14 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
           float sss = (1.0 - limbus) * (0.45 + 0.55 * lidUp);
           reflectedLight.indirectDiffuse += uSunColor * uSunGlow * 0.055 * sss
             * vec3(1.0, 0.86, 0.78);
+          // A globe in a socket sees maybe half the sky, and the specular has
+          // to be occluded with the diffuse or the tear film keeps mirroring a
+          // full hemisphere. Skipping this is why two white bars stayed the
+          // brightest thing on a shadowed face at broadcast range.
+          float sock = clamp(lidAo, 0.10, 1.0);
+          reflectedLight.indirectDiffuse *= sock;
+          reflectedLight.indirectSpecular *= 0.28 + 0.72 * sock;
+          reflectedLight.directSpecular *= 0.45 + 0.55 * sock;
         }
       `,
     });

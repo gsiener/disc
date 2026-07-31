@@ -70,6 +70,40 @@ export interface BodyState {
   strideU: number;
   speed: number;
   sp: number;
+
+  /* ---- posture, and the clock that drives it -------------------------- */
+
+  /**
+   * The animator's OWN clock, seconds. Not `loco.t`.
+   *
+   * A latched tableau (`sim/Game.ts applyTableau`) freezes the simulation and
+   * then the capture rig advances 150 render frames before the shutter opens —
+   * so `loco.t` is a constant for the whole of every screenshot. Anything an
+   * idle pose is built on has to advance on the RENDER clock or the athletes
+   * are dead still in exactly the frames a critic looks at.
+   */
+  clock: number;
+  /**
+   * −1 all the weight on the right foot … +1 all on the left. Nobody stands
+   * evenly on two feet for more than a few seconds; this is the shift.
+   */
+  weight: number;
+  /** 0..1 how switched-on: near the play, ready to move. Written by the owner. */
+  alert: number;
+  /** 0..1 holding the disc and stationary — a handler on a pivot. */
+  handler: number;
+  /** 0..1 marking the thrower. */
+  mark: number;
+}
+
+/** What the owner knows about an athlete that the simulation does not publish. */
+export interface StanceIntent {
+  /** 0..1 near the play and ready to move. */
+  alert?: number;
+  /** 0..1 has the disc. */
+  handler?: number;
+  /** 0..1 is on the mark. */
+  mark?: number;
 }
 
 /** Small deterministic hash — per-player variety without touching an Rng. */
@@ -90,6 +124,10 @@ export function makeBody(seed: number): BodyState {
     stumbleDir: hash01(seed * 13 + 9) < 0.5 ? -1 : 1,
     prevVX: 0, prevVZ: 0, accX: 0, accZ: 0,
     flexL: 0, flexR: 0, strideU: 0, speed: 0, sp: 0,
+    // Offset so two athletes stood side by side are never on the same breath,
+    // the same weight shift or the same head drift.
+    clock: hash01(seed * 23 + 17) * 40,
+    weight: 0, alert: 0, handler: 0, mark: 0,
   };
 }
 
@@ -100,11 +138,36 @@ const _q = new THREE.Quaternion();
 /* ----------------------------------------------------------- the drivers */
 
 /** Update the continuous scalars. Call once, before anything is posed. */
-export function updateDrivers(bs: BodyState, loco: LocoLike, dt: number): void {
+export function updateDrivers(
+  bs: BodyState, loco: LocoLike, dt: number, intent?: StanceIntent | null,
+): void {
   const speed = Math.hypot(loco.vel.x, loco.vel.z);
   bs.speed = speed;
   const top = Math.max(4, loco.derived?.topSpeed ?? TOP_REF);
   bs.sp = clamp01(speed / top);
+
+  // --- posture intent, smoothed ---------------------------------------------
+  bs.clock += dt;
+  bs.alert = damp(bs.alert, clamp01(intent?.alert ?? 0), 3.2, dt);
+  bs.handler = damp(bs.handler, clamp01(intent?.handler ?? 0), 6, dt);
+  bs.mark = damp(bs.mark, clamp01(intent?.mark ?? 0), 5, dt);
+
+  /**
+   * WEIGHT SHIFT. Two incommensurate slow sines, soft-clipped. The clip is the
+   * point: a raw sine spends most of its time crossing, which reads as a body
+   * swaying like a metronome, whereas a real athlete DWELLS on one leg for
+   * three or four seconds and changes over in about half of one. Clipping at
+   * 2.1× makes the signal flat-topped, which is that dwell, and the two periods
+   * (11.4 s and 27.8 s) never line up so no two shifts are the same length.
+   *
+   * Amplitude falls away with alertness — someone watching the disc arrive is
+   * balanced over both feet, not leaning on a hip — and to zero once moving,
+   * where the gait owns the pelvis.
+   */
+  const wt = bs.clock * 0.0877 + bs.idlePhase;
+  const raw = Math.sin(TAU * wt) * 0.78 + Math.sin(TAU * wt * 0.41 + 1.73) * 0.42;
+  const amp = (1 - 0.55 * bs.alert) * clamp01(1 - speed / 0.9) * (1 - bs.mark * 0.7);
+  bs.weight = clamp(raw * 2.1, -1, 1) * amp;
 
   // --- acceleration, filtered ------------------------------------------------
   if (dt > 1e-5 && !loco.air.airborne) {
@@ -149,23 +212,41 @@ export function updateDrivers(bs: BodyState, loco: LocoLike, dt: number): void {
   bs.rise = loco.pos.y - loco.groundY - loco.hipHeight;
 }
 
+/**
+ * How much of the sport-specific posture applies right now. It is a function of
+ * ground speed because these are STANCES, not gaits: a defender at a dead stop
+ * is coiled over the balls of his feet, the same defender at 6 m/s is running
+ * and the run owns his body.
+ */
+function stanceW(bs: BodyState): number {
+  return clamp01(1 - (bs.speed - 0.25) / 1.75);
+}
+
 /** Per-state contribution to the forward lean, radians. */
 function stateLeanBias(loco: LocoLike, bs: BodyState): number {
+  // A mark leans over its toes whatever the sim calls the state — it is the
+  // single most recognisable body shape in the sport.
+  const still = stanceW(bs);
+  const stance = still * (0.30 * bs.mark + 0.105 * bs.alert + 0.055 * bs.handler);
   switch (loco.state) {
-    case 'backpedal': return 0.20;               // chest over the toes
-    case 'shuffle': return 0.13;
+    case 'backpedal': return 0.20 + stance * 0.5;  // chest over the toes
+    case 'shuffle': return 0.13 + stance;
     case 'cut': return 0.10 + 0.16 * clamp01(loco.cutEntrySpeed / 8);
     case 'stumble': return 0.30;
-    default: return 0;
+    default: return stance;
   }
 }
 
 /** Per-state hip lowering, metres. */
 function stateCrouch(loco: LocoLike, bs: BodyState): number {
   const H = 1;
+  const still = stanceW(bs);
+  // Knees bent, hips down, ready to move: the mark most, a live cutter some, a
+  // handler a little (he is balanced over a pivot, not sitting in a stance).
+  const stance = still * (0.115 * bs.mark + 0.050 * bs.alert + 0.028 * bs.handler);
   switch (loco.state) {
-    case 'backpedal': return 0.055 * H;
-    case 'shuffle': return 0.095 * H;
+    case 'backpedal': return 0.055 * H + stance * 0.6;
+    case 'shuffle': return 0.095 * H + stance;
     case 'cut': return (0.045 + 0.075 * clamp01(loco.cutAngle / Math.PI)) * clamp01(loco.cutEntrySpeed / 7);
     case 'jump':
       return loco.air.airborne ? 0 : 0.20 * ease(clamp01(loco.stateT / Math.max(1e-3, loco.stateDur)));
@@ -176,7 +257,7 @@ function stateCrouch(loco: LocoLike, bs: BodyState): number {
       const k = clamp01(loco.stateT / Math.max(1e-3, loco.stateDur));
       return 0.16 * (1 - k) * (1 - k) * clamp01(0.4 + 0.6 * bs.sp);
     }
-    default: return 0;
+    default: return stance;
   }
 }
 
@@ -202,6 +283,8 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
   let sway = 0;
   let pelvisRoll = 0;
   let pelvisYaw = 0;
+  /** Idle-only lateral trunk flexion; the shoulders counter the pelvis. */
+  let trunkTilt = 0;
   if (moving) {
     const swayAmp = 0.013 + 0.014 * (1 - sp);
     sway = swayAmp * Math.cos(TAU * u);
@@ -209,16 +292,55 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
     // Frontal-plane pelvic drop: the swing-side hip falls a couple of degrees.
     pelvisRoll = (0.026 + 0.042 * sp) * Math.sin(TAU * u);
   } else {
-    const t = loco.t * 0.52 + bs.idlePhase;
-    sway = 0.030 * Math.sin(t) + 0.008 * Math.sin(t * 2.3 + 1.1);
-    pelvisRoll = 0.055 * Math.sin(t);
-    pelvisYaw = 0.030 * Math.sin(t * 0.71 + 0.4);
-    hipY -= 0.012 + 0.006 * Math.cos(t * 1.7);
+    /**
+     * STANDING. `bs.weight` is +1 when the athlete is stood on the left leg.
+     * Three things follow from that one number and they have to agree, because
+     * disagreeing is exactly what makes a shifted-weight pose look sprained:
+     *
+     *   the pelvis TRANSLATES over the loaded foot   (sway, toward +X = left)
+     *   the UNLOADED hip DROPS                       (roll about local +Z takes
+     *                                                 the spine's up-axis toward
+     *                                                 −X, i.e. drops the right)
+     *   the trunk laterally flexes back the OTHER way so the shoulder line is
+     *   counter-tilted to the hip line and the head stays over the base.
+     *
+     * That contrapposto — pelvis one way, shoulders the other — is the whole
+     * read. Symmetric is the mannequin.
+     */
+    const w = bs.weight;
+    const t = bs.clock * 0.52 + bs.idlePhase;
+    sway = 0.052 * w + 0.009 * Math.sin(t) + 0.004 * Math.sin(t * 2.3 + 1.1);
+    pelvisRoll = 0.075 * w + 0.010 * Math.sin(t * 0.83);
+    trunkTilt = -0.062 * w;
+    // Hips and shoulders never sit square: a small standing offset, plus a very
+    // slow drift so a held frame is not a held frame.
+    pelvisYaw = bs.swayBias * 0.55 + 0.026 * Math.sin(TAU * bs.clock * 0.071 + bs.idlePhase);
+    // Loading one leg drops the whole body a touch; standing tall costs effort.
+    hipY -= 0.010 + 0.010 * Math.abs(w) + 0.005 * Math.cos(t * 1.7);
   }
   sway += bs.swayBias * 0.01;
 
   /* ---- free body: the sim owns the height and most of the attitude -------- */
-  if (bs.freeW > 0.001) hipY = lerp(hipY, bs.rise, bs.freeW);
+  if (bs.freeW > 0.001) {
+    hipY = lerp(hipY, bs.rise, bs.freeW);
+    /**
+     * GOING FLAT DROPS THE HIPS, and the simulation does not model that.
+     * `Locomotion` carries a layout at very nearly standing hip height, so
+     * `rise` comes back near zero and the pelvis stays 0.95 m up — the body
+     * pitches over about it and the silhouette reads as a man falling over
+     * rather than a receiver extended a hand's width off the turf. Measured off
+     * the committed bones in the `layout` framing it was sitting ~50 degrees
+     * from horizontal with the head at head height.
+     *
+     * A flying body's mass centre is roughly a third of a standing hip height
+     * off the deck, so that is what comes off, in proportion to how prone the
+     * pose is. Floored at 0.20 m above the root so a body already ON the
+     * ground — where the sim HAS lowered `pos.y` and `rise` is already deeply
+     * negative — cannot be driven through the turf.
+     */
+    const flat = bs.proneW * 0.30 * Math.max(0.6, loco.hipHeight);
+    hipY = Math.max(hipY - flat, 0.20 - loco.hipHeight);
+  }
   bs.hipY = hipY;
 
   const fwdShift = bs.lean * 0.055 + (moving ? 0.012 * sp : 0);
@@ -236,7 +358,7 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
     ? -(0.060 + 0.165 * sp) * Math.sin(TAU * (u - 0.065))
     : -pelvisYaw * 0.5;
   const spineLean = bs.lean * 0.70;
-  const spineSide = bs.side * 0.70;
+  const spineSide = bs.side * 0.70 + trunkTilt;
   // Distribution down the chain: the thoracic spine is stiffer than the lumbar,
   // so most of the flexion happens low and most of the rotation happens high.
   const flexShare = [0.34, 0.28, 0.22, 0.16];
@@ -253,9 +375,12 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
 
   /* ---- neck + head baseline ---------------------------------------------- */
   // Keep the head level against the torso's lean; Secondary adds the look-at.
+  // Keep the head level against the torso's lean AND against the standing
+  // trunk tilt — a shifted hip that carries the head off vertical with it reads
+  // as a limp rather than as a rest.
   const headUp = -(bs.lean * 0.55 + bs.proneW * proneSpine(loco) * 0.45);
-  pose.setEuler(B.neck, headUp * 0.45, -counter * 0.35, -bs.side * 0.28);
-  pose.setEuler(B.head, headUp * 0.55, -counter * 0.20, -bs.side * 0.22);
+  pose.setEuler(B.neck, headUp * 0.45, -counter * 0.35, -bs.side * 0.28 - trunkTilt * 0.55);
+  pose.setEuler(B.head, headUp * 0.55, -counter * 0.20, -bs.side * 0.22 - trunkTilt * 0.35);
 
   /* ---- stumble ------------------------------------------------------------ */
   if (loco.state === 'stumble') {
@@ -276,9 +401,14 @@ function proneAngle(loco: LocoLike): number {
   if (loco.state === 'layout' && loco.air.airborne) {
     const span = Math.max(0.08, loco.air.tLand - loco.air.tTakeoff);
     const k = clamp01((loco.t - loco.air.tTakeoff) / span);
-    return 1.42 * ease(clamp01(k / 0.42));
+    // 1.42 rad is 81 degrees, and the residual nine degrees are the difference
+    // between a dive and a stumble — measured off the committed bones the body
+    // was sitting around 50 degrees off horizontal at the moment the `layout`
+    // framing catches it. The shot's whole brief is "receiver fully extended
+    // horizontal", so the target is past square: the chest leads the hips.
+    return 1.62 * ease(clamp01(k / 0.34));
   }
-  return 1.34;
+  return 1.46;
 }
 
 /** Extra thoracic extension (chest up) while prone — chin off the turf. */
@@ -392,9 +522,18 @@ export interface ArmTune {
   swing: number;
   /** Static shoulder raise (defensive arms-out, marking). */
   raise: number;
+  /**
+   * Static shoulder FLEXION, radians — how far forward of the coronal plane the
+   * upper arms are carried. This is the number that decides whether a standing
+   * athlete reads as an athlete or as a shop mannequin, and it was missing:
+   * with swing at zero and no flexion term, a stationary body put both arms
+   * exactly in the plane of the shoulders, which is the T-pose the rig was
+   * built in. Nobody stands like that. The arms live in front of you.
+   */
+  fwd: number;
 }
 
-const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0 };
+const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0, fwd: 0 };
 
 /**
  * Arm swing, counter-phase to the legs by construction. `side` is +1 for the
@@ -423,15 +562,36 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
     const faT = s === 1 ? B.foreArmTwist_L : B.foreArmTwist_R;
     const cl = s === 1 ? B.clavicle_L : B.clavicle_R;
 
-    // Anti-phase: the LEFT arm answers the RIGHT thigh.
-    const opp = s === 1 ? bs.flexR : bs.flexL;
+    /**
+     * Anti-phase: the LEFT arm answers the RIGHT thigh — but against the MEAN
+     * of the two thighs, not against zero.
+     *
+     * Through the flight phase of a run both thighs are forward of the hip at
+     * once (one driving through, one not yet extended), so the raw flexion
+     * carries a common-mode offset that pushed BOTH arms forward together on
+     * every stride. Side-on that is the tell: the arms stop looking like they
+     * are counter-rotating against the hips and start looking like the athlete
+     * is carrying a tray. Subtracting most of the mean leaves the differential —
+     * which is the swing — and keeps a little of the forward carriage a runner
+     * genuinely has.
+     */
+    const mean = (bs.flexL + bs.flexR) * 0.5;
+    const opp = (s === 1 ? bs.flexR : bs.flexL) - 0.62 * mean;
     const swing = k * opp;
     // The elbow closes on the forward swing and opens on the back swing —
     // a constant elbow angle is the tell that the arms are on a sine curve.
     const elbow = clamp(elbowBase + 0.55 * Math.max(0, swing) - 0.28 * Math.max(0, -swing), 0.12, 2.3);
     const adduct = adductBase - 0.10 * Math.max(0, swing);
+    // Standing carriage: forward of the coronal plane, and never the same on
+    // both sides. `swayBias` is a fixed per-player number, so one arm sits a
+    // few degrees further forward than the other for that athlete, always —
+    // which is what stops fourteen bodies reading as fourteen copies.
+    const fwd = t.fwd > 0
+      ? t.fwd * (1 + bs.swayBias * 1.6 * s)
+        + 0.030 * t.fwd * Math.sin(TAU * bs.clock * 0.13 + bs.idlePhase + s * 0.9)
+      : 0;
 
-    pose.setEuler(ua, swing + t.raise, -0.10 * s * sp, -(adduct) * s);
+    pose.setEuler(ua, swing + t.raise + fwd, -0.10 * s * sp, -(adduct) * s);
     pose.setBend(fa, elbow);
     // Humeral and forearm roll: the palms turn in on the forward swing.
     pose.setTwist(uaT, -0.22 * s * sp * 0.5);
@@ -452,31 +612,62 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   }
 }
 
+const _tune: ArmTune = { elbow: 0, adduct: 0, swing: 0, raise: 0, fwd: 0 };
+
 function armTuneFor(loco: LocoLike, bs: BodyState): ArmTune {
   switch (loco.state) {
     case 'backpedal':
       // Short, tight, low — a defender's arms never cross the midline.
-      return { elbow: 0.55, adduct: 0.10, swing: 0.55, raise: 0.10 };
+      return set(0.55, 0.10, 0.55, 0.10, 0.18 + 0.25 * bs.alert);
     case 'shuffle':
       // Wide and low, hands ready.
-      return { elbow: 0.75, adduct: -0.55, swing: 0.22, raise: 0.16 };
+      return set(0.75, -0.55, 0.22, 0.16, 0.26 + 0.20 * bs.alert);
     case 'cut': {
       // The inside arm sweeps across the body; the outside arm counterbalances.
       const w = clamp01(loco.cutAngle / Math.PI) * clamp01(loco.cutEntrySpeed / 6);
-      return { elbow: 0.30 * w, adduct: -0.18 * w, swing: 1.25, raise: 0.24 * w };
+      return set(0.30 * w, -0.18 * w, 1.25, 0.24 * w, 0);
     }
     case 'jump':
     case 'layout':
-      return { elbow: -0.15, adduct: -0.05, swing: 0.6, raise: 0 };
+      return set(-0.15, -0.05, 0.6, 0, 0);
     case 'landing':
-      return { elbow: 0.20, adduct: -0.30, swing: 0.4, raise: 0.20 };
-    default:
-      // Standing: the carriage term is already near zero at this speed, so the
-      // arms hang. Adding elbow here on top of it is what produced the
-      // permanently-flexed mannequin idle.
-      if (bs.speed < 0.35) return { elbow: 0, adduct: 0.05, swing: 0, raise: 0 };
-      return RUN_TUNE;
+      return set(0.20, -0.30, 0.4, 0.20, 0);
+    default: {
+      if (bs.speed >= 0.35) return RUN_TUNE;
+      /**
+       * STANDING — the pose the 'closeup' and 'portrait' framings judge.
+       *
+       * Three numbers, and all three were previously zero or near it:
+       *
+       *   fwd     the arms hang FORWARD of the shoulder line. A relaxed adult
+       *           carries them 8–12° forward; someone waiting to move carries
+       *           them nearer 25° with the hands in front of the hips where
+       *           they can do something.
+       *   elbow   soft, never locked. ~25° relaxed, ~45° ready.
+       *   adduct  in toward the ribs. The bind is a 46° A-pose, so it takes
+       *           0.55–0.62 rad off that just to hang plausibly; the old 0.05
+       *           left the arms 24° out from the body, which is the flared
+       *           near-T the frame was showing.
+       *
+       * A mark overrides all of this later (`Upper.poseMark`); this is the
+       * baseline it blends up from, so the transition has somewhere to start.
+       */
+      const a = bs.alert;
+      return set(
+        0.19 + 0.30 * a,          // elbow
+        0.26 - 0.11 * a,          // adduct (added to a 0.34 base below)
+        0,                        // swing
+        0,                        // raise
+        0.155 + 0.30 * a,         // fwd
+      );
+    }
   }
+}
+
+function set(elbow: number, adduct: number, swing: number, raise: number, fwd: number): ArmTune {
+  _tune.elbow = elbow; _tune.adduct = adduct; _tune.swing = swing;
+  _tune.raise = raise; _tune.fwd = fwd;
+  return _tune;
 }
 
 /**

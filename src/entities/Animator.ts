@@ -10,7 +10,7 @@ import {
   makeBody, updateDrivers, poseSpine, poseArms, poseFreeArms, poseFreeLegs,
   measureLegs, hipsFromPelvis, hash01,
 } from './anim/Gaits.ts';
-import type { BodyState } from './anim/Gaits.ts';
+import type { BodyState, StanceIntent } from './anim/Gaits.ts';
 import { makeFeet, updateFeet, solveLegs, hipDrop } from './anim/Feet.ts';
 import type { FeetState } from './anim/Feet.ts';
 import {
@@ -19,7 +19,7 @@ import {
 } from './anim/Upper.ts';
 import type { ThrowState, CatchState } from './anim/Upper.ts';
 import {
-  makeSecondary, poseGaze, poseBreath, poseFatigue, updateSignals,
+  makeSecondary, poseGaze, poseIdleHead, poseBreath, poseFatigue, updateSignals,
 } from './anim/Secondary.ts';
 import type { SecondaryState } from './anim/Secondary.ts';
 import type {
@@ -126,6 +126,8 @@ const _hipR = new THREE.Vector3();
 const _gaze: GazeTarget = { x: 0, y: 0, z: 0 };
 /** The throw layer, evaluated once per athlete and blended through two masks. */
 const _layer = new Pose();
+/** Reused stance intent — one object for the whole roster, written per athlete. */
+const _stance: StanceIntent = { alert: 0, handler: 0, mark: 0 };
 
 const NO_VEL: Vec3Like = { x: 0, y: 0, z: 0 };
 
@@ -145,6 +147,10 @@ export class AnimHandle {
 
   /** Throwing side in rig terms: -1 right-handed, +1 left-handed. */
   readonly handed: 1 | -1;
+  /** Which foot this athlete habitually stands with forward. Fixed, hashed. */
+  readonly leadFoot: 1 | -1;
+  /** Deterministic phase for the standing foot fidget. */
+  readonly footPhase: number;
 
   /* ---- intent, written by the owner ---- */
 
@@ -156,6 +162,15 @@ export class AnimHandle {
   carrying = false;
   /** Force side while marking: ±1 sets which lane is taken away, 0 = not marking. */
   marking: 0 | 1 | -1 = 0;
+  /**
+   * 0..1 how switched-on the athlete is, and the dial that turns a rest pose
+   * into a ready one — knees flexed, weight onto the balls of the feet, hands
+   * live, arms carried further forward, and the standing fidget that makes a
+   * waiting cutter re-set their feet every few seconds. Leave it negative (the
+   * default) and the animator derives it from how far this athlete is from
+   * whatever they are watching, which is the disc.
+   */
+  alert = -1;
   /** Per-athlete detail override; defaults to the animator's. */
   detail: number;
 
@@ -191,6 +206,13 @@ export class AnimHandle {
     this.id = id;
     this.handed = handed;
     this.detail = detail;
+    // Most people stand with the foot OPPOSITE their throwing hand forward —
+    // it is the same stagger a throw wants — but not everyone, so a fifth of
+    // the roster is dealt the other way round.
+    this.leadFoot = hash01(id * 4231 + 71) < 0.20
+      ? (handed as 1 | -1)
+      : (-handed as 1 | -1);
+    this.footPhase = hash01(id * 8171 + 313) * Math.PI * 2;
     this.kine = new Kine(rig.bones, rig.measure);
     this.body = makeBody(id);
     this.feet = makeFeet();
@@ -356,13 +378,35 @@ export class Animator {
      *     airborne rise lives in `pose.hip` so the ground frame never lies. */
     h.frame.set(loco.pos.x, loco.groundY, loco.pos.z, loco.facing);
 
+    /* 0b — WHAT KIND OF STANDING THIS IS.
+     *
+     * The simulation publishes `state: 'idle'` for a defender crouched on the
+     * mark, for a handler on a pivot and for a body stood at the back of the
+     * stack with nothing to do, and those are three completely different
+     * shapes. Two of the ten named framings are about the first two. The
+     * animator already holds everything needed to tell them apart — `carrying`,
+     * `marking`, and how far the athlete is from what they are watching — so
+     * it resolves the stance here rather than asking the sim to grow a field.
+     */
+    _stance.alert = h.alert < 0 ? this.alertOf(h) : h.alert;
+    _stance.handler = h.carrying ? 1 : 0;
+    _stance.mark = h.marking !== 0 ? 1 : 0;
+
     /* 1 — continuous drivers, then plant bookkeeping. */
-    updateDrivers(bs, loco, dt);
+    updateDrivers(bs, loco, dt, _stance);
     // The pivot is a rule of the sport, and it is only visible if the foot
     // actually stops turning. Hold it from the first frame of the windup until
-    // the follow-through is most of the way through.
+    // the follow-through is most of the way through — and, just as importantly,
+    // for the whole time the athlete simply STANDS there holding the disc,
+    // which is what the sideline and broadcast framings actually catch. A
+    // handler who has not started a throw yet still has a pivot foot, still has
+    // a wide staggered base, and still turns about that foot.
     const throwing = h.throwing;
-    h.feet.pivot = (throwing.active && throwing.relT < 0.26) ? throwing.pivot : 0;
+    const stationary = bs.speed < 0.55 && !h.feet.free;
+    h.feet.pivot = (throwing.active && throwing.relT < 0.26) ? throwing.pivot
+      : (h.carrying && stationary) ? (-h.handed as 1 | -1)
+        : 0;
+    this.stance(h, bs);
     updateFeet(h.feet, loco, dt, this.field);
 
     /* 2 — the body over the feet. */
@@ -408,7 +452,7 @@ export class Animator {
       poseHand(pose, -1, 'brace', h.detail);
     } else {
       poseArms(bs, pose, loco);
-      poseRunHands(pose, loco, h.detail);
+      poseRunHands(pose, loco, h.detail, bs.alert);
     }
 
     /* 9 — the upper-body layer: throw arms, or a carry, or a mark. */
@@ -418,17 +462,27 @@ export class Animator {
     const wantCarry = h.carrying && !h.catching.active && wThrow < 0.5 ? 1 : 0;
     h.carryW = damp(h.carryW, wantCarry, 9, dt);
     if (h.carryW > 0.004) {
-      poseCarry(pose, h.handed, h.carryW * (1 - wThrow), h.detail, bs.sp);
+      // Stood over a pivot with the disc: hold it OUT, away from the mark.
+      const out = h.feet.pivotOn ? clamp01(1 - bs.speed / 0.8) : 0;
+      poseCarry(pose, h.handed, h.carryW * (1 - wThrow), h.detail, bs.sp, out);
     }
     const wantMark = h.marking !== 0 && !h.feet.free ? 1 : 0;
     h.markW = damp(h.markW, wantMark, 8, dt);
     if (h.markW > 0.004 && h.marking !== 0) {
-      poseMark(pose, h.marking, h.markW, h.detail);
+      poseMark(pose, h.marking, h.markW, h.detail, bs.clock);
     }
 
     /* 10 — secondary. Additive, so it rides whatever is underneath. */
-    const target = h.gaze ?? this.gaze ?? this.travelGaze(loco);
-    poseGaze(h.secondary, kine, pose, h.frame, target, h.gazeWeight, dt);
+    // With nothing real to watch, the fallback is a point a few metres down the
+    // travel line — and locking onto it at full weight is what turns a head into
+    // a tripod. Half weight leaves the gaze solver in charge of the direction
+    // and leaves `poseIdleHead` room to put a scan on top, which is what a
+    // player with nothing to look at actually does.
+    const watching = h.gaze ?? this.gaze;
+    const target = watching ?? this.travelGaze(loco);
+    poseGaze(h.secondary, kine, pose, h.frame, target,
+      watching ? h.gazeWeight : h.gazeWeight * 0.45, dt);
+    poseIdleHead(h.secondary, pose, bs);
     const breathScale = h.detail < 0.6 ? 0.5 : 1;
     h.signals.breath = poseBreath(h.secondary, pose, loco, bs, dt, breathScale);
     poseFatigue(pose, loco, bs);
@@ -516,6 +570,39 @@ export class Animator {
   private thrower(): AnimHandle | undefined {
     for (const h of this.handles) if (h.carrying || h.throwing.active) return h;
     return undefined;
+  }
+
+  /**
+   * How switched-on an athlete is, from the one thing the animator can see:
+   * how far they are from what they are looking at. Inside 12 m of the disc
+   * you are in the play; past 26 m you are jogging back and nobody is watching
+   * you. Falling back to a mid value with no gaze target keeps a standalone
+   * preview from posing everyone asleep.
+   */
+  private alertOf(h: AnimHandle): number {
+    const p = h.gaze ?? this.gaze;
+    if (!p) return 0.35;
+    const dx = p.x - h.loco.pos.x;
+    const dz = p.z - h.loco.pos.z;
+    return clamp01((26 - Math.hypot(dx, dz)) / 14);
+  }
+
+  /**
+   * Push the resolved stance down into the foot solver. Width, stagger and
+   * heel lift are what a viewer actually reads a stance off — a mark is wide
+   * and square with the heels light, a live cutter is a little wider than rest
+   * and up on the balls, a body at rest is hip-width and staggered.
+   */
+  private stance(h: AnimHandle, bs: BodyState): void {
+    const f = h.feet;
+    const a = bs.alert, m = bs.mark;
+    f.stanceWide = 0.104 + 0.042 * a + 0.115 * m;
+    // A defender squares up; everyone else stands with one foot ahead. Which
+    // foot is a fixed habit per athlete, hashed off the id.
+    f.stanceStagger = (0.052 + 0.030 * a) * (1 - 0.85 * m);
+    f.heelLift = clamp01(0.55 * a + 0.95 * m);
+    f.stanceLead = h.leadFoot;
+    f.phase = h.footPhase;
   }
 
   /** Which arm leads a layout: the one nearer the thing being reached for. */

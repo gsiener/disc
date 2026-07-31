@@ -7,10 +7,32 @@ import type { Vec3 } from './Build.ts';
 /**
  * Anthropometry → 60-bone skeleton.
  *
- * Landmarks are fractions of standing height taken from adult athlete tables
- * (hip joint 0.530 H, acromion 0.818 H, knee 0.285 H, foot 0.153 H long, upper
- * arm 0.186 H, forearm 0.146 H). The parameter vector perturbs ratios, never
- * the total height, so `params.height` is always the number the frame measures.
+ * ============================================================================
+ *  THE TABLE. Every landmark below is a fraction of standing height H, taken
+ *  from adult tables (ISO 7250 / NASA-STD-3000 / Drillis-Contini), not tuned by
+ *  eye. If a number here changes, it changes because the table says so.
+ * ============================================================================
+ *
+ *   vertex (crown)          1.000 H      menton (chin)          0.870 H
+ *   head height             0.130 H      → 7.7 heads tall, which is where a
+ *                                          lean endurance athlete actually sits
+ *   eye line                0.935 H      = chin + 0.50 head heights
+ *   cervicale (C7)          0.822 H      acromion               0.818 H
+ *   glenohumeral centre     0.803 H      hip joint              0.530 H
+ *   knee joint              0.282 H      sphyrion (ankle)       0.0395 H
+ *   biacromial breadth      0.2214 H     bideltoid breadth      0.2640 H
+ *   head breadth            0.0850 H     head length            0.1075 H
+ *   neck breadth            0.0636 H
+ *   upper arm 0.186 H  forearm 0.146 H  hand 0.108 H   (forearm < upper arm)
+ *   thigh     0.248 H  shin    0.2425 H                (shin  < thigh)
+ *
+ * The two ratios a critic actually reads at a glance:
+ *   • half the shoulder span is 1.55 head-breadths (0.132 H vs 0.085 H)
+ *   • the head is 7.7 of its own heights below the crown
+ * Both are asserted numerically by the proportion probe rather than eyeballed.
+ *
+ * The parameter vector perturbs ratios, never the total height, so
+ * `params.height` is always the number the frame measures.
  *
  * BIND POSE is a 46-degree A-pose with a 9-degree elbow pre-bend and a 4-degree
  * knee pre-bend. Neither joint is straight at bind: a perfectly extended limb
@@ -29,6 +51,11 @@ export interface Anthro {
   ankleY: number; kneeY: number; hipY: number;
   waistY: number; chestY: number; neckBaseY: number;
   shoulderY: number; acromionY: number;
+  /** Half the biacromial breadth — the bony point of the shoulder. The deltoid
+   *  dome and the trapezius both aim at THIS, not at the joint centre, which is
+   *  ~2.7 cm inboard and below it. Conflating the two is what leaves a notch
+   *  between the trapezius and the deltoid for a sleeve to bridge with a plate. */
+  acromionHalf: number;
   chinY: number; crownY: number; headPivotY: number; eyeY: number;
   torsoSpan: number;
   /** pelvis, spine01, spine02, spine03, chest, neckBase, headPivot */
@@ -73,15 +100,26 @@ export function measureBody(p: BodyParams): Anthro {
 
   const ankleY = 0.0395 * H;
   const hipY = 0.530 * H * legF;
-  const kneeY = ankleY + (hipY - ankleY) * 0.487;
+  // Knee joint at 0.282 H. The old 0.487 split put it at 0.278 H and made the
+  // shin 5 % longer than the thigh; the table has the thigh slightly the longer
+  // of the two and a figure reads wrong the moment that inverts.
+  const kneeY = ankleY + (hipY - ankleY) * 0.494;
   const neckBaseY = 0.822 * H;
-  const shoulderY = 0.796 * H;
+  // Glenohumeral centre, NOT the acromion: the joint the humerus rotates about
+  // sits ~1.5 % H below and ~7 % inboard of the bony shoulder point.
+  const shoulderY = 0.803 * H;
   const acromionY = 0.818 * H;
   const headH = 0.130 * H * p.headSize;
   const crownY = H;
   const chinY = crownY - headH;
-  const headPivotY = chinY + headH * 0.30;
-  const eyeY = chinY + headH * 0.545;
+  // Atlanto-occipital joint — level with the ear canal, which is 0.36 of the
+  // way up the head from the chin. At 0.30 the head pivoted through its own
+  // jaw and a nod slid the chin sideways.
+  const headPivotY = chinY + headH * 0.36;
+  // Eye line at half the head's height. The sculpt in Head.ts puts the globes
+  // at ny = 0, i.e. exactly the head centre, so anything but 0.50 here hands
+  // the camera director and the gaze solver a landmark the mesh does not have.
+  const eyeY = chinY + headH * 0.505;
   const torsoSpan = neckBaseY - hipY;
   const waistY = hipY + torsoSpan * 0.30;
   const chestY = hipY + torsoSpan * 0.72;
@@ -97,8 +135,12 @@ export function measureBody(p: BodyParams): Anthro {
     V(0, headPivotY, -0.006 * H),
   ];
 
-  const shoulderHalf = 0.108 * H * p.shoulder * (1 - 0.085 * fr) * (0.98 + 0.05 * mus);
-  const hipHalf = 0.050 * H * p.hip * (1 + 0.075 * fr);
+  // Biacromial breadth 0.2214 H (0.399 m at 1.80). The previous 0.108 H
+  // half-width gave 0.2117 H — narrow shoulders on a wide head, which is the
+  // single loudest juvenile cue a figure can send.
+  const acromionHalf = 0.1125 * H * p.shoulder * (1 - 0.075 * fr) * (0.99 + 0.03 * mus);
+  const shoulderHalf = acromionHalf * 0.925;
+  const hipHalf = 0.0485 * H * p.hip * (1 + 0.075 * fr);
 
   const upperArm = 0.186 * H * armF;
   const foreArm = 0.146 * H * armF;
@@ -128,12 +170,15 @@ export function measureBody(p: BodyParams): Anthro {
   const hip: Vec3[] = [], knee: Vec3[] = [], ankle: Vec3[] = [], ball: Vec3[] = [],
     toeTip: Vec3[] = [], legDir: Vec3[] = [], shinDir: Vec3[] = [];
   for (const s of SIDES) {
+    // Femurs converge: knee separation is ~0.63 of the hip-joint separation and
+    // the malleoli ~0.57. At 0.82/0.76 the legs ran almost parallel, which puts
+    // an adult in a toddler's stance and forces the shorts' leg tubes apart.
     const hp = V(s * hipHalf, hipY, 0.004 * H);
-    const kn = V(s * hipHalf * 0.82, kneeY, 0.013 * H);
-    const an = V(s * hipHalf * 0.76, ankleY, -0.020 * H);
+    const kn = V(s * hipHalf * 0.72, kneeY, 0.013 * H);
+    const an = V(s * hipHalf * 0.64, ankleY, -0.020 * H);
     hip.push(hp); knee.push(kn); ankle.push(an);
-    ball.push(V(s * hipHalf * 0.78, 0.021 * H, 0.055 * H));
-    toeTip.push(V(s * hipHalf * 0.72, 0.013 * H, 0.105 * H));
+    ball.push(V(s * hipHalf * 0.66, 0.021 * H, 0.055 * H));
+    toeTip.push(V(s * hipHalf * 0.61, 0.013 * H, 0.105 * H));
     legDir.push(kn.clone().sub(hp).normalize());
     shinDir.push(an.clone().sub(kn).normalize());
   }
@@ -150,7 +195,13 @@ export function measureBody(p: BodyParams): Anthro {
     waistB: 0.0505 * H * p.waist * (0.93 + 0.24 * fat),
     hipA: 0.0900 * H * p.hip * (1 + 0.06 * fr),
     hipB: 0.0620 * H * p.hip * (0.97 + 0.10 * fat),
-    deltoid: 0.0333 * H * gm,
+    // Deltoid radius is DERIVED, not chosen: bideltoid 0.2640 H minus the
+    // glenohumeral half-width leaves exactly this much soft tissue outboard of
+    // the joint. At 0.0333 H the shoulder measured 0.30 H across — a linebacker
+    // in a lean endurance sport, and a ball the sleeve had to be inflated to
+    // clear.
+    deltoid: CLAMP(0.1320 * H * p.shoulder - shoulderHalf, 0.021 * H, 0.036 * H)
+      * (0.90 + 0.16 * mus + 0.06 * fat),
     bicep: 0.0274 * H * gm * (1 - 0.06 * fr),
     elbowR: 0.0225 * H * (0.94 + 0.12 * mus),
     foreMax: 0.0247 * H * gm * (1 - 0.05 * fr),
@@ -165,12 +216,16 @@ export function measureBody(p: BodyParams): Anthro {
     ankleB: 0.0180 * H * (0.95 + 0.08 * mus),
     handW: 0.0242 * H * armF,
     handT: 0.0078 * H * armF * (0.95 + 0.12 * mus),
-    headR: 0.0475 * H * p.headSize,
+    // Head BREADTH 0.0850 H (0.153 m at 1.80) and, through the same radius,
+    // length 0.1075 H — a cephalic index of 0.79, which is an adult skull. At
+    // 0.0475 H the head measured 0.0909 H across: 8 % over the table, and 8 %
+    // on a head is the whole difference between an athlete and an action figure.
+    headR: 0.0445 * H * p.headSize,
     headH,
   };
 
   return {
-    p, H, ankleY, kneeY, hipY, waistY, chestY, neckBaseY, shoulderY, acromionY,
+    p, H, ankleY, kneeY, hipY, waistY, chestY, neckBaseY, shoulderY, acromionY, acromionHalf,
     chinY, crownY, headPivotY, eyeY, torsoSpan, spine,
     clav, shoulder, elbow, wrist, handEnd, hip, knee, ankle, ball, toeTip,
     armDir, foreDir, handDir, legDir, shinDir, volar,

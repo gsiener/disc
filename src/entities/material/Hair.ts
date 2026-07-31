@@ -128,7 +128,13 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         vec4 sc = texture2D(uStrand, suv * vec2(0.16, 0.55) + 0.61);
         // Per-COLUMN strand length, sampled at a fixed v so it cannot vary down
         // the strand. This is what turns the cap's boundary into a comb.
-        float sLen = texture2D(uStrand, vec2(huv.x * uStrandRep.x * 0.45, 0.5)).a;
+        // The map alone gives about 26 independent columns across a head, and
+        // 26 columns through a binary alpha test is a row of rectangular
+        // blocks, not a fringe. A per-column hash at four times the rate turns
+        // the same band into hair.
+        float sCol = huv.x * uStrandRep.x;
+        float sLen = texture2D(uStrand, vec2(sCol * 0.45, 0.5)).a * 0.5
+          + 0.5 * mhash12(vec2(floor(sCol * 1.9), 3.0));
 
         // vLen is the one coordinate that means the same thing on both pieces
         // of geometry: 1 at the crown of the cap and 1 at the end of a card, 0
@@ -167,8 +173,12 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // 20 % up the shell. Fading the whole boundary band out together — the
         // first attempt — just moves the ruled line up the forehead; giving
         // every strand its own end point is what makes it a fringe.
-        float tipEnd = 0.040 + 0.155 * sLen;
-        float fringe = 1.0 - smoothstep(tipEnd - 0.010, tipEnd + 0.010, vLen);
+        // Keep this band SHORT. At 0.04–0.195 it ate a fifth of the cap, which
+        // on a 1.16 rad shell moves the visible hairline 25 mm up the forehead —
+        // and a 25 mm brow extension is the difference between an athlete and a
+        // cartoon. rig/Head.ts overshoots the shell by exactly this much.
+        float tipEnd = 0.012 + 0.058 * sLen;
+        float fringe = 1.0 - smoothstep(tipEnd - 0.008, tipEnd + 0.008, vLen);
         // Retire the whole erosion once one strand covers less than a pixel.
         // An alpha test against a sub-pixel mask does not read as fine hair at
         // forty metres, it reads as sparkle, and broadcast and night are both

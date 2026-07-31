@@ -60,8 +60,37 @@ export class GradePass extends QuadPass {
         uGain: { value: new THREE.Vector3(1.034, 1.000, 0.966) },
         uInvGamma: { value: new THREE.Vector3(1, 1, 1) },
         uSat: { value: 1.05 },
-        uGreenPush: { value: 0.20 },
-        uGreenSat: { value: 1.07 },
+        /**
+         * Turf hue and chroma — the two numbers that decide whether the
+         * athletes are the subject of the frame or the grass is.
+         *
+         * The art-direction rule is that exactly three things in the frame may
+         * be saturated: the two kits and the disc. Everything else lives under
+         * 50 % HSV. Measured against that, the pitch was the single worst
+         * offender in every gameplay shot — 55–75 % of the image at S 0.48–0.56
+         * (broadcast 0.53, layout 0.55, closeup 0.55, turf macro 0.56) while the
+         * home kit sat at S 0.57–0.65. A three-point saturation margin between
+         * the subject and two thirds of the frame is not a hierarchy, and
+         * `uGreenSat` at 1.07 was actively *widening* the problem by adding
+         * chroma to the largest surface in the shot.
+         *
+         * 0.84 takes the pitch to S 0.40–0.47 — under the ceiling, and far
+         * enough below the kit that the eye has somewhere to land. It is done
+         * here rather than in `TurfMaterial` deliberately: the frame's green
+         * comes from the pitch shader, a million instanced grass blades, the
+         * apron and the outfield, which are four different files owned by
+         * different systems. A hue-selective trim in the grade is the one place
+         * that keeps all four in agreement, and it cannot touch the blue kit
+         * (H 214°), the red trim (H 5°) or skin (H 15–40°).
+         *
+         * `uGreenPush` moves the pitch hue toward the target `#4d7a38` band
+         * (H 100–110°); measured turf was landing at H 84–94°, yellow of the
+         * brief. The push is kept moderate on purpose — it is a lerp toward a
+         * single hue, so a large value would flatten the lush/dry variation the
+         * wear map exists to produce.
+         */
+        uGreenPush: { value: 0.30 },
+        uGreenSat: { value: 0.84 },
         uSkinGuard: { value: 0.58 },
         uSatCeil: { value: 0.72 },
         // Teal shadows, warm highlights — the split every sports broadcast
@@ -216,8 +245,15 @@ export class GradePass extends QuadPass {
           // grey with an arbitrary hue — get dragged into the turf correction.
           float chromatic = smoothstep(0.10, 0.30, hsv.y);
           float green = smoothstep(0.155, 0.240, h) * (1.0 - smoothstep(0.400, 0.500, h)) * chromatic;
-          float skin  = smoothstep(0.000, 0.020, h) * (1.0 - smoothstep(0.090, 0.135, h)) * chromatic;
-          hsv.x = mix(hsv.x, 0.270, green * uGreenPush);
+          // Skin window opens at h 0.028 (10°), not at 0. The away kit's trim is
+          // #b3372e — H 5.4°, S 0.74 — which sat inside the old window and was
+          // therefore having its saturation clamped to uSkinGuard (0.58) by a
+          // guard that exists to stop *faces* going traffic-cone orange. The
+          // brief says the red trim runs at full saturation; it is one of the
+          // three things in the frame allowed to. Skin starts at H 15° and the
+          // guard is a ceiling, so nothing on a face changes.
+          float skin  = smoothstep(0.028, 0.046, h) * (1.0 - smoothstep(0.090, 0.135, h)) * chromatic;
+          hsv.x = mix(hsv.x, 0.282, green * uGreenPush);
           hsv.y *= mix(1.0, uGreenSat, green);
           hsv.y = mix(hsv.y, min(hsv.y, uSkinGuard), skin);
           // Saturation shoulder. Without it a strongly lit turf albedo runs

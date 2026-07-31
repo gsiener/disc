@@ -182,25 +182,61 @@ export class PostFXSystem implements System {
     /* ---------------------------------------------------------------- 3. AO */
     if (quality.ssao && !this.flags.has('noao')) {
       const gtao = new GTAOPass(scene, ctx.camera, pw, ph);
-      // Tuned for people, not for the default Stanford-bunny scale. A 0.45 m
-      // world radius is roughly a shoulder width: it darkens armpits, under
-      // chins, the seam where a cleat meets the turf and the treads of the
-      // stands, and it dies out to nothing across open flat grass because there
-      // is no occluder within half a metre. The steep distance exponent keeps it
-      // from turning distant crowd geometry into grey mud.
-      // `scale` is a gamma on the raw occlusion (`ao = pow(ao, scale)`), which
-      // makes it the right knob and the previous 1.15 the wrong value. A gamma
-      // leaves open ground almost exactly alone — flat turf resolves to ao ≈
-      // 0.98, and 0.98^2.4 is 0.95, a 5 % darkening nobody will ever see — while
-      // a crease at ao ≈ 0.6 drops to 0.30. That asymmetry is the whole point:
-      // it buys real contact darkening without laying grey mud over the pitch,
-      // which a linear intensity multiplier cannot do at any setting.
+      // Tuned for people, not for the default Stanford-bunny scale.
+      //
+      // The scoping was already right and is confirmed by measurement: dumping
+      // the denoised buffer (`?post=aoonly`) shows open flat grass at ao = 1.0
+      // exactly, so the pass lays no grey wash over the largest surface in the
+      // frame. What it was *also* doing was finding almost no occlusion on the
+      // things it exists for. Measured on `layout` with a player standing at
+      // 11 m, before: contact under the foot bottomed out at 0.54, the torso at
+      // 0.70, the head and neck at 0.85 — against an open-turf floor of 0.83.
+      // The head of a human figure was less occluded than a flat lawn. The
+      // beauty A/B (blendIntensity 1 vs 0) moved the image by at most 0.018
+      // luma anywhere and typically 0.003: a full-screen pass that was costing
+      // its milliseconds and returning nothing.
+      //
+      // Three of the four geometry parameters were the reason, and each fails
+      // in a different way:
+      //
+      //  - `distanceExponent` 1.8 spaced the six horizon steps as
+      //    (j/6)^1.8 · radius, i.e. 2 cm, 7 cm, 14 cm, 24 cm, 36 cm, 50 cm.
+      //    Two thirds of every search ray was spent inside the first 15 cm,
+      //    where a smooth surface has nothing to find. 1.0 spreads the steps
+      //    evenly over the radius, which is what a 0.55 m radius is for.
+      //  - `thickness` 0.50 gates every sample on `|viewDelta.z| < thickness`.
+      //    A standing player in front of a pitch that recedes for metres has a
+      //    silhouette whose depth delta is far more than half a metre, so the
+      //    body was being rejected as an occluder of the ground behind it —
+      //    which is precisely the contact-shadow case. A metre is the honest
+      //    assumed thickness for a human figure.
+      //  - `distanceFallOff` 1.0 weights sample j by 2/(j+2), so the outermost
+      //    steps counted for a third of the nearest ones and the far half of
+      //    the radius was effectively discarded. 0 takes the true horizon,
+      //    which is what GTAO integrates; the falloff is an artistic softener
+      //    and this pass had nothing left to soften.
+      //
+      // `scale` is a gamma on the raw occlusion (`ao = pow(ao, scale)`), and
+      // because open ground measures exactly 1.0 the gamma is free contrast
+      // there — 1^n is 1 at any exponent — while a crease at 0.6 drops to 0.22
+      // at 3.0. That asymmetry is the whole point, and it is why the knob was
+      // raised rather than the blend intensity, which would have dimmed the
+      // pitch along with the armpits.
+      // `radius` is 0.42 rather than the 0.55 the first pass at this used: a
+      // stand is thirty rows of seat backs and a crowd stacked behind each
+      // other, so every centimetre of radius pulls more of the bowl into its
+      // own occlusion and the stands were coming back a third darker than the
+      // pitch warranted. 0.42 m is still a head-to-shoulder span — it reaches
+      // every contact this pass exists for — while halving how many seat rows
+      // fall inside it. `distanceFallOff` at 0.3 does the same job along the
+      // ray, trimming the outermost steps that are the ones reaching across
+      // rows, and leaving the near samples that carry a foot or a chin intact.
       gtao.updateGtaoMaterial({
-        radius: 0.50,
-        distanceExponent: 1.8,
-        thickness: 0.50,
-        distanceFallOff: 1.0,
-        scale: 2.4,
+        radius: 0.42,
+        distanceExponent: 1.0,
+        thickness: 1.0,
+        distanceFallOff: 0.3,
+        scale: 2.6,
         samples: quality.tier === 'medium' ? 8 : 16,
         screenSpaceRadius: false,
       });
@@ -245,7 +281,13 @@ export class PostFXSystem implements System {
 
     /* --------------------------------------------------------------- 5. DOF */
     if (wantsDof) {
-      this.dof = new DofPass(pw, ph, quality.tier === 'ultra' ? 32 : 24);
+      // Tap count has to track the blur ceiling, not the tier's vanity: a Vogel
+      // disc gathered at 14 px with 24 taps leaves ~2 px between rim samples,
+      // and over a stand full of one-pixel crowd detail that reads as an
+      // ordered diagonal weave through the bokeh rather than as bokeh. Sample
+      // density goes as taps/radius², so the ceiling rise is paid for here.
+      const taps = quality.tier === 'ultra' ? 40 : quality.tier === 'high' ? 32 : 24;
+      this.dof = new DofPass(pw, ph, taps);
       this.dof.setDepth(depthPass!.texture);
       composer.addPass(this.dof);
     }

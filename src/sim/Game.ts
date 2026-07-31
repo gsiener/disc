@@ -15,6 +15,7 @@ import {
 } from './Rules.ts';
 import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
 import { powerForSpeed, type ThrowType as PhysThrowType } from './DiscPhysics.ts';
+import { SHOTS, type Shot } from '../capture/Shots.ts';
 import type { PlayerIntent as HumanIntent } from '../input/Intent.ts';
 import type { IntentGates } from '../input/Human.ts';
 import type { DefenderCandidate, SwitchSituation } from '../input/Switch.ts';
@@ -192,6 +193,9 @@ export class GameSystem implements System {
   init(ctx: Ctx): void {
     this.seed = ctx.rand.fork(0x6a3e1c).int(0, 0x7fffffff);
     this.rng = new Rng(this.seed);
+    // The live registry, not a snapshot: peers that register after us (the
+    // character system is one slot behind) appear on it as they are built.
+    this.sysRef = ctx.sys as unknown as Record<string, unknown>;
 
     this.field = ctx.sys['field'] as { heightAt?(x: number, z: number): number } | undefined;
     const ground = (x: number, z: number): number =>
@@ -233,8 +237,8 @@ export class GameSystem implements System {
     this.buildWorld();
     this.lineUpForPull();
 
-    ctx.events.on('shot:apply', (p: { name?: string; shot?: { tableau?: string } }) => {
-      this.applyTableau(p?.shot?.tableau ?? 'flow', p?.name ?? '', ctx);
+    ctx.events.on('shot:apply', (p: { name?: string; shot?: Shot }) => {
+      this.applyTableau(p?.shot?.tableau ?? 'flow', p?.name ?? '', ctx, p?.shot);
     });
 
     // The visual disc adopts our runtime if it inits after us; if it got there
@@ -292,9 +296,16 @@ export class GameSystem implements System {
     const d1 = this.gs.attackDir[1];
     this.aiDir = [d0, d1];
     const r = new Rng((this.seed ^ (this.gs.point * 0x9e3779b9)) >>> 0);
+    // Both sides run a vertical stack and both defend person, on purpose.
+    // Ultimate is only legible to someone who knows it if the shapes on the
+    // field are the shapes they know: a stack, a force, a matchup. A zone
+    // renders as fourteen bodies with no relationship to each other, which is
+    // exactly what "players scattered with no visible structure" looks like —
+    // so the zone bias is pushed well negative rather than left at the AI's
+    // default. The two teams differ by force and by aggression instead.
     this.ai = [
-      createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, seed: 11 }),
-      createTeamAI(1, d1, r, { formation: 'horizontal', force: 'forehand', aggression: 0.95, zoneBias: 0.05, seed: 29 }),
+      createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
+      createTeamAI(1, d1, r, { formation: 'vertical', force: 'backhand', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
     ];
   }
 
@@ -525,8 +536,7 @@ export class GameSystem implements System {
   private aiThrow(e: RosterEntry, act: Extract<PlayerAction, { kind: 'throw' }>): void {
     const type = THROW_MAP[act.throwType] ?? 'backhand';
     const hand: 'R' | 'L' = e.ai.handed === 'left' ? 'L' : 'R';
-    const lp = e.loco;
-    _from.set(lp.pos.x, lp.groundY + lp.hipHeight * 0.98, lp.pos.z);
+    this.releaseOrigin(e, _from);
     const tx = act.aimX - _from.x, tz = act.aimZ - _from.z;
     const want = Math.hypot(tx, tz);
     if (want < 0.4) return;
@@ -571,8 +581,7 @@ export class GameSystem implements System {
     e: RosterEntry, type: PhysThrowType, yaw: number, power: number,
     tilt: number, _dist: number, quality: number,
   ): void {
-    const lp = e.loco;
-    _from.set(lp.pos.x, lp.groundY + lp.hipHeight * 0.98, lp.pos.z);
+    this.releaseOrigin(e, _from);
     _aim.set(Math.sin(yaw), 0, Math.cos(yaw));
     const hand: 'R' | 'L' = e.ai.handed === 'left' ? 'L' : 'R';
     // Power buys distance; the stick's tilt buys curve; quality buys a clean
@@ -703,29 +712,75 @@ export class GameSystem implements System {
     );
     // Face of the disc points out to the throwing side and slightly up.
     _norm.set(rx * 0.86, 0.42, rz * 0.86).normalize();
-    this.discRuntime.hold(e.id, _v, _norm, this.gs.clock * 0.6);
+    // Roll about the face normal is a property of the grip, not of the clock —
+    // driving it from `gs.clock` made a held disc twirl in a motionless hand.
+    this.discRuntime.hold(e.id, _v, _norm, 0.35 + e.id * 0.41);
   }
 
   /** null = not probed yet, false = the peer does not offer one (or misbehaved). */
   private handAnchor: HandAnchorFn | false | null = null;
   private sysRef: Record<string, unknown> | undefined;
 
-  private carryFromRig(e: RosterEntry): boolean {
-    if (this.handAnchor === null) {
-      const peer = this.sysRef?.['players'] as Record<string, unknown> | undefined;
-      const fn = peer?.['discAnchor'] ?? peer?.['handAnchor'];
-      this.handAnchor = typeof fn === 'function'
-        ? (fn as HandAnchorFn).bind(peer) as HandAnchorFn
-        : false;
-    }
-    if (this.handAnchor === false) return false;
+  /**
+   * Resolve `ctx.sys.players.discAnchor` lazily.
+   *
+   * The character system registers itself one slot AFTER us, and a tableau can
+   * be applied on the very first frame — so "the peer is not there yet" must not
+   * be cached as "the peer does not exist". Only a peer that is present and
+   * misbehaves is latched off for good.
+   */
+  private resolveHandAnchor(): HandAnchorFn | null {
+    if (this.handAnchor === false) return null;
+    if (this.handAnchor) return this.handAnchor;
+    const peer = this.sysRef?.['players'] as Record<string, unknown> | undefined;
+    if (!peer) return null;                       // not built yet — retry next call
+    const fn = peer['discAnchor'] ?? peer['handAnchor'];
+    if (typeof fn !== 'function') { this.handAnchor = false; return null; }
+    this.handAnchor = (fn as HandAnchorFn).bind(peer) as HandAnchorFn;
+    return this.handAnchor;
+  }
+
+  /** Probe the rig for the grip point. Fills `_v` / `_norm`; false = no rig. */
+  private gripOf(id: number): boolean {
+    const fn = this.resolveHandAnchor();
+    if (!fn) return false;
     try {
-      if (!this.handAnchor(e.id, _v, _norm)) { this.handAnchor = false; return false; }
+      if (!fn(id, _v, _norm)) return false;
     } catch { this.handAnchor = false; return false; }
     if (!Number.isFinite(_v.x) || !Number.isFinite(_v.y) || !Number.isFinite(_v.z)
       || !(_norm.lengthSq() > 1e-6)) { this.handAnchor = false; return false; }
+    return true;
+  }
+
+  private carryFromRig(e: RosterEntry): boolean {
+    if (!this.gripOf(e.id)) return false;
     this.discRuntime.hold(e.id, _v, _norm.normalize(), this.gs.clock * 0.6);
     return true;
+  }
+
+  /**
+   * Where the disc actually leaves the body.
+   *
+   * The rig knows: `ctx.sys.players.discAnchor` reports the world point the disc
+   * occupies in the grip, so a release solved from there starts the flight at the
+   * hand rather than at the pelvis. Without a character system — headless tests,
+   * a stubbed peer — it falls back to a point off the throwing hip, which is
+   * where the disc is drawn in that case anyway.
+   *
+   * A grip that has ended up inside the turf (a rig mid-layout, a bad frame) is
+   * rejected: a disc released below the grass lands on the frame it is thrown.
+   */
+  private releaseOrigin(e: RosterEntry, out: THREE.Vector3): THREE.Vector3 {
+    const lp = e.loco;
+    if (this.gripOf(e.id) && _v.y > lp.groundY + 0.45) return out.copy(_v);
+    const right = e.ai.handed === 'left' ? -1 : 1;
+    const f = lp.facing;
+    const fx = Math.sin(f), fz = Math.cos(f);
+    return out.set(
+      lp.pos.x + fz * right * 0.34 + fx * 0.16,
+      lp.groundY + lp.hipHeight * 1.10,
+      lp.pos.z - fx * right * 0.34 + fz * 0.16,
+    );
   }
 
   /**
@@ -962,7 +1017,7 @@ export class GameSystem implements System {
 
     const dir = gs.attackDir[team];
     const lp = puller.loco;
-    _from.set(lp.pos.x, lp.groundY + lp.hipHeight * 1.05, lp.pos.z);
+    this.releaseOrigin(puller, _from);
     // Aim across to the far side so the pull is a real cross-field bomb.
     const bias = lp.pos.x > 0 ? -1 : 1;
     _aim.set(bias * 0.22, 0, dir);
@@ -1146,11 +1201,12 @@ export class GameSystem implements System {
    * (a camera hotkey) it releases after a couple of seconds so the game does
    * not simply freeze under the player.
    */
-  private applyTableau(tableau: string, shot: string, ctx: Ctx): void {
+  private applyTableau(tableau: string, shot: string, ctx: Ctx, cam?: Shot): void {
     this.posed = true;
     this.poseName = tableau;
     this.poseHold = 2.5;
     const r = new Rng((this.seed ^ hashName(tableau + shot)) >>> 0);
+    this.frame = makeFrame(resolveShot(cam, shot, tableau));
 
     // A plausible mid-game scoreline so the HUD is not sitting on 0-0.
     this.gs.score[0] = 9; this.gs.score[1] = 8;
@@ -1159,8 +1215,7 @@ export class GameSystem implements System {
     this.gs.stallCount = 4;
     this.gs.phase = 'LIVE_POSSESSION';
     this.gs.possession = 0;
-    this.gs.attackDir = [1, -1];
-    this.aiDir = [1, -1];
+    this.setAttack(-1);
 
     switch (tableau) {
       case 'mark': this.tableauMark(r); break;
@@ -1173,10 +1228,62 @@ export class GameSystem implements System {
     void ctx;
   }
 
+  /** Which way team 0 attacks in a posed frame. Team 1 always mirrors. */
+  private setAttack(dir: Dir): void {
+    this.gs.attackDir = [dir, -dir as Dir];
+    this.aiDir = [dir, -dir as Dir];
+  }
+
+  /** The camera the current tableau is being composed for. */
+  private frame: Frame = makeFrame(SHOTS.broadcast as Shot);
+
+  /**
+   * Solve the world XZ whose image sits `xPct` across the frame, `depth` metres
+   * down the view axis, for a body whose centre of mass is at height `y`.
+   *
+   * Composition is a screen-space property. Writing a tableau as a list of
+   * world coordinates and hoping is how the broadcast frame ended up with its
+   * subject at 6% of frame height, forty metres away, behind two anonymous
+   * bodies that happened to be nearer the lens. Every position below is stated
+   * as "this far into the shot, this far across it" and solved against the
+   * camera `Shots.ts` actually pins, so the arrangement survives a change of
+   * framing instead of silently rotting.
+   */
+  private at(depth: number, xPct: number, y = 0.95): { x: number; z: number } {
+    const f = this.frame;
+    const right = (xPct * 2 - 1) * depth * f.tanH;
+    const k = depth - f.d.y * (y - f.c.y);
+    // [ d.x  d.z ] [A]   [k]        A = x - c.x
+    // [ r.x  r.z ] [B] = [right]    B = z - c.z
+    const det = f.d.x * f.r.z - f.d.z * f.r.x;
+    const A = (k * f.r.z - f.d.z * right) / det;
+    const B = (f.d.x * right - k * f.r.x) / det;
+    return {
+      x: clampNum(f.c.x + A, -FIELD.SIDELINE + 0.3, FIELD.SIDELINE - 0.3),
+      z: clampNum(f.c.z + B, -FIELD.END_LINE + 0.3, FIELD.END_LINE - 0.3),
+    };
+  }
+
+  /**
+   * An offence/defence pair by explicit world offset. `pair()` positions the
+   * defender by a cushion measured downfield, which is the right model for a
+   * live cut and the wrong one for a body standing in a stack; this one puts
+   * him exactly where he is asked to be and points him at his man.
+   */
+  private duo(
+    slot: number, o: { x: number; z: number }, oFace: number, oOpt: PlaceOpts,
+    dOff: { x: number; z: number }, dOpt: PlaceOpts = {}, dFace?: number,
+  ): void {
+    const off = this.of(0, slot);
+    const def = this.of(1, slot);
+    const dx = o.x + dOff.x, dz = o.z + dOff.z;
+    this.placeBody(off, o.x, o.z, oFace, oOpt);
+    this.placeBody(def, dx, dz, dFace ?? Math.atan2(o.x - dx, o.z - dz), dOpt);
+  }
+
   /** Place a body and stop it dead. `state` picks the animation pose. */
   private placeBody(
-    e: RosterEntry, x: number, z: number, facing: number,
-    o: { speed?: number; dirX?: number; dirZ?: number; state?: LocoPlayer['state']; prone?: boolean; airborne?: boolean; y?: number } = {},
+    e: RosterEntry, x: number, z: number, facing: number, o: PlaceOpts = {},
   ): void {
     const lp = e.loco;
     lp.pos.x = x; lp.pos.z = z;
@@ -1191,8 +1298,32 @@ export class GameSystem implements System {
     lp.facing = facing;
     lp.state = o.state ?? (sp > 6 ? 'sprint' : sp > 3 ? 'run' : sp > 0.5 ? 'jog' : 'idle');
     lp.stateT = 0.12;
+    lp.stateDur = 0.45;
     lp.foot.pos.set(x, lp.groundY, z);
     lp.foot.contact = !lp.air.airborne;
+
+    /**
+     * Flight-arc bookkeeping. The animator does not blend a canned "layout"
+     * clip — it reads `air.tTakeoff / tApex / tLand` against `loco.t` and builds
+     * the pose from where in the arc the body is. Leaving those at zero means
+     * `loco.t - air.tTakeoff === 0`, the pose sits at the START of the gather,
+     * and a receiver posed mid-layout renders standing upright. That is exactly
+     * what the `layout` shot was showing. Put the takeoff a quarter second in
+     * the past and the landing a third of a second in the future, so a frozen
+     * tableau is sampled at full extension.
+     */
+    if (lp.air.airborne || lp.prone) {
+      const t = lp.t;
+      const laid = lp.prone || lp.state === 'layout';
+      lp.air.tTakeoff = t - (laid ? 0.26 : 0.18);
+      lp.air.tApex = t - (laid ? 0.10 : 0.02);
+      lp.air.tLand = t + (laid ? 0.34 : 0.26);
+      lp.air.takeoffY = lp.groundY + lp.hipHeight;
+      lp.air.apexY = Math.max(lp.pos.y, lp.groundY + (laid ? 0.62 : lp.hipHeight + 0.35));
+      lp.air.vy0 = laid ? 1.5 : 3.2;
+    } else {
+      lp.air.tTakeoff = lp.air.tApex = lp.air.tLand = lp.t - 4;
+    }
   }
 
   private of(team: TeamId, slot: number): RosterEntry { return this.roster[team * 7 + slot]; }
@@ -1217,28 +1348,69 @@ export class GameSystem implements System {
   }
 
   /**
-   * Broadcast flow. Offence attacking +Z with the disc on the left hash, a
-   * vertical stack ahead of it, an under cut live and a deep threat clearing.
-   * The camera sits at (-34, 15.5, 30) looking at (0, 1.6, 4), so the whole
-   * arrangement is built around z ~ 0..26.
+   * Broadcast flow — a vertical stack, live under cut, dump reset behind.
+   *
+   * Read the frame right to left: the thrower and his mark sit on the focal
+   * plane in the right third, the cutter he is looking at breaks into the
+   * centre, and the stack recedes away up-left with the deep threat pulling the
+   * last defender off the top. That ordering is not decoration — it is the only
+   * arrangement in which someone who knows Ultimate can name the formation, the
+   * force and the cut from a still, which is the whole job of this tableau.
    */
   private tableauFlow(r: Rng): void {
-    const thrower = this.of(0, 0);
-    this.placeBody(thrower, -6.4, 1.2, 1.15, { state: 'idle' });
-    // The mark, straddling the forehand side, low and wide.
-    this.placeBody(this.of(1, 0), -4.6, 2.4, Math.atan2(-1.8, -1.2), { state: 'shuffle', speed: 0.6 });
+    // Team 0 attacks -Z: from this camera that puts downfield up and to the
+    // left, so the play recedes instead of walking into the lens.
+    this.setAttack(-1);
 
-    // Reset handler behind the disc with his defender playing the up-line.
-    this.pair(1, -11.4, -3.4, 0.9, 1.4, -1.6, 1.5);
-    // The live under cut — the reason this frame is a play and not a formation.
-    this.pair(2, -1.6, 8.6, Math.atan2(-4.6, -6.2), 7.4, -2.2, 1.4, 6.6);
-    // Vertical stack.
-    this.pair(3, 2.2, 14.6, 0.2, 1.6, 2.0, 1.6);
-    this.pair(4, 2.9, 19.2, 0.15, 1.2, 2.2, 1.7);
-    // Deep threat pulling the last defender out of the picture.
-    this.pair(5, 6.4, 26.4, 0.1, 8.2, 3.1, 1.2, 8.0);
-    // Weak-side cutter clearing.
-    this.pair(6, -12.6, 11.8, 2.6, 4.4, -1.4, -1.6);
+    const T = this.at(45.0, 0.62);
+    const thrower = this.of(0, 0);
+
+    // The stack: front of it 12 m in front of the disc, then straight downfield
+    // on 4.7 m spacing with the slow drift a real stack always has.
+    const s0 = this.at(44.5, 0.345);
+    const stack = (i: number): { x: number; z: number } =>
+      ({ x: s0.x + i * 0.34, z: s0.z - i * 4.70 });
+
+    // The live cut: out of the front of the stack, breaking back to the open
+    // (forehand, -X) side of the disc. He is caught mid-stride with his
+    // defender two and a half metres beaten.
+    const C = this.at(44.0, 0.415);
+    const catchAt = { x: T.x - 5.4, z: T.z - 5.0 };
+    const cd = norm2(catchAt.x - C.x, catchAt.z - C.z);
+    const cFace = Math.atan2(cd.x, cd.z);
+
+    // Handler and his mark. Force forehand, so the mark stands on the +X
+    // (backhand) shoulder, a shade over a metre off — a legal, real mark.
+    this.placeBody(thrower, T.x, T.z, Math.atan2(catchAt.x - T.x, catchAt.z - T.z), { state: 'idle' });
+    // Downfield-and-a-shade-across: at 46 m the only offset that separates two
+    // silhouettes at all is the one aligned with the camera's own screen axis,
+    // and for this angle that is straight down the field.
+    this.placeBody(this.of(1, 0), T.x + 0.30, T.z - 1.15, Math.atan2(-0.30, 1.15),
+      { state: 'shuffle', speed: 0.55 });
+
+    // Dump reset, behind the disc on the break side, with his defender denying
+    // the up-line.
+    const R = this.at(46.4, 0.755);
+    this.duo(1, R, Math.atan2(T.x - R.x, T.z - R.z), { state: 'idle', speed: 0.9 },
+      { x: -0.9, z: -1.8 }, { state: 'shuffle', speed: 1.0 });
+
+    // The live cutter.
+    this.duo(2, C, cFace,
+      { speed: 7.4, dirX: cd.x, dirZ: cd.z, state: 'sprint' },
+      { x: -cd.x * 2.5, z: -cd.z * 2.5 },
+      { speed: 6.8, dirX: cd.x, dirZ: cd.z, state: 'sprint' }, cFace);
+
+    // Three standing in the stack, each defender shading the open side.
+    this.duo(3, stack(0), 0.30, { state: 'idle', speed: 0.6 }, { x: -1.65, z: 0.45 }, { state: 'shuffle', speed: 0.5 });
+    this.duo(4, stack(1), 0.26, { state: 'idle', speed: 0.5 }, { x: -1.70, z: 0.40 }, { state: 'shuffle', speed: 0.4 });
+    this.duo(6, stack(2), 0.24, { state: 'idle', speed: 0.7 }, { x: -1.62, z: 0.52 }, { state: 'shuffle', speed: 0.6 });
+
+    // Deep threat off the back of the stack, defender a stride behind.
+    const D = { x: stack(2).x + 3.1, z: stack(2).z - 6.4 };
+    this.duo(5, D, Math.atan2(0.16, -1),
+      { speed: 8.2, dirX: 0.16, dirZ: -1, state: 'sprint' },
+      { x: -0.5, z: 2.2 },
+      { speed: 8.0, dirX: 0.16, dirZ: -1, state: 'sprint' }, Math.atan2(0.16, -1));
 
     this.gs.thrower = thrower.id;
     this.gs.pivot = { x: thrower.loco.pos.x, y: 0, z: thrower.loco.pos.z };
@@ -1249,19 +1421,46 @@ export class GameSystem implements System {
     void r;
   }
 
-  /** Sideline telephoto: a handler pivoting against a mark. */
+  /**
+   * Sideline telephoto: the handler's pivot against the mark, two bodies on the
+   * focal plane with the rest of both teams compressed behind them.
+   *
+   * The one thing this framing cannot survive is a body in front of the
+   * subject: at 27 m focus and a 20-degree lens anything nearer than about
+   * 20 m is both larger than the handler and completely out of focus. Nothing
+   * is placed inside that distance.
+   */
   private tableauMark(r: Rng): void {
+    this.setAttack(-1);
     const thrower = this.of(0, 0);
-    // Camera is at x = -26 looking at (2, 1.5, 2): face the thrower across it.
-    this.placeBody(thrower, 2.0, 2.0, -1.35, { state: 'idle' });
-    this.placeBody(this.of(1, 0), 3.55, 3.35, Math.atan2(-1.55, -1.35), { state: 'shuffle', speed: 0.5 });
+    const T = this.at(27.0, 0.44);
+    // Downfield is -Z for this team, and from this camera that reads left, so
+    // the mark separates cleanly from his man instead of eclipsing him.
+    const M = { x: T.x - 0.62, z: T.z - 1.06 };
+    this.placeBody(thrower, T.x, T.z, Math.atan2(M.x - T.x, M.z - T.z) + 0.55, { state: 'idle' });
+    this.placeBody(this.of(1, 0), M.x, M.z, Math.atan2(T.x - M.x, T.z - M.z),
+      { state: 'shuffle', speed: 0.6 });
 
-    this.pair(1, -4.0, -2.4, 1.1, 1.0, -1.5, 1.4);
-    this.pair(2, 4.2, 13.5, Math.atan2(-2.0, -5.5), 7.0, -2.4, 1.5, 6.4);
-    this.pair(3, 8.5, 21.0, 0.2, 2.0, 2.4, 1.5);
-    this.pair(4, -8.0, 17.0, 0.4, 5.5, -2.0, -1.4);
-    this.pair(5, 11.5, 30.0, 0.1, 7.6, 3.0, 1.1);
-    this.pair(6, -13.0, 6.0, 2.4, 3.0, -1.2, -1.5);
+    // Everything else sits behind the plane of the mark: a cut coming back, a
+    // stack, and a deep pair, all inside the frame and all softening with
+    // distance. Depths chosen so nothing lands on the far sideline.
+    const back: [number, number, number, number, number][] = [
+      // slot, depth, x%, offence speed, defender screen-side offset
+      [1, 29.5, 0.66, 0.9, -1.7],   // the reset, just past the pivot
+      [2, 31.0, 0.30, 6.6, +1.9],
+      [3, 34.5, 0.68, 0.8, -1.8],
+      [4, 37.5, 0.24, 1.0, +1.7],
+      [5, 40.0, 0.74, 7.4, -2.1],
+      [6, 42.5, 0.46, 1.2, +1.6],
+    ];
+    for (const [slot, depth, xp, sp, side] of back) {
+      const o = this.at(depth, xp);
+      const dir = sp > 4 ? norm2(T.x - o.x, T.z - o.z) : { x: 0, z: -1 };
+      this.duo(slot, o, Math.atan2(dir.x, dir.z),
+        { speed: sp, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : sp > 2 ? 'run' : 'idle' },
+        { x: side, z: sp > 4 ? -1.6 : 0.6 },
+        { speed: sp * 0.92, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : sp > 2 ? 'run' : 'shuffle' });
+    }
 
     this.gs.thrower = thrower.id;
     this.gs.stallCount = 6;
@@ -1272,12 +1471,19 @@ export class GameSystem implements System {
     void r;
   }
 
-  /** Character hero shot: a receiver at the origin, three-quarter to camera. */
+  /** Character hero shot: a receiver standing exactly on the shot's focal plane. */
   private tableauPortrait(r: Rng): void {
     const hero = this.of(0, 4);
-    // Camera at (2.1, 1.72, 3.0); face slightly off-axis for a 3/4 view.
-    const toCam = Math.atan2(2.1, 3.0);
-    this.placeBody(hero, 0, 0, toCam - 0.42, { state: 'idle' });
+    // On the view axis at the focus distance, so the head lands on the camera's
+    // target point and the face is the sharpest thing in the frame. Standing at
+    // the origin — where this used to put him — is 0.6 m behind focus, which on
+    // a 42-degree lens at f/3.4 is the difference between pores and mush.
+    const f = this.frame;
+    const dist = f.focus > 0 ? f.focus : 3.1;
+    const eye = 1.62;
+    const H = this.at(dist, 0.5, eye);
+    const toCam = Math.atan2(f.c.x - H.x, f.c.z - H.z);
+    this.placeBody(hero, H.x, H.z, toCam - 0.42, { state: 'idle' });
     hero.loco.foot.contact = true;
 
     // Bodies far behind for the bokeh field, none close enough to crowd him.
@@ -1288,6 +1494,7 @@ export class GameSystem implements System {
       this.placeBody(others[i], Math.sin(a) * d, -Math.cos(a) * d - 6, a + Math.PI,
         { speed: r.range(2, 7) });
     }
+    this.gs.thrower = null;
     this.discRuntime.mode = 'ground';
     _v.set(-9, 0, -18);
     this.discRuntime.settle(_v);
@@ -1300,36 +1507,65 @@ export class GameSystem implements System {
    * frame is the path DiscPhysics actually produced.
    */
   private tableauLayout(r: Rng): void {
+    this.setAttack(1);
     const rec = this.of(0, 4);
     const def = this.of(1, 4);
-    // Camera at (7.5, 1.1, 9) on (0, 0.85, 0); view axis (-0.64, -0.77) in XZ.
-    // Everything moves perpendicular to it — receiver, defender and disc all
-    // cross the frame rather than running down the lens.
-    this.placeBody(rec, 1.55, -1.28, Math.atan2(-0.77, 0.64), {
-      speed: 7.4, dirX: -0.77, dirZ: 0.64, state: 'layout', prone: true, airborne: true, y: 0.62,
+
+    // The receiver flies square across the lens — along the camera's own screen
+    // -X axis — so the extension is seen broadside instead of down its length.
+    const f = this.frame;
+    const across = norm2(-f.r.x, -f.r.z);
+    const R = this.at(11.7, 0.535, 0.62);
+
+    this.placeBody(rec, R.x, R.z, Math.atan2(across.x, across.z), {
+      speed: 7.4, dirX: across.x, dirZ: across.z, state: 'layout', prone: true, airborne: true, y: 0.62,
     });
     rec.loco.vel.y = 0.55;
-    rec.loco.air.tTakeoff = 0; rec.loco.air.tApex = 0.06; rec.loco.air.apexY = rec.loco.pos.y + 0.02;
 
-    this.placeBody(def, 3.6, -2.85, Math.atan2(-0.77, 0.64), { speed: 7.9, dirX: -0.77, dirZ: 0.64, state: 'sprint' });
+    // Trailing defender, two metres back down the same line and still inside
+    // the frame: at this focal length "behind him" and "off the right edge" are
+    // the same direction, so the gap is what decides whether he is in shot.
+    this.placeBody(def, R.x - across.x * 2.05, R.z - across.z * 2.05,
+      Math.atan2(across.x, across.z), { speed: 7.9, dirX: across.x, dirZ: across.z, state: 'sprint' });
 
-    // The thrower and the rest, spread out behind and away.
-    this.placeBody(this.of(0, 0), -16.5, -12.0, Math.atan2(16.5, 12.0), { state: 'idle' });
-    this.placeBody(this.of(1, 0), -15.2, -10.9, Math.atan2(-1.3, -1.1), { state: 'shuffle' });
-    for (let i = 1; i <= 3; i++) {
-      const t = i / 4;
-      this.pair(i, -10 + t * 22, 9 + t * 16, 0.3, 3 + 3 * t, 2.0, 1.5);
+    // The thrower who put it there, deep in the background but readable.
+    const TH = this.at(38.0, 0.478);
+    this.placeBody(this.of(0, 0), TH.x, TH.z, Math.atan2(R.x - TH.x, R.z - TH.z), { state: 'idle' });
+    const MK = this.at(38.8, 0.512);
+    this.placeBody(this.of(1, 0), MK.x, MK.z, Math.atan2(TH.x - MK.x, TH.z - MK.z), { state: 'shuffle' });
+
+    // Three pairs stacked through the mid-ground so the bokeh has content.
+    const back: [number, number, number, number][] = [
+      [1, 20.0, 0.76, 5.4],
+      [2, 26.0, 0.31, 6.1],
+      [3, 33.0, 0.58, 3.2],
+      [5, 24.0, 0.83, 7.0],
+      [6, 30.0, 0.14, 4.2],
+    ];
+    for (const [slot, depth, xp, sp] of back) {
+      const o = this.at(depth, xp);
+      const dir = norm2(R.x - o.x, R.z - o.z);
+      this.duo(slot, o, Math.atan2(dir.x, dir.z),
+        { speed: sp, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : 'run' },
+        { x: -dir.x * 1.9 + 1.2, z: -dir.z * 1.9 + 0.4 },
+        { speed: sp * 0.9, dirX: dir.x, dirZ: dir.z, state: sp > 5.5 ? 'sprint' : 'run' });
     }
-    this.pair(5, 12.5, 22.0, 0.2, 7.2, 2.8, 1.2);
-    this.pair(6, -14.0, 4.0, 2.5, 3.4, -1.4, -1.5);
 
-    this.stageFlight(new THREE.Vector3(0.10, 0.92, 0.05), 'forehand', 0.60, 0.04, 0.9, -0.88, 0.50, 0.30);
+    // The disc, on the fingertips of the extended arm — 0.82 m ahead of the
+    // body along the line of flight, a hand's height above the chest. The
+    // animator's reach IK takes the hands to wherever this lands, so getting
+    // the disc right is what makes the extension look like a catch attempt
+    // rather than a man falling over near a frisbee.
+    this.stageFlight(
+      new THREE.Vector3(R.x + across.x * 0.82, rec.loco.pos.y + 0.10, R.z + across.z * 0.82),
+      'forehand', 0.60, 0.04, 0.9, Math.atan2(across.x, across.z), 0.50, 0.30);
     this.discRuntime.wear = 0.6;
     void r;
   }
 
   /** Macro on a spinning disc mid-huck, with the real curved path behind it. */
   private tableauHuck(r: Rng): void {
+    this.setAttack(-1);
     // Camera at (3.2, 2.4, 3.4) on (0, 2.2, 0), so the view axis is (-0.68, -0.72)
     // in XZ. Heading 2.33 rad is exactly perpendicular to it: the disc crosses
     // the frame instead of receding down the lens axis, which is the difference
@@ -1338,51 +1574,82 @@ export class GameSystem implements System {
     // the hot stamp is visible rather than presenting a bare edge.
     this.stageFlight(new THREE.Vector3(0, 2.2, 0), 'backhand', 0.94, 0.16, 1.0, 2.33, 0.55, 0.75);
 
-    // Bodies well behind the focal plane so there is something to defocus.
-    const pairs: [number, number][] = [[-17, -19], [-24, -12], [-11, -27], [-30, -25]];
-    for (let i = 0; i < 4; i++) {
-      const [x, z] = pairs[i];
-      this.pair(i + 1, x, z, Math.atan2(-x, -z), 6.2 + r.range(0, 1.8), 2.2, 1.4);
+    // Seven pairs laddered back from 9 m to 30 m and kept inside the frame —
+    // the previous ring of bodies sat outside the 26-degree cone entirely, so
+    // the "warm field bokeh" this shot is supposed to sit against was bare
+    // grass. Nothing is nearer than 9 m: at f/4.5 on a 4.4 m focus a closer
+    // body is a shapeless smear over the subject.
+    const ladder: [number, number, number, number][] = [
+      [0, 9.0, 0.85, 6.4],
+      [1, 9.8, 0.15, 6.9],
+      [2, 14.0, 0.76, 7.6],
+      [3, 19.0, 0.28, 7.1],
+      [4, 22.0, 0.63, 5.8],
+      [5, 26.0, 0.40, 8.0],
+      [6, 30.0, 0.55, 4.6],
+    ];
+    for (const [slot, depth, xp, sp] of ladder) {
+      const o = this.at(depth, xp);
+      const a = 2.33 + r.range(-0.5, 0.5);
+      const dir = { x: Math.sin(a), z: Math.cos(a) };
+      this.duo(slot, o, a,
+        { speed: sp, dirX: dir.x, dirZ: dir.z, state: 'sprint' },
+        { x: -dir.x * 2.1 + 0.9, z: -dir.z * 2.1 - 0.6 },
+        { speed: sp * 0.95, dirX: dir.x, dirZ: dir.z, state: 'sprint' }, a);
     }
-    this.placeBody(this.of(0, 0), 3.6, -6.4, Math.atan2(-3.6, 6.4), { state: 'idle' });
-    this.placeBody(this.of(1, 0), 2.4, -5.2, Math.atan2(1.2, -1.2), { state: 'shuffle' });
-    this.placeBody(this.of(0, 5), -34, -34, 0.7, { speed: 8 });
-    this.placeBody(this.of(1, 5), -36, -36, 0.7, { speed: 8 });
+    this.gs.thrower = null;
     this.discRuntime.wear = 0.35;
   }
 
-  /** Endzone score: the catch completed, teammates converging. */
+  /**
+   * Endzone score. This lens sees a wedge: the camera stands 4 m inside the
+   * back of the endzone looking at the end line, so everything in bounds AND in
+   * frame lies between two and six metres away. The old arrangement put the
+   * whole celebration *behind* the camera and framed two bodies out of fifteen.
+   * Three athletes, big, is what this shot can actually hold.
+   */
   private tableauScore(r: Rng): void {
-    // Camera at (4, 2.2, -46) looking at (-1, 1.7, -54). Put the scorer on that
-    // sight line, four metres out, and still inside the end line.
     const scorer = this.of(1, 4);
     this.gs.possession = 1;
-    this.gs.attackDir = [1, -1];
-    this.placeBody(scorer, 1.75, -49.3, Math.atan2(4 - 1.75, -46 + 49.3), { state: 'idle' });
+    this.setAttack(1);
 
-    const mates: [number, number][] = [[-2.6, -45.2], [4.9, -44.0], [-6.4, -41.0], [7.6, -39.5]];
-    for (let i = 0; i < 4; i++) {
-      const [x, z] = mates[i];
-      const e = this.of(1, [0, 1, 2, 3][i]);
-      this.placeBody(e, x, z, Math.atan2(1.75 - x, -49.3 - z), { speed: 5.4 + r.range(0, 1.6), state: 'sprint' });
-    }
-    this.placeBody(this.of(1, 5), -10.5, -36.0, 0.4, { speed: 6.2, state: 'sprint' });
-    this.placeBody(this.of(1, 6), 12.0, -34.0, 0.6, { speed: 5.8, state: 'sprint' });
+    const S = this.at(4.2, 0.60);
+    this.placeBody(scorer, S.x, S.z, Math.atan2(this.frame.c.x - S.x, this.frame.c.z - S.z),
+      { state: 'idle' });
 
-    // The beaten defence.
-    this.placeBody(this.of(0, 4), -0.9, -46.6, Math.atan2(2.65, -2.7), { state: 'idle' });
-    for (let i = 0; i < 6; i++) {
-      const e = this.of(0, i);
-      if (i === 4) continue;
-      this.placeBody(e, -14 + i * 5.2, -37.5 + (i % 2) * 3.4, 2.9, { speed: 1.2, state: 'jog' });
+    // Two teammates arriving from the open side of the frame.
+    const M1 = this.at(6.0, 0.17);
+    this.placeBody(this.of(1, 0), M1.x, M1.z, Math.atan2(S.x - M1.x, S.z - M1.z),
+      { speed: 5.6 + r.range(0, 1.2), state: 'sprint' });
+    const M2 = this.at(5.0, 0.335);
+    this.placeBody(this.of(1, 1), M2.x, M2.z, Math.atan2(S.x - M2.x, S.z - M2.z),
+      { speed: 5.0 + r.range(0, 1.2), state: 'sprint' });
+
+    // The beaten defender, hands on hips, between them.
+    const D = this.at(5.4, 0.455);
+    this.placeBody(this.of(0, 4), D.x, D.z, Math.atan2(S.x - D.x, S.z - D.z), { state: 'idle' });
+
+    // Everybody else is genuinely elsewhere — upfield, behind the lens. They
+    // are not hidden, they are where the rest of a team is a second after a
+    // goal, and the frustum simply does not reach them.
+    const rest = [
+      [this.of(1, 2), -9.0, -43.0], [this.of(1, 3), 6.5, -42.0],
+      [this.of(1, 5), -13.5, -38.5], [this.of(1, 6), 11.5, -37.0],
+      [this.of(0, 0), -4.5, -41.5], [this.of(0, 1), 2.0, -40.0],
+      [this.of(0, 2), -11.0, -39.0], [this.of(0, 3), 9.0, -38.0],
+      [this.of(0, 5), -6.0, -35.0], [this.of(0, 6), 13.5, -34.0],
+    ] as const;
+    for (const [e, x, z] of rest) {
+      this.placeBody(e as RosterEntry, x, z, 2.9 + r.range(-0.5, 0.5),
+        { speed: r.range(0.8, 2.4), state: 'jog' });
     }
-    this.placeBody(this.of(0, 6), 15.0, -33.0, 3.0, { speed: 1.0, state: 'jog' });
 
     // The disc, just caught, still on the fingertips.
     const lp = scorer.loco;
     _v.set(lp.pos.x + 0.24, lp.groundY + lp.hipHeight * 1.55, lp.pos.z + 0.30);
     _norm.set(0.35, 0.68, 0.64).normalize();
     this.discRuntime.hold(scorer.id, _v, _norm, 1.1);
+    this.gs.thrower = scorer.id;
     this.discRuntime.wear = 0.7;
     this.gs.score[0] = 9; this.gs.score[1] = 9;
     this.gs.teams[0].score = 9; this.gs.teams[1].score = 9;
@@ -1408,9 +1675,15 @@ export class GameSystem implements System {
     const steps = Math.max(1, Math.round(back * 120));
     for (let i = 0; i < steps; i++) rt.step(1 / 120);
 
-    _v2.copy(target).sub(rt.state.pos);
-    rt.state.pos.copy(target);
-    for (const s of rt.trail) { s.x += _v2.x; s.y += _v2.y; s.z += _v2.z; }
+    // Own scratch, deliberately: callers hand us a point they computed
+    // themselves, and if that point happens to be one of this module's shared
+    // vectors the offset below overwrites the target while it is still being
+    // read. A staged disc then lands on the delta instead of the fingertips.
+    const dx = target.x - rt.state.pos.x;
+    const dy = target.y - rt.state.pos.y;
+    const dz = target.z - rt.state.pos.z;
+    rt.state.pos.set(target.x, target.y, target.z);
+    for (const s of rt.trail) { s.x += dx; s.y += dy; s.z += dz; }
     rt.mode = 'flight';
     rt.state.touchedGround = false;
     rt.state.atRest = false;
@@ -1421,12 +1694,108 @@ export class GameSystem implements System {
 
   /** Which tableau is currently latched, or '' when the match is live. */
   get tableau(): string { return this.posed ? this.poseName : ''; }
+
+  /**
+   * Unlatch a tableau and play on.
+   *
+   * A shot latches the arrangement so the shutter always opens on the same
+   * frame — which also means that in capture mode the match never runs. This is
+   * the door back out: the screenshot rig, a debug key, or anything that wants
+   * to watch the simulation rather than a still calls it and the game resumes
+   * from the posed configuration.
+   */
+  resumeLive(): void {
+    if (!this.posed) return;
+    this.posed = false;
+    this.poseName = '';
+    this.poseHold = 0;
+    // Some tableaux park the disc mid-flight with no thrower, which is not a
+    // state the rules machine can step out of. Anything not cleanly resumable
+    // restarts the point from a pull — the fastest way back to real play.
+    const gs = this.gs;
+    const holder = gs.thrower !== null ? this.byId.get(gs.thrower) : undefined;
+    const resumable = (gs.phase === 'LIVE_POSSESSION' || gs.phase === 'CHECK') && !!holder;
+    this.thrownBy = -1;
+    this.intendedReceiver = -1;
+    this.flightSettled = true;
+    if (resumable) {
+      this.discRuntime.mode = 'held';
+      this.discRuntime.holderId = holder!.id;
+      this.carryDisc();
+      return;
+    }
+    gs.phase = 'PRE_PULL';
+    gs.stallCount = 0;
+    gs.thrower = null;
+    this.lineUpForPull();
+    this.lastPhase = 'PRE_PULL';
+  }
 }
 
 /* ---------------------------------------------------------------- helpers */
 
 function clampNum(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+function norm2(x: number, z: number): { x: number; z: number } {
+  const l = Math.hypot(x, z) || 1;
+  return { x: x / l, z: z / l };
+}
+
+/** Options `placeBody` understands. Named so the tableaux read as English. */
+interface PlaceOpts {
+  speed?: number;
+  dirX?: number;
+  dirZ?: number;
+  state?: LocoPlayer['state'];
+  prone?: boolean;
+  airborne?: boolean;
+  /** Height of the body centre above the turf. */
+  y?: number;
+}
+
+/**
+ * The camera a tableau is being composed for, reduced to the four things a
+ * composition actually needs: where it is, which way it looks, which way is
+ * screen-right, and how wide the cone is.
+ */
+interface Frame {
+  c: THREE.Vector3;
+  d: THREE.Vector3;
+  r: THREE.Vector3;
+  /** tan of the half horizontal field of view at 16:9. */
+  tanH: number;
+  focus: number;
+}
+
+const CAPTURE_ASPECT = 16 / 9;
+
+function makeFrame(shot: Shot): Frame {
+  const c = new THREE.Vector3().fromArray(shot.pos as unknown as number[]);
+  const t = new THREE.Vector3().fromArray(shot.target as unknown as number[]);
+  const d = t.sub(c).normalize();
+  const r = new THREE.Vector3(-d.z, 0, d.x).normalize();
+  const tanV = Math.tan((shot.fov * Math.PI) / 360);
+  return { c, d, r, tanH: tanV * CAPTURE_ASPECT, focus: shot.focus ?? 0 };
+}
+
+/**
+ * Which camera to compose against.
+ *
+ * The rig hands the whole `Shot` over on `shot:apply`, but the headless tests
+ * emit only `{tableau}` and a hotkey may emit nothing at all — so fall back to
+ * the shot of that name, then to the first shot that declares this tableau,
+ * then to the broadcast angle. A tableau always has a camera to solve against.
+ */
+function resolveShot(cam: Shot | undefined, name: string, tableau: string): Shot {
+  if (cam && Array.isArray(cam.pos) && typeof cam.fov === 'number') return cam;
+  const byName = (SHOTS as Record<string, Shot>)[name];
+  if (byName) return byName;
+  for (const s of Object.values(SHOTS as Record<string, Shot>)) {
+    if (s.tableau === tableau) return s;
+  }
+  return SHOTS.broadcast as Shot;
 }
 
 function hashName(s: string): number {

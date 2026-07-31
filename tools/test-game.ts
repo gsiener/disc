@@ -17,6 +17,7 @@ import * as THREE from 'three';
 import { EventBus, QUALITY_PRESETS, Rng, type Ctx } from '../src/core/Ctx.ts';
 import { GameSystem } from '../src/sim/Game.ts';
 import { FIELD } from '../src/sim/Rules.ts';
+import { SHOTS, type Shot, type ShotName } from '../src/capture/Shots.ts';
 
 /* ---------------------------------------------------------------- harness */
 
@@ -92,10 +93,60 @@ let thrown = 0;
 ctx.events.on('disc:released', () => { thrown++; });
 
 game.init(ctx);
-if (VERBOSE) {
-  ctx.events.on('score', (p: any) => console.log(`  GOAL  ${p.scoreline}`));
-  ctx.events.on('turnover', (p: any) => console.log(`  TO    ${p.reason} -> team ${p.to}`));
-}
+
+/* ------------------------------------------------------------ play-by-play */
+
+/**
+ * A commentary line per event, with the clock and the scoreline, so the run is
+ * readable as a match rather than as a histogram. The point of printing it is
+ * that "62 completions" is compatible with a broken game and "HOME 4 pulls,
+ * catch, catch, huck, layout D, break" is not.
+ */
+const pbp: string[] = [];
+let clockNow = 0;
+let stepNow = 0;
+const who = (id: number | null | undefined): string => {
+  if (id === null || id === undefined || id < 0) return '?';
+  const e = game.entry(id);
+  return e ? `${e.team === 0 ? 'HOME' : 'AWAY'} #${e.number}` : `#${id}`;
+};
+const say = (tag: string, text: string): void => {
+  if (pbp.length >= 4000) return;
+  const m = Math.floor(clockNow / 60), s = Math.floor(clockNow % 60);
+  pbp.push(`${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+    + ` ${String(game.gs.score[0])}-${String(game.gs.score[1])}`
+    + `  ${tag.padEnd(9)} ${text}`);
+};
+let throwDist = 0;
+let lastRelease: { x: number; z: number } | null = null;
+let maxStall = 0;
+const throwLengths: number[] = [];
+ctx.events.on('pull', (p: any) => {
+  say('PULL', `${who(p?.playerId ?? p?.puller)} sends it away`);
+});
+ctx.events.on('disc:released', (p: any) => {
+  const id = game.gs.thrower;
+  lastRelease = { x: p?.pos?.x ?? 0, z: p?.pos?.z ?? 0 };
+  say('THROW', `${who(id)} ${p?.throwType ?? '?'}`
+    + `  ${Math.hypot(p?.vel?.x ?? 0, p?.vel?.y ?? 0, p?.vel?.z ?? 0).toFixed(1)} m/s`
+    + `  stall ${game.gs.stallCount}`);
+});
+ctx.events.on('disc:caught', (p: any) => {
+  let d = 0;
+  if (lastRelease) d = Math.hypot((p?.pos?.x ?? 0) - lastRelease.x, (p?.pos?.z ?? 0) - lastRelease.z);
+  if (d > 0.5) { throwLengths.push(d); throwDist += d; }
+  say('CATCH', `${who(p?.playerId)} at ${(p?.pos?.x ?? 0).toFixed(0)},${(p?.pos?.z ?? 0).toFixed(0)}`
+    + (d > 0.5 ? `  (${d.toFixed(0)} m gain)` : ''));
+});
+ctx.events.on('turnover', (p: any) => say('TURNOVER', `${p?.reason} — team ${p?.to} takes over`));
+ctx.events.on('score', (p: any) => say('GOAL', `team ${p?.team} — ${p?.scoreline ?? ''}`));
+ctx.events.on('stall:tick', (p: any) => {
+  const c = p?.count ?? 0;
+  if (c > maxStall) maxStall = c;
+  if (c >= 8) say('STALL', `count ${c} on ${who(game.gs.thrower)}`);
+});
+ctx.events.on('half', () => say('HALF', 'halftime'));
+void stepNow;
 
 /* --------------------------------------------------------------- integrate */
 
@@ -117,6 +168,8 @@ ctx.events.on('stall:tick', (p: { count?: number }) => {
 
 const t0 = Date.now();
 for (let i = 0; i < steps; i++) {
+  stepNow = i;
+  clockNow = i * DT;
   game.update(DT, ctx);
   ctx.time += DT;
   ctx.frame++;

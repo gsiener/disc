@@ -205,6 +205,16 @@ if (view === 'closeup') {
   camera.position.set(2.05, 1.32, 0.55);
   camera.lookAt(0.02, 1.06, 0);
   camera.fov = 44;
+} else if (view === 'hips') {
+  // The crotch test. Front-on at hip height, one figure at rest and one
+  // mid-stride, because the inseam only fails when a femur swings.
+  const p = referenceBodyParams();
+  add(p, -0.42, 0, 0);
+  const r = add(referenceBodyParams(), 0.42, 0, 0);
+  poseStride(r);
+  camera.position.set(0, 0.98, 1.85);
+  camera.lookAt(0, 0.90, 0);
+  camera.fov = 40;
 } else if (view === 'hands') {
   const p = referenceBodyParams();
   const r = add(p, 0, 0, Math.PI);

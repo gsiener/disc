@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { stepRate, dutyFactor, stanceHalfWidth, GAIT_MIN_SPEED } from '../../sim/move/Gait.ts';
-import { B, angDelta, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
+import { B, TAU, angDelta, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
 import type { LocoLike, FieldLike } from './Types.ts';
 
 /**
@@ -128,6 +128,30 @@ export interface FeetState {
   pivotOn: boolean;
   /** World yaw the pivot foot was frozen at when it engaged. */
   pivotYaw: number;
+
+  /* ---- standing stance, written by the owner --------------------------- */
+
+  /**
+   * Half the lateral gap between the feet at rest, metres. A relaxed athlete is
+   * near hip width (~0.11); a cutter waiting to go is a little wider; a mark is
+   * wide enough that the stance itself reads as defensive from the sideline.
+   */
+  stanceWide: number;
+  /** Which foot sits forward. Fixed per athlete — a stance is a habit. */
+  stanceLead: 1 | -1;
+  /** How far the lead foot is ahead of the trail foot, metres. */
+  stanceStagger: number;
+  /**
+   * 0..1 weight forward onto the balls of the feet. Drives a small standing
+   * plantarflexion, so the heels come light and the athlete reads as sprung
+   * rather than parked. `ankleWorld` already rolls the sole about whichever
+   * contact point is down, so this lifts the ankle instead of sinking the toe.
+   */
+  heelLift: number;
+  /** Own clock, seconds — advances on the render step, not the frozen sim. */
+  clock: number;
+  /** Deterministic per-athlete phase for the standing fidget. */
+  phase: number;
 }
 
 function track(side: 1 | -1): FootTrack {
@@ -148,6 +172,8 @@ export function makeFeet(): FeetState {
     normal: new THREE.Vector3(0, 1, 0),
     free: false,
     pivot: 0, pivotOn: false, pivotYaw: 0,
+    stanceWide: 0.115, stanceLead: 1, stanceStagger: 0.045, heelLift: 0,
+    clock: 0, phase: 0,
   };
 }
 
@@ -185,6 +211,7 @@ export function updateFeet(
   const f = loco.foot;
   const speed = Math.hypot(loco.vel.x, loco.vel.z);
   const moving = speed >= GAIT_MIN_SPEED;
+  st.clock += dt;
 
   if (!st.seeded) { seedStance(st, loco, field); st.seeded = true; }
 
@@ -338,11 +365,17 @@ function swingPitch(t: FootTrack, s: number, sp: number): void {
 function seedStance(st: FeetState, loco: LocoLike, field: FieldLike | null): void {
   const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
   const rx = -fz, rz = fx;
+  // Seed the stance the idle solver is going to want, not a symmetric one: a
+  // tableau teleports the roster and then re-seeds, and if the seed is square
+  // every athlete in the frame takes their first quarter-second re-stepping.
+  const w = Math.max(0.100, st.stanceWide);
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
     const sgn = t.side === 1 ? -1 : 1;
-    const x = loco.pos.x + rx * 0.115 * sgn;
-    const z = loco.pos.z + rz * 0.115 * sgn;
+    const lead = t.side === st.stanceLead ? 1 : -1;
+    const along = st.stanceStagger * lead;
+    const x = loco.pos.x + rx * w * sgn + fx * along;
+    const z = loco.pos.z + rz * w * sgn + fz * along;
     t.plant.set(x, groundAt(field, x, z, loco.groundY), z);
     t.pos.copy(t.plant);
     t.contact = true;
@@ -360,10 +393,23 @@ function seedStance(st: FeetState, loco: LocoLike, field: FieldLike | null): voi
 function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | null): void {
   const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
   const rx = -fz, rz = fx;
-  const wide = loco.state === 'shuffle' ? 0.20 : 0.115;
+  const wide = Math.max(loco.state === 'shuffle' ? 0.20 : 0.100, st.stanceWide);
+  /**
+   * STANDING FIDGET. A held stance with a hard re-step threshold is stable to
+   * the millimetre, which is correct physics and wrong observation: an athlete
+   * waiting on a cut resets their feet every few seconds whether or not their
+   * body has moved. Walking the IDEAL stance around by a little more than the
+   * trigger produces exactly that — a real step, planted, IK'd, at a cadence
+   * set by two slow incommensurate sines — and it costs two sin calls. Off
+   * entirely when the athlete is not switched on, because a bored body at the
+   * back of the stack genuinely does stand still.
+   */
+  const fid = 0.105 * st.heelLift;
+  const fidX = fid * Math.sin(TAU * st.clock * 0.106 + st.phase);
+  const fidZ = fid * 0.7 * Math.sin(TAU * st.clock * 0.071 + st.phase * 1.7);
   // The free foot of a pivoting thrower re-steps far sooner than a idling one:
   // it is being walked around the plant, not holding a stance.
-  const trigger = st.pivotOn ? 0.085 : IDLE_STEP_TRIGGER;
+  const trigger = st.pivotOn ? 0.085 : lerp(IDLE_STEP_TRIGGER, 0.072, clamp01(st.heelLift));
   const idleYaw = loco.facing;
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
@@ -387,10 +433,11 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
     // foot of a pivoting thrower is the exception — it is stepped OUT and
     // forward, wide, which is what gives a throw its base and what a
     // shoulder-width idle stance conspicuously does not have.
+    const lead = t.side === st.stanceLead ? 1 : -1;
     const w = st.pivotOn ? 0.31 : wide;
-    const ahead = st.pivotOn ? 0.20 : -0.022;
-    const wx = loco.pos.x + rx * w * sgn + fx * ahead * sgn;
-    const wz = loco.pos.z + rz * w * sgn + fz * ahead * sgn;
+    const along = st.pivotOn ? 0.20 * sgn : st.stanceStagger * lead;
+    const wx = loco.pos.x + rx * (w * sgn + fidX * lead) + fx * (along + fidZ * lead);
+    const wz = loco.pos.z + rz * (w * sgn + fidX * lead) + fz * (along + fidZ * lead);
     const gy = groundAt(field, wx, wz, loco.groundY);
 
     if (t.stepT >= 0) {
@@ -421,7 +468,12 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
       t.pos.copy(t.plant);
       t.contact = true;
       t.uStance = 0.4;
-      t.pitch += (0 - t.pitch) * (1 - Math.exp(-16 * dt));
+      // Weight forward onto the ball: a small plantarflexion, so the heel is
+      // light. Negative pitch is toes-down; `ankleWorld` then takes the ball as
+      // the contact point and lifts the ankle by the geometry, which is why
+      // this cannot push the toe through the turf.
+      const rest = -0.135 * clamp01(st.heelLift);
+      t.pitch += (rest - t.pitch) * (1 - Math.exp(-16 * dt));
     }
     t.u = 0;
     t.hard = false;

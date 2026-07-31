@@ -65,6 +65,25 @@ function tileWorley(x: number, y: number, p: number, seed: number): [number, num
   return [Math.sqrt(f1), id];
 }
 
+/** Same lattice, but returning f2 − f1 — the distance to the nearest cell WALL,
+ *  which is what a network of furrows actually is. */
+function tileWorleyEdge(x: number, y: number, p: number, seed: number): number {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const w = (n: number) => ((n % p) + p) % p;
+  let f1 = 1e9, f2 = 1e9;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const cx = xi + dx, cy = yi + dy;
+      const wx = w(cx), wy = w(cy);
+      const ex = cx + hash2(wx, wy, seed) - x;
+      const ey = cy + hash2(wx, wy, seed + 7919) - y;
+      const d = ex * ex + ey * ey;
+      if (d < f1) { f2 = f1; f1 = d; } else if (d < f2) { f2 = d; }
+    }
+  }
+  return Math.sqrt(f2) - Math.sqrt(f1);
+}
+
 /* ---------------------------------------------------------------- baking */
 
 /** Sobel a height field into RGB, leaving A free for a data channel. */
@@ -125,20 +144,27 @@ export class DetailTextures {
       const N = S.pore;
       const P = 16; // lattice period in cells
       const h = heightField(N, (u, v) => {
-        // Two decorrelated furrow directions, warped so the network is irregular.
+        // THE NETWORK IS A CELL WALL, NOT TWO SINE FAMILIES. The first pass
+        // crossed |sin(a+b)| with |sin(a−0.82b)|, which is by definition a warp
+        // and a weft: a perfectly regular diagonal lattice, and at any camera
+        // distance where its period lands near a pixel it beat into a visible
+        // burlap weave across every face on the pitch. A Worley f2−f1 field is
+        // an irregular polygonal network by construction — which is also what
+        // skin micro-relief actually is — so it has no period to alias against.
         const wx = tileFbm(u * P, v * P, P, 3, 11) - 0.5;
         const wy = tileFbm(u * P + 3.7, v * P + 1.9, P, 3, 23) - 0.5;
-        const a = u * P * 3.1 + wx * 2.2;
-        const b = v * P * 3.1 + wy * 2.2;
-        const f1 = Math.abs(Math.sin((a + b) * Math.PI));
-        const f2 = Math.abs(Math.sin((a - b * 0.82) * Math.PI));
-        const furrow = -0.55 * Math.pow(1 - Math.min(f1, f2), 3.0);
+        const edge = tileWorleyEdge(u * P * 3 + wx * 0.85, v * P * 3 + wy * 0.85, P * 3, 41);
+        const furrow = -0.60 * Math.pow(smoothstep(0.16, 0.0, edge), 1.6);
+        // A second, coarser network at an incommensurate scale: real relief has
+        // primary lines with secondary ones subdividing the plateaux.
+        const edge2 = tileWorleyEdge(u * P + wy * 0.4, v * P + wx * 0.4, P, 83);
+        const furrow2 = -0.26 * Math.pow(smoothstep(0.13, 0.0, edge2), 1.8);
         // Pores: cellular, but only a fraction of cells actually carry one.
         const [d, id] = tileWorley(u * P * 5.0, v * P * 5.0, P * 5, 41);
         const pore = id > 0.52 ? -0.85 * smoothstep(0.30, 0.0, d) * (0.4 + 0.6 * id) : 0;
         // Fine 30 µm roughness so the specular never goes perfectly flat.
         const fine = (tileFbm(u * P * 11, v * P * 11, P * 11, 2, 67) - 0.5) * 0.20;
-        return furrow + pore + fine;
+        return furrow + furrow2 + pore + fine;
       });
       this.pore = normalWithAlpha(h, N, 3.4, (_x, _y, u, v) => {
         // Micro-roughness rides the same network: the plateaux are smooth and

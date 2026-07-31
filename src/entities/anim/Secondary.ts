@@ -121,6 +121,34 @@ export function poseGaze(
   }
 }
 
+/**
+ * Idle head life. Additive, runs after `poseGaze`.
+ *
+ * A gaze solver that has converged produces a head welded to its target, which
+ * over a run of frames is a tripod, not a person. Two things fix it cheaply:
+ * a small always-on drift so even a locked-on head keeps moving, and a much
+ * larger wander when the athlete is NOT attending to anything — the scan a
+ * player does between plays, checking the stack and the sideline.
+ *
+ * Everything is driven off `bs.clock`, which is the animator's own clock, so it
+ * still moves while a latched tableau holds the simulation still. That is the
+ * whole reason it exists: `loco.t` is frozen in every screenshot.
+ */
+export function poseIdleHead(ss: SecondaryState, pose: Pose, bs: BodyState): void {
+  const still = clamp01(1 - bs.speed / 2.2);
+  if (still < 0.02) return;
+  const t = bs.clock;
+  const wander = still * (1 - ss.attend);
+  const alive = still * 0.22;
+  const yaw = 0.30 * wander * Math.sin(t * 0.28 + bs.idlePhase)
+    + 0.11 * wander * Math.sin(t * 0.71 + bs.idlePhase * 1.9)
+    + 0.020 * alive * Math.sin(t * 1.9 + bs.breathPhase);
+  const pitch = 0.10 * wander * Math.sin(t * 0.41 + bs.idlePhase * 0.7)
+    + 0.014 * alive * Math.sin(t * 2.3 + bs.idlePhase);
+  pose.addEuler(B.head, -pitch, yaw * 0.62, 0);
+  pose.addEuler(B.neck, -pitch * 0.45, yaw * 0.38, 0);
+}
+
 /* ------------------------------------------------------------- breathing */
 
 /**

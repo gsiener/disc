@@ -35,12 +35,52 @@ export class DofPass extends QuadPass {
   focus = 12;
   /** Blur strength scalar taken from the shot list (not an f-number). */
   aperture = 1.0;
-  /** Pixels of CoC per unit of `aperture · fovFactor · diopter`. */
-  scale = 0.0011;
-  /** Hard cap on the background blur radius, as a fraction of frame height. */
-  maxRadius = 0.0085;
-  /** Foreground CoC, as a fraction of the background's scale and ceiling. */
-  nearFraction = 0.45;
+  /**
+   * Pixels of CoC per unit of `aperture · fovFactor · diopter`.
+   *
+   * At 0.0011 the pass was numerically inert and the shot list's apertures were
+   * decoration. Worked through: `sideline` is a 20° telephoto at aperture 2.4
+   * focused at 27 m, and the stand 60 m behind it came out at 1.9 px of blur —
+   * under the 0.85 px per-fragment early-out for most of its area, i.e. razor
+   * sharp. `layout` put the LED ribbon at 2.0 px, which is why the boards were
+   * legible enough to read the sponsor names off, and legible advertising is
+   * exactly what the brief says must never be in the top three contrast
+   * elements of a frame.
+   *
+   * 0.0026 is the number that makes each shot deliver what its own `focus` and
+   * `aperture` already claim, measured per shot at 1080p:
+   *
+   *   closeup   crowd at 60 m  → 14 px (capped) — "background is pure bokeh"
+   *   sideline  stand at 60 m  → 4.4 px, 120 m → 6.2 px
+   *   layout    boards at 50 m → 4.7 px, far stand → 5.5 px
+   *   disc      field at 20 m  → 14 px (capped) — "warm field bokeh"
+   *   broadcast infinity       → 0.6 px, so the pass still skips itself
+   *
+   * `broadcast` skipping is correct and not an oversight: a 34° lens at
+   * aperture 0.9 focused at 46 m genuinely has nothing out of focus in it, and
+   * running a 24-tap gather to produce sub-pixel blur is pure cost.
+   */
+  scale = 0.0026;
+  /**
+   * Hard cap on the background blur radius, as a fraction of frame height.
+   *
+   * 0.0085 was 9.2 px, which no pixel in any shot ever reached — the ceiling
+   * was below the floor. 0.013 is 14 px at 1080p, which is what the two macro
+   * framings (`closeup`, `disc`) need before their backgrounds actually melt.
+   */
+  maxRadius = 0.013;
+  /**
+   * Foreground CoC, as a fraction of the background's scale and ceiling.
+   *
+   * Dropped from 0.45 with the ceiling rise, so the near lobe caps at 4.5 px
+   * rather than following the background up to 7.8. The whole of the ground
+   * level `turf` framing is foreground — a metre of sward between the lens and
+   * the focal plane — and at 7.8 px the sub-pixel blades stopped resolving as
+   * blades and started resolving as a directional smear, which is the one thing
+   * that shot exists to disprove. The background keeps its full ceiling; only
+   * the lobe that sits over the subject is held back.
+   */
+  nearFraction = 0.32;
 
   private h = 1080;
 

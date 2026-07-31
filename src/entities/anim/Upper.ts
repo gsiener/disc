@@ -102,7 +102,17 @@ const THROWS: Record<ThrowKind, [ThrowKey, ThrowKey, ThrowKey]> = {
     // horizontal, disc at the far hip. sz was +1.02 here, 58 degrees of
     // abduction on top of the A-pose, which lifted the whole arm out sideways
     // and made a backhand windup look like a hammer.
-    K(0.42, 0.72, 0.22, -0.78, -0.72, 1.75, -0.85, 0.30, -0.75, 0.10, -0.62, 0.95, 0.055, -0.03),
+    // `sy` is HUMERAL ROTATION and it decides which way the flexed elbow points
+    // the forearm, which is the whole shape of the windup. Local +Y runs down
+    // the bone, so on a hanging arm a positive written twist (`sy * s`) rotates
+    // the elbow's flexion plane OUTWARD — and a 100-degree elbow then swings the
+    // forearm up and away from the body, putting the disc beside the ear. That
+    // is a hammer. A backhand wraps the other way: internal rotation, forearm
+    // across the front of the chest, disc past the off hip. Measured off the
+    // committed bones, the sign was inverted here — forearm direction was
+    // (0.78 right, 0.61 up) at full coil where it wants to be roughly level and
+    // pointing across the midline.
+    K(0.42, 0.72, 0.10, 0.72, -0.72, 1.62, -0.85, 0.30, -0.75, 0.10, -0.62, 0.95, 0.055, -0.03),
     K(-0.18, -0.30, 0.62, 0.30, 0.34, 0.42, 0.55, -0.16, 0.70, -0.05, -0.20, 0.55, 0.020, 0.075),
     K(-0.34, -0.62, 0.95, 0.55, 0.10, 0.85, 0.80, -0.05, 0.95, 0.00, -0.10, 0.35, 0.010, 0.090),
   ],
@@ -504,24 +514,54 @@ function reachArm(
  * throwing side with the fingers under the rim — not clamped to the chest,
  * which is what a placeholder does.
  */
-export function poseCarry(pose: Pose, s: 1 | -1, w: number, detail: number, sp: number): void {
+export function poseCarry(
+  pose: Pose, s: 1 | -1, w: number, detail: number, sp: number, out = 0,
+): void {
   if (w <= 0.001) return;
   const ua = s === 1 ? B.upperArm_L : B.upperArm_R;
   const fa = s === 1 ? B.foreArm_L : B.foreArm_R;
   const hd = s === 1 ? B.hand_L : B.hand_R;
   const faT = s === 1 ? B.foreArmTwist_L : B.foreArmTwist_R;
-  blendEuler(pose, ua, 0.30 + 0.10 * sp, -0.20 * s, -0.42 * s, w);
-  blendBend(pose, fa, 1.28 - 0.12 * sp, w);
+  /**
+   * A RUNNING carry and a STANDING carry are different holds and `out` is which
+   * one this is. Running, the disc is tucked in at the hip where it does not
+   * cost you an arm; standing over a pivot with a mark in your face, it is held
+   * out at arm's length on the throwing side, away from the defender's hands.
+   * The old pose only had the tuck, so a handler on the disc — the subject of
+   * two of the ten named framings — stood with the disc glued to his waist.
+   *
+   * z is signed: `poseArms` writes adduction as `-(adduct) * s`, so on both
+   * sides a NEGATIVE `z * s` product adducts and a positive one abducts.
+   */
+  const abduct = lerp(-0.42, 0.26, out) - 0.30 * sp;
+  blendEuler(pose, ua, 0.30 + 0.10 * sp + 0.16 * out, -0.20 * s, abduct * s, w);
+  blendBend(pose, fa, lerp(1.28, 1.16, out) - 0.12 * sp, w);
   blendEuler(pose, hd, -0.18, 0.55 * s, 0.15 * s, w);
   pose.setTwist(faT, lerp(0, 0.72 * s, w));
   poseHand(pose, s, 'grip', detail, w);
+  // The off hand comes across as a screen on a standing hold — a handler does
+  // not leave it hanging while somebody is reaching for the disc.
+  if (out > 0.02) {
+    const oua = s === 1 ? B.upperArm_R : B.upperArm_L;
+    const ofa = s === 1 ? B.foreArm_R : B.foreArm_L;
+    blendEuler(pose, oua, 0.46 * out, 0, -0.34 * out * -s, w * out);
+    blendBend(pose, ofa, 1.05 * out, w * out);
+  }
 }
 
-/** Active mark: hands up in the throwing lanes, hips low, feet wide. */
-export function poseMark(pose: Pose, force: -1 | 1, w: number, detail: number): void {
+/**
+ * Active mark: hands out in the throwing lanes, hips low, feet wide.
+ *
+ * `t` is a clock in seconds. A mark is never still — the whole job is to move
+ * your hands where the disc wants to go — so the arms drift on two slow sines
+ * and the drift is the difference between a defender and a scarecrow.
+ */
+export function poseMark(pose: Pose, force: -1 | 1, w: number, detail: number, t = 0): void {
   if (w <= 0.001) return;
   // The arm on the force side goes low to take away the break; the other goes
   // high. That asymmetry is the whole visual language of a mark.
+  const drift = Math.sin(t * 2.15);
+  const drift2 = Math.sin(t * 1.37 + 1.1);
   for (let si = 0; si < 2; si++) {
     const s: 1 | -1 = si === 0 ? 1 : -1;
     const low = (s === 1) === (force < 0);
@@ -533,13 +573,21 @@ export function poseMark(pose: Pose, force: -1 | 1, w: number, detail: number): 
     // `+ * s`. Written with the leading minus this put both arms across the
     // chest, which is a shrug, not a mark.
     //
-    // Bind is a 46-degree A-pose, so the z delta is measured from there: 1.55
-    // puts the high hand well above the shoulder, 0.15 leaves the low one at
-    // hip height and clear of the body. Flexion stays small on purpose — a mark
-    // spreads across the throwing lanes, it does not point at the thrower.
-    blendEuler(pose, ua, low ? 0.10 : 0.15, 0, (low ? 0.15 : 1.55) * s, w);
-    blendBend(pose, fa, low ? 0.26 : 0.58, w);
-    blendEuler(pose, hd, low ? 0.25 : -0.15, 0.10 * s, 0, w);
+    // Bind is a 46-degree A-pose, so the z delta is measured from there: 1.42
+    // puts the high hand a good way above the shoulder, 0.62 takes the low one
+    // out to near horizontal at waist height rather than leaving it dangling at
+    // the seam of the shorts, which is where 0.15 left it. Both arms also carry
+    // real forward flexion now — a mark stands IN the lanes, in front of its own
+    // shoulder line; arms in the coronal plane block nothing and read as a
+    // shrug from any angle but dead side-on.
+    const z = (low ? 0.62 : 1.58) + 0.13 * (low ? drift2 : drift);
+    const x = (low ? 0.34 : 0.28) + 0.10 * (low ? drift : drift2);
+    blendEuler(pose, ua, x, 0, z * s, w);
+    // The high elbow stays fairly open. Folding it (0.72 rad) brought the hand
+    // back down to shoulder height and threw away the whole point of raising
+    // the arm — the high hand has to sit ABOVE the head to take the lane.
+    blendBend(pose, fa, low ? 0.30 : 0.44, w);
+    blendEuler(pose, hd, low ? 0.22 : -0.10, 0.06 * s, 0, w);
     poseHand(pose, s, 'mark', detail, w);
   }
 }
@@ -616,11 +664,16 @@ function blendBend(pose: Pose, i: number, x: number, w: number): void {
 
 export { blendEuler, blendBend };
 
-/** Hand shape while simply running — cheap, and it is what most frames show. */
-export function poseRunHands(pose: Pose, loco: LocoLike, detail: number): void {
+/**
+ * Hand shape while simply running — cheap, and it is what most frames show.
+ * `alert` is 0..1: a stationary athlete watching the disc has open, live hands;
+ * one standing about at the back of the stack has relaxed ones.
+ */
+export function poseRunHands(pose: Pose, loco: LocoLike, detail: number, alert = 0): void {
   const k: HandPose = loco.state === 'shuffle' || loco.state === 'backpedal' ? 'open'
     : loco.state === 'sprint' ? 'run'
-      : 'relax';
+      : alert > 0.55 ? 'open'
+        : 'relax';
   poseHand(pose, 1, k, detail);
   poseHand(pose, -1, k, detail);
 }
