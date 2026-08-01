@@ -121,6 +121,32 @@ node tools/capture.mjs broadcast turf  # named shots -> shots/*.png
 node tools/capture.mjs                 # all shots
 ```
 
+### capture.mjs photographs a FROZEN TABLEAU. Know which rig you want.
+
+`applyShot()` pins the camera *and* sets `game.posed`, and `Game.update` only
+counts the pose hold down when `ctx.capture` is false — so in the shot rig a
+tableau is held forever, by design. That is exactly right for judging a material,
+a texture or a piece of geometry, and it is useless for judging anything that
+moves: a camera, an animation, an interface that reacts to play. The framing you
+would be assessing is the framing the pin overrode.
+
+For anything in motion, use the live rig, which releases both locks and
+photographs actual play:
+
+```bash
+node tools/capture-live.mjs --n 8 --gap 2.5 --q high --w 1280 --h 720 --out shots/mine
+```
+
+- **Use `--w 1280 --h 720`.** At 1920×1080 against a 30 M-triangle scene
+  Chrome's screenshot path wedges partway through the run.
+- **Use your own `--out`** so parallel agents do not overwrite each other.
+- It prints `simT`, disc and player positions per frame, and shouts **FROZEN**
+  if nothing moved between frames. Heed it. A wedged run still writes plausible
+  PNGs and still exits 0 — a frozen series is indistinguishable from a working
+  one by eye, and it has already fooled one reviewer on this project.
+- Stale `vite` servers accumulate across agent runs and will make it time out.
+  `pkill -f "[v]ite"` first if it hangs.
+
 Then **read the PNGs back with the Read tool and look at them.** Do not report
 success on code you have not seen rendered. `shots/_meta.json` has the GPU name,
 frame time, draw calls, triangle count and any console errors — check it.
