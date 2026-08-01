@@ -41,6 +41,12 @@ import * as THREE from 'three';
 
 import type { Ctx, System } from '../core/Ctx.ts';
 import { colourwayById } from '../entities/material/Tone.ts';
+// Two pure, stateless modules — not systems. `buildCut` is the same constructor
+// the AI runs, so the ghost route the HUD draws is the order the AI was given
+// rather than a drawn approximation of it; `pickSwitchTarget` is the same policy
+// `Input.ts` commits with, so the preview cannot disagree with the switch.
+import { pickSwitchTarget } from '../input/Switch.ts';
+import { buildCut, type CutKind, type Sign } from '../sim/Playbook.ts';
 import { clockText, hexOf, luma, readable, setStyle } from './Dom.ts';
 import { Badges } from './Badges.ts';
 import { GameplayLayer } from './Gameplay.ts';
@@ -86,9 +92,18 @@ interface GameStateLike {
   score: [number, number]; possession: 0 | 1 | null; thrower: number | null; stallCount: number;
   rules: { stallMax: number };
   teams: [TeamStatsLike, TeamStatsLike];
+  attackDir?: [number, number];
   markerLegal?(): boolean;
   playerStats?(id: number): PlayerStatsLike | undefined;
   lastScore?: { team: 0 | 1; playerId: number; assistId: number | null } | null;
+}
+
+/** The committed route, if the game chooses to publish the one it ran. */
+interface CommandedCutLike {
+  playerId: number;
+  kind: string;
+  setup: { x: number; z: number };
+  target: { x: number; z: number };
 }
 
 interface GameLike {
@@ -98,7 +113,22 @@ interface GameLike {
   discRuntime?: { mode: 'held' | 'flight' | 'ground'; holderId: number; state: { pos: THREE.Vector3 } };
   selectedReceiverId?(id: number): number;
   markerId?(): number;
+  /** `Locomotion` — asked only whether a body can act right now. */
+  loco?: { isAvailable?(p: unknown): boolean };
+  /** The switch policy's inputs, shared with `InputSystem.resolveSwitch`. */
+  defenderCandidates?(): readonly SwitchCandidateLike[];
+  switchSituation?(): SwitchSituationLike;
+  /**
+   * Optional. When the game publishes the exact route it handed `TeamAI`, the
+   * ghost is that route; otherwise the HUD rebuilds it from the same
+   * `buildCut()` and the same stick reading, which agrees on shape and kind and
+   * differs only by the AI's per-cut jitter.
+   */
+  commandedCut?(): CommandedCutLike | null;
 }
+
+type SwitchCandidateLike = Parameters<typeof pickSwitchTarget>[0][number];
+type SwitchSituationLike = Parameters<typeof pickSwitchTarget>[1];
 
 interface PlayersLike {
   get?(id: number): { number: number; name: string } | undefined;
@@ -113,7 +143,19 @@ interface ChargeLike {
   targetHold: number; targetHalfWidth: number; maxHold: number;
 }
 
-interface InputLike { charge?: ChargeLike }
+/** The live intent struct — read, never written. */
+interface IntentLike {
+  move?: { x: number; z: number; mag: number };
+  aim?: { x: number; z: number; active: boolean };
+  receiver?: { callCut: boolean; selectX: number; selectZ: number; holdTime: number };
+}
+
+interface InputLike {
+  charge?: ChargeLike;
+  intent?: IntentLike;
+  /** `HumanController` — only `isDown` and the gates are read. */
+  human?: { isDown?(action: string): boolean; gates?: { onDefence?: boolean } };
+}
 
 /* --------------------------------------------------------------- constants */
 
@@ -126,6 +168,22 @@ const FALLBACK_MAX_HOLD = 2.0;
 
 /** Predicted flight is re-integrated at this rate, not every frame. */
 const PREDICT_HZ = 12;
+/**
+ * Prediction horizon. It has to outlast the longest throw in the game or the
+ * "landing" ring is not a landing ring — it is a ring around wherever the disc
+ * happened to be when the horizon ran out, drawn at whatever height it was
+ * still flying at. A max backhand leaves at 27 m/s and hangs for about 3.4 s;
+ * 5 s covers every throw the physics can produce, and `predictPath` stops the
+ * moment it touches ground, so the cost of the extra headroom is zero on every
+ * throw that lands sooner.
+ */
+const PREDICT_HORIZON = 5;
+
+/** Stall count at which the reset stops being an option and becomes the plan. */
+const DUMP_STALL = 7;
+
+/** Switch button hold before the policy's answer is previewed under a body. */
+const SWITCH_PREVIEW_HOLD = 0.25;
 
 const POSITION_LABEL: Record<string, string> = {
   handler: 'Handler', cutter: 'Cutter', deep: 'Deep', utility: 'Utility',
@@ -160,8 +218,23 @@ export class HudSystem implements System, HudSource {
   private records = new Map<number, HudPlayer>();
   private rosterById = new Map<number, RosterLike>();
 
-  private flightCache: { x: number; y: number; z: number }[] | null = null;
+  private flightCache: { x: number; y: number; z: number; t?: number }[] | null = null;
   private flightAt = -1e3;
+
+  /**
+   * The force the human has CALLED, or null until they call one.
+   *
+   * `input:force` is a defensive instruction — "we are forcing that way" — and
+   * on defence it is the thing the player needs echoed back instantly, which is
+   * why it wins over the geometry for as long as the human's team is defending.
+   * On offence the arc reports the opposite: where the mark is actually
+   * standing, which is the read the thrower has to make and may not match what
+   * the defence intended.
+   */
+  private calledForce: -1 | 1 | null = null;
+  private switchHeld = 0;
+  /** Identity of the cut order currently held, so the route latches once. */
+  private cutKey = '';
 
   private pendingCard: { at: number; req: CardRequest } | null = null;
   private pendingSummary: { at: number; data: SummaryData; hold: number } | null = null;
@@ -230,7 +303,7 @@ export class HudSystem implements System, HudSource {
         number: kit?.number ?? e.number,
         name: kit?.name ?? e.name,
         position: POSITION_LABEL[e.archetype] ?? 'Player',
-        x: 0, y: 0, z: 0, groundY: 0, stamina: 1,
+        x: 0, y: 0, z: 0, groundY: 0, stamina: 1, available: true,
       });
     }
   }
@@ -258,7 +331,14 @@ export class HudSystem implements System, HudSource {
     on('stall:tick', (p) => this.bug?.tick(p?.count ?? 0, this.ctx.time));
 
     on('score', (p) => this.onScore(p));
-    on('turnover', (p) => this.onTurnover(p));
+    // Every turnover pulses the ring, not just the ones that earn a card: the
+    // pulse is the announcement that the situation has inverted around you, and
+    // a drop inverts it exactly as hard as a block does.
+    on('turnover', (p) => { this.frame.flipAt = this.ctx.time; this.onTurnover(p); });
+    on('input:force', (p) => {
+      const s = p?.force;
+      if (s === 1 || s === -1) this.calledForce = s;
+    });
     on('state:changed', (p) => this.onStateChanged(p));
     on('replay:start', (p) => this.badges?.setReplay(true, p?.label ?? 'Replay'));
     on('replay:end', () => this.badges?.setReplay(false));
@@ -362,7 +442,245 @@ export class HudSystem implements System, HudSource {
     f.perfectHold = c && c.maxHold > 0 ? c.targetHold : FALLBACK_PERFECT_HOLD;
     f.perfectHalf = c && c.maxHold > 0 ? c.targetHalfWidth : FALLBACK_PERFECT_HALF;
     f.maxHold = c && c.maxHold > 0 ? c.maxHold : FALLBACK_MAX_HOLD;
+
+    this.readAnnotations(dt);
   }
+
+  /* --------------------------------------------------- off-ball legibility */
+
+  /**
+   * Resolve the five reads the gameplay layer annotates.
+   *
+   * All of it is derived here rather than in the widget for the reason the rest
+   * of the HUD is: `GameplayLayer` should be a function from a struct to SVG,
+   * reviewable without knowing that `ctx.sys.game` exists. Every peer hook used
+   * below is optional, so a stubbed game costs a `-1` and never a throw.
+   */
+  private readAnnotations(dt: number): void {
+    const f = this.frame;
+    const gs = this.game?.gs;
+
+    const poss = f.possession;
+    const dirs = gs?.attackDir;
+    f.attackDir = poss !== null && dirs && dirs[poss] < 0 ? -1 : 1;
+
+    const me = f.controlledId >= 0 ? this.player(f.controlledId) : null;
+    const onDefence = !!me && poss !== null && me.team !== poss;
+
+    this.readForce(f, onDefence);
+    this.readLanding(f);
+    this.readCut(f, onDefence);
+    this.readDump(f);
+    this.readSwitchPreview(f, dt, onDefence);
+  }
+
+  /**
+   * The break side: the shoulder the mark is taking away.
+   *
+   * Geometry first — the mark stands on the side it is denying, which is the
+   * same read `AI.ts` makes off the same two positions, so the arc and the AI
+   * can never tell the thrower different stories. A human's own force call
+   * overrides it while their team is defending, because that is an instruction
+   * they gave and it has to come back instantly.
+   */
+  private readForce(f: HudFrame, onDefence: boolean): void {
+    f.forceKnown = false;
+    if (f.discMode !== 'held' || f.throwerId < 0) return;
+    const thrower = this.player(f.throwerId);
+    if (!thrower) return;
+
+    if (onDefence && this.calledForce !== null) {
+      // force = +1 means "force everything to +X", so the open side is +X and
+      // the mark is standing on -X.
+      f.forceAngle = this.calledForce > 0 ? -Math.PI / 2 : Math.PI / 2;
+      f.forceKnown = true;
+      return;
+    }
+    // Who is actually marking: the nearest opponent inside 3.6 m. This is the
+    // same scan `TeamAI.readForce` runs, deliberately — it works when
+    // `markerId()` has not been assigned yet (a check, a pickup, a posed
+    // tableau) and it cannot disagree with the AI when it has, because both
+    // read the same two bodies. The named marker still wins when it is in
+    // range, so the arc tracks the mark the rules machine is counting on.
+    let dx = 0;
+    let dz = 0;
+    let best = 3.6 * 3.6;
+    const named = f.markerId >= 0 ? this.player(f.markerId) : null;
+    if (named) {
+      const ndx = named.x - thrower.x;
+      const ndz = named.z - thrower.z;
+      const d2 = ndx * ndx + ndz * ndz;
+      if (d2 < best) { best = d2; dx = ndx; dz = ndz; }
+    }
+    if (best >= 3.6 * 3.6) {
+      for (const id of this.rosterById.keys()) {
+        const p = this.player(id);
+        if (!p || p.team === thrower.team) continue;
+        const pdx = p.x - thrower.x;
+        const pdz = p.z - thrower.z;
+        const d2 = pdx * pdx + pdz * pdz;
+        if (d2 < best) { best = d2; dx = pdx; dz = pdz; }
+      }
+    }
+    // A mark standing dead in front tells you nothing about a side; the sim
+    // applies the same 0.25 m deadband before it will read a force off one.
+    if (best >= 3.6 * 3.6 || Math.abs(dx) < 0.25) return;
+    f.forceAngle = Math.atan2(dx, dz);
+    f.forceKnown = true;
+  }
+
+  private readLanding(f: HudFrame): void {
+    const path = f.discMode === 'flight' ? this.flight() : null;
+    const land = f.landing;
+    if (!path || path.length < 2) { land.active = false; return; }
+    const last = path[path.length - 1];
+    land.active = true;
+    land.x = last.x;
+    land.y = last.y;
+    land.z = last.z;
+    land.t = last.t ?? 0;
+  }
+
+  /**
+   * The order, latched on its edge.
+   *
+   * `callCut` is held continuously, but the route is built once — the AI's own
+   * contract says so ("call it on the edge of the hold, not every step") — so
+   * the ghost latches on the same edge and then sits still while the runner
+   * either does or does not run it. It is drawn at full strength while the
+   * button is down and fades over 1.5 s once it comes up, which is the window
+   * in which you are actually judging the execution.
+   */
+  private readCut(f: HudFrame, onDefence: boolean): void {
+    const cut = f.cut;
+    const rc = this.input?.intent?.receiver;
+    const holding = !!rc?.callCut && !onDefence && f.discMode === 'held';
+    if (!holding) { this.cutKey = ''; cut.held = false; return; }
+
+    // Prefer the route the game actually committed; fall back to rebuilding it.
+    const published = this.game?.commandedCut?.() ?? null;
+    if (published && published.playerId >= 0) {
+      const runner = this.player(published.playerId);
+      const key = `p${published.playerId}|${published.kind}`;
+      if (key !== this.cutKey && runner) {
+        this.cutKey = key;
+        cut.playerId = published.playerId;
+        cut.kind = published.kind;
+        cut.fromX = runner.x; cut.fromZ = runner.z;
+        cut.setupX = published.setup.x; cut.setupZ = published.setup.z;
+        cut.targetX = published.target.x; cut.targetZ = published.target.z;
+      }
+      cut.held = true;
+      cut.at = f.t;
+      return;
+    }
+
+    const runner = f.receiverId >= 0 ? this.player(f.receiverId) : null;
+    const disc = this.disc();
+    if (!runner || !disc || !rc) { this.cutKey = ''; cut.held = false; return; }
+
+    const l = Math.hypot(rc.selectX, rc.selectZ);
+    if (!(l > 1e-3)) { this.cutKey = ''; cut.held = false; return; }
+    const ux = rc.selectX / l;
+    const uz = rc.selectZ / l;
+    const dir = f.attackDir;
+    // The open side falls out of the break bearing the force read already
+    // produced; with no mark on the field yet, assume the open side is +X so a
+    // called cut still draws rather than silently doing nothing.
+    const breakX = f.forceKnown ? Math.sign(Math.sin(f.forceAngle)) : -1;
+    const openSign = ((breakX >= 0 ? -1 : 1)) as Sign;
+    // `chooseFormation` switches to the endzone set inside 22 m, which is what
+    // turns a commanded deep into a strike.
+    const redZone = 32 - dir * disc.z <= 22;
+    const kind = cutKindFor(ux, uz, dir, openSign, runner.position === 'Handler', redZone);
+    const key = `p${runner.id}|${kind}`;
+    if (key !== this.cutKey) {
+      this.cutKey = key;
+      const side = (Math.sign(ux) || openSign) as Sign;
+      // j = 0.5 is the median of the AI's per-cut jitter, so the ghost is the
+      // canonical shape of the route rather than one particular roll of it.
+      const r = buildCut(kind, { x: runner.x, z: runner.z }, { x: disc.x, z: disc.z }, dir, openSign, side, 0.5);
+      cut.playerId = runner.id;
+      cut.kind = kind;
+      cut.fromX = runner.x; cut.fromZ = runner.z;
+      cut.setupX = r.setup.x; cut.setupZ = r.setup.z;
+      cut.targetX = r.target.x; cut.targetZ = r.target.z;
+    }
+    cut.held = true;
+    cut.at = f.t;
+  }
+
+  /**
+   * The reset, bracketed the moment the count says it is the plan.
+   *
+   * "Nearest handler behind the disc" — behind is measured against the
+   * attacking direction, and a cutter loitering in the reset space is a worse
+   * answer than a handler a little further away, so the archetype is priced in
+   * rather than filtered on.
+   */
+  private readDump(f: HudFrame): void {
+    f.dumpId = -1;
+    if (f.stall < DUMP_STALL || f.discMode !== 'held' || f.throwerId < 0) return;
+    const thrower = this.player(f.throwerId);
+    if (!thrower) return;
+
+    let best = -1;
+    let bestScore = Infinity;
+    for (const id of this.rosterById.keys()) {
+      if (id === thrower.id) continue;
+      const p = this.player(id);
+      if (!p || p.team !== thrower.team || !p.available) continue;
+      // Behind the disc, in the attacking frame.
+      if (f.attackDir * (p.z - thrower.z) > 0.5) continue;
+      const d = Math.hypot(p.x - thrower.x, p.z - thrower.z);
+      if (d > 22) continue;
+      const score = d * (p.position === 'Handler' ? 1 : 1.7);
+      if (score < bestScore) { bestScore = score; best = id; }
+    }
+    f.dumpId = best;
+  }
+
+  /**
+   * Who a held switch would hand you.
+   *
+   * Scored with `pickSwitchTarget` — the same function `InputSystem` commits
+   * with, given the same candidates and the same stick hint — so the preview is
+   * the decision, not a guess at it. The commit itself still happens on the
+   * press; what the hold buys is the ability to steer the stick and watch the
+   * policy's answer move before you take it.
+   */
+  private readSwitchPreview(f: HudFrame, dt: number, onDefence: boolean): void {
+    f.switchPreviewId = -1;
+    const down = onDefence && (this.input?.human?.isDown?.('switchDefender') ?? false);
+    if (!down) { this.switchHeld = 0; return; }
+    this.switchHeld += dt;
+    if (this.switchHeld < SWITCH_PREVIEW_HOLD) return;
+
+    const cands = this.game?.defenderCandidates?.();
+    const sit = this.game?.switchSituation?.();
+    if (!cands || cands.length === 0 || !sit) return;
+
+    const it = this.input?.intent;
+    const useAim = !!it?.aim?.active;
+    const hx = useAim ? (it?.aim?.x ?? 0) : (it?.move?.x ?? 0);
+    const hz = useAim ? (it?.aim?.z ?? 0) : (it?.move?.z ?? 0);
+    const hm = Math.hypot(hx, hz);
+    if (hm > 0.35) {
+      this.hinted.discX = sit.discX; this.hinted.discZ = sit.discZ;
+      this.hinted.threatX = sit.threatX; this.hinted.threatZ = sit.threatZ;
+      this.hinted.discInAir = sit.discInAir;
+      this.hinted.fromX = sit.fromX; this.hinted.fromZ = sit.fromZ;
+      this.hinted.hintX = hx / hm; this.hinted.hintZ = hz / hm;
+      f.switchPreviewId = pickSwitchTarget(cands, this.hinted, f.controlledId);
+    } else {
+      f.switchPreviewId = pickSwitchTarget(cands, sit, f.controlledId);
+    }
+  }
+
+  /** Reused so the preview never allocates on a held button. */
+  private hinted: SwitchSituationLike = {
+    discX: 0, discZ: 0, threatX: 0, threatZ: 0, discInAir: false,
+  };
 
   /* ------------------------------------------------------------- HudSource */
 
@@ -376,6 +694,7 @@ export class HudSystem implements System, HudSource {
     rec.z = lp.pos.z;
     rec.groundY = lp.groundY;
     rec.stamina = Math.max(0, Math.min(1, lp.stamina / 100));
+    rec.available = this.game?.loco?.isAvailable?.(lp) ?? true;
     return rec;
   }
 
@@ -384,15 +703,16 @@ export class HudSystem implements System, HudSource {
     return p ? p : null;
   }
 
-  flight(): readonly { x: number; y: number; z: number }[] | null {
+  flight(): readonly { x: number; y: number; z: number; t?: number }[] | null {
     const rt = this.game?.discRuntime;
     if (!rt || rt.mode !== 'flight' || !this.discSys?.predictPath) return null;
     const t = this.ctx.time;
     if (this.flightCache && t - this.flightAt < 1 / PREDICT_HZ) return this.flightCache;
     this.flightAt = t;
-    // 2.4 s at 24 Hz — enough of the arc to lead a receiver, cheap enough to
-    // re-integrate a dozen times a second rather than every frame.
-    this.flightCache = this.discSys.predictPath(rt.state, 2.4, 1 / 24);
+    // Integrated to ground contact at 24 Hz: the whole arc, and a last sample
+    // that is genuinely the landing point. Cheap enough to re-run a dozen times
+    // a second rather than every frame.
+    this.flightCache = this.discSys.predictPath(rt.state, PREDICT_HORIZON, 1 / 24);
     return this.flightCache;
   }
 
@@ -571,6 +891,24 @@ export class HudSystem implements System, HudSource {
 }
 
 /* ---------------------------------------------------------------- helpers */
+
+/**
+ * Which of the seven routes a stick direction is asking for.
+ *
+ * This mirrors `TeamAI.commandCut` exactly — same thresholds, same order of
+ * tests — because the ghost has to name the route the AI will actually run.
+ * It is only reached when the game does not publish the committed route
+ * itself; the day it does, this is dead weight and should go.
+ */
+function cutKindFor(
+  ux: number, uz: number, dir: 1 | -1, openSign: Sign, isHandler: boolean, redZone: boolean,
+): CutKind {
+  const downfield = dir * uz;
+  if (downfield > 0.55) return redZone ? 'strike' : 'deep';
+  if (downfield < -0.30) return Math.abs(ux) > 0.72 ? 'swing' : 'dump';
+  if (isHandler && Math.abs(ux) > 0.50) return 'up-line';
+  return (Math.sign(ux) || openSign) === openSign ? 'under' : 'break-under';
+}
 
 function rate(n: number, d: number): number { return d > 0 ? n / d : 0; }
 

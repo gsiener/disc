@@ -115,7 +115,7 @@ export class InputSystem implements System {
     this.human.setGates(gates ?? this.fallbackGates);
     this.human.facingYaw = host?.playerFacing?.(playerId) ?? this.human.facingYaw;
     this.human.selectedReceiverId = host?.selectedReceiverId?.(playerId) ?? this.human.selectedReceiverId;
-    this.human.cameraYaw = cameraYaw(ctx);
+    this.human.cameraYaw = latchedCameraYaw(ctx, this.human.intent.move.mag);
 
     const intent = this.human.step(dt, now);
 
@@ -245,6 +245,23 @@ export class InputSystem implements System {
       : sit;
     return pickSwitchTarget(cands, hinted, playerId);
   }
+}
+
+/**
+ * Camera yaw for the movement basis, with the director's post-cut latch applied.
+ *
+ * Movement is camera-relative, and this is re-read every step — so a broadcast
+ * cut would rotate the player's controls out from under their thumb mid-stride.
+ * `camera/Director.ts` freezes the yaw at its pre-cut value until the move stick
+ * drops below 0.2 and then adopts the new one. Absent a director (or before one
+ * has cut anything) this is exactly the live camera yaw.
+ */
+function latchedCameraYaw(ctx: Ctx, moveMag: number): number {
+  const raw = cameraYaw(ctx);
+  const dir = ctx.sys['camera'] as unknown as
+    { latchYaw?(raw: number, moveMag: number): number } | undefined;
+  const y = dir?.latchYaw?.(raw, moveMag);
+  return typeof y === 'number' && Number.isFinite(y) ? y : raw;
 }
 
 /** Yaw the camera looks along, derived without importing three. */

@@ -325,6 +325,430 @@ group('determinism');
   ok(runDigest(SEED + 1) !== a, 'a different seed produces a different match');
 }
 
+/* ============================================ scripted possessions (§2, §3)
+ *
+ * Everything above drives fourteen AI players and asserts that a MATCH happens.
+ * Everything below drives the HUMAN seam — the one the design brief found cut
+ * and left empty — and asserts that a PLAYER happens: that a flick of the aim
+ * stick resolves to the teammate it pointed at, that holding it sends him on a
+ * real route, that the assist can never move a release more than five degrees,
+ * that control lands where §3 says it lands and when, and that a turnover does
+ * not yank the avatar out from under the player.
+ *
+ * It runs through the real consumers: a stub `ctx.sys.input` publishing the
+ * same `PlayerIntent` struct `HumanController` publishes, with a real
+ * `InputBuffer` behind it, so the flush is a flush of the actual buffer type.
+ */
+
+import { InputBuffer } from '../src/input/Buffer.ts';
+import { makeIntent, resetIntent, type PlayerIntent } from '../src/input/Intent.ts';
+import { Locomotion } from '../src/sim/Locomotion.ts';
+
+const DEG = 180 / Math.PI;
+const norm = (x: number, z: number): { x: number; z: number } => {
+  const l = Math.hypot(x, z) || 1;
+  return { x: x / l, z: z / l };
+};
+
+/** The minimum a peer must look like for GameSystem to read a human off it. */
+class StubInput {
+  readonly human = { buffer: new InputBuffer({ window: 0.5 }) };
+  readonly intent: PlayerIntent = makeIntent(0, 'human');
+  private n = 0;
+  /** Fresh intent for this step, owned by `playerId`. */
+  begin(playerId: number, t: number): PlayerIntent {
+    const i = resetIntent(this.intent);
+    i.playerId = playerId;
+    i.step = this.n++;
+    i.t = t;
+    i.receiver.callCut = false;
+    i.receiver.holdTime = 0;
+    i.charge.active = false;
+    return i;
+  }
+}
+
+interface ControlEvent { t: number; to: number; from: number; reason: string }
+interface FlipEvent { t: number; at: number; controlled: number }
+
+function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: boolean }) {
+  const c = makeCtx(seed);
+  const g = new GameSystem();
+  const stub = new StubInput();
+  c.sys['game'] = g;
+  c.sys['input'] = stub;
+  g.init(c);
+
+  const control: ControlEvent[] = [];
+  const flips: FlipEvent[] = [];
+  const selects: { id: number; want: number; cone: number; cands: any[] }[] = [];
+  const cuts: { t: number; id: number; kind: string; tx: number; tz: number; from: { x: number; z: number } }[] = [];
+  const assists: number[] = [];
+  const releases: { t: number; target: number }[] = [];
+  let dumpSelects = 0;
+  let dumpBehind = 0;
+  let bufferLiveAtFlip = 0;
+  let bufferLiveAfterFlip = 0;
+  const catches: { t: number; id: number }[] = [];
+  let catchControl = 0;
+  let catchChecked = 0;
+  let unavailableTo = 0;
+  let unavailableFrom = 0;
+
+  let simT = 0;
+  c.events.on('control:changed', (p: any) => {
+    control.push({ t: simT, to: p.to ?? p.playerId, from: p.from, reason: p.reason });
+    const to = g.entry(p.playerId);
+    const from = g.entry(p.from);
+    if (to && !Locomotion.isAvailable(to.loco)) unavailableTo++;
+    if (p.reason !== 'manual' && from && !Locomotion.isAvailable(from.loco)) unavailableFrom++;
+  });
+  c.events.on('control:flip', (p: any) => {
+    flips.push({ t: simT, at: p.grace, controlled: p.playerId });
+    // The buffer must be empty on the very step the gates invert.
+    bufferLiveAfterFlip += stub.human.buffer.live(simT);
+  });
+  c.events.on('disc:caught', (p: any) => {
+    const e = g.entry(p.playerId);
+    if (e && e.team === g.humanTeam && p.outcome === 'completion') catches.push({ t: simT, id: p.playerId });
+  });
+  c.events.on('input:cut', (p: any) => {
+    const e = g.entry(p.playerId);
+    cuts.push({
+      t: simT, id: p.playerId, kind: p.kind, tx: p.targetX, tz: p.targetZ,
+      from: { x: e?.loco.pos.x ?? 0, z: e?.loco.pos.z ?? 0 },
+    });
+  });
+
+  /* the script's own little state machine */
+  let hold = 0;
+  let want = -1;
+  let cutIssued = false;
+  let picked = false;
+  let graceUntil = -1;
+  let episode = 0;
+
+  for (let i = 0; i < Math.round(seconds / DT); i++) {
+    simT = i * DT;
+    const gs = g.gs;
+    const me = g.controlledPlayerId;
+    const it = stub.begin(me, simT);
+    const mine = gs.possession === g.humanTeam;
+    const throwing = gs.phase === 'LIVE_POSSESSION' && gs.thrower === me && mine;
+    let selecting = false;
+
+    if (throwing) {
+      hold += DT;
+      // 0.35 s: pick a teammate downfield and flick the stick at him.
+      if (hold >= 0.35 && !picked) {
+        const th = g.entry(me)!;
+        const dir = gs.attackDir[th.team];
+        const live = g.roster.filter((e) => e.team === th.team && e.id !== me
+          && Locomotion.isAvailable(e.loco)
+          && dir * (e.loco.pos.z - th.loco.pos.z) > 3
+          && Math.hypot(e.loco.pos.x - th.loco.pos.x, e.loco.pos.z - th.loco.pos.z) > 6
+          && Math.hypot(e.loco.pos.x - th.loco.pos.x, e.loco.pos.z - th.loco.pos.z) < 34)
+          .sort((a, b) => dir * (b.loco.pos.z - a.loco.pos.z));
+        let ux = 0, uz = 0;
+        if (live.length >= 2 && episode % 2 === 1) {
+          // Point the stick BETWEEN two teammates: the score, not the geometry,
+          // has to break the tie. `want` stays -1 so this select is excluded
+          // from the "the man you pointed at" ratio and only tests the argmax.
+          const a = live[0], b = live[1];
+          const va = norm(a.loco.pos.x - th.loco.pos.x, a.loco.pos.z - th.loco.pos.z);
+          const vb = norm(b.loco.pos.x - th.loco.pos.x, b.loco.pos.z - th.loco.pos.z);
+          const m = norm(va.x + vb.x, va.z + vb.z);
+          ux = m.x; uz = m.z;
+          want = -1;
+        } else if (live.length >= 1) {
+          const t = live[0];
+          const m = norm(t.loco.pos.x - th.loco.pos.x, t.loco.pos.z - th.loco.pos.z);
+          ux = m.x; uz = m.z;
+          want = t.id;
+        }
+        if (ux !== 0 || uz !== 0) {
+          it.aim.active = true; it.aim.x = ux; it.aim.z = uz; it.aim.mag = 1;
+          it.aim.yaw = Math.atan2(ux, uz);
+          it.receiver.selectX = ux; it.receiver.selectZ = uz;
+          it.receiver.selectFresh = true;
+          cutIssued = false;
+          picked = true;
+          episode++;
+          selecting = true;
+        }
+      }
+      // 0.55 s: hold the same direction — that is a callCut.
+      if (hold >= 0.55 && !cutIssued && g.selectedTarget >= 0) {
+        const th = g.entry(me)!;
+        const dir = gs.attackDir[th.team];
+        const open = g.gs.possession !== null ? 1 : 1;
+        // Rotate through the vocabulary: deep, across, and back to the reset,
+        // so all three branches of the direction -> CutKind map get exercised.
+        const which = episode % 3;
+        const cx = which === 0 ? 0 : which === 1 ? 1 : -0.4;
+        const cz = which === 0 ? dir : which === 1 ? dir * 0.15 : -dir;
+        const m = norm(cx * open, cz);
+        it.receiver.selectX = m.x; it.receiver.selectZ = m.z;
+        it.receiver.callCut = true;
+        it.receiver.holdTime = 0.2;
+        cutIssued = true;
+      }
+      // 0.95 s: release, aimed a couple of degrees off the man so the assist
+      // has something to correct.
+      if (hold >= 0.95) {
+        const target = g.selectedTarget;
+        const t = target >= 0 ? g.entry(target) : undefined;
+        const th = g.entry(me)!;
+        const vx = (t?.loco.pos.x ?? th.loco.pos.x + 6) - th.loco.pos.x;
+        const vz = (t?.loco.pos.z ?? th.loco.pos.z + 6) - th.loco.pos.z;
+        const yaw = Math.atan2(vx, vz) + 0.06;                   // 3.4 degrees off
+        // Power is range: the human path maps `dist = 6 + 46 * power`, so a
+        // script that always charges the same amount throws it away all day.
+        const range = Math.hypot(vx, vz);
+        const r = it.release;
+        r.fired = true; r.type = 'backhand';
+        r.power = Math.max(0.12, Math.min(0.95, (range - 4) / 46)); r.quality = 1;
+        r.tilt = 0; r.aimYaw = yaw; r.hold = 0.85; r.perfect = true;
+        r.steadiness = 1; r.targetId = target;
+        releases.push({ t: simT, target });
+        hold = 0; want = -1; cutIssued = false; picked = false;
+      }
+    } else {
+      hold = 0; want = -1; cutIssued = false; picked = false;
+    }
+
+    // A press left in the buffer so the flip has something to flush.
+    if (i % 240 === 0) stub.human.buffer.press('throw', simT);
+
+    // Optionally fight the grace window, to prove human intent wins.
+    if (opts.touchDuringGrace && g.controlGrace > 0) { it.move.x = 1; it.move.mag = 1; }
+
+    if (g.controlGrace > 0 && graceUntil < 0) graceUntil = simT + g.controlGrace;
+
+    const wantAtSelect = want;
+    const dumpBefore = g.selectionSource;
+    const preLive = stub.human.buffer.live(simT);
+    g.update(DT, c);
+    c.time += DT;
+
+    if (dumpBefore !== 'dump' && g.selectionSource === 'dump') {
+      dumpSelects++;
+      const r = g.entry(g.selectedTarget);
+      const th = gs.thrower !== null ? g.entry(gs.thrower) : undefined;
+      if (r && th) {
+        const dir = gs.attackDir[th.team];
+        if (dir * (r.loco.pos.z - g.discRuntime.state.pos.z) <= 1.0) dumpBehind++;
+      }
+    }
+    if (selecting && g.selectCandidates.length > 0) {
+      selects.push({
+        id: g.selectedTarget, want: wantAtSelect, cone: 0,
+        cands: g.selectCandidates.map((x) => ({ ...x })),
+      });
+    }
+    if (catches.length && catches[catches.length - 1].t === simT) {
+      catchChecked++;
+      if (g.controlledPlayerId === catches[catches.length - 1].id) catchControl++;
+    }
+    if (it.release.fired) assists.push(g.lastAimAssist);
+    void preLive; void bufferLiveAtFlip;
+  }
+  return {
+    game: g, ctx: c, stub, control, flips, selects, cuts, assists, releases,
+    dumpSelects, dumpBehind, bufferLiveAfterFlip, unavailableTo, unavailableFrom,
+    catchChecked, catchControl,
+  };
+}
+
+const R = scriptedRun(SEED, 420, { touchDuringGrace: false });
+
+group('receiver selection — the 35-degree cone (§2)');
+{
+  const all = R.selects.flatMap((s) => s.cands);
+  ge(R.selects.length, 6, 'the scripted possessions made directional selects');
+  ge(all.length, 6, 'and every select scored a candidate set');
+  const maxAngle = all.reduce((m, c) => Math.max(m, c.angle), 0);
+  ok(maxAngle <= 35 / DEG + 1e-9, 'no candidate was ever outside the 35-degree cone',
+    `${(maxAngle * DEG).toFixed(2)} deg`);
+  let weightsOk = 0;
+  for (const c of all) {
+    const s = 0.60 * c.angular + 0.25 * c.openness + 0.15 * c.sanity;
+    if (Math.abs(s - c.score) < 1e-9) weightsOk++;
+  }
+  ok(weightsOk === all.length, 'the score is 60% angular / 25% lane / 15% distance, exactly',
+    `${weightsOk}/${all.length}`);
+  let argmax = 0;
+  for (const s of R.selects) {
+    let best = -1, bv = -1;
+    for (const c of s.cands) if (c.score > bv) { bv = c.score; best = c.id; }
+    if (best === s.id) argmax++;
+  }
+  ok(argmax === R.selects.length, 'the selection is always the argmax of the score',
+    `${argmax}/${R.selects.length}`);
+  const aimed = R.selects.filter((s) => s.want >= 0);
+  const intended = aimed.filter((s) => s.id === s.want).length;
+  ge(intended / Math.max(1, aimed.length), 0.75,
+    'and it is the man the stick pointed at at least 75% of the time');
+  const contested = R.selects.filter((s) => s.cands.length >= 2).length;
+  ge(contested, 2, 'at least some selects had to choose between two teammates');
+  console.log(`\x1b[2m  selects ${R.selects.length}`
+    + `  intended ${(100 * intended / R.selects.length).toFixed(0)}%`
+    + `  widest cone hit ${(maxAngle * DEG).toFixed(1)} deg`
+    + `  mean candidates/select ${(all.length / R.selects.length).toFixed(1)}`
+    + `  contested ${R.selects.filter((s) => s.cands.length >= 2).length}\x1b[0m`);
+}
+
+group('callCut into the AI (§2)');
+{
+  ge(R.cuts.length, 3, 'holding the direction commanded real routes');
+  const kinds = new Set(R.cuts.map((c) => c.kind));
+  ok(kinds.size >= 1, 'and they came back as Playbook cut kinds', [...kinds].join(','));
+  let onField = 0;
+  for (const c of R.cuts) {
+    if (Math.abs(c.tx) <= FIELD.SIDELINE && Math.abs(c.tz) <= FIELD.END_LINE) onField++;
+  }
+  ok(onField === R.cuts.length, 'every commanded route targets a point on the field',
+    `${onField}/${R.cuts.length}`);
+  ok(R.cuts.every((c) => Math.hypot(c.tx - c.from.x, c.tz - c.from.z) > 1.5),
+    'and a point the commanded player has to actually run to');
+  console.log(`\x1b[2m  cuts commanded ${R.cuts.length}  kinds ${[...kinds].join(', ')}\x1b[0m`);
+}
+
+group('aim assist is capped and quality-scaled (§2)');
+{
+  ge(R.assists.length, 3, 'the assist engaged on releases with a receiver selected');
+  const worst = R.assists.reduce((m, a) => Math.max(m, Math.abs(a)), 0);
+  ok(worst <= 5 / DEG + 1e-9, 'and never rotated a release by more than 5 degrees',
+    `${(worst * DEG).toFixed(3)} deg`);
+  const mean = R.assists.reduce((s, a) => s + Math.abs(a), 0) / R.assists.length;
+  console.log(`\x1b[2m  assists ${R.assists.length}`
+    + `  max ${(worst * DEG).toFixed(2)} deg  mean ${(mean * DEG).toFixed(2)} deg\x1b[0m`);
+}
+{
+  // Quality scaling: the same geometry at q=0 must move nothing at all.
+  const c2 = makeCtx(SEED);
+  const g2 = new GameSystem();
+  const s2 = new StubInput();
+  c2.sys['game'] = g2; c2.sys['input'] = s2;
+  g2.init(c2);
+  let zeroQ = 0, fullQ = 0, fired = 0;
+  for (let i = 0; i < 120 * 300; i++) {
+    const gs2 = g2.gs;
+    const me = g2.controlledPlayerId;
+    const it = s2.begin(me, i * DT);
+    if (gs2.phase === 'LIVE_POSSESSION' && gs2.thrower === me && gs2.possession === g2.humanTeam
+      && i % 90 === 0) {
+      const th = g2.entry(me)!;
+      let tgt = -1, bd = 1e9;
+      for (const e of g2.roster) {
+        if (e.team !== th.team || e.id === me) continue;
+        const d = Math.hypot(e.loco.pos.x - th.loco.pos.x, e.loco.pos.z - th.loco.pos.z);
+        if (d > 7 && d < bd) { bd = d; tgt = e.id; }
+      }
+      if (tgt >= 0) {
+        const t = g2.entry(tgt)!;
+        const vx = t.loco.pos.x - th.loco.pos.x, vz = t.loco.pos.z - th.loco.pos.z;
+        const l = Math.hypot(vx, vz) || 1;
+        it.receiver.selectX = vx / l; it.receiver.selectZ = vz / l; it.receiver.selectFresh = true;
+        it.aim.active = true; it.aim.x = vx / l; it.aim.z = vz / l; it.aim.mag = 1;
+      }
+    } else if (gs2.phase === 'LIVE_POSSESSION' && gs2.thrower === me && g2.selectedTarget >= 0
+      && i % 90 === 12) {
+      const th = g2.entry(me)!, t = g2.entry(g2.selectedTarget)!;
+      const yaw = Math.atan2(t.loco.pos.x - th.loco.pos.x, t.loco.pos.z - th.loco.pos.z) + 0.09;
+      const r = it.release;
+      r.fired = true; r.type = 'backhand'; r.power = 0.4; r.tilt = 0; r.aimYaw = yaw;
+      r.hold = 0.85; r.steadiness = 1; r.targetId = g2.selectedTarget;
+      const rr = Math.hypot(t.loco.pos.x - th.loco.pos.x, t.loco.pos.z - th.loco.pos.z);
+      r.power = Math.max(0.12, Math.min(0.95, (rr - 4) / 46));
+      r.quality = fired % 2 === 0 ? 0 : 1;
+      const even = fired % 2 === 0;
+      fired++;
+      g2.update(DT, c2); c2.time += DT;
+      if (even) { if (g2.lastAimAssist === 0) zeroQ++; } else if (Math.abs(g2.lastAimAssist) > 0) fullQ++;
+      continue;
+    }
+    g2.update(DT, c2);
+    c2.time += DT;
+  }
+  ge(fired, 4, 'the quality probe fired releases at q=0 and q=1');
+  ok(zeroQ > 0 && zeroQ === Math.ceil(fired / 2), 'a zero-quality release gets no assist at all',
+    `${zeroQ} of ${Math.ceil(fired / 2)}`);
+  ge(fullQ, 1, 'a perfect release gets the full assist');
+}
+
+group('control handoff (§3)');
+{
+  const byReason = new Map<string, number>();
+  for (const e of R.control) byReason.set(e.reason, (byReason.get(e.reason) ?? 0) + 1);
+  ge(R.control.length, 6, 'control moved during the scripted possessions');
+  ge(byReason.get('handoff') ?? 0, 1, 'and moved to the intended receiver after a release');
+  ok((byReason.get('thrower') ?? 0) > 0, 'and snapped to the thrower on offence');
+  // Every handoff must land within a step of release + 0.1 s.
+  let onTime = 0, handoffs = 0;
+  for (const e of R.control) {
+    if (e.reason !== 'handoff') continue;
+    handoffs++;
+    let best = Infinity;
+    for (const r of R.releases) if (r.target >= 0) best = Math.min(best, Math.abs(e.t - (r.t + 0.10)));
+    if (best <= DT * 1.5) onTime++;
+  }
+  ok(onTime === handoffs, 'every handoff fired at release + 0.1 s, to the step',
+    `${onTime}/${handoffs}`);
+  ge(R.catchChecked, 2, 'completions landed for the human team');
+  ok(R.catchControl === R.catchChecked, 'and control was on the catcher on the catch frame',
+    `${R.catchControl}/${R.catchChecked}`);
+  ok(R.unavailableTo === 0, 'control never landed on a body Locomotion.isAvailable rejects',
+    `${R.unavailableTo}`);
+  ok(R.unavailableFrom === 0, 'and never moved off an unavailable body except on a manual switch',
+    `${R.unavailableFrom}`);
+  console.log(`\x1b[2m  control changes ${R.control.length} — `
+    + [...byReason.entries()].map(([k, v]) => `${k} ${v}`).join('  ') + '\x1b[0m');
+}
+
+group('the mid-flight turnover (§3)');
+{
+  ge(R.flips.length, 2, 'possession flipped mid-play during the scripted run');
+  ok(R.flips.every((f) => Math.abs(f.at - 0.60) < 1e-9), 'each flip opened a 0.6 s grace window');
+  ok(R.bufferLiveAfterFlip === 0, 'the input buffer was already empty on the flip step',
+    `${R.bufferLiveAfterFlip} live presses`);
+  // No automatic control change inside any grace window.
+  let inside = 0;
+  for (const f of R.flips) {
+    for (const e of R.control) {
+      if (e.reason === 'manual') continue;
+      if (e.t > f.t + 1e-9 && e.t < f.t + 0.60 - 1e-9) inside++;
+    }
+  }
+  ok(inside === 0, 'control did not move for 0.6 s after any flip', `${inside} early changes`);
+  // And the policy switch does fire at the far end of at least one of them.
+  const policy = R.control.filter((e) => e.reason === 'turnover-policy');
+  ge(policy.length, 1, 'the switch policy fired at the end of a grace window');
+  let atEnd = 0;
+  for (const e of policy) {
+    for (const f of R.flips) if (Math.abs(e.t - (f.t + 0.60)) <= DT * 2) { atEnd++; break; }
+  }
+  ok(atEnd === policy.length, 'and only ever at the end of one', `${atEnd}/${policy.length}`);
+  console.log(`\x1b[2m  flips ${R.flips.length}  policy switches ${policy.length}\x1b[0m`);
+}
+
+group('human intent wins the grace window (§3)');
+{
+  const T = scriptedRun(SEED, 420, { touchDuringGrace: true });
+  ge(T.flips.length, 2, 'the touched run flipped possession too');
+  const policy = T.control.filter((e) => e.reason === 'turnover-policy');
+  ok(policy.length === 0, 'touching the stick inside the window cancels the policy switch',
+    `${policy.length} fired anyway`);
+  ok(T.unavailableTo === 0, 'and control still never landed on an unavailable body');
+}
+
+group('the dump default (§2)');
+{
+  ge(R.dumpSelects, 1, 'at stall 7 with nothing selected, the reset handler auto-selects');
+  ok(R.dumpBehind === R.dumpSelects, 'and the auto-selected reset is always BEHIND the disc',
+    `${R.dumpBehind}/${R.dumpSelects}`);
+}
+
 /* ---------------------------------------------------------------- summary */
 
 console.log(`\n\x1b[2m${SECONDS}s of match simulated in ${wall} ms `

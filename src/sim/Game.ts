@@ -3,11 +3,13 @@ import type { Ctx, System } from '../core/Ctx.ts';
 import { Rng } from '../core/Ctx.ts';
 
 import {
-  catchProbability, createTeamAI, makePlayer, restBetweenPoints, updateTeam,
+  catchProbability, createTeamAI, effectiveMaxSpeed, makePlayer, restBetweenPoints,
+  throwFlightTime, updateTeam,
   type AIPlayer, type AIWorld, type Archetype, type DiscState as AIDiscState,
   type GamePhase, type PlayerAction, type PlayerIntent as AIIntent, type TeamAI,
   type ThrowType as AIThrowType,
 } from './AI.ts';
+import { laneOf, type CutRoute, type LaneKey, type Sign } from './Playbook.ts';
 import { Locomotion, type DesiredMove, type LocoPlayer } from './Locomotion.ts';
 import { createGameState, GameState, type Phase } from './GameState.ts';
 import {
@@ -18,7 +20,10 @@ import { powerForSpeed, type ThrowType as PhysThrowType } from './DiscPhysics.ts
 import { SHOTS, type Shot } from '../capture/Shots.ts';
 import type { PlayerIntent as HumanIntent } from '../input/Intent.ts';
 import type { IntentGates } from '../input/Human.ts';
-import type { DefenderCandidate, SwitchSituation } from '../input/Switch.ts';
+import {
+  pickSwitchTarget, switchScore,
+  type DefenderCandidate, type SwitchSituation,
+} from '../input/Switch.ts';
 
 /**
  * GameSystem — the match.
@@ -79,6 +84,40 @@ const RELEASE_DEADTIME = 0.10;
 /** Players are pushed back inside this box every step. */
 const PLAY_BOUND_X = FIELD.SIDELINE + 2.5;
 const PLAY_BOUND_Z = FIELD.END_LINE + 2.5;
+
+/* ------------------------------------------------ tuning: targeting/control
+ *
+ * Every number below is quoted from docs/gameplay-design.md §2–§3 and is
+ * asserted against in tools/test-game.ts. They are targets, not preferences.
+ */
+
+/** Half-angle of the directional-select cone (rad). Brief: 35 degrees. */
+const SELECT_CONE = (35 * Math.PI) / 180;
+/** Selection score weights. Brief: 60% angular fit / 25% lane / 15% distance. */
+const SELECT_W_ANGLE = 0.60;
+const SELECT_W_LANE = 0.25;
+const SELECT_W_DIST = 0.15;
+/** Below this the lane is too short to be a pass at all (m). */
+const SELECT_MIN_RANGE = 1.5;
+/** A commanded route ghost lives this long for the HUD (s). */
+const CUT_GHOST_TIME = 1.5;
+
+/** Aim assist only engages inside this much raw error (rad). Brief: 12 degrees. */
+const ASSIST_WINDOW = (12 * Math.PI) / 180;
+/** And may never rotate the release by more than this (rad). Brief: 5 degrees. */
+const ASSIST_MAX = (5 * Math.PI) / 180;
+
+/** Stall count at which the reset handler is auto-selected. Brief: 7. */
+const DUMP_STALL = 7;
+
+/** Control moves to the intended receiver this long after the release (s). */
+const HANDOFF_DELAY = 0.10;
+/** Control is frozen for this long after possession flips (s). Brief: 0.6. */
+const TURNOVER_GRACE = 0.60;
+/** Move-stick magnitude that counts as "the human touched it" during grace. */
+const GRACE_TOUCH = 0.15;
+/** Two switch presses inside this window read as a double tap (s). Brief: 0.3. */
+const DOUBLE_TAP = 0.30;
 
 const ARCHETYPES: readonly Archetype[] = [
   'handler', 'handler', 'handler', 'cutter', 'cutter', 'deep', 'utility',
@@ -181,6 +220,52 @@ export class GameSystem implements System {
   private humanStep = -1;
   private humanIdle = 99;
 
+  /* ------------------------------------------------------ targeting/control
+   *
+   * The seam §6 of the design brief describes: `Human.ts` produces a
+   * directional select and a callCut, `Input.ts` emits `input:receiver`, and
+   * until now nothing consumed either. Everything below is that consumer.
+   */
+
+  /** Monotonic simulation seconds. Drives the handoff and double-tap clocks. */
+  private simT = 0;
+  /** Where the current selection came from — HUD draws a dump bracket amber. */
+  private selectSource: SelectSource = 'none';
+  /** Lane the selected receiver occupies, via `Playbook.laneOf`. */
+  private selectedLane: LaneKey | null = null;
+  /** Last directional select, scored. Telemetry for the HUD and the tests. */
+  private candidates: SelectCandidate[] = [];
+  /** Route the human last commanded, and how long ago — the §4 route ghost. */
+  private cutRoute: CutRoute | null = null;
+  private cutRouteFor = -1;
+  private cutRouteAge = 0;
+  /** callCut is edge-triggered: one command per hold, not one per step. */
+  private cutHeld = false;
+  private cutCommandFor = -1;
+  /** Signed rotation the last release's aim assist applied (rad). */
+  private lastAssist = 0;
+
+  /** Pending control transfer to the intended receiver: id and the due time. */
+  private handoffTo = -1;
+  private handoffAt = 0;
+  /**
+   * Sim time the post-turnover control freeze ends, or -1 when there is none.
+   * An absolute deadline rather than a countdown, so the window is exactly
+   * 0.6 s and not 0.6 s minus the step it opened on.
+   */
+  private graceUntil = -1;
+  /** True once the human moved or pressed switch inside the grace window. */
+  private graceTouched = false;
+  /** Possession as of the end of the previous step; flips are detected here. */
+  private lastPossession: TeamId | null = null;
+  /** Sim time of the last switch press, for the double-tap escape hatch. */
+  private lastSwitchT = -99;
+  /** Diagnostics: how many times control has moved, and why it last moved. */
+  private controlChanges = 0;
+  private controlReason = 'init';
+  /** The event bus, cached in init so control changes can announce themselves. */
+  private bus: Ctx['events'] | null = null;
+
   /* tableau */
   private posed = false;
   private poseName = '';
@@ -193,6 +278,7 @@ export class GameSystem implements System {
   init(ctx: Ctx): void {
     this.seed = ctx.rand.fork(0x6a3e1c).int(0, 0x7fffffff);
     this.rng = new Rng(this.seed);
+    this.bus = ctx.events;
     // The live registry, not a snapshot: peers that register after us (the
     // character system is one slot behind) appear on it as they are built.
     this.sysRef = ctx.sys as unknown as Record<string, unknown>;
@@ -232,6 +318,7 @@ export class GameSystem implements System {
     });
     this.gs.startGame();
     this.lastPhase = this.gs.phase;
+    this.lastPossession = this.gs.possession;
 
     this.rebuildAI();
     this.buildWorld();
@@ -320,9 +407,16 @@ export class GameSystem implements System {
       if (this.posed) return;
     }
 
+    this.simT += dt;
     this.readHuman(ctx, dt);
     this.syncAIFromBodies();
     this.buildWorld();
+
+    /* 0 — targeting --------------------------------------------------------
+     * Before the AI runs, so a cut commanded this step is executed this step
+     * rather than eight milliseconds late.
+     */
+    this.stepTargeting(dt, ctx);
 
     /* 1 — intents ---------------------------------------------------------- */
     this.intents.length = 0;
@@ -362,7 +456,11 @@ export class GameSystem implements System {
 
     /* 7 — the referee ------------------------------------------------------- */
     this.orchestrate(dt);
-    this.autoSelectControlled();
+    // Possession is watched on the SAME fixed step it flips — the gates the
+    // input system reads are derived from `gs`, so they invert here too, and
+    // the buffer flush has to happen before a stale press can be re-read.
+    this.watchPossession(ctx);
+    this.autoSelectControlled(ctx);
 
     if (this.gs.phase !== this.lastPhase) {
       this.onPhaseChange(this.lastPhase, this.gs.phase);
@@ -472,11 +570,14 @@ export class GameSystem implements System {
 
   /** Human intent -> the same one-shot `PlayerAction` the AI emits. */
   private humanAction(hi: HumanIntent, e: RosterEntry): PlayerAction | null {
-    if (hi.receiver.cycle !== 0) this.cycleReceiver(hi.receiver.cycle);
     if (hi.release.fired && this.gs.thrower === e.id && this.gs.phase === 'LIVE_POSSESSION') {
       const type = HUMAN_THROW_MAP[hi.release.type] ?? 'backhand';
-      const yaw = hi.release.aimYaw;
       const q = hi.release.quality;
+      // Aim assist first, jitter second, and in that order on purpose: the
+      // assist is a correction to what the player POINTED at, and the spread is
+      // the hand shaking on what he actually threw. Reversing them would let a
+      // sloppy release be quietly cleaned up by the assist.
+      const yaw = this.assistedYaw(e, hi.release.aimYaw, q, hi.release.power);
       // Release quality is spread, exactly as it is for the AI: a rushed or
       // overcharged throw wanders, a perfect one goes where it was pointed.
       const spread = (1 - q) * 0.16 + (1 - hi.release.steadiness) * 0.05;
@@ -497,6 +598,282 @@ export class GameSystem implements System {
     let i = mates.findIndex((r) => r.id === this.selectedReceiver);
     i = (i + (delta > 0 ? 1 : -1) + mates.length * 2) % mates.length;
     this.selectedReceiver = mates[i].id;
+  }
+
+  /* ============================================== receiver targeting (§2) */
+
+  /**
+   * One step of the targeting layer.
+   *
+   * Runs before the AI so a commanded cut is a cut this step. Everything it
+   * reads is either the human's intent for this step or the rules machine's
+   * state; nothing here can change a body's position, only which body the game
+   * is pointing at.
+   */
+  private stepTargeting(dt: number, ctx: Ctx): void {
+    if (this.cutRoute) {
+      this.cutRouteAge += dt;
+      if (this.cutRouteAge > CUT_GHOST_TIME) { this.cutRoute = null; this.cutRouteFor = -1; }
+    }
+
+    const gs = this.gs;
+    const thrower = gs.thrower !== null ? this.byId.get(gs.thrower) : undefined;
+    const live = gs.phase === 'LIVE_POSSESSION' && !!thrower
+      && gs.possession !== null && thrower.team === gs.possession;
+    if (!live || !thrower) { this.cutHeld = false; return; }
+
+    const hi = this.liveHumanIntent(ctx);
+    const driving = !!hi && this.controlledPlayerId === thrower.id;
+
+    if (hi && driving) {
+      const rc = hi.receiver;
+      if (rc.cycle !== 0) { this.cycleReceiver(rc.cycle); this.selectSource = 'human'; }
+      if (rc.slot >= 0) this.selectSlot(rc.slot, thrower);
+      // The flick: RS past `selectThreshold` commits a direction, and the game
+      // resolves it to a body. Free aim stays authoritative — this only decides
+      // who the bracket, the assist and the callCut are talking about.
+      if (rc.selectFresh) {
+        const id = this.resolveConeSelect(rc.selectX, rc.selectZ, thrower);
+        if (id >= 0) {
+          this.selectedReceiver = id;
+          this.selectSource = 'human';
+          this.announceSelection(ctx, 'cone');
+        }
+      }
+      // Hold it and the selected receiver runs the cut the stick indicates.
+      const wantCut = rc.callCut && (rc.selectX !== 0 || rc.selectZ !== 0);
+      if (wantCut && (!this.cutHeld || this.cutCommandFor !== this.selectedReceiver)) {
+        this.commandCut(ctx, rc.selectX, rc.selectZ);
+      }
+      this.cutHeld = wantCut;
+    } else {
+      this.cutHeld = false;
+    }
+
+    // A selection that has stopped making sense is dropped rather than aimed at.
+    if (this.selectedReceiver >= 0) {
+      const r = this.byId.get(this.selectedReceiver);
+      if (!r || r.team !== thrower.team || r.id === thrower.id || !this.loco.isAvailable(r.loco)) {
+        this.selectedReceiver = -1;
+        this.selectSource = 'none';
+        this.selectedLane = null;
+      }
+    }
+
+    // The dump default: at stall 7 the panic button is already aimed.
+    if (this.selectedReceiver < 0 && gs.stallCount >= DUMP_STALL) {
+      const id = this.resetHandler(thrower);
+      if (id >= 0) {
+        this.selectedReceiver = id;
+        this.selectSource = 'dump';
+        this.selectedLane = this.laneOfPlayer(id, thrower.team);
+        this.announceSelection(ctx, 'dump');
+      }
+    }
+  }
+
+  /**
+   * Resolve a stick direction to the teammate it means.
+   *
+   * A 35-degree half-angle cone out of the thrower, scored 60% angular fit /
+   * 25% lane openness / 15% distance sanity — the brief's numbers exactly. The
+   * cone is generous because the stick is a coarse instrument; the lane term is
+   * what stops it from handing you the man standing behind a defender, and the
+   * distance term is what stops a 2 m dish and a 55 m prayer from outscoring
+   * the 20 m cut you were obviously looking at.
+   *
+   * Returns the receiver id, or -1 if the cone is empty.
+   */
+  private resolveConeSelect(dx: number, dz: number, thrower: RosterEntry): number {
+    this.candidates.length = 0;
+    const l = Math.hypot(dx, dz);
+    if (!(l > 1e-3)) return -1;
+    const ux = dx / l, uz = dz / l;
+    const ox = thrower.loco.pos.x, oz = thrower.loco.pos.z;
+
+    let best = -1;
+    let bestScore = -1;
+    for (const r of this.roster) {
+      if (r.team !== thrower.team || r.id === thrower.id) continue;
+      if (!this.loco.isAvailable(r.loco)) continue;
+      const vx = r.loco.pos.x - ox, vz = r.loco.pos.z - oz;
+      const d = Math.hypot(vx, vz);
+      if (d < SELECT_MIN_RANGE) continue;
+      const cos = clampNum((vx * ux + vz * uz) / d, -1, 1);
+      const angle = Math.acos(cos);
+      if (angle > SELECT_CONE) continue;
+
+      const angular = 1 - angle / SELECT_CONE;
+      const openness = 1 - this.laneBlockage(ox, oz, r);
+      // Sane range for a thrown disc: everything from a 6 m dish out to a 30 m
+      // strike is worth full marks, tapering to nothing at the 46 m the arm
+      // cannot reach anyway.
+      const sanity = smooth01(d, 2.0, 6.0) * (1 - smooth01(d, 30, 46));
+      const score = SELECT_W_ANGLE * angular + SELECT_W_LANE * openness + SELECT_W_DIST * sanity;
+      this.candidates.push({ id: r.id, angle, angular, openness, distance: d, sanity, score });
+      if (score > bestScore) { bestScore = score; best = r.id; }
+    }
+    if (best >= 0) this.selectedLane = this.laneOfPlayer(best, thrower.team);
+    return best;
+  }
+
+  /**
+   * How blocked the straight lane from the disc to a receiver is, 0..1.
+   *
+   * Deliberately the same model `TeamAI.laneBlockage` runs — a defender counts
+   * for how much of the corridor he can put a hand into by the time the disc
+   * gets there, scaled by his awareness — expressed against a ground corridor
+   * rather than a sampled flight, and built out of `AI.ts`'s own exported
+   * primitives (`effectiveMaxSpeed`, `throwFlightTime`) so the two cannot drift
+   * apart in their tuning. It lives here rather than in `AI.ts` because the
+   * AI's copy is private to `TeamAI` and this file owns only the one command
+   * entry point over there.
+   *
+   * The first 0.6 m and the last 22% are skipped for the same reason the AI
+   * skips them: the release window belongs to the mark and the tail belongs to
+   * the receiver's own defender, which is separation, not blockage.
+   */
+  private laneBlockage(ox: number, oz: number, r: RosterEntry): number {
+    const tx = r.loco.pos.x, tz = r.loco.pos.z;
+    const len = Math.hypot(tx - ox, tz - oz);
+    if (len < 1e-3) return 0;
+    const ux = (tx - ox) / len, uz = (tz - oz) / len;
+    const tf = throwFlightTime(r.ai, 'backhand', len);
+    let worst = 0;
+    for (const f of this.roster) {
+      if (f.team === r.team) continue;
+      if (!this.loco.isAvailable(f.loco)) continue;
+      const rx = f.loco.pos.x - ox, rz = f.loco.pos.z - oz;
+      const along = rx * ux + rz * uz;
+      if (along < 0.6 || along > len * 0.78) continue;
+      const perp = Math.abs(rx * uz - rz * ux);
+      const t = (along / len) * tf;
+      const reachable = 0.60 + effectiveMaxSpeed(f.ai) * Math.max(0, t - 0.14) * 0.72;
+      const awareness = 0.55 + 0.45 * (f.ai.attr.defAwareness / 100);
+      const w = clampNum((reachable - perp) / 1.4, 0, 1) * awareness;
+      if (w > worst) worst = w;
+    }
+    return clampNum(worst, 0, 0.97);
+  }
+
+  /** Keyboard 1-7 direct select, mapped through the possession team's roster. */
+  private selectSlot(slot: number, thrower: RosterEntry): void {
+    const mates = this.roster.filter((r) => r.team === thrower.team && r.id !== thrower.id);
+    const r = mates[clampNum(slot, 0, mates.length - 1) | 0];
+    if (!r || !this.loco.isAvailable(r.loco)) return;
+    this.selectedReceiver = r.id;
+    this.selectSource = 'human';
+    this.selectedLane = this.laneOfPlayer(r.id, thrower.team);
+  }
+
+  /** `Playbook.laneOf` against the live disc — the HUD's name for the throw. */
+  private laneOfPlayer(id: number, team: TeamId): LaneKey | null {
+    const r = this.byId.get(id);
+    if (!r) return null;
+    const s = this.discRuntime.state.pos;
+    return laneOf(r.loco.pos.x, r.loco.pos.z, { x: s.x, z: s.z },
+      this.gs.attackDir[team], this.ai[team].openSign as Sign);
+  }
+
+  /**
+   * The reset handler: the nearest available handler BEHIND the disc.
+   *
+   * "Behind" is what makes it a reset rather than a second cutter in the lane,
+   * and it is the whole reason this selection is safe to make automatically.
+   * Non-handlers are eligible but carry a 25 m penalty, so one is only ever
+   * chosen when there is genuinely no handler back there.
+   */
+  private resetHandler(thrower: RosterEntry): number {
+    const dir = this.gs.attackDir[thrower.team];
+    const s = this.discRuntime.state.pos;
+    let best = -1;
+    let bestScore = Infinity;
+    for (const r of this.roster) {
+      if (r.team !== thrower.team || r.id === thrower.id) continue;
+      if (!this.loco.isAvailable(r.loco)) continue;
+      if (dir * (r.loco.pos.z - s.z) > 1.0) continue;
+      const d = Math.hypot(r.loco.pos.x - s.x, r.loco.pos.z - s.z);
+      const isHandler = r.ai.role === 'handler' || r.archetype === 'handler';
+      const score = d + (isHandler ? 0 : 25);
+      if (score < bestScore) { bestScore = score; best = r.id; }
+    }
+    return best;
+  }
+
+  /**
+   * Send the selected receiver on the cut the stick indicates.
+   *
+   * The whole of the command is `TeamAI.commandCut` — the one documented entry
+   * point this file adds to `AI.ts`. Everything after it is presentation: the
+   * route is kept for 1.5 s so `Gameplay.ts` can draw the order that was given
+   * next to the execution of it.
+   */
+  private commandCut(ctx: Ctx, dx: number, dz: number): void {
+    const gs = this.gs;
+    const id = this.selectedReceiver;
+    this.cutCommandFor = id;
+    if (id < 0 || gs.possession === null) return;
+    const r = this.byId.get(id);
+    if (!r || r.team !== gs.possession) return;
+    const s = this.discRuntime.state.pos;
+    const cut = this.ai[gs.possession].commandCut(id, dx, dz, { x: s.x, z: s.z });
+    if (!cut) return;
+    this.cutRoute = cut;
+    this.cutRouteFor = id;
+    this.cutRouteAge = 0;
+    ctx.events.emit('input:cut', {
+      playerId: id, kind: cut.kind, lane: cut.lane,
+      setupX: cut.setup.x, setupZ: cut.setup.z,
+      targetX: cut.target.x, targetZ: cut.target.z,
+      ttl: CUT_GHOST_TIME,
+    });
+  }
+
+  private announceSelection(ctx: Ctx, how: 'cone' | 'dump'): void {
+    const r = this.byId.get(this.selectedReceiver);
+    if (!r) return;
+    ctx.events.emit('receiver:selected', {
+      playerId: r.id, how, lane: this.selectedLane,
+      x: r.loco.pos.x, z: r.loco.pos.z,
+    });
+  }
+
+  /**
+   * Quality-scaled aim assist (§2).
+   *
+   * If a receiver is selected and the raw aim is already within 12 degrees of
+   * the ideal lead, rotate toward the lead by up to 5 degrees, scaled by
+   * release quality — a perfect-window release gets all 5, a rushed one gets
+   * almost none. Timing skill buys accuracy; it does not buy aim. Outside the
+   * 12-degree window nothing happens at all, because at that point the player
+   * is throwing somewhere else on purpose and the disc must go there.
+   *
+   * The lead is solved against the receiver's own velocity in two passes, which
+   * is the same converging lead `AI.ts` uses and is accurate to well inside the
+   * 5 degrees this is allowed to move.
+   */
+  private assistedYaw(e: RosterEntry, yaw: number, quality: number, power: number): number {
+    this.lastAssist = 0;
+    const id = this.selectedReceiver;
+    if (id < 0) return yaw;
+    const r = this.byId.get(id);
+    if (!r || r.team !== e.team || r.id === e.id) return yaw;
+
+    this.releaseOrigin(e, _from);
+    const speed = clampNum(9 + 19 * power, 8, 27);
+    let lx = r.loco.pos.x, lz = r.loco.pos.z;
+    for (let i = 0; i < 2; i++) {
+      const d = Math.hypot(lx - _from.x, lz - _from.z);
+      const t = clampNum(d / (speed * 0.82), 0, 3.5);
+      lx = r.loco.pos.x + r.loco.vel.x * t;
+      lz = r.loco.pos.z + r.loco.vel.z * t;
+    }
+    const ideal = Math.atan2(lx - _from.x, lz - _from.z);
+    const err = wrapPi(ideal - yaw);
+    if (Math.abs(err) > ASSIST_WINDOW) return yaw;
+    const rot = clampNum(err, -ASSIST_MAX, ASSIST_MAX) * clampNum(quality, 0, 1);
+    this.lastAssist = rot;
+    return yaw + rot;
   }
 
   /* --------------------------------------------------------------- actions */
@@ -716,6 +1093,19 @@ export class GameSystem implements System {
     const s = this.discRuntime.state;
     this.thrownBy = e.id;
     this.intendedReceiver = receiverId;
+    /**
+     * Control follows the disc, 0.1 s behind it (§3).
+     *
+     * The tenth of a second is the follow-through: yanking the avatar on the
+     * release frame steals the one gesture the thrower makes. After it, the
+     * human is the receiver — which hands them the catch, the layout bid and
+     * the first pivot, and those three are where the game lives. With no
+     * receiver selected the handoff is skipped and control moves at the catch
+     * instead, in `onCaught`.
+     */
+    this.handoffTo = (e.team === this.humanTeam && receiverId >= 0 && this.byId.has(receiverId))
+      ? receiverId : -1;
+    this.handoffAt = this.simT + HANDOFF_DELAY;
     this.hadInBounds = isInBounds({ x: s.pos.x, y: 0, z: s.pos.z });
     this.lastInBounds.copy(s.pos);
     this.flightSettled = false;
@@ -981,6 +1371,13 @@ export class GameSystem implements System {
     this.thrownBy = -1;
     this.intendedReceiver = -1;
     this.flightSettled = true;
+    // Control to the catcher (§3) — but only on a catch that did NOT flip
+    // possession. A D or an interception is a turnover, and a turnover owns
+    // the next 0.6 s of control by the grace rule, not this line.
+    if (e.team === this.humanTeam && this.lastPossession === e.team && this.handoffTo < 0) {
+      this.takeControl(e.id, 'catch');
+    }
+    this.handoffTo = -1;
     if (this.gs.phase === 'TURNOVER_DEAD') { this.afterTurnoverInAir(); return; }
     this.discRuntime.mode = 'held';
     this.discRuntime.holderId = e.id;
@@ -1097,6 +1494,10 @@ export class GameSystem implements System {
       this.discRuntime.mode = 'held';
       this.discRuntime.holderId = this.gs.thrower;
       this.selectedReceiver = -1;
+      this.selectSource = 'none';
+      this.selectedLane = null;
+      this.cutHeld = false;
+      this.cutCommandFor = -1;
     }
     if (to === 'POINT_SCORED') this.poseHold = 0;
     void from;
@@ -1119,6 +1520,17 @@ export class GameSystem implements System {
     this.discRuntime.mode = 'ground';
     this.thrownBy = -1;
     this.intendedReceiver = -1;
+    this.handoffTo = -1;
+    this.graceUntil = -1;
+    this.graceTouched = false;
+    this.selectedReceiver = -1;
+    this.selectSource = 'none';
+    this.selectedLane = null;
+    this.cutRoute = null;
+    this.cutRouteFor = -1;
+    this.cutHeld = false;
+    this.cutCommandFor = -1;
+    this.lastPossession = gs.possession;
   }
 
   private doPull(): void {
@@ -1194,15 +1606,54 @@ export class GameSystem implements System {
   /* --------------------------------------------------------- player control */
 
   /**
-   * On offence you drive whoever has the disc; on defence you drive whoever has
-   * the best claim on the disc's destination. Both are what the player expects
-   * to happen without asking.
+   * Who the human is driving (§3).
+   *
+   * On offence you are the disc: control snaps to the thrower while it is in a
+   * hand, follows the intended receiver 0.1 s after the release, and lands on
+   * the catcher at the catch. On defence control does not move on its own at
+   * all while somebody is playing — a switch is a decision, and taking it away
+   * from the player is how a defence stops being readable — with two
+   * exceptions: the grace-window policy switch after a turnover, and the
+   * nearest-to-threat fallback when there is no human input at all (the
+   * screenshot rig and the attract-mode demo, `humanIdle > 1.5`).
+   *
+   * Two invariants, both asserted in tools/test-game.ts:
+   *   - control is never handed to a body `Locomotion.isAvailable` rejects;
+   *   - control never moves on its own while the CURRENT body is unavailable —
+   *     you committed to that layout and you get to watch it land.
    */
-  private autoSelectControlled(): void {
+  private autoSelectControlled(ctx: Ctx): void {
     const gs = this.gs;
+
+    // (a) The 0.6 s turnover grace. Control is frozen; the situation inverts
+    //     around the body you already had.
+    if (this.simT < this.graceUntil) {
+      const hi = this.liveHumanIntent(ctx);
+      if (hi && (hi.move.mag > GRACE_TOUCH || hi.defence.switchRequested)) this.graceTouched = true;
+      return;
+    }
+    if (this.graceUntil >= 0) {
+      this.graceUntil = -1;
+      this.endGrace();
+      return;
+    }
+
+    // (b) Mid-layout, prone, getting up: you keep the body.
+    const me = this.byId.get(this.controlledPlayerId);
+    if (me && !this.loco.isAvailable(me.loco)) return;
+
+    // (c) Release + 0.1 s -> the intended receiver.
+    if (this.handoffTo >= 0) {
+      if (this.simT < this.handoffAt) return;
+      const to = this.handoffTo;
+      this.handoffTo = -1;
+      if (this.takeControl(to, 'handoff')) return;
+    }
+
     const mine = gs.possession === this.humanTeam;
-    if (mine && gs.thrower !== null && this.byId.get(gs.thrower)?.team === this.humanTeam) {
-      this.controlledPlayerId = gs.thrower;
+    if (mine && gs.phase === 'LIVE_POSSESSION' && gs.thrower !== null
+      && this.byId.get(gs.thrower)?.team === this.humanTeam) {
+      this.takeControl(gs.thrower, 'thrower');
       return;
     }
     if (!mine && this.humanIdle > 1.5) {
@@ -1210,11 +1661,137 @@ export class GameSystem implements System {
       let best = -1, bestScore = Infinity;
       for (const e of this.roster) {
         if (e.team !== this.humanTeam) continue;
+        if (!this.loco.isAvailable(e.loco)) continue;
         const s = Math.hypot(e.loco.pos.x - t.x, e.loco.pos.z - t.z);
         if (s < bestScore) { bestScore = s; best = e.id; }
       }
-      if (best >= 0) this.controlledPlayerId = best;
+      if (best >= 0) this.takeControl(best, 'idle-nearest');
     }
+  }
+
+  /**
+   * Possession changed hands on this fixed step (§3, the mid-flight turnover).
+   *
+   * Three things happen here and they happen together, because the failure mode
+   * is a press made under the old gates resolving under the new ones — a
+   * buffered `throw` coming back 100 ms later as a `switchDefender`:
+   *
+   *   1. the input buffer is flushed;
+   *   2. the indicator is told immediately, so the ring pulses and flips to its
+   *      defensive treatment while the disc is still rolling;
+   *   3. the control freeze opens, and control does NOT move for 0.6 s.
+   *
+   * The policy switch fires at the far end of that window, not here — see
+   * `endGrace`.
+   */
+  private watchPossession(ctx: Ctx): void {
+    const gs = this.gs;
+    const poss = gs.possession;
+    if (poss === this.lastPossession) return;
+    const prev = this.lastPossession;
+    this.lastPossession = poss;
+    if (prev === null || poss === null) return;
+    // A score, halftime and the pull are possession changes the rules machine
+    // makes with the disc already dead. Nothing to grace.
+    switch (gs.phase) {
+      case 'POINT_SCORED': case 'PRE_PULL': case 'HALFTIME':
+      case 'TIMEOUT': case 'GAME_OVER': return;
+      default: break;
+    }
+
+    this.flushInputBuffer(ctx);
+    this.selectedReceiver = -1;
+    this.selectSource = 'none';
+    this.selectedLane = null;
+    this.handoffTo = -1;
+    this.cutHeld = false;
+    this.cutCommandFor = -1;
+    this.graceUntil = this.simT + TURNOVER_GRACE;
+    this.graceTouched = false;
+    ctx.events.emit('control:flip', {
+      playerId: this.controlledPlayerId,
+      team: poss,
+      toDefence: poss !== this.humanTeam,
+      grace: TURNOVER_GRACE,
+    });
+  }
+
+  /**
+   * The grace window closed. Unless the human touched the sticks inside it —
+   * human intent always wins — the switch policy now fires against the dead
+   * disc, or against the predicted landing if it is still moving.
+   */
+  private endGrace(): void {
+    if (this.graceTouched) return;
+    if (this.gs.possession === this.humanTeam) return;   // we won it; the offence rules take over
+    const id = this.policySwitchTarget();
+    if (id >= 0) this.takeControl(id, 'turnover-policy');
+  }
+
+  /**
+   * `pickSwitchTarget` (shipped as-is, per §3) against the current threat, with
+   * one addition the brief asks for: if the body you already have is the best
+   * candidate, nothing moves.
+   */
+  private policySwitchTarget(): number {
+    const cands = this.defenderCandidates();
+    if (cands.length === 0) return -1;
+    const sit = this.switchSituation();
+    const target = pickSwitchTarget(cands, sit, this.controlledPlayerId);
+    if (target < 0) return -1;
+    const me = cands.find((c) => c.id === this.controlledPlayerId);
+    const to = cands.find((c) => c.id === target);
+    if (me && to && me.eligible !== false && switchScore(me, sit) <= switchScore(to, sit)) return -1;
+    return target;
+  }
+
+  /**
+   * The double-tap escape hatch (§3): cycle outward through the defenders by
+   * distance to the threat, for when the policy disagrees with the player.
+   */
+  private cycleSwitchOutward(): boolean {
+    const t = this.threatPoint();
+    const list = this.roster
+      .filter((e) => e.team === this.humanTeam && e.team !== this.gs.possession
+        && this.loco.isAvailable(e.loco))
+      .map((e) => ({ id: e.id, d: Math.hypot(e.loco.pos.x - t.x, e.loco.pos.z - t.z) }))
+      .sort((a, b) => (a.d - b.d) || (a.id - b.id));
+    if (list.length < 2) return false;
+    const i = list.findIndex((c) => c.id === this.controlledPlayerId);
+    return this.takeControl(list[(i + 1) % list.length].id, 'double-tap');
+  }
+
+  /**
+   * The one place `controlledPlayerId` is written. Two refusals, both from §3:
+   *
+   *   - never a body that cannot act (mid-layout, prone, recovering);
+   *   - and never automatically OFF a body that cannot act either. You
+   *     committed to that bid; the 2.04 s of recovery is the price and you get
+   *     to watch it. Only an explicit human switch (`why === 'manual'`) may
+   *     leave a body early, because human intent always wins.
+   */
+  private takeControl(id: number, why: string): boolean {
+    if (id === this.controlledPlayerId) return true;
+    const e = this.byId.get(id);
+    if (!e || !this.loco.isAvailable(e.loco)) return false;
+    const cur = this.byId.get(this.controlledPlayerId);
+    if (why !== 'manual' && cur && !this.loco.isAvailable(cur.loco)) return false;
+    const from = this.controlledPlayerId;
+    this.controlledPlayerId = id;
+    this.controlChanges++;
+    this.controlReason = why;
+    this.bus?.emit('control:changed', { playerId: id, from, reason: why, team: e.team });
+    return true;
+  }
+
+  /**
+   * Drop every buffered press. Duck-typed through `ctx.sys.input` so this file
+   * keeps working with the input system absent (headless tests, capture).
+   */
+  private flushInputBuffer(ctx: Ctx): void {
+    const input = ctx.sys['input'] as unknown as
+      { human?: { buffer?: { clear(action?: string): void } } } | undefined;
+    try { input?.human?.buffer?.clear(); } catch { /* peer under construction */ }
   }
 
   private threatPoint(): { x: number; z: number } {
@@ -1288,9 +1865,62 @@ export class GameSystem implements System {
 
   selectedReceiverId(_playerId: number): number { return this.selectedReceiver; }
 
+  /**
+   * A switch the player asked for. `Input.ts` has already run `pickSwitchTarget`
+   * and handed us its answer; we take it, except on a double tap inside 0.3 s,
+   * which means "not that one" and cycles outward instead.
+   *
+   * A manual switch is human intent, so it beats the turnover grace window —
+   * but it still cannot land on a body that is unavailable.
+   */
   setControlledPlayer(playerId: number): void {
-    if (this.byId.has(playerId)) this.controlledPlayerId = playerId;
+    const dbl = this.simT - this.lastSwitchT <= DOUBLE_TAP;
+    this.lastSwitchT = this.simT;
+    this.graceTouched = true;
+    if (dbl && this.gs.possession !== null && this.gs.possession !== this.humanTeam
+      && this.cycleSwitchOutward()) return;
+    this.takeControl(playerId, 'manual');
   }
+
+  /* ------------------------------------------- targeting/control telemetry */
+
+  /** Id of the currently selected receiver, or -1. */
+  get selectedTarget(): number { return this.selectedReceiver; }
+  /** How that selection was made — the HUD draws a dump bracket differently. */
+  get selectionSource(): SelectSource { return this.selectSource; }
+  /** Lane the selected receiver occupies, per `Playbook.laneOf`. */
+  get selectedTargetLane(): LaneKey | null { return this.selectedLane; }
+  /** The last directional select's scored candidates, best-first order not guaranteed. */
+  get selectCandidates(): readonly SelectCandidate[] { return this.candidates; }
+  /**
+   * The route the human last commanded, in the shape `src/ui/Hud.ts` declares
+   * for its cut-route ghost (§4): who was told to run, which `CutKind` it
+   * resolved to, and the two points the route is drawn through. Null once the
+   * ghost's 1.5 s has expired, so the HUD can fall back to rebuilding it.
+   *
+   * A METHOD, not a field, because that peer calls it as `commandedCut?.()`.
+   */
+  commandedCut(): { playerId: number; kind: string; setup: { x: number; z: number }; target: { x: number; z: number } } | null {
+    const c = this.cutRoute;
+    if (!c || this.cutRouteFor < 0) return null;
+    return {
+      playerId: this.cutRouteFor, kind: c.kind,
+      setup: { x: c.setup.x, z: c.setup.z },
+      target: { x: c.target.x, z: c.target.z },
+    };
+  }
+  /** The raw route, for anything that wants the lane and the timings too. */
+  get commandedRoute(): CutRoute | null { return this.cutRoute; }
+  get commandedRouteAge(): number { return this.cutRouteAge; }
+  /** Signed rotation the last release's aim assist applied, radians. */
+  get lastAimAssist(): number { return this.lastAssist; }
+  /** Seconds left of the post-turnover control freeze; 0 when not in one. */
+  get controlGrace(): number { return Math.max(0, this.graceUntil - this.simT); }
+  /** Diagnostics: how many times control has moved, and why it last moved. */
+  get controlChangeCount(): number { return this.controlChanges; }
+  get controlChangeReason(): string { return this.controlReason; }
+  /** Monotonic simulation seconds — the clock the handoff and taps run on. */
+  get simTime(): number { return this.simT; }
 
   /* ------------------------------------------------------------- telemetry */
 
@@ -1968,6 +2598,12 @@ export class GameSystem implements System {
     this.thrownBy = -1;
     this.intendedReceiver = -1;
     this.flightSettled = true;
+    this.handoffTo = -1;
+    this.graceUntil = -1;
+    this.graceTouched = false;
+    this.cutRoute = null;
+    this.cutRouteFor = -1;
+    this.lastPossession = gs.possession;
     if (resumable) {
       this.discRuntime.mode = 'held';
       this.discRuntime.holderId = holder!.id;
@@ -1986,6 +2622,44 @@ export class GameSystem implements System {
 
 function clampNum(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
+}
+
+/** Smoothstep in [edge0, edge1]; 0 below, 1 above. */
+function smooth01(x: number, edge0: number, edge1: number): number {
+  const t = clampNum((x - edge0) / (edge1 - edge0 || 1e-6), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/** Shortest signed angle in (-PI, PI]. */
+function wrapPi(a: number): number {
+  let v = a % (Math.PI * 2);
+  if (v > Math.PI) v -= Math.PI * 2;
+  else if (v <= -Math.PI) v += Math.PI * 2;
+  return v;
+}
+
+/** Where a receiver selection came from. */
+export type SelectSource = 'none' | 'human' | 'dump';
+
+/**
+ * One teammate weighed against a directional select, with every term of the
+ * score kept separately. Published so the HUD can explain a bracket and so the
+ * tests can assert the weights are what the design brief says they are.
+ */
+export interface SelectCandidate {
+  id: number;
+  /** Angle off the stick direction, radians. Always <= SELECT_CONE. */
+  angle: number;
+  /** 1 dead on the stick, 0 at the edge of the cone. */
+  angular: number;
+  /** 1 a clean lane, 0 a defender standing in it. */
+  openness: number;
+  /** Metres from the thrower. */
+  distance: number;
+  /** 1 inside sane throwing range, tapering to 0 outside it. */
+  sanity: number;
+  /** 0.60 * angular + 0.25 * openness + 0.15 * sanity. */
+  score: number;
 }
 
 function norm2(x: number, z: number): { x: number; z: number } {

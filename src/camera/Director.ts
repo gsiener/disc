@@ -1,183 +1,273 @@
 import * as THREE from 'three';
-import type { Ctx, System } from '../core/Ctx';
-import { SHOTS, type ShotName } from '../capture/Shots';
+import type { Ctx, System } from '../core/Ctx.ts';
+import { Explorer } from './Explorer.ts';
+import { ShotMachine, SHOT_SIDE, type ShotKind } from './Cuts.ts';
+import { TELE, TeleRig } from './Tele.ts';
+import { isLivePhase, type CamPhase, type CamPlayer, type PathPoint, type WorldView } from './View.ts';
 
 /**
- * Viewer camera for the live build.
+ * THE BROADCAST DIRECTOR.
  *
- * The gameplay broadcast director is not written yet (there is no game loop to
- * direct). What this provides instead is an explorer: orbit and free-fly
- * controls plus hotkeys onto the named framings in `capture/Shots.ts`, so the
- * same shots the critics review can be walked around in a browser.
+ * One camera is on air at a time. During live play it is always the tele rig
+ * (`Tele.ts`) — an elevated sideline long lens on a dolly, leading the play and
+ * never chasing the disc. Between points, and only in the phases the rules
+ * machine actually goes dead in, the cut library (`Cuts.ts`) may take the pull
+ * aerial, a low endzone angle or the celebration. There are no cuts while the
+ * disc is live.
  *
- * It deliberately yields to the screenshot rig. `applyShot` hard-pins the camera
- * and emits `shot:applied`; when that fires — or whenever `ctx.capture` is set —
- * this stops writing to the camera entirely, so a captured frame is never a
- * blend of a pinned shot and a live controller.
+ * Two things this file is careful about, both of which have bitten before:
+ *
+ *  1. IT YIELDS TO THE SCREENSHOT RIG. `capture/Shots.ts` hard-pins the camera
+ *     and emits `shot:applied`; when that fires — or whenever `ctx.capture` is
+ *     set — this stops writing to the camera entirely, for good. A captured
+ *     frame is never a blend of a pinned shot and a live controller.
+ *
+ *  2. IT OWNS THE CAMERA-RELATIVE INPUT FRAME. `input/Input.ts` re-reads the
+ *     live camera every step to build the movement basis, so a cut would
+ *     otherwise rotate the player's controls out from under their thumb.
+ *     `latchYaw()` freezes the yaw the input system sees at its pre-cut value
+ *     until the stick comes back under 0.2, and the input system consults it.
  */
 
-const SHOT_ORDER: ShotName[] = [
-  'broadcast', 'sideline', 'closeup', 'layout', 'disc',
-  'stadium', 'turf', 'crowd', 'endzone', 'night',
-];
-
-const TMP = new THREE.Vector3();
-const FWD = new THREE.Vector3();
-const RIGHT = new THREE.Vector3();
-const UP = new THREE.Vector3(0, 1, 0);
+export interface DirectorTelemetry {
+  shot: ShotKind;
+  side: 'sideline' | 'endzone';
+  shotAge: number;
+  cuts: number;
+  cutThisFrame: boolean;
+  lastShotLength: number;
+  forcedCuts: number;
+  phase: CamPhase | 'none';
+  live: boolean;
+  panRate: number;
+  tiltRate: number;
+  zoomRate: number;
+  dollySpeed: number;
+  leadFrac: number;
+  huck: number;
+  redZone: number;
+  frozen: boolean;
+  pullFrac: number;
+  latched: boolean;
+}
 
 export class CameraDirector implements System {
   readonly name = 'camera';
   readonly order = 10;
 
-  private ctx!: Ctx;
-  private target = new THREE.Vector3(0, 1.6, 0);
-  private yaw = 0;
-  private pitch = 0.28;
-  private dist = 46;
+  readonly tele = new TeleRig();
+  readonly cuts = new ShotMachine();
+  private explorer = new Explorer();
 
-  private dragging = false;
-  private lastX = 0;
-  private lastY = 0;
-  private keys = new Set<string>();
-  private freeFly = false;
+  private ctx!: Ctx;
   private pinned = false;
-  private idle = 0;
-  private autoOrbit = true;
   private hint: HTMLElement | null = null;
   private hintTimer = 0;
+
+  /* ---- world view, rebuilt per frame without allocating ---- */
+  private players: CamPlayer[] = [];
+  private view: WorldView | null = null;
+  private lastPhase: CamPhase | 'none' = 'none';
+
+  /* ---- input yaw latch ---- */
+  private latchedYaw: number | null = null;
+
+  readonly telemetry: DirectorTelemetry = {
+    shot: 'tele', side: 'sideline', shotAge: 0, cuts: 0, cutThisFrame: false,
+    lastShotLength: 0, forcedCuts: 0, phase: 'none', live: false,
+    panRate: 0, tiltRate: 0, zoomRate: 0, dollySpeed: 0, leadFrac: 1,
+    huck: 0, redZone: 0, frozen: false, pullFrac: 0, latched: false,
+  };
 
   init(ctx: Ctx): void {
     this.ctx = ctx;
     ctx.events.on('shot:applied', () => { this.pinned = true; });
     if (ctx.capture) { this.pinned = true; return; }
 
-    this.goToShot('broadcast');
-    this.bind();
+    this.explorer.attach(ctx);
+    this.explorer.onFlash = (m) => this.flash(m);
+    this.bindKeys();
     this.buildHint();
-  }
-
-  /* ------------------------------------------------------------- controls */
-
-  private bind(): void {
-    const el = this.ctx.renderer.domElement;
-    el.style.touchAction = 'none';
-    el.style.cursor = 'grab';
-
-    el.addEventListener('pointerdown', (e) => {
-      this.dragging = true;
-      this.autoOrbit = false;
-      this.lastX = e.clientX; this.lastY = e.clientY;
-      el.setPointerCapture(e.pointerId);
-      el.style.cursor = 'grabbing';
-    });
-    el.addEventListener('pointerup', (e) => {
-      this.dragging = false;
-      try { el.releasePointerCapture(e.pointerId); } catch { /* already released */ }
-      el.style.cursor = 'grab';
-    });
-    el.addEventListener('pointermove', (e) => {
-      if (!this.dragging) return;
-      const dx = e.clientX - this.lastX;
-      const dy = e.clientY - this.lastY;
-      this.lastX = e.clientX; this.lastY = e.clientY;
-      this.yaw -= dx * 0.0045;
-      this.pitch = clamp(this.pitch + dy * 0.0035, -1.35, 1.45);
-      this.idle = 0;
-    });
-    el.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      this.autoOrbit = false;
-      // Multiplicative, so zoom feels the same at 2 m as at 200 m.
-      this.dist = clamp(this.dist * Math.exp(e.deltaY * 0.0012), 1.2, 320);
-      this.idle = 0;
-    }, { passive: false });
-
-    window.addEventListener('keydown', (e) => {
-      const idx = e.key === '0' ? 10 : Number(e.key);
-      const named = Number.isFinite(idx) ? SHOT_ORDER[idx - 1] : undefined;
-      if (named) {
-        this.goToShot(named);
-        this.flash(`${idx === 10 ? 0 : idx} · ${named}`);
-        return;
-      }
-      const k = e.key.toLowerCase();
-      if (k === 'f') {
-        this.freeFly = !this.freeFly;
-        this.flash(this.freeFly ? 'free-fly · WASD QE · shift = fast' : 'orbit');
-        return;
-      }
-      if (k === 'r') {
-        this.autoOrbit = !this.autoOrbit;
-        this.flash(this.autoOrbit ? 'auto-orbit on' : 'auto-orbit off');
-        return;
-      }
-      if (k === 'h') { this.toggleHint(); return; }
-      this.keys.add(k);
-      if ('wasdqe'.includes(k)) this.autoOrbit = false;
-    });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
-    window.addEventListener('blur', () => this.keys.clear());
-  }
-
-  /** Frames a named shot without pinning — the viewer can then move freely. */
-  private goToShot(name: ShotName): void {
-    const s = SHOTS[name];
-    TMP.fromArray(s.pos);
-    this.target.fromArray(s.target);
-    TMP.sub(this.target);
-    this.dist = Math.max(TMP.length(), 1e-3);
-    this.yaw = Math.atan2(TMP.x, TMP.z);
-    this.pitch = Math.asin(clamp(TMP.y / this.dist, -1, 1));
-    this.ctx.camera.fov = s.fov;
-    this.ctx.camera.updateProjectionMatrix();
-    // Let sky/lighting restage for this shot's hour, but do NOT emit
-    // 'shot:applied' — that is the rig's pin signal.
-    this.ctx.events.emit('shot:apply', { name, shot: s });
-    this.autoOrbit = false;
-    this.idle = 0;
   }
 
   /* --------------------------------------------------------------- update */
 
   lateUpdate(dt: number, ctx: Ctx): void {
     if (this.pinned) return;
-    const cam = ctx.camera;
-
-    if (this.freeFly) {
-      const speed = (this.keys.has('shift') ? 46 : 13) * dt;
-      cam.getWorldDirection(FWD);
-      RIGHT.crossVectors(FWD, UP).normalize();
-      if (this.keys.has('w')) cam.position.addScaledVector(FWD, speed);
-      if (this.keys.has('s')) cam.position.addScaledVector(FWD, -speed);
-      if (this.keys.has('a')) cam.position.addScaledVector(RIGHT, -speed);
-      if (this.keys.has('d')) cam.position.addScaledVector(RIGHT, speed);
-      if (this.keys.has('e')) cam.position.y += speed;
-      if (this.keys.has('q')) cam.position.y -= speed;
-      if (cam.position.y < 0.25) cam.position.y = 0.25;
-      // Keep the orbit target ahead, so toggling back is not disorienting.
-      this.target.copy(cam.position).addScaledVector(FWD, this.dist);
-      cam.lookAt(this.target);
+    if (this.explorer.isActive) {
+      this.explorer.update(dt, ctx);
       this.tickHint(dt);
       return;
     }
 
-    this.idle += dt;
-    if (this.autoOrbit || this.idle > 25) this.yaw += dt * 0.035;
+    const w = this.readWorld(ctx);
+    if (!w) { this.tickHint(dt); return; }
 
-    const cp = Math.cos(this.pitch);
-    TMP.set(Math.sin(this.yaw) * cp, Math.sin(this.pitch), Math.cos(this.yaw) * cp)
-      .multiplyScalar(this.dist);
-    cam.position.copy(this.target).add(TMP);
-    if (cam.position.y < 0.25) cam.position.y = 0.25;
-    cam.lookAt(this.target);
+    const cam = ctx.camera;
+    const aspect = cam.aspect > 0.1 ? cam.aspect : 16 / 9;
+    const preCutYaw = cameraYawOf(cam);
 
+    // The tele runs every frame whether or not it is on air, so that a cut back
+    // to it lands on a shot that is already tracking rather than one that slews
+    // into position over the next third of a second.
+    this.tele.update(dt, w, aspect);
+    const cut = this.cuts.update(dt, w, aspect);
+    if (cut && this.cuts.shot === 'tele') this.tele.snap(w, aspect);
+
+    if (this.cuts.shot === 'tele') this.tele.apply(cam);
+    else this.cuts.apply(cam);
+
+    if (cut) this.onCut(preCutYaw);
+
+    this.publish(w);
     this.tickHint(dt);
   }
 
-  /* ----------------------------------------------------------------- hint */
+  /* ----------------------------------------------------------- world view */
+
+  /**
+   * Read the match off `ctx.sys.game`. Every field is probed defensively: this
+   * system has to boot with the game system absent (a renderer-only page, a
+   * unit test) and simply do nothing rather than throw in `lateUpdate`.
+   */
+  private readWorld(ctx: Ctx): WorldView | null {
+    const game = ctx.sys['game'] as unknown as GamePeer | undefined;
+    const gs = game?.gs;
+    const rt = game?.discRuntime;
+    if (!gs || !rt || !Array.isArray(game?.roster)) return null;
+
+    const phase = gs.phase as CamPhase;
+    const changed = phase !== this.lastPhase;
+    this.lastPhase = phase;
+
+    const offence: 0 | 1 = (gs.possession ?? gs.receivingTeam ?? 0) as 0 | 1;
+    const attackDir = (gs.attackDir?.[offence] ?? 1) as 1 | -1;
+    const pullDir = (gs.attackDir?.[gs.pullingTeam ?? 0] ?? 1) as 1 | -1;
+
+    if (this.players.length !== game.roster.length) {
+      this.players = game.roster.map((r) => ({ id: r.id, team: r.team, x: 0, y: 0, z: 0 }));
+    }
+    for (let i = 0; i < game.roster.length; i++) {
+      const r = game.roster[i];
+      const p = this.players[i];
+      p.id = r.id; p.team = r.team;
+      p.x = r.loco.pos.x; p.y = r.loco.pos.y; p.z = r.loco.pos.z;
+    }
+
+    const s = rt.state.pos;
+    const dead = phase === 'TURNOVER_DEAD' || phase === 'PRE_PULL';
+    const disc = dead || !Number.isFinite(s.x)
+      ? { x: gs.discPos.x, y: 0.12, z: gs.discPos.z }
+      : { x: s.x, y: s.y, z: s.z };
+
+    const v = this.view ?? (this.view = {
+      phase, phaseTimer: 0, phaseChanged: false, offence, attackDir, pullDir,
+      disc, discFlight: false, throwerId: -1, markerId: -1, receiverId: -1,
+      scorerId: -1, players: this.players,
+      predict: () => this.predict(rt),
+    });
+    v.phase = phase;
+    v.phaseTimer = gs.phaseTimer ?? 0;
+    v.phaseChanged = changed;
+    v.offence = offence;
+    v.attackDir = attackDir;
+    v.pullDir = pullDir;
+    v.disc = disc;
+    v.discFlight = rt.mode === 'flight';
+    v.throwerId = gs.thrower ?? -1;
+    v.markerId = safeCall(() => game.markerId?.() ?? -1, -1);
+    v.receiverId = safeCall(() => game.selectedReceiverId?.(gs.thrower ?? -1) ?? -1, -1);
+    v.scorerId = gs.lastScore?.playerId ?? -1;
+    v.players = this.players;
+    v.predict = () => this.predict(rt);
+    return v;
+  }
+
+  /**
+   * The remaining flight. `DiscRuntime.predictPath` integrates the SAME model
+   * the disc actually flies, at the same fixed step, so the point the camera is
+   * looking at is the point the disc arrives at — which is the only reason a
+   * lead this long is possible at all.
+   */
+  private predict(rt: DiscPeer): readonly PathPoint[] {
+    try { return rt.predictPath(rt.state, 6, 1 / 30) ?? []; } catch { return []; }
+  }
+
+  /* -------------------------------------------------------------- the cut */
+
+  private onCut(preCutYaw: number): void {
+    // Camera-relative movement must not rotate under the player's thumb.
+    this.latchedYaw = preCutYaw;
+  }
+
+  /**
+   * Called by `input/Input.ts` every step. Returns the yaw the movement basis
+   * should use: the pre-cut value while the stick is still deflected, the live
+   * camera the moment it comes back under 0.2 (or immediately, if it already is).
+   */
+  latchYaw(rawYaw: number, moveMag: number): number {
+    if (this.latchedYaw === null) return rawYaw;
+    if (!(moveMag >= 0.2)) { this.latchedYaw = null; return rawYaw; }
+    return this.latchedYaw;
+  }
+
+  /** True while a post-cut latch is holding the input frame. */
+  get yawLatched(): boolean { return this.latchedYaw !== null; }
+
+  /* ------------------------------------------------------------ telemetry */
+
+  private publish(w: WorldView): void {
+    const t = this.telemetry;
+    const c = this.cuts.telemetry;
+    const r = this.tele.telemetry;
+    const onTele = this.cuts.shot === 'tele';
+    t.shot = c.shot;
+    t.side = SHOT_SIDE[c.shot];
+    t.shotAge = c.age;
+    t.cuts = c.cuts;
+    t.cutThisFrame = c.cutThisFrame;
+    t.lastShotLength = c.lastShotLength;
+    t.forcedCuts = c.forced;
+    t.pullFrac = c.pullFrac;
+    t.phase = w.phase;
+    t.live = isLivePhase(w.phase);
+    t.panRate = onTele ? r.panRate : 0;
+    t.tiltRate = onTele ? r.tiltRate : 0;
+    t.zoomRate = onTele ? r.zoomRate : 0;
+    t.dollySpeed = onTele ? r.dollySpeed : 0;
+    t.leadFrac = r.leadFrac;
+    t.huck = r.huck;
+    t.redZone = r.redZone;
+    t.frozen = r.frozen;
+    t.latched = this.latchedYaw !== null;
+  }
+
+  /* ------------------------------------------------------------ debug hooks */
+
+  /** Release the capture pin. Only for probes that want to watch the director. */
+  unpin(): void { this.pinned = false; }
+  pin(): void { this.pinned = true; }
+  get isPinned(): boolean { return this.pinned; }
+  get mode(): 'broadcast' | 'explorer' { return this.explorer.isActive ? 'explorer' : 'broadcast'; }
+
+  setExplorer(on: boolean): void {
+    this.explorer.setActive(on);
+    this.flash(on ? 'explorer · drag/wheel · 1–0 shots · F fly' : 'tele broadcast');
+  }
+
+  /* ------------------------------------------------------------------- ui */
+
+  private bindKeys(): void {
+    if (typeof window === 'undefined') return;
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Backquote') { this.setExplorer(!this.explorer.isActive); return; }
+      if (e.code === 'KeyH' && !this.explorer.isActive) this.toggleHint();
+      else if (e.key.toLowerCase() === 'h' && this.explorer.isActive) this.toggleHint();
+    });
+  }
 
   private buildHint(): void {
+    if (typeof document === 'undefined') return;
     const ui = document.getElementById('ui');
     if (!ui) return;
     const el = document.createElement('div');
@@ -191,11 +281,9 @@ export class CameraDirector implements System {
     ].join(';');
     el.innerHTML = `
       <div style="color:#7fb2ff;letter-spacing:.18em;font-size:9.5px;margin-bottom:7px">
-        ULTIMATE · RENDERER PREVIEW</div>
-      <div data-flash>drag to orbit · wheel to zoom</div>
-      <div><b>1</b>–<b>0</b> jump between framings</div>
-      <div><b>F</b> free-fly · <b>R</b> auto-orbit · <b>H</b> hide</div>
-      <div style="opacity:.55;margin-top:7px">no gameplay yet — players are placeholder capsules</div>`;
+        ULTIMATE · TELE BROADCAST</div>
+      <div data-flash>camera follows the play</div>
+      <div><b>\`</b> renderer explorer · <b>H</b> hide</div>`;
     ui.appendChild(el);
     this.hint = el;
   }
@@ -219,11 +307,58 @@ export class CameraDirector implements System {
     this.hintTimer -= dt;
     if (this.hintTimer <= 0) {
       const line = this.hint?.querySelector('[data-flash]') as HTMLElement | null;
-      if (line) line.textContent = 'drag to orbit · wheel to zoom';
+      if (line) {
+        line.textContent = this.explorer.isActive
+          ? 'drag to orbit · wheel to zoom' : 'camera follows the play';
+      }
     }
   }
 }
 
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
+/* ---------------------------------------------------------------- peers */
+
+interface DiscPeer {
+  mode: string;
+  state: { pos: { x: number; y: number; z: number } };
+  predictPath(state: unknown, horizon?: number, step?: number): PathPoint[];
 }
+
+interface GamePeer {
+  gs: {
+    phase: string;
+    phaseTimer: number;
+    possession: 0 | 1 | null;
+    receivingTeam: 0 | 1;
+    pullingTeam: 0 | 1;
+    attackDir: [number, number];
+    thrower: number | null;
+    discPos: { x: number; y: number; z: number };
+    lastScore: { playerId: number } | null;
+  };
+  discRuntime: DiscPeer;
+  roster: { id: number; team: 0 | 1; loco: { pos: { x: number; y: number; z: number } } }[];
+  markerId?(): number;
+  selectedReceiverId?(id: number): number;
+}
+
+function safeCall<T>(fn: () => T, fallback: T): T {
+  try {
+    const v = fn();
+    return v === undefined || v === null ? fallback : v;
+  } catch { return fallback; }
+}
+
+/**
+ * Yaw the camera is looking along — derived exactly the way `input/Input.ts`
+ * derives it, off the world matrix, so the value handed to the latch is in the
+ * same frame as the value the input system will compare it against.
+ */
+function cameraYawOf(cam: THREE.PerspectiveCamera): number {
+  const e = cam.matrixWorld.elements;
+  const fx = -e[8];
+  const fz = -e[10];
+  if (fx === 0 && fz === 0) return 0;
+  return Math.atan2(fx, fz);
+}
+
+export { TELE };

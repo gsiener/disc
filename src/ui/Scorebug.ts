@@ -15,8 +15,15 @@
  *    timeout pips sideways and the stall count does not shuffle its neighbours.
  *  - **The stall count is an arc gauge.** It is the one number a viewer reads in
  *    peripheral vision while watching the disc, so it gets shape as well as
- *    value: the ring fills, warms at 6, and goes hot at 8 with a pulse on every
- *    tick.
+ *    value: the ring fills, shifts amber at 7, and goes hot at 9 with a pulse on
+ *    every tick.
+ *
+ *    Seven is not a round number, it is the *dump count* — the point at which
+ *    the reset stops being an option and becomes the plan, and the same count
+ *    at which the gameplay layer starts bracketing the reset handler. The two
+ *    marks fire together on purpose: the bug shifts in the corner of your eye
+ *    and the answer appears on the field in the same frame. Amber for "bail
+ *    now", red for "you are out of time".
  *
  * Motion is driven from sim time (see `Dom.ts`), never CSS transitions, so a
  * captured frame is identical run to run.
@@ -31,6 +38,11 @@ import type { HudFrame, HudWidget, Side, TeamBrand } from './Model.ts';
 /** Stall arc geometry, in the gauge's own 40×40 user space. */
 const GA = { cx: 20, cy: 20, r: 15.0, w: 3.7 };
 const CIRC = 2 * Math.PI * GA.r;
+
+/** Amber. Kept identical to `Hud.ts`'s DUMP_STALL — see the header. */
+const DUMP_STALL = 7;
+/** Red. The last two counts of a ten count. */
+const HOT_STALL = 9;
 
 interface TeamCells {
   root: HTMLElement;
@@ -275,8 +287,8 @@ export class Scorebug implements HudWidget {
     const a = this.stallArcM.step(f.dt);
     setAttr(this.stallArc, 'stroke-dasharray', `${(a * CIRC).toFixed(2)} ${(CIRC * 2).toFixed(2)}`);
 
-    const hot = f.stall >= 8;
-    const warn = f.stall >= 6;
+    const hot = f.stall >= HOT_STALL;
+    const warn = f.stall >= DUMP_STALL;
     setFlag(this.stallCell, 'hot', hot);
     setFlag(this.stallCell, 'warn', warn && !hot);
     // Three discrete states, not a ramp. Interpolating blue→amber in RGB passes

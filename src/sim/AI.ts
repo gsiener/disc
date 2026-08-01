@@ -541,6 +541,87 @@ export class TeamAI {
     return this.zoneRole.get(defenderId) ?? null;
   }
 
+  /* ====================================================== command channel */
+
+  /**
+   * THE callCut ENTRY POINT — the one way anything outside this file may steer
+   * an offensive player, and deliberately the only one.
+   *
+   * A human holding a direction on the aim stick (`ReceiverIntent.callCut`,
+   * produced by `src/input/Human.ts` after `cutHoldTime`) is giving an order,
+   * not driving a body: "you, go there". The order has to become a real cut —
+   * a setup step the wrong way, a plant, a hard break into space, a lane
+   * claimed so nobody else runs into it — or the commanded receiver moves
+   * differently from the other six and the offence stops reading as a shape.
+   * So the command is expressed in exactly the vocabulary the AI already runs:
+   * `buildCut()` constructs the route, `Mem.cut` / `cutState` drive it, and
+   * `tickCutters` / `tickHandlerCuts` / `cutterIntent` execute and retire it
+   * with no knowledge that a human asked for it.
+   *
+   * Contract:
+   *   - `dirX`/`dirZ` are a WORLD XZ direction (need not be unit). It is
+   *     resolved to one of the seven `CutKind`s by where it points relative to
+   *     this team's attacking direction and current open side — downfield is a
+   *     deep (a strike in the endzone set), backfield is a dump or a swing,
+   *     across is an under or a break-under, and a handler pushing up the line
+   *     gets the up-line.
+   *   - The commanded cut OUTRANKS an AI cut already holding the same lane:
+   *     that player is sent to clear. Lane exclusivity is the invariant that
+   *     keeps two cutters out of one piece of field, and it survives here.
+   *   - Idempotency is the CALLER's job. Every call rebuilds the route and
+   *     restarts it at `setup`; call it on the edge of the hold, not every
+   *     step, or the receiver will jog the setup step forever.
+   *   - Safe to call before the first `update()`: it no-ops until the roster
+   *     has been seen.
+   *
+   * Returns the route that was committed, or null if the command was refused
+   * (unknown player, wrong team, degenerate direction).
+   */
+  commandCut(receiverId: number, dirX: number, dirZ: number, disc: Vec2): CutRoute | null {
+    const p = this.byId.get(receiverId);
+    if (!p || p.team !== this.team) return null;
+    const l = Math.hypot(dirX, dirZ);
+    if (!(l > 1e-3)) return null;
+
+    const ux = dirX / l;
+    const uz = dirZ / l;
+    const dir = this.dir;
+    const openSign = this.openSign;
+    const downfield = dir * uz;                       // +1 = straight at the goal
+    const side: Sign = (Math.sign(ux) || openSign) as Sign;
+    const isHandler = this.handlerRing.includes(receiverId);
+
+    let kind: CutKind;
+    if (downfield > 0.55) {
+      kind = this.formation === 'endzone' ? 'strike' : 'deep';
+    } else if (downfield < -0.30) {
+      kind = Math.abs(ux) > 0.72 ? 'swing' : 'dump';
+    } else if (isHandler && Math.abs(ux) > 0.50) {
+      kind = 'up-line';
+    } else {
+      kind = side === openSign ? 'under' : 'break-under';
+    }
+
+    const cut = buildCut(kind, { x: p.pos.x, z: p.pos.z }, disc, dir, openSign, side, this.rng.next());
+
+    const m = this.m(receiverId);
+    if (m.cut && this.liveLanes.get(m.cut.lane) === receiverId) this.liveLanes.delete(m.cut.lane);
+    const holder = this.liveLanes.get(cut.lane);
+    if (holder !== undefined && holder !== receiverId) {
+      const hm = this.m(holder);
+      hm.cut = null;
+      hm.cutState = 'clear';
+      hm.cutT = 0;
+      this.liveLanes.delete(cut.lane);
+    }
+    m.cut = cut;
+    m.cutState = 'setup';
+    m.cutT = 0;
+    m.cutCooldown = 0;
+    this.liveLanes.set(cut.lane, receiverId);
+    return cut;
+  }
+
   /* ------------------------------------------------------------- update */
 
   update(world: AIWorld, dt: number): PlayerIntent[] {

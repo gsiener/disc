@@ -59,14 +59,28 @@ function fakeCtx(w: number, h: number): Ctx {
   };
 }
 
-/** A single athlete standing near the middle of the pitch, so the ring projects. */
+/**
+ * A handful of athletes near the middle of the pitch, so every world-anchored
+ * gizmo has something to project onto: the thrower (controlled), the mark that
+ * the force arc is read off, a selected receiver, a reset handler behind the
+ * disc, and a defender for the switch preview to ghost.
+ */
 function fakeSource(): HudSource {
-  const rec: HudPlayer = {
-    id: 3, team: 0, number: 7, name: 'Okafor', position: 'Handler',
-    x: 2, y: 0, z: 2, groundY: 0, stamina: 0.62,
-  };
+  const mk = (
+    id: number, team: 0 | 1, number: number, name: string, position: string,
+    x: number, z: number, stamina = 1, available = true,
+  ): HudPlayer => ({ id, team, number, name, position, x, y: 0, z, groundY: 0, stamina, available });
+
+  const roster: HudPlayer[] = [
+    mk(3, 0, 7, 'Okafor', 'Handler', 2, 2, 0.62),        // thrower / controlled
+    mk(9, 1, 22, 'Vasquez', 'Cutter', 3.1, 2.5),          // the mark
+    mk(5, 0, 14, 'Brennan', 'Cutter', -3.5, 12),          // selected receiver
+    mk(2, 0, 3, 'Sandoval', 'Handler', -3.2, -3.4),       // reset behind the disc
+    mk(11, 1, 41, 'Doyle', 'Cutter', -4.6, 11),           // switch-preview target
+  ];
+  const by = new Map(roster.map((p) => [p.id, p]));
   return {
-    player: (id) => (id === rec.id ? rec : null),
+    player: (id) => by.get(id) ?? null,
     disc: () => ({ x: 2, y: 1.2, z: 2 }),
     flight: () => null,
   };
@@ -93,6 +107,23 @@ function baseFrame(w: number, h: number): HudFrame {
   return f;
 }
 
+/** The off-ball layer, staged so all of it is on screen in one still. */
+function stageLegibility(f: HudFrame): void {
+  f.stall = 7;                       // dump urgency: amber gauge + reset bracket
+  f.dumpId = 2;
+  f.receiverId = 5;
+  f.markerId = 9;
+  f.attackDir = 1;
+  f.forceKnown = true;
+  // The mark is standing on +X, so +X is the closed shoulder.
+  f.forceAngle = Math.atan2(1, 0.4);
+  f.switchPreviewId = 11;
+  f.cut = {
+    playerId: 5, kind: 'under', held: true, at: 6,
+    fromX: -3.5, fromZ: 12, setupX: -2.6, setupZ: 15, targetX: -5.5, targetZ: 8.5,
+  };
+}
+
 /** Root font-size exactly as `HudSystem.resize` computes it. */
 function rootSize(w: number): number { return Math.max(13, Math.min(22, w / 108)); }
 
@@ -107,6 +138,7 @@ function live(host: HTMLElement, w: number, h: number): void {
   const ctx = fakeCtx(w, h);
   const src = fakeSource();
   const f = baseFrame(w, h);
+  stageLegibility(f);
 
   const bug = new Scorebug(root, BRANDS);
   const play = new GameplayLayer(root, ctx, src, BRANDS);
@@ -122,7 +154,10 @@ function live(host: HTMLElement, w: number, h: number): void {
   for (let i = 0; i < 90; i++) { f.t += 1 / 60; for (const wd of [bug, play, card, summary, badges]) wd.update(f); }
 
   card.show({
-    player: { id: 9, team: 1, number: 62, name: 'Brennan', position: 'Cutter', x: 0, y: 0, z: 0, groundY: 0, stamina: 1 },
+    player: {
+      id: 9, team: 1, number: 62, name: 'Brennan', position: 'Cutter',
+      x: 0, y: 0, z: 0, groundY: 0, stamina: 1, available: true,
+    },
     tag: 'Goal',
     sub: 'Cutter · from #14 OKAFOR',
     stats: [{ key: 'G', value: '1' }, { key: 'A', value: '0' }, { key: 'D', value: '0' }],
