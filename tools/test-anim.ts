@@ -324,12 +324,15 @@ function testFeet(rows: LadderRow[]): void {
     `${worstMid.toFixed(3)} mm/frame`);
   ok('no mid-stance frame slips more than 3 mm', worstMidPeak < 3.0,
     `${worstMidPeak.toFixed(2)} mm`);
-  // Whole stance, touchdown transient and toe-off included. 25 mm over a whole
-  // plant is 1.4 % of a body height; at the 40-90 px the game is played at it is
-  // a quarter of a pixel.
-  ok('total slip per stance stays under 25 mm at every speed', worstStance < 25,
+  // Whole stance, touchdown transient and toe-off included. 20 mm over a whole
+  // plant is 1.1 % of a body height; at the 40-90 px the game is played at it is
+  // under a pixel. Note the walk rows accumulate over twice as many frames as
+  // the sprint rows, because a walking foot is down for 0.67 of its cycle.
+  ok('total slip per stance stays under 22 mm at every speed', worstStance < 22,
     `${worstStance.toFixed(1)} mm (p95 over all stances)`);
-  ok('no single frame slips more than 14 mm', worstFrame < 14,
+  // Nothing may jump. A single 12 mm frame is a snap, and a snap is what a
+  // stale plant or a leg that cannot reach its target produces.
+  ok('no single frame slips more than 4 mm', worstFrame < 4,
     `${worstFrame.toFixed(2)} mm`);
 }
 
@@ -496,6 +499,7 @@ function testArms(): void {
   section('6. Arms counter-swing the legs');
   note('common mode is the part of the two arms\' motion that is SHARED — both');
   note('arms forward at once. It is what reads as "carrying a tray".');
+  const swings: number[] = [];
   for (const target of [1.2, 3.0, 5.0, 7.0]) {
     const st = new Stage(0xA12);
     const h = st.add(0);
@@ -525,16 +529,25 @@ function testArms(): void {
       cRms < 0.08 * dRms, `${(100 * cRms / dRms).toFixed(1)} %`);
     ok(`arms are carried forward of the shoulders at ${target.toFixed(1)} m/s`,
       (mL + mR) / 2 > 0.04, `${((mL + mR) / 2).toFixed(3)}`);
-    if (target >= 3) {
-      ok(`swing grows with speed at ${target.toFixed(1)} m/s`, dRms > 0.25, `${dRms.toFixed(3)} rms`);
-    }
+    swings.push(dRms);
   }
+  // Amplitude is not authored — it is read straight back off the leg IK — so
+  // this is really a check that the legs' own swing scales, seen through the
+  // arms. A gait whose arms do not open up with pace reads as a shuffle.
+  let grows = true;
+  for (let i = 1; i < swings.length; i++) if (swings[i] < swings[i - 1] * 1.15) grows = false;
+  ok('arm swing opens up with every step of the speed ladder', grows,
+    swings.map((s) => s.toFixed(3)).join(' -> ') + ' rms');
+  ok('a sprint swings at least twice as far as a walk',
+    swings[swings.length - 1] > 2 * swings[0],
+    `${swings[0].toFixed(3)} -> ${swings[swings.length - 1].toFixed(3)} rms`);
 }
 
 /* ====================================================================== 7 */
 
 function gaitSample(mode: 'run' | 'backpedal' | 'shuffle', speed: number): {
   thighRange: number; thighBack: number; footGap: number; ground: number; lift: number;
+  heelDown: number; state: string; chestFwd: number;
 } {
   const st = new Stage(0xDEF);
   const h = st.add(0);
@@ -547,7 +560,7 @@ function gaitSample(mode: 'run' | 'backpedal' | 'shuffle', speed: number): {
     return { dir: side, speed, face, mode: 'shuffle' };
   };
   st.run(420, want);
-  let lo = 9, hi = -9, gap = 0, ground = 0, n = 0, lift = 0;
+  let lo = 9, hi = -9, gap = 0, ground = 0, n = 0, lift = 0, heel = 0, fwd = 0;
   st.run(300, want, () => {
     const z = boneDir(h, B.thigh_L).z;
     lo = Math.min(lo, z); hi = Math.max(hi, z);
@@ -555,39 +568,68 @@ function gaitSample(mode: 'run' | 'backpedal' | 'shuffle', speed: number): {
       h.feet.L.pos.x - h.feet.R.pos.x, h.feet.L.pos.z - h.feet.R.pos.z));
     if (h.feet.L.contact || h.feet.R.contact) ground++;
     if (!h.feet.L.contact) lift = Math.max(lift, h.feet.L.pos.y - st.bodies[0].groundY);
+    // Toes-up while loaded means the heel is carrying the athlete.
+    if (h.feet.L.contact && h.feet.L.pitch > 0.02) heel++;
+    fwd += chestTilt(h).fwd;
     n++;
   });
-  return { thighRange: hi - lo, thighBack: lo, footGap: gap, ground: ground / n, lift };
+  return {
+    thighRange: hi - lo, thighBack: lo, footGap: gap, ground: ground / n, lift,
+    heelDown: heel / n, state: st.bodies[0].state, chestFwd: fwd / n,
+  };
 }
 
 function testDefensiveGaits(): void {
   section('7. Defensive gaits are not reversed running');
+  note('a backpedal uses the same cadence and stride the simulation gives a forward');
+  note('run — that part is not the animator\'s to change. What separates them is');
+  note('ground contact, foot strike, recovery height and posture.');
   const run = gaitSample('run', 3.0);
   const bp = gaitSample('backpedal', 3.0);
   const sh = gaitSample('shuffle', 3.0);
   for (const [name, g] of [['run', run], ['backpedal', bp], ['shuffle', sh]] as const) {
-    note(`${name.padEnd(10)} thigh swing ${g.thighRange.toFixed(2)} rad  `
-      + `max foot separation ${g.footGap.toFixed(2)} m  `
-      + `ground ${(100 * g.ground).toFixed(0)}%  swing lift ${(g.lift * 100).toFixed(1)} cm`);
+    note(`${name.padEnd(10)} state ${g.state.padEnd(10)} thigh swing ${g.thighRange.toFixed(2)} rad  `
+      + `base ${g.footGap.toFixed(2)} m  ground ${(100 * g.ground).toFixed(0)}%  `
+      + `lift ${(g.lift * 100).toFixed(1)} cm  heel-loaded ${(100 * g.heelDown).toFixed(0)}%  `
+      + `chest ${(Math.asin(g.chestFwd) * 180 / Math.PI).toFixed(1)}°`);
   }
-  // A shuffle is a lateral slide: short choppy legs, a wide base, and the feet
-  // never cross. A backpedal is not a shuffle and neither is a run.
+  ok('all three states are actually reached',
+    run.state === 'jog' && bp.state === 'backpedal' && sh.state === 'shuffle',
+    `${run.state} / ${bp.state} / ${sh.state}`);
+  // A shuffle is a lateral slide: short choppy legs and a wide base.
   ok('a shuffle keeps a wider base than a run', sh.footGap > run.footGap * 1.1,
     `${sh.footGap.toFixed(2)} vs ${run.footGap.toFixed(2)} m`);
   ok('a shuffle takes much shorter steps than a run',
     sh.thighRange < run.thighRange * 0.6,
     `${sh.thighRange.toFixed(2)} vs ${run.thighRange.toFixed(2)} rad of thigh swing`);
-  ok('a backpedal is not just a run played backwards',
-    Math.abs(bp.thighRange - run.thighRange) > 0.03 || bp.ground > run.ground + 0.05,
-    `swing ${bp.thighRange.toFixed(2)} vs ${run.thighRange.toFixed(2)} rad, `
-    + `ground ${(100 * bp.ground).toFixed(0)} vs ${(100 * run.ground).toFixed(0)} %`);
+  // A defender lives on the balls of their feet and stays connected to the turf.
+  ok('a runner puts a heel down and a backpedaller does not',
+    run.heelDown > 0.10 && bp.heelDown < 0.01,
+    `run ${(100 * run.heelDown).toFixed(0)} % vs backpedal ${(100 * bp.heelDown).toFixed(0)} %`);
+  ok('a shuffle never puts a heel down', sh.heelDown < 0.01,
+    `${(100 * sh.heelDown).toFixed(0)} %`);
   ok('a backpedal keeps more of itself on the ground than a run',
-    bp.ground > run.ground, `${(100 * bp.ground).toFixed(0)} vs ${(100 * run.ground).toFixed(0)} %`);
+    bp.ground > run.ground + 0.03,
+    `${(100 * bp.ground).toFixed(0)} vs ${(100 * run.ground).toFixed(0)} %`);
+  ok('defensive footwork skims instead of recovering high',
+    bp.lift < run.lift * 0.75 && sh.lift < run.lift * 0.6,
+    `run ${(100 * run.lift).toFixed(1)} cm, backpedal ${(100 * bp.lift).toFixed(1)} cm, `
+    + `shuffle ${(100 * sh.lift).toFixed(1)} cm`);
+  ok('a defender carries the chest further over the toes than a runner',
+    bp.chestFwd > run.chestFwd + 0.05 && sh.chestFwd > run.chestFwd + 0.03,
+    `run ${run.chestFwd.toFixed(3)}, backpedal ${bp.chestFwd.toFixed(3)}, `
+    + `shuffle ${sh.chestFwd.toFixed(3)}`);
 }
 
 /* ====================================================================== 8 */
 
-/** Sum of per-bone quaternion angles between two poses, radians. */
+/**
+ * Sum of per-bone quaternion angles between two poses, radians.
+ *
+ * `Pose.q` is a Float32Array, and `acos` near 1 amplifies its quantisation: two
+ * bit-identical computations score ~0.02 rad summed over 60 bones rather than 0.
+ * That is the noise floor and every threshold below is set above it.
+ */
 function poseDistance(a: AnimHandle, b: AnimHandle): number {
   let sum = 0;
   for (let i = 0; i < NB; i++) {
@@ -656,11 +698,12 @@ function testDiversity(): void {
   const st2 = new Stage(0x5EED);
   for (let i = 0; i < N; i++) st2.add(i, i * 4, 0);
   st2.run(600, straight(5.0));
-  let same = true;
+  let drift = 0;
   for (let i = 0; i < N; i++) {
-    if (poseDistance(st.handles[i], st2.handles[i]) > 1e-6) same = false;
+    drift = Math.max(drift, poseDistance(st.handles[i], st2.handles[i]));
   }
-  ok('the signature is deterministic', same, 'identical rosters pose identically');
+  ok('the signature is deterministic', drift < 0.05,
+    `worst rebuild drift ${drift.toFixed(4)} rad (float32 noise floor ~0.02)`);
 }
 
 /* ====================================================================== 9 */

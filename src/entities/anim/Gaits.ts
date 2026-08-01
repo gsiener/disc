@@ -84,7 +84,7 @@ export interface BodyState {
    * so they cost nothing and cannot desynchronise anything.
    */
   gSwing: number; gCounter: number; gBob: number; gPelvis: number;
-  gElbow: number; gLean: number;
+  gElbow: number; gAdduct: number; gLean: number;
   /**
    * Which of THIS athlete's feet answers the simulation's `foot.planted === 'L'`.
    * +1 keeps the simulation's naming, −1 swaps it. See `gaitLead` and
@@ -154,6 +154,23 @@ export function gaitLead(id: number): 1 | -1 {
   return (id & 1) === 0 ? 1 : -1;
 }
 
+/**
+ * A 0..1 signature coordinate for player `id` on axis `axis`.
+ *
+ * NOT a hash. A hash is uniform, and uniform is exactly wrong here: over eight
+ * athletes a uniform draw leaves some pair within a per cent of each other on
+ * every axis at once, and that pair is two clones. The golden-ratio sequence
+ * `frac(id·φ)` is a low-discrepancy set — by the three-distance theorem the
+ * smallest gap between any two of N points is bounded below and for N = 14 it is
+ * about a eighteenth of the range, which no random draw guarantees. Offsetting
+ * per axis rotates the same well-spread set, so no pair can be adjacent on one
+ * axis and identical on the next.
+ */
+export function gsig(id: number, axis: number): number {
+  const x = (id | 0) * 0.61803398875 + axis * 0.38196601125 + 0.137;
+  return x - Math.floor(x);
+}
+
 /** Small deterministic hash — per-player variety without touching an Rng. */
 export function hash01(n: number): number {
   let x = (n | 0) * 0x9e3779b1;
@@ -175,13 +192,13 @@ export function makeBody(seed: number): BodyState {
     // Six independent hashes off the one seed. Spreads are deliberately modest —
     // ±15 % on an amplitude is the difference between two runners, ±40 % is the
     // difference between a runner and a cartoon.
-    gSwing: 0.80 + hash01(seed * 31 + 7) * 0.42,
-    gCounter: 0.78 + hash01(seed * 37 + 19) * 0.48,
-    gBob: 0.80 + hash01(seed * 41 + 29) * 0.44,
-    gPelvis: 0.80 + hash01(seed * 43 + 53) * 0.44,
-    gElbow: (hash01(seed * 47 + 61) - 0.5) * 0.46,
-    gAdduct: (hash01(seed * 61 + 97) - 0.5) * 0.24,
-    gLean: (hash01(seed * 53 + 71) - 0.5) * 0.115,
+    gSwing: 0.80 + gsig(seed, 0) * 0.42,
+    gCounter: 0.78 + gsig(seed, 1) * 0.48,
+    gBob: 0.80 + gsig(seed, 2) * 0.44,
+    gPelvis: 0.80 + gsig(seed, 3) * 0.44,
+    gElbow: (gsig(seed, 4) - 0.5) * 0.46,
+    gAdduct: (gsig(seed, 5) - 0.5) * 0.24,
+    gLean: (gsig(seed, 6) - 0.5) * 0.115,
     parity: 0,
     // Offset so two athletes stood side by side are never on the same breath,
     // the same weight shift or the same head drift.
@@ -233,7 +250,7 @@ export function updateDrivers(
   if (dt > 1e-5 && !loco.air.airborne) {
     const ax = (loco.vel.x - bs.prevVX) / dt;
     const az = (loco.vel.z - bs.prevVZ) / dt;
-    const k = 1 - Math.exp(-11 * dt);
+    const k = 1 - Math.exp(-18 * dt);
     bs.accX += (clamp(ax, -30, 30) - bs.accX) * k;
     bs.accZ += (clamp(az, -30, 30) - bs.accZ) * k;
   }
@@ -270,7 +287,16 @@ export function updateDrivers(
   sideT = clamp(sideT, -0.60, 0.60);
 
   [bs.lean, bs.leanV] = spring(bs.lean, bs.leanV, leanT, 13, dt);
-  [bs.side, bs.sideV] = spring(bs.side, bs.sideV, sideT, 12, dt);
+  /**
+   * The lateral lean is sprung nearly twice as stiff as the forward one, and it
+   * has to be. A hard cut spends its peak lateral load inside about 0.15 s; at
+   * omega 12, behind an 11 rad/s acceleration filter, the trunk was still at
+   * 16 degrees when the physics was asking for 55 and only reached its full
+   * lean a third of a second later, by which time the athlete is running
+   * straight again. A lean that arrives after the turn is not a lean, it is a
+   * wobble.
+   */
+  [bs.side, bs.sideV] = spring(bs.side, bs.sideV, sideT, 23, dt);
 
   // --- crouch ----------------------------------------------------------------
   bs.crouch = damp(bs.crouch, stateCrouch(loco, bs), 14, dt);
@@ -636,7 +662,7 @@ const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0, fwd: 0 };
 export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   const sp = bs.sp;
   const t = armTuneFor(loco, bs);
-  const k = (0.40 + 0.34 * sp) * t.swing * bs.gSwing;
+  const k = (0.46 + 0.40 * sp) * t.swing * bs.gSwing;
   // Elbow carriage is a function of GROUND SPEED, not of speed-as-a-fraction-
   // of-top-speed, and it saturates: a jogger and a sprinter both run with the
   // elbow near a right angle, and what actually grows with pace is the swing
@@ -644,7 +670,7 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   // left everyone below a sprint running with near-straight arms.
   const carriage = smooth(clamp01(bs.speed / 3.2));
   const elbowBase = 0.26 + 1.06 * carriage + t.elbow + bs.gElbow * carriage;
-  const adductBase = 0.34 + 0.16 * sp + t.adduct;
+  const adductBase = 0.34 + 0.16 * sp + t.adduct + bs.gAdduct * carriage;
   /**
    * The arms are carried FORWARD of the shoulder line while running, and that
    * offset is a constant, not a by-product of the swing. It used to arrive as a
@@ -656,8 +682,15 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
    * the swing was biased +0.53/−0.25 forward — the "carrying a tray" read.
    * Subtracting the filtered mean in full leaves a pure differential, and this
    * puts the carriage back as an honest constant.
+   *
+   * It is a SMALL constant. Measured off the committed bones, 0.085 + 0.130
+   * centred the shoulder's swing 15 degrees forward of vertical, so the back of
+   * the swing only reached 22 degrees of extension and the hand never got behind
+   * the hip — side-on the athlete reads as paddling in front of themselves. A
+   * runner's shoulder swings about a point much nearer vertical; the hand is
+   * carried forward by the ELBOW, not by parking the whole arm there.
    */
-  const runFwd = t.swing > 0 ? (0.085 + 0.130 * carriage) * t.swing : 0;
+  const runFwd = t.swing > 0 ? (0.045 + 0.070 * carriage) * t.swing : 0;
 
   for (let si = 0; si < 2; si++) {
     const s: 1 | -1 = si === 0 ? 1 : -1;
@@ -686,9 +719,11 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
      */
     const opp = (s === 1 ? bs.flexR : bs.flexL) - (bs.flexL + bs.flexR) * 0.5;
     const swing = k * opp;
-    // The elbow closes on the forward swing and opens on the back swing —
-    // a constant elbow angle is the tell that the arms are on a sine curve.
-    const elbow = clamp(elbowBase + 0.55 * Math.max(0, swing) - 0.28 * Math.max(0, -swing), 0.12, 2.3);
+    // The elbow closes on the forward swing and opens on the back swing — a
+    // constant elbow angle is the tell that the arms are on a sine curve, and
+    // an elbow that stays shut through the back swing keeps the hand in front of
+    // the hip where a runner's hand has long since passed it.
+    const elbow = clamp(elbowBase + 0.55 * Math.max(0, swing) - 0.46 * Math.max(0, -swing), 0.12, 2.3);
     const adduct = adductBase - 0.10 * Math.max(0, swing);
     // Standing carriage: forward of the coronal plane, and never the same on
     // both sides. `swayBias` is a fixed per-player number, so one arm sits a

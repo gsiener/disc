@@ -701,8 +701,12 @@ export { blendEuler, blendBend };
  * one standing about at the back of the stack has relaxed ones.
  */
 export function poseRunHands(pose: Pose, loco: LocoLike, detail: number, alert = 0): void {
+  // A moving athlete's hand is loosely closed, not hanging open — 'relax' is a
+  // hand at rest and it was being handed to every jog and run in the game, which
+  // is fourteen bodies running with limp fingers.
   const k: HandPose = loco.state === 'shuffle' || loco.state === 'backpedal' ? 'open'
-    : loco.state === 'sprint' ? 'run'
+    : loco.state === 'sprint' || loco.state === 'run' || loco.state === 'jog'
+      || loco.state === 'cut' ? 'run'
       : alert > 0.55 ? 'open'
         : 'relax';
   poseHand(pose, 1, k, detail);

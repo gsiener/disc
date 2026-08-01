@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { stepRate, stanceHalfWidth, GAIT_MIN_SPEED } from '../../sim/move/Gait.ts';
 import { B, TAU, angDelta, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
-import { gaitLead, hash01 } from './Gaits.ts';
+import { gaitLead, gsig } from './Gaits.ts';
 import type { LocoLike, FieldLike } from './Types.ts';
 
 /**
@@ -35,13 +35,13 @@ import type { LocoLike, FieldLike } from './Types.ts';
  * own share of its own cycle; above 0.5 the shares overlap, both feet are down
  * together and the gait is a walk. See that function.
  *
- * WHERE THE SWING FOOT IS GOING. It lands where `advanceGait` will put it:
- * body position at the landing instant, plus 0.30 of a step along travel, plus
- * half a stance width to the side. Re-evaluated every frame against a linear
- * extrapolation of the body, the prediction error is O(a·τ²) and τ — the time
- * left in the swing — goes to zero at touchdown. The prediction therefore
- * *converges* onto the plant the sim is about to make, so there is no snap to
- * absorb. The horizontal path is a smootherstep, whose derivative vanishes at
+ * WHERE THE SWING FOOT IS GOING. It lands where `placePlant` will put it: body
+ * position at the landing instant, plus a share of the contact length along
+ * travel, plus half a stance width to the side. Re-evaluated every frame against
+ * a linear extrapolation of the body, the prediction error is O(a·τ²) and τ —
+ * the time left in the swing — goes to zero at touchdown, so the prediction
+ * *converges* onto the plant that is about to be committed and there is no snap
+ * to absorb. The horizontal path is a smootherstep, whose derivative vanishes at
  * both ends: the foot leaves at zero world speed and arrives at zero world
  * speed, which is the definition of not sliding.
  *
@@ -80,9 +80,21 @@ const SWING_LIFT_MAX = 0.46;
  * the athlete is running. One curve, and the transition happens because the
  * numbers cross, not because a state machine said so.
  */
-export function footStance(speed: number): number {
+export function footStance(speed: number, mode: FootMode = 'run'): number {
   const r = Math.pow(Math.max(0, speed) / 2.6, 1.9);
-  return clamp(0.22 + 0.50 / (1 + r), 0.24, 0.72);
+  // A defender does not sprint backwards or sideways, they stay CONNECTED to
+  // the ground — a backpedal and a lateral shuffle both keep a foot down for
+  // longer than a forward run at the same ground speed, which is most of why
+  // they read as defensive footwork rather than as a run played in reverse.
+  const k = mode === 'shuffle' ? 1.18 : mode === 'backpedal' ? 1.12 : 1;
+  return clamp((0.22 + 0.50 / (1 + r)) * k, 0.24, 0.78);
+}
+
+/** Which of the three placement/contact regimes a state falls into. */
+export type FootMode = 'run' | 'backpedal' | 'shuffle';
+
+function footModeOf(state: string): FootMode {
+  return state === 'shuffle' ? 'shuffle' : state === 'backpedal' ? 'backpedal' : 'run';
 }
 
 /**
@@ -92,9 +104,13 @@ export function footStance(speed: number): number {
  * buttock, which is a fast-running behaviour, so the curve is quadratic in the
  * low range and linear once the athlete is actually running.
  */
-function swingLift(speed: number): number {
+function swingLift(speed: number, mode: FootMode): number {
   const v = Math.max(0, speed);
-  return Math.min(SWING_LIFT_MAX, 0.015 + 0.050 * v * (0.35 + 0.0765 * v));
+  // Defensive footwork skims. A backpedal recovers the foot low and quick and a
+  // shuffle barely leaves the turf at all — pick either foot up like a runner
+  // and you have lost the step you were guarding.
+  const k = mode === 'shuffle' ? 0.42 : mode === 'backpedal' ? 0.58 : 1;
+  return Math.min(SWING_LIFT_MAX, (0.015 + 0.050 * v * (0.35 + 0.0765 * v)) * k);
 }
 /** Plantarflexion at toe-off, radians, before the speed scale. */
 const TOE_OFF = 0.62;
@@ -142,6 +158,8 @@ export interface FootTrack {
   /** Metres the leg came up short of the ankle target last solve. Diagnostic:
    *  anything non-zero while planted means the pin is being missed. */
   overrun: number;
+  /** Seconds this foot has been in swing. Reset the moment it takes load. */
+  swingT: number;
   /** Idle micro-step timer; < 0 when not stepping. */
   stepT: number;
   stepFrom: THREE.Vector3;
@@ -204,6 +222,8 @@ export interface FeetState {
   parity: 1 | -1 | 0;
   /** Per-athlete toe-out offset, radians. Feet are a fingerprint. */
   toeOut: number;
+  /** Per-athlete multiplier on the running step width. */
+  widthK: number;
   /** Last dt handed to `updateFeet`, so `hipDrop` can filter frame-rate-safely. */
   lastDt: number;
   /** Held hip drop, metres. Follows a rising demand instantly, releases slowly. */
@@ -216,7 +236,7 @@ function track(side: 1 | -1): FootTrack {
     plant: new THREE.Vector3(), hard: false,
     pos: new THREE.Vector3(), land: new THREE.Vector3(),
     u: 0, uStance: 0, contact: true, pitch: 0, worldYaw: 0, plantYaw: 0, roll: 0, toe: 0, overrun: 0,
-    stepT: -1, stepFrom: new THREE.Vector3(),
+    swingT: 0, stepT: -1, stepFrom: new THREE.Vector3(),
   };
 }
 
@@ -230,7 +250,7 @@ export function makeFeet(): FeetState {
     pivot: 0, pivotOn: false, pivotYaw: 0,
     stanceWide: 0.115, stanceLead: 1, stanceStagger: 0.045, heelLift: 0,
     clock: 0, phase: 0,
-    parity: 0, toeOut: TOE_OUT, lastDt: 1 / 60, drop: 0,
+    parity: 0, toeOut: TOE_OUT, widthK: 1, lastDt: 1 / 60, drop: 0,
   };
 }
 
@@ -327,7 +347,10 @@ export function updateFeet(
 
   if (st.parity === 0) {
     st.parity = gaitLead(loco.id);
-    st.toeOut = TOE_OUT + (hash01((loco.id | 0) * 59 + 83) - 0.5) * 0.075;
+    st.toeOut = TOE_OUT + (gsig(loco.id, 7) - 0.5) * 0.10;
+    // Step width is a fingerprint too — some athletes track narrow, some run
+    // with the feet a hand's width further apart than the next athlete.
+    st.widthK = 0.86 + gsig(loco.id, 8) * 0.30;
   }
   if (!st.seeded) { seedStance(st, loco, field); st.seeded = true; }
 
@@ -360,13 +383,13 @@ export function updateFeet(
       if (f.hard) {
         t.plant.set(f.pos.x, f.pos.y, f.pos.z);
       } else {
-        const mode = loco.state === 'shuffle' ? 'shuffle'
-          : loco.state === 'backpedal' ? 'backpedal' : 'run';
-        placePlant(t.plant, loco, t.side, footStance(speed),
-          speed / stepRate(speed), stanceHalfWidth(speed, mode), field);
+        const m = footModeOf(loco.state);
+        placePlant(t.plant, loco, t.side, footStance(speed, m),
+          speed / stepRate(speed), stanceHalfWidth(speed, m) * st.widthK, field);
       }
       t.hard = f.hard;
       t.stepT = -1;
+      t.swingT = 0;
       // The heading is latched HERE, at the touchdown, and held all of stance.
       t.plantYaw = loco.facing
         + (st.toeOut + (f.hard && loco.state === 'cut' ? 0.22 : 0)) * t.side;
@@ -418,18 +441,20 @@ export function updateFeet(
   if (!moving) { idleFeet(st, loco, dt, field); return; }
 
   const rate = stepRate(speed);
+  const mode = footModeOf(loco.state);
   // Cycle stance fraction, not the sim's step-relative duty — see `footStance`.
-  const ds = footStance(speed);
+  const ds = footStance(speed, mode);
   const stride = speed / rate;
-  const mode = loco.state === 'shuffle' ? 'shuffle' : loco.state === 'backpedal' ? 'backpedal' : 'run';
-  const half = stanceHalfWidth(speed, mode);
+  const half = stanceHalfWidth(speed, mode) * st.widthK;
   const sp = clamp01(speed / 8.5);
+  // A defender lives on the balls of their feet: no heel strike, ever.
+  const fore = mode !== 'run';
 
   const inv = 1 / Math.max(1e-6, speed);
   const tx = loco.vel.x * inv, tz = loco.vel.z * inv;         // travel, world
   const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
   const rx = -fz, rz = fx;                                     // athlete's right
-  const lift = swingLift(speed);
+  const lift = swingLift(speed, mode);
 
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
@@ -447,12 +472,43 @@ export function updateFeet(
 
     if (t.contact) {
       t.pos.copy(t.plant);
-      stancePitch(t, t.uStance, sp, dt);
+      t.swingT = 0;
+      stancePitch(t, t.uStance, sp, dt, fore);
     } else {
-      const s = clamp01((u - ds) / (1 - ds));
+      /**
+       * A SWING FOOT MUST NOT BE HELD BY A STALE PLANT.
+       *
+       * `plantForCut` freezes `foot.phase` at 0 for the whole of a hard plant
+       * and always plants the OUTSIDE foot — so an athlete who cuts the same way
+       * twice in a row never hands the other foot a plant edge at all, and that
+       * foot's recorded plant is wherever it last touched down, which can be
+       * several metres back. On the phase alone it also sits at the very start
+       * of its swing arc for the entire plant, so it does not move off that
+       * stale point either. Measured on a double cut the ankle target ended
+       * 2.5 m beyond the leg's reach: the leg is then solved fully extended at
+       * a target it cannot make, which is a stretched, dragged limb.
+       *
+       * Two independent backstops, both cheap. The swing ORIGIN is dragged back
+       * inside a leg's span of the body, and swing progress takes the greater of
+       * the phase and the ELAPSED TIME — the two agree exactly while the phase
+       * is running, and when the simulation stops it the free leg still swings
+       * through into the new direction, which is what it does in life.
+       */
+      t.swingT += dt;
+      const span = 1.05 * Math.max(0.6, loco.hipHeight);
+      const sx = t.plant.x - loco.pos.x, sz = t.plant.z - loco.pos.z;
+      const sd = Math.hypot(sx, sz);
+      if (sd > span) {
+        const k = span / sd;
+        t.plant.x = loco.pos.x + sx * k;
+        t.plant.z = loco.pos.z + sz * k;
+        t.plant.y = groundAt(field, t.plant.x, t.plant.z, loco.groundY);
+      }
+      const dur = Math.max(0.06, (1 - ds) * 2 / rate);
+      const s = Math.max(clamp01((u - ds) / (1 - ds)), clamp01(t.swingT / dur));
       // Where `placePlant` will put it, evaluated at the landing instant. Same
       // formula, so the prediction converges exactly onto the commit.
-      const tau = (1 - u) * 2 / rate;
+      const tau = (1 - s) * dur;
       const sgn = t.side === 1 ? -1 : 1;          // the R foot goes to the right
       const ahead = FRONT_SHARE * 2 * ds * stride;
       const px = loco.pos.x + loco.vel.x * tau + tx * ahead + rx * half * sgn;
@@ -466,7 +522,7 @@ export function updateFeet(
       t.pos.x += tx * back;
       t.pos.z += tz * back;
       t.pos.y += lift * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.72)), 1.25);
-      swingPitch(t, s, sp);
+      swingPitch(t, s, sp, fore);
     }
 
     // Toe-out, plus more on the braced outside foot of a hard cut.
@@ -476,8 +532,9 @@ export function updateFeet(
       t.worldYaw = t.plantYaw;
     } else {
       // Swing: turn onto the new heading and ARRIVE on it, so the foot is
-      // already square when it lands and nothing has to rotate under load.
-      const sw = clamp01((u - ds) / (1 - ds));
+      // already square when it lands and nothing has to rotate under load. Same
+      // progress the position uses, or the heel would arrive before the foot.
+      const sw = Math.max(clamp01((u - ds) / (1 - ds)), clamp01(t.swingT / Math.max(0.06, (1 - ds) * 2 / rate)));
       t.worldYaw = t.plantYaw + angDelta(yawTarget, t.plantYaw) * smootherstep(sw);
     }
     t.roll = cut ? -0.16 * t.side : 0;
@@ -486,14 +543,18 @@ export function updateFeet(
 }
 
 /** Foot pitch across stance: strike → flat → push-off. */
-function stancePitch(t: FootTrack, k: number, sp: number, dt: number): void {
+function stancePitch(t: FootTrack, k: number, sp: number, dt: number, fore: boolean): void {
   // Forefoot strike at sprint, heel strike at jog. The crossover is real, and
-  // it is one of the few gait details a viewer can actually name.
-  const strike = 0.24 - 0.40 * sp;
+  // it is one of the few gait details a viewer can actually name. Defensive
+  // footwork never gets the heel down at all.
+  const strike = fore ? -0.16 - 0.12 * sp : 0.24 - 0.40 * sp;
+  // Mid-stance is flat for a runner and still slightly on the ball for a
+  // defender — the heel touching down is the thing that stops being able to go.
+  const flat = fore ? -0.11 : 0;
   let pitch: number;
-  if (k < 0.28) pitch = lerp(strike, 0, smooth(k / 0.28));
-  else if (k < 0.55) pitch = 0;
-  else pitch = lerp(0, -TOE_OFF * (0.55 + 0.55 * sp), smooth((k - 0.55) / 0.45));
+  if (k < 0.28) pitch = lerp(strike, flat, smooth(k / 0.28));
+  else if (k < 0.55) pitch = flat;
+  else pitch = lerp(flat, -TOE_OFF * (0.55 + 0.55 * sp), smooth((k - 0.55) / 0.45));
   // Fast. The filter is here only to bridge the swing→stance handoff without a
   // step; anything slower leaves a degree or two of residual pitch settling
   // through mid-stance, and because the ankle is shifted to compensate for
@@ -502,12 +563,15 @@ function stancePitch(t: FootTrack, k: number, sp: number, dt: number): void {
 }
 
 /** Foot pitch across swing: finish push-off, dorsiflex to clear, then set. */
-function swingPitch(t: FootTrack, s: number, sp: number): void {
+function swingPitch(t: FootTrack, s: number, sp: number, fore: boolean): void {
   const off = -TOE_OFF * (0.55 + 0.55 * sp);
-  const strike = 0.24 - 0.40 * sp;
-  if (s < 0.22) t.pitch = lerp(off, 0.10, smooth(s / 0.22));
-  else if (s < 0.62) t.pitch = lerp(0.10, 0.26, smooth((s - 0.22) / 0.40));
-  else t.pitch = lerp(0.26, strike, smooth((s - 0.62) / 0.38));
+  const strike = fore ? -0.16 - 0.12 * sp : 0.24 - 0.40 * sp;
+  // Dorsiflexion to clear the turf on the way through — a defender needs much
+  // less of it because the foot never got far off the ground to begin with.
+  const clear = fore ? 0.06 : 0.26;
+  if (s < 0.22) t.pitch = lerp(off, clear * 0.4, smooth(s / 0.22));
+  else if (s < 0.62) t.pitch = lerp(clear * 0.4, clear, smooth((s - 0.22) / 0.40));
+  else t.pitch = lerp(clear, strike, smooth((s - 0.62) / 0.38));
 }
 
 /* ------------------------------------------------------------------ idle */
