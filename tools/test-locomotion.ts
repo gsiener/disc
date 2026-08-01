@@ -525,13 +525,20 @@ function testCollisions(): void {
   section('8. Player-player collision');
 
   // (a) Two players spawned overlapping, no input: must separate and settle.
+  //
+  // The resting distance is now set by the SOFT tier (move/Separation.ts), not
+  // by the hard-contact radius. Two athletes who merely ended up next to each
+  // other stand a body's width apart — the hard radius is only the floor under
+  // an actual collision. See tools/test-move.ts for why: bodies resting on the
+  // 0.64 m contact radius is what made twelve players read as one silhouette.
   const { loco } = makeLoco();
   const a = loco.create({ id: 1, attr: AVERAGE, pos: new THREE.Vector3(-0.15, 0, 0) });
   const b = loco.create({ id: 2, attr: AVERAGE, pos: new THREE.Vector3(0.15, 0, 0) });
   const rsum = a.radius + b.radius;
+  const psum = a.personal + b.personal;
   let minDist = Infinity;
   const dists: number[] = [];
-  for (let i = 0; i < 120 * 2; i++) {
+  for (let i = 0; i < 120 * 6; i++) {
     loco.step(a, {}, DT);
     loco.step(b, {}, DT);
     loco.resolveCollisions(DT);
@@ -540,13 +547,16 @@ function testCollisions(): void {
     dists.push(d);
   }
   const tail = dists.slice(-60);
+  // Jitter is a REVERSAL, not motion: the pair must approach monotonically.
   let jitter = 0;
-  for (let i = 1; i < tail.length; i++) jitter = Math.max(jitter, Math.abs(tail[i] - tail[i - 1]));
+  for (let i = 1; i < tail.length; i++) jitter = Math.max(jitter, tail[i - 1] - tail[i]);
   const settle = tail[tail.length - 1];
-  console.log(`   overlapped 0.30 m apart (need ${fmt(rsum)}): settled at ${fmt(settle)} m, ` +
-    `max tail jitter ${(jitter * 1000).toFixed(4)} mm/step, |v| ${fmt(spd(a))}/${fmt(spd(b))} m/s`);
-  between('resting separation', settle, rsum - 0.012, rsum + 0.002, ' m');
-  ok('no jitter at rest', jitter < 1e-4, `${(jitter * 1e6).toFixed(3)} um/step`);
+  console.log(`   overlapped 0.30 m apart (hard ${fmt(rsum)}, personal ${fmt(psum)}): ` +
+    `settled at ${fmt(settle)} m, worst backward step ${(jitter * 1e6).toFixed(4)} um, ` +
+    `|v| ${fmt(spd(a))}/${fmt(spd(b))} m/s`);
+  between('resting separation', settle, psum - 0.05, psum + 0.002, ' m');
+  ok('the hard radius is still cleared', settle > rsum, `${fmt(settle)} > ${fmt(rsum)} m`);
+  ok('no jitter at rest', jitter < 1e-9, `${(jitter * 1e6).toFixed(3)} um/step`);
   ok('no residual velocity at rest', spd(a) < 0.02 && spd(b) < 0.02,
     `${fmt(spd(a))} / ${fmt(spd(b))} m/s`);
 

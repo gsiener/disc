@@ -165,10 +165,25 @@ export interface LocoPlayer {
   /** Surface normal under the player's feet this step. */
   groundN: THREE.Vector3;
 
-  /** Collision radius (m). */
+  /** Hard-contact radius (m) — the volume no other body may enter. */
   radius: number;
+  /**
+   * Soft "personal space" radius (m). Always >= `radius`. Bodies are slid
+   * apart inside the sum of the two, positionally and laterally, so athletes
+   * leave a body's width around themselves instead of resting shoulder to
+   * shoulder on the hard-contact floor. See move/Separation.ts.
+   */
+  personal: number;
   /** Hip height when standing (m). */
   hipHeight: number;
+
+  /**
+   * Unit XZ direction this player was commanded to travel on the most recent
+   * step, or (0,0) if they were given none. Separation reads it so a
+   * correction can be applied across the commanded line rather than against
+   * it — see move/Separation.ts `pairAxis`.
+   */
+  cmd: Vec2Like;
 
   /** Direction the cut is pivoting toward, valid while state==='cut'. */
   cutDir: THREE.Vector3;

@@ -52,8 +52,12 @@ import { clamp, fbm2, hash2, smoothstep, valueNoise2 } from '../util/Noise.ts';
  *    flight, so the curve of a huck is the curve DiscPhysics produced. Width
  *    and opacity scale with speed, so a 6 m dump has essentially none and a
  *    55 m hammer has a full ribbon.
- *  - A CONTACT SHADOW that tightens and darkens as the disc nears the turf.
- *    For a small object against a big green plane this is the depth cue.
+ *  - A SUN SHADOW that tracks the disc at every altitude, stretched along the
+ *    sun azimuth and softening with height. For a small object over a big green
+ *    plane this is the only depth cue a viewer has.
+ *  - BROADCAST READABILITY. See the block above `MIN_DISC_PX` — measured, not
+ *    guessed. At the tele's real working range the honest projection of a
+ *    175 g disc is two pixels, and two pixels cannot be tracked.
  */
 
 /* ========================================================== profile + mesh */
@@ -268,6 +272,50 @@ function bakeAlbedo(seed: number): THREE.Texture {
         c.beginPath(); c.arc(cx, cy, r, 0, Math.PI * 2); c.stroke();
       }
 
+      /**
+       * THE RIM STAMP — the one saturated thing on the disc, and the reason it
+       * can be found at fifty metres.
+       *
+       * `docs/art-direction.md` reserves saturation for exactly three objects:
+       * the two kits and the disc. The disc was not spending it. A neutral
+       * `#fafafa` body is correct for the plate ("highest value object on the
+       * pitch") and useless as an identity, because the away kit is `#f2f2ee`
+       * and pale skin is not far off either — a white disc crossing a white
+       * jersey at 48 m is gone, which is measurably what happened.
+       *
+       * So the outer rim carries a saturated warm-orange stamp, rr 0.90 → 1.0.
+       * That band is not decoration: from a camera 15 m up looking at a level
+       * disc, the flight plate is foreshortened to a quarter of its width while
+       * the rim wall is seen square-on, so the rim is most of what the tele
+       * ever sees. Orange is the complement of turf green, sits nowhere near
+       * either kit, and is a colour real competition discs are actually made
+       * in — the test in the art brief is "would this exist at a well-funded
+       * club championship in July", and a stamped rim would.
+       */
+      {
+        // Bright amber, not a deep orange. The first cut of this band used
+        // `#ff7324`; measured against the same frame it made the disc DARKER
+        // than the white it replaced (peak ΔRGB against turf fell 153 → 100),
+        // because at the tele's obliquity this band is most of what is seen.
+        // The disc has to stay the highest-value object in the frame while it
+        // is being coloured, so the band runs hot and narrow.
+        const rg = c.createLinearGradient(cx - rad, cy - rad, cx + rad, cy + rad);
+        rg.addColorStop(0.00, '#f08a12');
+        rg.addColorStop(0.32, '#ffae2e');
+        rg.addColorStop(0.60, '#ffd07a');
+        rg.addColorStop(1.00, '#f2921a');
+        c.fillStyle = rg;
+        c.beginPath();
+        c.arc(cx, cy, rad, 0, Math.PI * 2);
+        c.arc(cx, cy, rad * (isTop ? 0.932 : 0.944), 0, Math.PI * 2, true);
+        c.fill();
+        // A hair of unstamped plastic inboard of the band, so the edge of the
+        // stamp reads as a printed edge rather than as the end of the object.
+        c.strokeStyle = 'rgba(252,252,251,0.6)';
+        c.lineWidth = Math.max(1, rad * 0.009);
+        c.beginPath(); c.arc(cx, cy, rad * (isTop ? 0.926 : 0.938), 0, Math.PI * 2); c.stroke();
+      }
+
       if (isTop) {
         // Hot-stamped foil ring. Two tones so it reads as metal leaf, not paint.
         const fg = c.createLinearGradient(cx - rad, cy - rad, cx + rad, cy + rad);
@@ -412,15 +460,23 @@ function bakeOrm(seed: number): THREE.Texture {
 }
 
 /**
- * Radial falloff for the contact shadow, carried in ALPHA. (Multiply blending
- * is the obvious choice here and is wrong: `opacity` does not enter the
- * multiply equation, so the blob could not fade as the disc climbed.)
+ * Radial falloff for the sun shadow, carried in ALPHA. (Multiply blending is
+ * the obvious choice here and is wrong: `opacity` does not enter the multiply
+ * equation, so the blob could not fade as the disc climbed.)
+ *
+ * Two lobes, not one. A shadow cast from 12 m up is mostly penumbra — but a
+ * pure penumbra is a smudge with no locatable centre, and the whole job of this
+ * mark is to say *where* the disc is over the ground. So: a broad soft lobe
+ * that carries the softness, plus a tight core that survives being scaled to
+ * three metres across and still gives the eye a point to fix on.
  */
 function bakeContact(): THREE.Texture {
   const S = 128;
   return bake((_x, _y, u, v, out, i) => {
     const d = Math.hypot(u - 0.5, v - 0.5) * 2;
-    const k = Math.pow(clamp(1 - d, 0, 1), 1.55);
+    const broad = Math.pow(clamp(1 - d, 0, 1), 1.55);
+    const core = Math.pow(clamp(1 - d * 2.35, 0, 1), 1.15);
+    const k = clamp(broad * 0.72 + core * 0.46, 0, 1);
     out[i] = 0; out[i + 1] = 0; out[i + 2] = 0;
     out[i + 3] = k * 255;
   }, { size: S, colorSpace: THREE.NoColorSpace, wrap: THREE.ClampToEdgeWrapping, mips: true, name: 'disc-contact' });
@@ -679,6 +735,7 @@ export class DiscRuntime {
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
+const XAXIS = new THREE.Vector3(1, 0, 0);
 const _q1 = new THREE.Quaternion();
 const _q2 = new THREE.Quaternion();
 const _v2 = new THREE.Vector3();
@@ -705,6 +762,76 @@ const SHUTTER = 0.40;
 /** Longest ribbon the trail is ever allowed to draw, metres. */
 const TRAIL_METRES = 6.5;
 
+/* ------------------------------------------------- broadcast readability */
+/**
+ * WHY A DISC NEEDS HELP AT FIFTY METRES, in measured numbers.
+ *
+ * The tele rig (docs/gameplay-design.md §1.1) sits at x = −42, y = 15 and works
+ * between 17° and 30° of vertical FOV, which puts the disc 40–60 m out. At
+ * 1280 × 720 that is 22–37 screen pixels per metre, so a 27.3 cm disc is 6–11
+ * pixels across its widest axis. That alone would be survivable.
+ *
+ * What is not survivable is the *obliquity*. A camera 13 m above a disc 48 m
+ * away looks at its flight plane from 16°, so a level disc — the ordinary
+ * attitude of every throw that is not a hammer — presents cos 74° ≈ 0.27 of its
+ * face. Probed against live play (all eight frames, `LIVE_POSSESSION`, fov
+ * 29–30°, range 47–53 m) the projected minor axis measured **2.95 – 7.38 px**,
+ * and on the rig at 60 m through a 30° lens it measured **1.29 px**. The disc
+ * was not "hard to see"; it was one pixel of pale grey lying on top of pale
+ * grey-green turf, and at that size MSAA erases it outright. Two frames of the
+ * eight had no locatable disc at all.
+ *
+ * That is not a styling problem and it is not a geometry bug — the lathed mesh
+ * is correct, and the "cross" and "plank" a viewer reports are, respectively,
+ * the painted brick mark (which is far larger and whiter than the disc) and the
+ * honest 8 × 3 px silhouette of a level disc seen from a sideline tele.
+ *
+ * So the disc gets the same treatment a football gets in every shipped sports
+ * title: a floor on its angular size, held smoothly, capped hard, and exactly
+ * 1.0 at any range where the honest projection is already big enough. Nothing
+ * here fires inside ~25 m, so the beauty framings are untouched.
+ */
+/** Projected major axis, in device pixels, the disc never falls below. */
+const MIN_DISC_PX = 12.5;
+/** Ceiling on the isotropic size compensation. 1.75 × 27.3 cm = 48 cm. */
+const MAX_SIZE_GAIN = 1.75;
+/**
+ * Projected MINOR axis floor. A level disc is a sliver, and the sliver is what
+ * the eye actually has to follow across the frame, so it gets its own budget —
+ * paid in thickness, along the disc normal only, where it costs nothing to a
+ * silhouette that is two pixels tall in the first place.
+ */
+const MIN_MINOR_PX = 5.0;
+const MAX_THICK_GAIN = 2.6;
+/**
+ * Dark separation rim, in device pixels per side. This is what keeps a white
+ * disc off a white kit; value contrast against turf was never the problem.
+ * Kept under a pixel: at 60 m the whole disc is five pixels tall, and a rim
+ * that eats two of them has traded one invisibility for another.
+ */
+const OUTLINE_PX = 0.85;
+/** Minor axis of the sun shadow, in device pixels, never below this. */
+const SHADOW_MIN_PX = 8.5;
+/** Ribbon half-width floor, device pixels. A huck must leave a mark at 50 m. */
+const TRAIL_MIN_PX = 1.6;
+/**
+ * How far the shadow is allowed to run away from under the disc, metres.
+ *
+ * A shadow is where the sun ray through the object meets the ground, and at
+ * golden hour — the hour this game is set in — that puts the shadow of a disc
+ * 12 m up something like a hundred metres downrange, off the pitch and in the
+ * car park. Physically exact and completely useless: a mark that far from its
+ * object is not read as belonging to it. Measured at 3 m of lean the shadow
+ * already read as an unrelated smudge forty pixels off the disc.
+ *
+ * The lean is therefore exact while the disc is on or near the grass, where a
+ * long raking shadow is the whole grounding cue, and clamps to a metre once it
+ * is airborne. Nothing is lost: from a camera 15 m up, a disc at altitude
+ * already projects far above its ground point, so the vertical gap on screen —
+ * not the lean — is what carries the height.
+ */
+const SHADOW_OFFSET_MAX = 1.0;
+
 export class DiscSystem implements System {
   readonly name = 'disc';
   readonly order = 7;
@@ -722,6 +849,12 @@ export class DiscSystem implements System {
   private trailCol!: THREE.BufferAttribute;
   private contact!: THREE.Mesh;
   private contactMat!: THREE.MeshBasicMaterial;
+  /** Inverted-hull separation rim; see `OUTLINE_PX`. */
+  private outline!: THREE.Mesh;
+  private outlineMat!: THREE.MeshBasicMaterial;
+  /** Unit vector toward the sun, from `sun:changed`. Golden-hour default. */
+  private sunDir = new THREE.Vector3(-0.62, 0.26, -0.74).normalize();
+  private unsub: Array<() => void> = [];
 
   private wearTex!: THREE.DataTexture;
   private wearData!: Uint8Array;
@@ -780,11 +913,47 @@ export class DiscSystem implements System {
     this.installShader(tapsFor(tier));
 
     this.mesh = new THREE.Mesh(geo, this.mat);
-    this.mesh.castShadow = true;
+    /**
+     * NO CSM SHADOW. The disc owns exactly one mark on the turf and this file
+     * draws it.
+     *
+     * The cascade shadow does render — measured, at 40 m it is a two-pixel
+     * smudge — but it lands where the sun actually puts it, and at a 26° sun a
+     * disc 8 m up throws its true shadow ELEVEN METRES downrange. So the frame
+     * carried two marks: a faint correct one nobody could associate with the
+     * disc, and the readable one below it. Two shadows for one object is worse
+     * than none, and of the two it is the readable one that does the job.
+     */
+    this.mesh.castShadow = false;
     this.mesh.receiveShadow = false;
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 2;
     this.group.add(this.mesh);
+
+    /**
+     * ---- separation rim ----
+     *
+     * An inverted hull: the same lathe, a hair larger, back faces only. The
+     * disc writes depth first, so all that survives is a ring one pixel wide
+     * around the silhouette. Its thickness is specified in PIXELS and converted
+     * to metres per frame, so it is one pixel at 20 m and one pixel at 60 m,
+     * and it is faded out entirely inside 13 m where nothing needs it.
+     *
+     * This is the half of the fix that size compensation cannot do. Against
+     * turf the disc already has two stops of value contrast; against the away
+     * kit (`#f2f2ee`), a forearm, or the pale sand of the surrounds it has
+     * none, and those are exactly the pixels a thrower and a receiver occupy.
+     */
+    this.outlineMat = new THREE.MeshBasicMaterial({
+      color: 0x151c17, side: THREE.BackSide, transparent: true, opacity: 0,
+      depthWrite: false, toneMapped: false, name: 'disc-edge',
+    });
+    this.outline = new THREE.Mesh(geo, this.outlineMat);
+    this.outline.frustumCulled = false;
+    this.outline.castShadow = false;
+    this.outline.renderOrder = 2;
+    this.outline.visible = false;
+    this.group.add(this.outline);
 
     /* ---- trail ---- */
     const tg = new THREE.BufferGeometry();
@@ -811,7 +980,7 @@ export class DiscSystem implements System {
     this.trail.visible = false;
     ctx.scene.add(this.trail);
 
-    /* ---- contact shadow ---- */
+    /* ---- sun shadow ---- */
     this.contactMat = new THREE.MeshBasicMaterial({
       map: bakeContact(), transparent: true, depthWrite: false,
       color: 0x000000, toneMapped: false, name: 'disc-contact',
@@ -822,6 +991,18 @@ export class DiscSystem implements System {
     this.contact.renderOrder = 1;
     this.contact.frustumCulled = false;
     ctx.scene.add(this.contact);
+
+    // The shadow has to know where the sun is or it is a decal, not a shadow.
+    // Absent a sky system the golden-hour default above stands, so the mark is
+    // never wrong-by-nothing.
+    this.unsub.push(ctx.events.on('sun:changed', (p: any) => {
+      const d = p?.dir;
+      if (d && typeof d.x === 'number' && Number.isFinite(d.x)) {
+        this.sunDir.set(d.x, d.y, d.z);
+        if (this.sunDir.lengthSq() < 1e-6) this.sunDir.set(0, 1, 0);
+        this.sunDir.normalize();
+      }
+    }));
 
     ctx.scene.add(this.group);
 
@@ -865,19 +1046,148 @@ export class DiscSystem implements System {
     this.uSpinBlur.value = Math.min(0.70, swept);
     this.uWearAmt.value = 0.35 + 0.65 * rt.wear;
 
-    /* ---- contact shadow ---- */
-    const gy = rt.groundAt(s.pos.x, s.pos.z);
-    const h = Math.max(0, s.pos.y - gy);
-    const near = 1 - Math.min(1, h / 5.5);
-    const scale = DISC.diameter * (1.02 + 3.1 * (1 - near) * (1 - near));
-    this.contact.position.set(s.pos.x, gy + 0.012, s.pos.z);
-    this.contact.scale.set(scale, scale, 1);
-    const dens = 0.16 + 0.72 * near * near;
-    this.contactMat.opacity = rt.mode === 'held' ? dens * 0.55 : dens;
-    this.contact.visible = h < 7.5;
+    const pxm = this.pixelsPerMetre(ctx, s.pos);
+    this.updateReadability(ctx, pxm);
+    this.updateShadow(ctx);
 
     /* ---- trail ---- */
-    this.updateTrail(ctx);
+    this.updateTrail(ctx, pxm);
+  }
+
+  /* --------------------------------------------------------- readability */
+
+  /**
+   * Device pixels per metre of world, at the depth of `at`. Everything in this
+   * file that has to survive being looked at from fifty metres is specified in
+   * pixels and converted here — a metre is not a unit the eye has.
+   */
+  private pixelsPerMetre(ctx: Ctx, at: THREE.Vector3): number {
+    const cam = ctx.camera as THREE.PerspectiveCamera;
+    const buf = ctx.renderer.domElement;
+    const hpx = buf.height || 720;
+    if (!(cam as any).isPerspectiveCamera || !cam.fov) return hpx / 20;
+    const dist = Math.max(0.05, cam.position.distanceTo(at));
+    const half = Math.tan((cam.fov * 0.5) * THREE.MathUtils.DEG2RAD);
+    return (hpx * 0.5) / (dist * Math.max(1e-4, half));
+  }
+
+  /**
+   * Hold the disc above a floor of angular size, and put a one-pixel dark rim
+   * around it. Both terms are identity at any range where the honest projection
+   * is already legible, and both are hard-capped, so the disc grows into a
+   * trackable object and never into a cartoon frisbee.
+   */
+  private updateReadability(ctx: Ctx, pxm: number): void {
+    const majorPx = DISC.diameter * pxm;
+    const gain = clamp(MIN_DISC_PX / Math.max(1e-3, majorPx), 1, MAX_SIZE_GAIN);
+
+    /**
+     * The minor axis is the one that actually fails. A level disc seen from a
+     * sideline tele shows cos(74°) of its face, so the silhouette collapses to
+     * a sliver whose height is mostly the 2.6 cm rim wall. Rather than tilt the
+     * disc toward the lens — which would be a lie about its attitude, and the
+     * attitude is what tells you a hammer from a backhand — the shortfall is
+     * paid in thickness along the disc normal, where at these sizes it is one
+     * or two pixels of rim and nothing else.
+     */
+    const n = _v2.set(0, 1, 0).applyQuaternion(this.group.quaternion);
+    const view = _v3.copy(this.group.position).sub(ctx.camera.position);
+    if (view.lengthSq() < 1e-8) view.set(0, 0, 1); else view.normalize();
+    const cosOb = Math.min(1, Math.abs(n.dot(view)));
+    const sinOb = Math.sqrt(Math.max(0, 1 - cosOb * cosOb));
+    const facePx = DISC.diameter * cosOb * gain * pxm;
+    const edgePx = DISC.halfHeight * 2 * sinOb * gain * pxm;
+    let thick = 1;
+    if (edgePx > 1e-4 && facePx + edgePx < MIN_MINOR_PX) {
+      thick = clamp((MIN_MINOR_PX - facePx) / edgePx, 1, MAX_THICK_GAIN);
+    }
+    this.mesh.scale.set(gain, gain * thick, gain);
+
+    // The rim, in metres of whatever a pixel is worth out here.
+    const rimM = OUTLINE_PX / Math.max(1e-4, pxm);
+    const k = 1 + rimM / R;
+    this.outline.scale.set(gain * k, gain * thick * k, gain * k);
+    // Fade on ANGULAR size, not on range: a wide lens at 25 m and a long lens
+    // at 55 m present the same disc, and the rim should be there for the second
+    // and gone for the first.
+    const vis = smoothstep(MIN_DISC_PX * 2.6, MIN_DISC_PX * 1.35, majorPx);
+    this.outlineMat.opacity = 0.72 * vis;
+    this.outline.visible = vis > 0.01;
+  }
+
+  /**
+   * The sun shadow. Not a contact blob — the disc spends most of a point above
+   * 2 m and all of a huck above 8, and the old mark switched off at 7.5 m,
+   * which is precisely when a viewer stops being able to judge altitude by any
+   * other means.
+   */
+  private updateShadow(ctx: Ctx): void {
+    const rt = this.rt;
+    const s = rt.state;
+    const gy = rt.groundAt(s.pos.x, s.pos.z);
+    const h = Math.max(0, s.pos.y - gy);
+
+    // Sun ray through the disc, met at the turf — saturating, see the note on
+    // SHADOW_OFFSET_MAX.
+    const up = Math.max(0.10, this.sunDir.y);
+    const hx = -this.sunDir.x / up, hz = -this.sunDir.z / up;   // metres out per metre up
+    const slope = Math.hypot(hx, hz);
+    const off = Math.min(h * slope, SHADOW_OFFSET_MAX);
+    const sx = s.pos.x + (slope > 1e-4 ? (hx / slope) * off : 0);
+    const sz = s.pos.z + (slope > 1e-4 ? (hz / slope) * off : 0);
+    const sy = rt.groundAt(sx, sz);
+
+    /**
+     * Size and density.
+     *
+     * The videogame reflex here is "grow it and fade it with height", and
+     * measured it was wrong twice over: at 8 m the mark had ballooned to 0.7 m
+     * and dropped to 22% density, which came out as seven pixels in the whole
+     * frame darker than the threshold — a smudge, not a shadow. It is also
+     * false. The sun subtends half a degree, so a shadow cast from 8 m gains
+     * about seven centimetres of penumbra and loses almost no density; what
+     * actually changes with height is WHERE it lands, and from a camera 15 m up
+     * that separation is many tens of pixels on its own.
+     *
+     * So the mark stays close to the disc's own footprint and stays dark. It
+     * grows a little, because a mark that never grows reads as pinned to the
+     * object rather than lying on the grass.
+     */
+    const soft = 1 + h * 0.05;
+    const stretch = clamp(1 / Math.max(0.18, this.sunDir.y), 1, 2.2);
+    let wid = DISC.diameter * 1.18 * soft;
+    let len = wid * stretch;
+
+    /**
+     * Same pixel floor as the body, and for the same reason — but measured on
+     * the SCREEN minor axis, not the world one. A tele looks at the turf from
+     * 16°, so a shadow half a metre across is fifteen pixels wide and four
+     * pixels tall; budgeting its world size gets a mark that satisfies the
+     * floor on paper and is a hairline in the frame. Foreshortening is part of
+     * the measurement.
+     */
+    const pxm = this.pixelsPerMetre(ctx, _v.set(sx, sy, sz));
+    const slant = Math.max(0.05, ctx.camera.position.distanceTo(_v));
+    const sinEl = clamp((ctx.camera.position.y - sy) / slant, 0.05, 1);
+    const grow = clamp(SHADOW_MIN_PX / Math.max(1e-3, wid * pxm * sinEl), 1, 2.4);
+    wid *= grow; len *= grow;
+
+    // Long axis along the sun azimuth.
+    let az = 0;
+    if (slope > 1e-4) az = Math.atan2(-(hz / slope), hx / slope);
+    _q1.setFromAxisAngle(UP, az);
+    _q2.setFromAxisAngle(XAXIS, -Math.PI / 2);
+    this.contact.quaternion.copy(_q1).multiply(_q2);
+    this.contact.position.set(sx, sy + 0.012, sz);
+    this.contact.scale.set(len, wid, 1);
+
+    // Floor the density so the mark is still there at a huck's apex; the disc
+    // and its shadow diverging on screen is the altitude read.
+    const dens = 0.34 + 0.53 * Math.exp(-h / 6.0);
+    this.contactMat.opacity = rt.mode === 'held' ? dens * 0.6 : dens;
+    // Under the floodlights there is no sun and four shadows, none of them
+    // this one; the towers' own shadow maps own that frame.
+    this.contact.visible = this.sunDir.y > 0.02;
   }
 
   /* ---------------------------------------------------------------- shader */
@@ -1045,7 +1355,7 @@ export class DiscSystem implements System {
 
   /* ----------------------------------------------------------------- trail */
 
-  private updateTrail(ctx: Ctx): void {
+  private updateTrail(ctx: Ctx, pxm: number): void {
     const rt = this.rt;
     const src = rt.trail;
     const geo = this.trail.geometry;
@@ -1095,7 +1405,13 @@ export class DiscSystem implements System {
 
       const age = (i + 1) / count;                   // 0 oldest .. 1 newest
       const taper = age * age;
-      const w = DISC.diameter * (0.02 + 0.38 * taper) * (0.45 + 0.55 * gain);
+      // A ribbon 10 cm wide is three pixels at four metres and a third of a
+      // pixel at fifty, which is to say the trail existed only in the framings
+      // that did not need it. Floor the half-width in PIXELS: the huck — the
+      // one throw where the disc is small, fast and far — is the throw that
+      // actually gets a ribbon.
+      const wMin = (TRAIL_MIN_PX / Math.max(1e-4, pxm)) * (0.35 + 0.65 * taper);
+      const w = Math.max(DISC.diameter * (0.02 + 0.38 * taper), wMin) * (0.45 + 0.55 * gain);
       const a = taper * age * 0.52 * gain;
 
       const k = i * 6, kc = i * 8;
@@ -1123,6 +1439,9 @@ export class DiscSystem implements System {
   position(out = new THREE.Vector3()): THREE.Vector3 { return out.copy(this.rt.state.pos); }
 
   dispose(): void {
+    for (const u of this.unsub) u();
+    this.unsub.length = 0;
+    this.outlineMat?.dispose();
     this.mesh?.geometry.dispose();
     this.mat?.dispose();
     this.trail?.geometry.dispose();

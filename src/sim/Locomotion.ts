@@ -12,6 +12,9 @@ import {
 import { GroundProbe, gradeAlong, slopeMultiplier, type Surface } from './move/Ground.ts';
 import { advanceGait, plantForCut, GAIT_MIN_SPEED } from './move/Gait.ts';
 import { PRONE_Y, contestAir, reachAt, predictPos, type ContestResult } from './move/Contest.ts';
+import {
+  accumulateSeparation, DiscProbe, PERSONAL_RADIUS, type DiscFocus,
+} from './move/Separation.ts';
 
 /**
  * ============================================================================
@@ -129,7 +132,10 @@ export interface CreateOpts {
   pos?: THREE.Vector3;
   facing?: number;
   stamina?: number;
+  /** Hard-contact radius (m). */
   radius?: number;
+  /** Soft personal-space radius (m); clamped to at least `radius`. */
+  personal?: number;
 }
 
 /* ---------------------------------------------------- AI interop (duck-typed)
@@ -205,6 +211,13 @@ export class Locomotion implements System {
   /** When registered as a System, update() resolves collisions. */
   autoResolve = true;
 
+  /** Run the soft personal-space pass before hard contact. See Separation.ts. */
+  separate = true;
+
+  /** Pairs the last separation pass engaged, and the metres it moved. Debug. */
+  sepPairs = 0;
+  sepWork = 0;
+
   readonly players: LocoPlayer[] = [];
 
   private host: LocoHost | null = null;
@@ -212,6 +225,11 @@ export class Locomotion implements System {
   private rng = new Rng(0x10c0_5eed);
   private byId = new Map<number, LocoPlayer>();
   private lastCutEnd = new Map<number, number>();
+  private sepX = new Float64Array(16);
+  private sepZ = new Float64Array(16);
+  private sepR = new Float64Array(16);
+  private discProbe = new DiscProbe();
+  private discFocus: DiscFocus = { x: 0, z: 0, live: false };
 
   /* ------------------------------------------------------------ lifecycle */
 
@@ -267,7 +285,9 @@ export class Locomotion implements System {
       groundY: pos.y - hipHeight,
       groundN: new THREE.Vector3(0, 1, 0),
       radius: opts.radius ?? DEFAULT_RADIUS,
+      personal: Math.max(opts.radius ?? DEFAULT_RADIUS, opts.personal ?? PERSONAL_RADIUS),
       hipHeight,
+      cmd: { x: 0, z: 0 },
       cutDir: new THREE.Vector3(),
       cutEntrySpeed: 0,
       cutAngle: 0,
@@ -475,6 +495,18 @@ export class Locomotion implements System {
     p.t += dt;
     p.stateT += dt;
 
+    // Record the commanded line for the separation pass. `solveGround` refines
+    // this once it has resolved cuts and braking; this is the fallback for the
+    // airborne and committed paths, which never reach the solver.
+    if (desired.dir && !desired.brake) {
+      const d = desired.dir as Vec2Like;
+      const l = Math.hypot(d.x, d.z);
+      p.cmd.x = l > 1e-5 ? d.x / l : 0;
+      p.cmd.z = l > 1e-5 ? d.z / l : 0;
+    } else {
+      p.cmd.x = 0; p.cmd.z = 0;
+    }
+
     this.probe.sample(p.pos.x, p.pos.z, SURF);
     p.groundY = SURF.y;
     p.groundN.copy(SURF.n);
@@ -660,6 +692,12 @@ export class Locomotion implements System {
     else if (desired.speed !== undefined) tgt = desired.speed;
     else tgt = cap * clamp01(desired.effort ?? 1);
     tgt = clamp(tgt, 0, cap);
+
+    // The line this body is actually committed to travelling this step — the
+    // cut direction while planting, the request otherwise, and nothing at all
+    // if they were told to stop. Separation slides bodies ACROSS this rather
+    // than against it, so making room never costs progress toward the spot.
+    if (hasDir && tgt > 0.05) { p.cmd.x = dx; p.cmd.z = dz; } else { p.cmd.x = 0; p.cmd.z = 0; }
 
     const tvx = dx * tgt, tvz = dz * tgt;
 
@@ -935,11 +973,98 @@ export class Locomotion implements System {
   /* ---------------------------------------------------------- collisions */
 
   /**
-   * Soft-body separation with momentum transfer. Position correction adds no
-   * energy (so resting contacts do not jitter) and the normal impulse only
-   * fires on approach. Hard contact stumbles the player who was less braced.
+   * Two passes, in this order:
+   *
+   *   1. PERSONAL SPACE (move/Separation.ts). Positional, lateral, no velocity
+   *      written. Athletes make room for each other before they touch, so the
+   *      resting separation of two bodies that merely converged is ~1.26 m
+   *      rather than the 0.64 m hard-contact floor. This is what stops twelve
+   *      off-ball bodies reading as one silhouette.
+   *   2. HARD CONTACT (below). Impulses, momentum transfer, stumbles, fouls.
+   *      Runs on the post-separation geometry so it only ever fires on real
+   *      collisions — someone genuinely ran into someone else — rather than on
+   *      the crowding that pass 1 has already resolved.
+   *
+   * Set `separate = false` to run the hard tier alone.
+   *
+   * Both passes move bodies in XZ, and both are followed by a re-seat: the
+   * surface height under a body is sampled during `step()`, before either pass
+   * has run, and `Players.ts` parks the rig root on `loco.groundY`. On a pitch
+   * that falls 18.5 cm from the crown to the touchline, a body nudged sideways
+   * and left on its old `groundY` renders fractionally into the turf. It is a
+   * tenth of a millimetre in practice, but the contract "groundY is the
+   * surface under this body" is worth having exactly rather than nearly.
    */
   resolveCollisions(dt: number, list: LocoPlayer[] = this.players): void {
+    if (this.separate) this.applySeparation(list, dt);
+    this.resolveContacts(dt, list);
+    this.reseat(list);
+  }
+
+  /**
+   * Re-read the surface under every grounded body and put its centre of mass
+   * back at the right height above it. Idempotent: for a body that nothing
+   * moved this recomputes exactly what `stepGround` already stored. Airborne
+   * bodies are skipped — their Y is ballistic and belongs to `stepAir`.
+   */
+  private reseat(list: LocoPlayer[]): void {
+    for (let i = 0; i < list.length; i++) {
+      const p = list[i];
+      if (p.air.airborne) continue;
+      this.probe.sample(p.pos.x, p.pos.z, SURF);
+      p.groundY = SURF.y;
+      p.groundN.copy(SURF.n);
+      this.conformY(p);
+    }
+  }
+
+  /**
+   * Personal space. Jacobi-accumulated so the result does not depend on pair
+   * order, then applied in one go.
+   */
+  private applySeparation(list: LocoPlayer[], dt: number): void {
+    const n = list.length;
+    if (n < 2) return;
+    if (this.sepX.length < n) {
+      this.sepX = new Float64Array(n * 2);
+      this.sepZ = new Float64Array(n * 2);
+      this.sepR = new Float64Array(n * 2);
+    }
+    const sx = this.sepX, sz = this.sepZ;
+    sx.fill(0, 0, n);
+    sz.fill(0, 0, n);
+
+    this.discProbe.bind(this.host?.sys as Record<string, unknown> | undefined);
+    this.discProbe.read(this.discFocus);
+
+    this.sepWork = 0;
+    this.sepPairs = accumulateSeparation(list, dt, sx, sz, this.discFocus, this.sepR);
+    if (this.sepPairs === 0) return;
+
+    for (let i = 0; i < n; i++) {
+      if (sx[i] === 0 && sz[i] === 0) continue;
+      this.sepWork += Math.hypot(sx[i], sz[i]);
+      const p = list[i];
+      p.pos.x += sx[i];
+      p.pos.z += sz[i];
+      // Carry the planted foot with the body. The foot IK pins the ankle to
+      // this world point, so translating the hips without it stretches the leg
+      // and the athlete skates. A separation step is footwork; it should move
+      // the foot. (The footstep event has already been emitted at the original
+      // plant, so the turf scuff and the audio are unaffected.)
+      p.foot.pos.x += sx[i];
+      p.foot.pos.z += sz[i];
+    }
+    // `reseat()` in resolveCollisions puts every moved body back on the
+    // surface once both passes are done.
+  }
+
+  /**
+   * Hard contact with momentum transfer. Position correction adds no energy
+   * (so resting contacts do not jitter) and the normal impulse only fires on
+   * approach. Hard contact stumbles the player who was less braced.
+   */
+  private resolveContacts(dt: number, list: LocoPlayer[]): void {
     const n = list.length;
     for (let i = 0; i < n; i++) {
       const a = list[i];
@@ -1073,3 +1198,4 @@ export type {
 export type { ContestResult } from './move/Contest.ts';
 export { DEFAULT_ATTRS, UNAVAILABLE_STATES, COMMITTED_STATES } from './move/Types.ts';
 export { derive, leapHeight, takeoffVy, modeCapFraction } from './move/Attributes.ts';
+export { PERSONAL_RADIUS, SEP_RATE, compliance } from './move/Separation.ts';
