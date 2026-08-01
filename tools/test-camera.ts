@@ -170,6 +170,92 @@ class Meter {
   }
 }
 interface Prev { yaw: number; pitch: number; fov: number }
+
+/**
+ * THE STEADINESS METER — the assertion every other framing rule misses.
+ *
+ * Each rule in the brief's grammar is satisfied at BOTH ENDS of a whip: the disc
+ * is on screen, the thrower and the mark are framed, five offenders are held. A
+ * head that swings a dozen degrees back and forth between two such framings
+ * passes the entire grammar and is still unwatchable — and that is exactly what
+ * the framing guarantee's solver did before it was given a memory, because the
+ * thing it optimises (how many bodies are inside a box) is a step function of
+ * the geometry and a step function re-optimised every frame makes a solver hunt.
+ *
+ * Measured here: WASTED YAW TRAVEL. Over a sliding one-second window of held
+ * possession on the tele, the head's total path length minus the net distance it
+ * actually covered. A camera panning to follow a cutter travels 13 degrees and
+ * ends 13 degrees away — waste zero, and that is real camera work, not a defect,
+ * which is why a peak-to-peak measure is the wrong instrument here. A camera
+ * hunting between two framings travels 26 degrees and ends where it started, and
+ * every one of those degrees is motion the viewer cannot attribute to anything
+ * on the field. This is displacement-invariant by construction: it cannot be
+ * satisfied by holding still and it cannot be tripped by tracking the play.
+ */
+class Steadiness {
+  /** Worst wasted yaw travel, degrees, over any fully eligible 1 s window. */
+  worst = 0;
+  worstAt = '';
+  /** Direction reversals after a run of at least five frames' travel. */
+  reversals = 0;
+  /** Frames that were eligible to be measured. */
+  eligibleFrames = 0;
+  /** The yaw/skew series of the worst window, for attributing the swing. */
+  worstSeries: { yaw: number; skew: number; fov: number }[] = [];
+  private readonly hist: { yaw: number; ok: boolean; skew: number; fov: number }[] = [];
+  /** Unwrapped, so the peak-to-peak is never a wrap artefact. */
+  private cont = 0;
+  private prevYaw = 0;
+  private prevX = 0;
+  private prevZ = 0;
+  private dir = 0;
+  private run = 0;
+  private have = false;
+
+  sample(
+    cam: THREE.PerspectiveCamera, eligible: boolean, dx: number, dz: number, where: string,
+    skew = 0,
+  ): void {
+    const yaw = yawOf(cam);
+    if (this.have) this.cont += wrap(yaw - this.prevYaw);
+    else this.cont = yaw;
+    const deg = this.cont * 180 / Math.PI;
+    const still = this.have && Math.hypot(dx - this.prevX, dz - this.prevZ) < 0.02;
+    const ok = eligible && still;
+    if (ok) this.eligibleFrames++;
+
+    if (this.have && ok) {
+      const d = wrap(yaw - this.prevYaw);
+      const s = Math.abs(d) < 1e-9 ? 0 : Math.sign(d);
+      if (s !== 0) {
+        if (this.dir !== 0 && s !== this.dir) {
+          if (this.run > 4) this.reversals++;
+          this.run = 0;
+        }
+        this.dir = s;
+        this.run++;
+      }
+    } else { this.dir = 0; this.run = 0; }
+
+    this.hist.push({ yaw: deg, ok, skew, fov: cam.fov });
+    if (this.hist.length > FPS) this.hist.shift();
+    if (this.hist.length === FPS) {
+      let all = true, path = 0;
+      for (let i = 0; i < this.hist.length; i++) {
+        if (!this.hist[i].ok) { all = false; break; }
+        if (i > 0) path += Math.abs(this.hist[i].yaw - this.hist[i - 1].yaw);
+      }
+      const net = Math.abs(this.hist[this.hist.length - 1].yaw - this.hist[0].yaw);
+      const waste = path - net;
+      if (all && waste > this.worst) {
+        this.worst = waste;
+        this.worstAt = where;
+        this.worstSeries = this.hist.map((h) => ({ yaw: h.yaw, skew: h.skew, fov: h.fov }));
+      }
+    }
+    this.prevYaw = yaw; this.prevX = dx; this.prevZ = dz; this.have = true;
+  }
+}
 const wrap = (a: number): number => {
   const t = (a + Math.PI) % (2 * Math.PI);
   return (t < 0 ? t + 2 * Math.PI : t) - Math.PI;
@@ -477,6 +563,7 @@ const dir = new CameraDirector();
 dir.init(ctxB);
 
 const meter = new Meter();
+const steady = new Steadiness();
 const prevB: Prev = { yaw: 0, pitch: 0, fov: 38 };
 
 let frames = 0;
@@ -511,6 +598,11 @@ for (let f = 0; f < steps; f++) {
   const cam = ctxB.camera;
   const gs = game.gs;
   meter.sample(cam, FRAME, t.cutThisFrame, prevB, `f${f} ${gs.phase}/${t.shot} frozen=${t.frozen}`);
+  steady.sample(
+    cam,
+    gs.phase === 'LIVE_POSSESSION' && t.shot === 'tele' && !t.cutThisFrame,
+    gs.discPos.x, gs.discPos.z,
+    `f${f} ${gs.phase} fov ${cam.fov.toFixed(1)} skew ${t.skewPan.toFixed(1)}`, t.skewPan);
   shotUse.set(t.shot, (shotUse.get(t.shot) ?? 0) + 1);
   fovLo = Math.min(fovLo, cam.fov); fovHi = Math.max(fovHi, cam.fov);
   if (t.side === 'sideline') sidelineXmax = Math.max(sidelineXmax, cam.position.x);
@@ -665,6 +757,24 @@ le(meter.maxZoom, TELE.FOV_RATE, 'peak zoom rate', '°/s');
 le(meter.maxDolly, TELE.DOLLY_SPEED, 'peak dolly speed', ' m/s');
 le(meter.maxDollyAccel, TELE.DOLLY_ACCEL + 0.5, 'peak dolly accel', ' m/s²');
 if (meter.accelWhere) info('  worst accel at', meter.accelWhere);
+
+/**
+ * The steadiness budget. Some waste is honest — cutters genuinely reverse and the
+ * operator follows them — so this is set with headroom over what the rig measures
+ * and well under what the memoryless solver produced, which wasted better than
+ * twenty degrees a second hunting between two equally good framings.
+ */
+le(steady.worst, 8, 'worst wasted yaw travel, 1 s window', '°');
+if (steady.worstAt) info('  worst waste at', steady.worstAt);
+if (VERBOSE && steady.worstSeries.length) {
+  const s0 = steady.worstSeries;
+  for (let i = 0; i < s0.length; i += 5) {
+    console.log(`      +${(i / FPS).toFixed(2)}s  yaw ${s0[i].yaw.toFixed(2)}`
+      + `  skew ${s0[i].skew.toFixed(2)}  fov ${s0[i].fov.toFixed(2)}`);
+  }
+}
+info('yaw reversals while the disc is held', String(steady.reversals)
+  + ` over ${(steady.eligibleFrames / FPS).toFixed(0)} s`);
 
 console.log('');
 le(sidelineXmax, CUTS.SIDELINE_X, 'worst sideline camera x', ' m');

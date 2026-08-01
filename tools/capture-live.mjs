@@ -158,10 +158,18 @@ for (let i = 0; i < N; i++) {
     const dir = ctx.sys['camera'];
     const game = ctx.sys['game'];
     const cam = ctx.camera;
+    // Positions, not just camera state: a rig that reports a plausible camera
+    // over a world that is not moving looks exactly like a working rig, and
+    // that is the failure this tool exists to make impossible to miss.
+    const r0 = game?.roster?.[0]?.loco?.pos;
     return {
       shot: dir?.telemetry?.shot ?? '?',
       phase: game?.gs?.phase ?? '?',
       score: game?.gs?.score ? game.gs.score.join('-') : '?',
+      simT: +(game?.simT ?? 0).toFixed(2),
+      disc: game?.gs?.discPos
+        ? [+game.gs.discPos.x.toFixed(2), +game.gs.discPos.z.toFixed(2)] : null,
+      p0: r0 ? [+r0.x.toFixed(2), +r0.z.toFixed(2)] : null,
       fov: +cam.fov.toFixed(1),
       pos: [cam.position.x, cam.position.y, cam.position.z].map((v) => +v.toFixed(1)),
     };
@@ -171,7 +179,22 @@ for (let i = 0; i < N; i++) {
   rows.push({ file, t: +(WARM + (i + 1) * GAP).toFixed(1), ...tel });
   console.log(`  t=${String(rows[i].t).padStart(5)}s  ${tel.shot.padEnd(12)} `
     + `${tel.phase.padEnd(16)} fov ${String(tel.fov).padStart(4)}  `
-    + `z ${String(tel.pos[2]).padStart(6)}  ${tel.score}  -> ${file}`);
+    + `camz ${String(tel.pos[2]).padStart(6)}  disc ${JSON.stringify(tel.disc)}  `
+    + `p0 ${JSON.stringify(tel.p0)}  ${tel.score}`);
+}
+
+/**
+ * A frame series where nothing moved is the one result this tool must never
+ * report as success — it is indistinguishable from a working rig by eye, and
+ * it is what the first version of this tool actually did.
+ */
+const moved = rows.some((r, i) => i > 0 && (
+  r.simT !== rows[i - 1].simT
+  && (JSON.stringify(r.disc) !== JSON.stringify(rows[i - 1].disc)
+    || JSON.stringify(r.p0) !== JSON.stringify(rows[i - 1].p0))));
+if (!moved) {
+  console.error('\n!! FROZEN — the world did not advance between frames.');
+  console.error('   These PNGs are not evidence of anything. Do not review them.');
 }
 
 writeFileSync(`${OUT}/_live.json`, JSON.stringify({ gpu, W, H, QUALITY, rows, problems }, null, 2));

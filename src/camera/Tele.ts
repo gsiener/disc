@@ -56,6 +56,8 @@ export const TELE = {
   DISC_W: 0.65,
   CENTROID_W: 0.35,
   CENTROID_R: 25,
+  /** Metres over which membership of that set fades in — see `aimHeld`. */
+  CENTROID_FADE: 4,
   LEAD: 6,
 
   /* framing solve */
@@ -630,9 +632,31 @@ export class TeleRig {
        */
       const sHold = this.frameScore(holdH, holdV, countH, countV, snugH, snugV);
       // The thrower is a hard constraint and never enters `gh`, hence the +1.
-      const holdMeets = ((sHold / SCORE_BODY) | 0) + 1 >= TELE.GUARD_MIN;
-      if (s0 < sHold + (holdMeets ? SCORE_BODY : 1)) {
-        n0 = (sHold / SCORE_BODY) | 0; s0 = sHold; x0 = holdH; y0 = holdV;
+      const nHold = (sHold / SCORE_BODY) | 0;
+      const holdMeets = nHold + 1 >= TELE.GUARD_MIN;
+
+      /**
+       * A RE-FRAME MUST BUY A BODY. Not a tie, not a better-composed frame with
+       * the same bodies in it.
+       *
+       * The earlier form of this test let any score improvement win whenever the
+       * held frame was short of the guarantee, on the reasoning that a short
+       * frame should grab any help at once. The reasoning is right and the
+       * threshold was wrong: `frameScore` is `bodies·SCORE_BODY + snug`, so "any
+       * improvement" includes moving one already-held body from near an edge to
+       * comfortably inside — no body gained, and the head swings anyway. And the
+       * exception fires exactly when it does the most damage: with the lens at
+       * its 30° stop the frame is short more or less continuously, so the hatch
+       * that was meant to be rare becomes the rule and the rig hunts between two
+       * equally-good four-body framings for as long as the play stays wide.
+       *
+       * Comparing body counts keeps the intent — a short frame still takes a
+       * fifth body the instant one is reachable — and costs the viewer nothing,
+       * because a swing that gains no body is a swing they cannot attribute to
+       * anything on the field.
+       */
+      if (((s0 / SCORE_BODY) | 0) <= nHold) {
+        n0 = nHold; s0 = sHold; x0 = holdH; y0 = holdV;
       }
 
       if (s0 > bestS) {
@@ -710,15 +734,35 @@ export class TeleRig {
    */
   private aimHeld(w: WorldView): void {
     const d = w.disc;
-    let cx = 0, cz = 0, n = 0;
-    const r2 = TELE.CENTROID_R * TELE.CENTROID_R;
+    /**
+     * The centroid membership is FEATHERED at its edge, and that is not a
+     * refinement — it is the difference between a camera and a twitch.
+     *
+     * A hard "offensive players within 25 m" test is a step function of the
+     * geometry: a receiver drifting across the radius adds a whole body to a
+     * six-body mean, which moves the centroid by a metre in a single frame,
+     * moves the focus point by 0.35 of that, and the head chases it. With seven
+     * players running there is nearly always somebody sitting on the boundary,
+     * so the step fires over and over, and because it comes straight through the
+     * aim spring it is indistinguishable from the camera deciding to look
+     * somewhere else. Weighting the last four metres to zero keeps exactly the
+     * brief's set — nobody past 25 m contributes anything — and makes joining it
+     * a movement rather than an event.
+     */
+    let cx = 0, cz = 0, sum = 0;
+    const rIn = TELE.CENTROID_R - TELE.CENTROID_FADE;
     for (const p of w.players) {
       if (p.team !== w.offence) continue;
-      const ddx = p.x - d.x, ddz = p.z - d.z;
-      if (ddx * ddx + ddz * ddz > r2) continue;
-      cx += p.x; cz += p.z; n++;
+      const dist = Math.hypot(p.x - d.x, p.z - d.z);
+      if (dist >= TELE.CENTROID_R) continue;
+      let g = 1;
+      if (dist > rIn) {
+        const t = (TELE.CENTROID_R - dist) / TELE.CENTROID_FADE;
+        g = t * t * (3 - 2 * t);
+      }
+      cx += p.x * g; cz += p.z * g; sum += g;
     }
-    if (n === 0) { cx = d.x; cz = d.z; } else { cx /= n; cz /= n; }
+    if (sum <= 1e-6) { cx = d.x; cz = d.z; } else { cx /= sum; cz /= sum; }
 
     this.focus.set(
       TELE.DISC_W * d.x + TELE.CENTROID_W * cx,
