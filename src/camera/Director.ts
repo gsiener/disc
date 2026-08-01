@@ -49,6 +49,9 @@ export interface DirectorTelemetry {
   frozen: boolean;
   pullFrac: number;
   latched: boolean;
+  /** Degrees of framing skew the tele applied off its focus point. */
+  skewPan: number;
+  skewTilt: number;
 }
 
 export class CameraDirector implements System {
@@ -77,6 +80,7 @@ export class CameraDirector implements System {
     lastShotLength: 0, forcedCuts: 0, phase: 'none', live: false,
     panRate: 0, tiltRate: 0, zoomRate: 0, dollySpeed: 0, leadFrac: 1,
     huck: 0, redZone: 0, frozen: false, pullFrac: 0, latched: false,
+    skewPan: 0, skewTilt: 0,
   };
 
   init(ctx: Ctx): void {
@@ -239,6 +243,8 @@ export class CameraDirector implements System {
     t.huck = r.huck;
     t.redZone = r.redZone;
     t.frozen = r.frozen;
+    t.skewPan = onTele ? r.skewPan : 0;
+    t.skewTilt = onTele ? r.skewTilt : 0;
     t.latched = this.latchedYaw !== null;
   }
 

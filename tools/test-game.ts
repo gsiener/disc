@@ -384,6 +384,7 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   const selects: { id: number; want: number; cone: number; cands: any[] }[] = [];
   const cuts: { t: number; id: number; kind: string; tx: number; tz: number; from: { x: number; z: number } }[] = [];
   const assists: number[] = [];
+  const leadErrs: number[] = [];
   const releases: { t: number; target: number }[] = [];
   let dumpSelects = 0;
   let dumpBehind = 0;
@@ -550,11 +551,11 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
       catchChecked++;
       if (g.controlledPlayerId === catches[catches.length - 1].id) catchControl++;
     }
-    if (it.release.fired) assists.push(g.lastAimAssist);
+    if (it.release.fired) { assists.push(g.lastAimAssist); leadErrs.push(g.lastLeadError); }
     void preLive; void bufferLiveAtFlip;
   }
   return {
-    game: g, ctx: c, stub, control, flips, selects, cuts, assists, releases,
+    game: g, ctx: c, stub, control, flips, selects, cuts, assists, leadErrs, releases,
     dumpSelects, dumpBehind, bufferLiveAfterFlip, unavailableTo, unavailableFrom,
     catchChecked, catchControl,
   };
@@ -592,7 +593,8 @@ group('receiver selection — the 35-degree cone (§2)');
   const contested = R.selects.filter((s) => s.cands.length >= 2).length;
   ge(contested, 2, 'at least some selects had to choose between two teammates');
   console.log(`\x1b[2m  selects ${R.selects.length}`
-    + `  intended ${(100 * intended / R.selects.length).toFixed(0)}%`
+    + `  intended ${(100 * intended / Math.max(1, aimed.length)).toFixed(0)}%`
+    + ` of ${aimed.length} aimed`
     + `  widest cone hit ${(maxAngle * DEG).toFixed(1)} deg`
     + `  mean candidates/select ${(all.length / R.selects.length).toFixed(1)}`
     + `  contested ${R.selects.filter((s) => s.cands.length >= 2).length}\x1b[0m`);
@@ -747,6 +749,142 @@ group('the dump default (§2)');
   ge(R.dumpSelects, 1, 'at stall 7 with nothing selected, the reset handler auto-selects');
   ok(R.dumpBehind === R.dumpSelects, 'and the auto-selected reset is always BEHIND the disc',
     `${R.dumpBehind}/${R.dumpSelects}`);
+}
+
+group('the assist window is 12 degrees, hard (§2)');
+{
+  /**
+   * The cap and the quality scaling are covered above. This is the rest of the
+   * contract, asserted against the quantity the window is actually measured on:
+   * the angle from the raw aim to the IDEAL LEAD, which is a different number
+   * from the angle to the receiver's feet the moment he is running — a 20 m
+   * cutter at 8 m/s leads by more than the whole 12 degrees on his own. So the
+   * game publishes that error (`lastLeadError`) and the run is classified by it:
+   *
+   *   |err| >  12 deg  ->  assist is exactly zero. The player is throwing
+   *                        somewhere else on purpose and the disc goes there.
+   *   |err| <= 12 deg  ->  assist is non-zero, never past the lead, never more
+   *                        than 5 deg, and always toward the lead.
+   */
+  const errs = R.leadErrs;
+  ok(errs.length === R.assists.length, 'every release reported a lead error');
+  let outside = 0, outsideMoved = 0, inside = 0, insideMoved = 0;
+  let overshoot = 0, wrongWay = 0, overCap = 0;
+  for (let i = 0; i < errs.length; i++) {
+    const err = errs[i];
+    const a = R.assists[i];
+    if (Math.abs(err) > 12 / DEG) { outside++; if (a !== 0) outsideMoved++; continue; }
+    if (err === 0) continue;                    // no receiver selected on that release
+    inside++;
+    if (a !== 0) insideMoved++;
+    if (Math.abs(a) > Math.abs(err) + 1e-12) overshoot++;
+    if (a !== 0 && Math.sign(a) !== Math.sign(err)) wrongWay++;
+    if (Math.abs(a) > 5 / DEG + 1e-9) overCap++;
+  }
+  ge(inside, 3, 'the scripted run released inside the 12-degree window');
+  ge(outside, 1, 'and outside it');
+  ok(outsideMoved === 0, 'outside 12 degrees the assist is exactly zero',
+    `${outsideMoved}/${outside} were moved anyway`);
+  ok(insideMoved === inside, 'inside 12 degrees it always engages', `${insideMoved}/${inside}`);
+  ok(overshoot === 0, 'and never rotates past the lead it is correcting toward', `${overshoot}`);
+  ok(wrongWay === 0, 'and never away from it', `${wrongWay}`);
+  ok(overCap === 0, 'and never by more than 5 degrees', `${overCap}`);
+  const meanErr = errs.reduce((s, e) => s + Math.abs(e), 0) / Math.max(1, errs.length);
+  console.log(`\x1b[2m  releases ${errs.length}  inside window ${inside} (all assisted)`
+    + `  outside ${outside} (none assisted)`
+    + `  mean raw lead error ${(meanErr * DEG).toFixed(1)} deg\x1b[0m`);
+}
+
+group('the double-tap escape hatch (§3)');
+{
+  // Tap A once and you get the policy's answer (`pickSwitchTarget`, shipped as
+  // written). Tap it again inside 0.3 s and you get the NEXT defender outward by
+  // distance to the threat instead — the hatch for when the policy is wrong.
+  const c5 = makeCtx(SEED);
+  const g5 = new GameSystem();
+  const s5 = new StubInput();
+  c5.sys['game'] = g5; c5.sys['input'] = s5;
+  g5.init(c5);
+  let singles = 0, singlesOk = 0, doubles = 0, doublesOk = 0, illegal = 0;
+  for (let i = 0; i < 120 * 300 && doubles < 8; i++) {
+    s5.begin(g5.controlledPlayerId, i * DT);
+    g5.update(DT, c5);
+    c5.time += DT;
+    const gs5 = g5.gs;
+    const onD = gs5.possession !== null && gs5.possession !== g5.humanTeam
+      && gs5.phase === 'LIVE_POSSESSION';
+    if (!onD || i % 400 !== 0) continue;
+    const cands = g5.defenderCandidates()
+      .filter((c) => c.eligible !== false && c.id !== g5.controlledPlayerId);
+    if (cands.length < 2) continue;
+
+    const target = cands[0].id;
+    g5.setControlledPlayer(target);                       // tap 1: take the answer
+    singles++;
+    if (g5.controlledPlayerId === target) singlesOk++;
+
+    // What the outward cycle owes us, computed independently of the game.
+    const sit = g5.switchSituation();
+    const ring = g5.roster
+      .filter((e) => e.team === g5.humanTeam && e.team !== gs5.possession
+        && Locomotion.isAvailable(e.loco))
+      .map((e) => ({
+        id: e.id,
+        d: Math.hypot(e.loco.pos.x - sit.threatX, e.loco.pos.z - sit.threatZ),
+      }))
+      .sort((a, b) => (a.d - b.d) || (a.id - b.id));
+    const cur = ring.findIndex((x) => x.id === g5.controlledPlayerId);
+    const expect = ring[(cur + 1) % ring.length].id;
+
+    g5.setControlledPlayer(target);                       // tap 2, same step: cycle
+    doubles++;
+    if (g5.controlledPlayerId === expect) doublesOk++;
+    const landed = g5.entry(g5.controlledPlayerId);
+    if (!landed || !Locomotion.isAvailable(landed.loco)) illegal++;
+  }
+  ge(doubles, 3, 'the probe found defensive moments to double-tap in');
+  ok(singlesOk === singles, 'a single tap takes the switch policy\'s answer',
+    `${singlesOk}/${singles}`);
+  ok(doublesOk === doubles, 'a second tap inside 0.3 s cycles one defender outward instead',
+    `${doublesOk}/${doubles}`);
+  ok(illegal === 0, 'and the hatch never lands on an unavailable body', `${illegal}`);
+  console.log(`\x1b[2m  taps ${singles}  double-taps ${doubles}  cycled ${doublesOk}\x1b[0m`);
+}
+
+group('an idle human never deadlocks the match');
+{
+  /**
+   * The failure this guards, measured before it was fixed: `AI.ts` sends exactly
+   * ONE player after a dead disc, the human path discards that player's AI
+   * intent, and `orchestrate`'s pick-up backstop needs a body within 3.6 m. Put
+   * the controlled player nearest a turnover and take your hands off the pad and
+   * nobody ever arrives. Seed 7 sat in TURNOVER_DEAD for 152 s of a 400 s run.
+   * `Game.idleCollector` hands that one body back to its own AI after a second.
+   */
+  let worst = 0;
+  let worstSeed = 0;
+  const dwell: number[] = [];
+  for (const seed of [SEED, 7, 1234]) {
+    const c6 = makeCtx(seed);
+    const g6 = new GameSystem();
+    const s6 = new StubInput();
+    c6.sys['game'] = g6; c6.sys['input'] = s6;
+    g6.init(c6);
+    let longest = 0;
+    for (let i = 0; i < 120 * 180; i++) {
+      s6.begin(g6.controlledPlayerId, i * DT);          // published, but all zero
+      g6.update(DT, c6);
+      c6.time += DT;
+      if (g6.gs.phase === 'TURNOVER_DEAD' && g6.gs.phaseTimer > longest) longest = g6.gs.phaseTimer;
+    }
+    dwell.push(longest);
+    if (longest > worst) { worst = longest; worstSeed = seed; }
+    ge(g6.gs.point, 2, `seed ${seed}: the match still progressed with an idle human`);
+  }
+  ok(worst < 6, 'a dead disc is always collected, even with the stick at rest',
+    `worst dwell ${worst.toFixed(1)} s on seed ${worstSeed}`);
+  console.log(`\x1b[2m  longest TURNOVER_DEAD per seed: `
+    + dwell.map((d) => `${d.toFixed(1)}s`).join('  ') + '\x1b[0m');
 }
 
 /* ---------------------------------------------------------------- summary */

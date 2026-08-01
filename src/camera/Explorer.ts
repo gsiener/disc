@@ -9,8 +9,8 @@ import { SHOTS, type ShotName } from '../capture/Shots.ts';
  * This was the whole of `Director.ts` before there was a game to direct, and it
  * is still the most useful tool in the project for looking at the renderer: it
  * is how the same shots the visual critics review get walked around in a
- * browser. It now lives behind a debug key (` or V) while the broadcast
- * director owns the camera by default.
+ * browser. It now lives behind the backquote key while the broadcast director
+ * owns the camera by default.
  */
 
 const SHOT_ORDER: ShotName[] = [

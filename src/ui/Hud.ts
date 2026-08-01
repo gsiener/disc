@@ -112,6 +112,8 @@ interface GameLike {
   controlledPlayerId?: number;
   discRuntime?: { mode: 'held' | 'flight' | 'ground'; holderId: number; state: { pos: THREE.Vector3 } };
   selectedReceiverId?(id: number): number;
+  /** 'human' | 'dump' | 'none' — how that selection was arrived at. */
+  selectionSource?: string;
   markerId?(): number;
   /** `Locomotion` — asked only whether a body can act right now. */
   loco?: { isAvailable?(p: unknown): boolean };
@@ -388,6 +390,15 @@ export class HudSystem implements System, HudSource {
   }
 
   private restage(): void {
+    // The cut ghost is the one annotation that outlives its own input — it
+    // fades over 1.5 s of sim time after the button comes up. A tableau is a
+    // still that must be a function of the shot alone, so the order is dropped
+    // rather than left to fade across the shutter.
+    const cut = this.frame.cut;
+    cut.playerId = -1;
+    cut.held = false;
+    cut.at = -1;
+    this.cutKey = '';
     for (const w of this.widgets) w.restage?.(this.frame);
   }
 
@@ -423,6 +434,7 @@ export class HudSystem implements System, HudSource {
 
     f.controlledId = g?.controlledPlayerId ?? -1;
     f.receiverId = g?.selectedReceiverId?.(f.controlledId) ?? -1;
+    f.receiverAuto = f.receiverId >= 0 && g?.selectionSource === 'dump';
     f.markerId = g?.markerId?.() ?? -1;
     const rt = g?.discRuntime;
     f.discMode = rt?.mode ?? 'ground';

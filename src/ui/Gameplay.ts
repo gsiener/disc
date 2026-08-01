@@ -34,7 +34,8 @@
  *   landing ring     where the disc comes down: the defensive read, and the
  *                    thing that makes the switch policy's choice explicable
  *   cut ghost        the order you gave, dashed, so you can judge the execution
- *   dump bracket     at stall 7 the reset stops being an option and is marked
+ *   dump bracket     at stall 7 the reset stops being an option and is marked;
+ *                    broken stroke wherever the count made the choice, not you
  *   defence ring     a dashed outer ring, never a hue change
  *   recovery dim     40% while the body cannot act — the layout's 2.04 s bill
  *   switch preview   a 40% ghost under the body a held switch would hand you
@@ -66,6 +67,19 @@ const DEFENCE_RING_R = 1.05;
 /** Force arc: 130° of a 1.1 m circle centred on the break shoulder. */
 const FORCE_R = 1.1;
 const FORCE_SPAN = (130 * Math.PI) / 180;
+/**
+ * How far the end caps turn in toward the thrower, metres.
+ *
+ * Sized off measurement, not taste. Under the tele rig the arc is about 85 px
+ * of chord and 9 px of sagitta — a shallow curve lying in the grass — and at
+ * the first pass the caps were 0.30 m at 42 % alpha, which came out as a 1.3 px
+ * ghost nobody could see. They are the entire difference between "a stray line
+ * on the turf" and "a closed side", so they are drawn at the arc's own weight
+ * and a third of its radius. At the arc's ends the radius points along ±Z, i.e.
+ * across the screen from the tele's sideline seat, so this length survives the
+ * projection where the arc's own bulge does not.
+ */
+const FORCE_CAP = 0.36;
 /** Seconds a released cut order stays on the turf before it is gone. */
 const CUT_FADE = 1.5;
 /** Turnover pulse: 1.4× radius, 0.3 s. */
@@ -179,9 +193,10 @@ export class GameplayLayer implements HudWidget {
     this.gForce = svgEl('g', undefined, this.svg);
     this.forceArc = svgEl('path', undefined, this.gForce);
     this.forceCaps = svgEl('path', undefined, this.gForce);
-    stroke(this.forceArc, 'rgba(203,222,246,.70)', 2.2);
+    stroke(this.forceArc, 'rgba(203,222,246,.82)', 2.2);
     setAttr(this.forceArc, 'stroke-linecap', 'round');
-    stroke(this.forceCaps, 'rgba(203,222,246,.42)', 1.6);
+    stroke(this.forceCaps, 'rgba(203,222,246,.72)', 2.0);
+    setAttr(this.forceCaps, 'stroke-linecap', 'round');
     setShown(this.gForce, false);
 
     /* --- commanded cut --------------------------------------------------- */
@@ -358,8 +373,10 @@ export class GameplayLayer implements HudWidget {
     setAttr(this.forceArc, 'stroke-width', (2.2 * this.scale).toFixed(2));
     setStyle(this.gForce, 'opacity', (vis * 0.92).toFixed(3));
 
-    // Two short radial ticks turning in at the ends. Without them the arc reads
-    // as a stray curve on the grass; with them it reads as a closed side.
+    // Two radial ticks turning in at the ends. Without them the arc reads as a
+    // stray curve on the grass; with them it reads as a closed side, because
+    // the thing that separates a wall from a ring in one glance is that a wall
+    // has ends.
     const p = this.pb2.reset();
     let ok = true;
     for (const s of [-1, 1]) {
@@ -367,11 +384,12 @@ export class GameplayLayer implements HudWidget {
       const sx = Math.sin(e), sz = Math.cos(e);
       if (!this.proj.at(thrower.x + sx * FORCE_R, y, thrower.z + sz * FORCE_R)) { ok = false; break; }
       p.move(this.proj.x, this.proj.y);
-      if (!this.proj.at(thrower.x + sx * (FORCE_R - 0.30), y, thrower.z + sz * (FORCE_R - 0.30))) { ok = false; break; }
+      const r2 = FORCE_R - FORCE_CAP;
+      if (!this.proj.at(thrower.x + sx * r2, y, thrower.z + sz * r2)) { ok = false; break; }
       p.line(this.proj.x, this.proj.y);
     }
     setAttr(this.forceCaps, 'd', ok ? p.build() : '');
-    setAttr(this.forceCaps, 'stroke-width', (1.6 * this.scale).toFixed(2));
+    setAttr(this.forceCaps, 'stroke-width', (2.0 * this.scale).toFixed(2));
   }
 
   /* --------------------------------------------------------- commanded cut */
@@ -441,9 +459,17 @@ export class GameplayLayer implements HudWidget {
 
   /* ------------------------------------------------------------- the reset */
 
+  /**
+   * The bail-out, when it is not already the selection.
+   *
+   * At stall 7 the sim aims the panic button at the reset itself, so in live
+   * play this fires only in the case that actually needs two marks: the human
+   * has picked a downfield target and the count has run out anyway. Then you
+   * see both — what you want, and what is still there. When the reset *is* the
+   * selection, `drawReceiver` carries it with a broken stroke instead; two
+   * brackets on one body is noise pretending to be nuance.
+   */
   private drawDump(f: HudFrame): void {
-    // Suppressed the moment the reset is the actual selection: two brackets on
-    // one body, one solid and one dashed, is noise pretending to be nuance.
     const want = f.dumpId >= 0 && f.dumpId !== f.receiverId ? this.src.player(f.dumpId) : null;
     this.dumpIn.target = want ? 1 : 0;
     const vis = this.dumpIn.step(f.dt);
@@ -610,13 +636,28 @@ export class GameplayLayer implements HudWidget {
 
   /* ---------------------------------------------------------------- receiver */
 
+  /**
+   * The selected receiver — solid when the human chose them, broken when the
+   * count did.
+   *
+   * From stall 7 the sim aims the panic button for you (`Game.ts`'s dump
+   * default), so past that point the bracket is usually on a body nobody
+   * picked. Drawn identically, that is the HUD claiming an intention the player
+   * never had; and because the reset and the auto-selection are the *same*
+   * athlete, the dashed dump bracket below is suppressed on them and this is
+   * the only mark that fires. So the distinction has to live here: same shape,
+   * same hue, broken stroke and a little dimmer — "this is the throw, and the
+   * count is the one saying so".
+   */
   private drawReceiver(f: HudFrame): void {
     const r = f.receiverId >= 0 ? this.src.player(f.receiverId) : null;
     if (!r) { setShown(this.gRecv, false); return; }
     const d = this.bracketPath(r, this.pb, 1);
     if (!d) { setShown(this.gRecv, false); return; }
     setAttr(this.recvBrackets, 'd', d);
-    setAttr(this.recvBrackets, 'stroke-width', (2.2 * this.scale).toFixed(2));
+    setAttr(this.recvBrackets, 'stroke-width', ((f.receiverAuto ? 1.9 : 2.2) * this.scale).toFixed(2));
+    setAttr(this.recvBrackets, 'stroke', f.receiverAuto ? 'rgba(139,236,190,.66)' : 'rgba(139,236,190,.88)');
+    setAttr(this.recvBrackets, 'stroke-dasharray', f.receiverAuto ? '5 4' : 'none');
     setShown(this.gRecv, true);
   }
 

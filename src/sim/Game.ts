@@ -119,6 +119,14 @@ const GRACE_TOUCH = 0.15;
 /** Two switch presses inside this window read as a double tap (s). Brief: 0.3. */
 const DOUBLE_TAP = 0.30;
 
+/**
+ * A dead disc nobody is walking to stops the match dead (see `idleCollector`).
+ * The body is released to its own AI after this long standing still (s), and
+ * only while the move stick is under `IDLE_MOVE`.
+ */
+const COLLECT_PATIENCE = 1.0;
+const IDLE_MOVE = 0.05;
+
 const ARCHETYPES: readonly Archetype[] = [
   'handler', 'handler', 'handler', 'cutter', 'cutter', 'deep', 'utility',
 ];
@@ -244,6 +252,14 @@ export class GameSystem implements System {
   private cutCommandFor = -1;
   /** Signed rotation the last release's aim assist applied (rad). */
   private lastAssist = 0;
+  /**
+   * Signed error between the last release's RAW aim and the ideal lead (rad),
+   * or 0 when no receiver was selected. This is the quantity the 12-degree
+   * window is measured against — not the angle to the receiver's feet, which is
+   * a different number entirely once he is running — so it is published rather
+   * than left implicit, and tools/test-game.ts asserts the window against it.
+   */
+  private lastLeadErr = 0;
 
   /** Pending control transfer to the intended receiver: id and the due time. */
   private handoffTo = -1;
@@ -433,7 +449,12 @@ export class GameSystem implements System {
       if (!e) continue;
       if (human && it.id === this.controlledPlayerId) {
         this.actionOf.set(it.id, this.humanAction(human, e));
-        this.loco.step(e.loco, this.humanDesired(human, e), dt);
+        // A body the human is not moving still has to collect a dead disc —
+        // see `idleCollector`. Everything else about him stays human-driven.
+        const d = this.idleCollector(human, e)
+          ? this.loco.intentToDesired(e.loco, it)
+          : this.humanDesired(human, e);
+        this.loco.step(e.loco, d, dt);
       } else {
         this.actionOf.set(it.id, it.action);
         this.loco.step(e.loco, this.loco.intentToDesired(e.loco, it), dt);
@@ -566,6 +587,46 @@ export class GameSystem implements System {
       d.mode = 'jog';
     }
     return d;
+  }
+
+  /**
+   * The one case where the controlled body moves without being told to.
+   *
+   * `AI.ts` sends exactly ONE player after a dead disc — the nearest — and the
+   * other six re-form. The human path throws away that player's AI intent, so
+   * if the nearest happens to be the body the human is driving and the human is
+   * not pushing the stick, nobody ever reaches the disc: `orchestrate`'s
+   * pick-up backstop needs someone inside 3.6 m and there is no one. Measured
+   * with an idle human over five seeds and 400 s each, this deadlocks the match
+   * outright — seed 7 sat in `TURNOVER_DEAD` for 152 s and was still sitting
+   * there when the run ended.
+   *
+   * So after a full second of a dead disc with the stick at rest, the collector
+   * is handed back to his own AI, which walks him over and picks it up. It is
+   * the same judgement `orchestrate` already makes one line lower — a match
+   * that cannot restart is worse than a body that took a step you did not ask
+   * for — and it costs the player nothing, because ANY stick input (mag > 0.05)
+   * takes the body straight back. Nothing else about him is ever overridden:
+   * `humanAction` still runs, so a bid is still a bid.
+   */
+  private idleCollector(hi: HumanIntent, e: RosterEntry): boolean {
+    const gs = this.gs;
+    if (gs.phase !== 'TURNOVER_DEAD') return false;
+    if (gs.possession === null || e.team !== gs.possession) return false;
+    if (hi.move.mag > IDLE_MOVE) return false;
+    if (gs.phaseTimer < COLLECT_PATIENCE) return false;
+    if (!this.loco.isAvailable(e.loco)) return false;
+    // Only the man the AI would have sent, and only while nobody else is
+    // already standing over it.
+    const dx = gs.discPos.x, dz = gs.discPos.z;
+    const mine = Math.hypot(e.loco.pos.x - dx, e.loco.pos.z - dz);
+    if (mine <= PICKUP_RADIUS) return false;
+    for (const o of this.roster) {
+      if (o.team !== e.team || o.id === e.id) continue;
+      if (!this.loco.isAvailable(o.loco)) continue;
+      if (Math.hypot(o.loco.pos.x - dx, o.loco.pos.z - dz) < mine) return false;
+    }
+    return true;
   }
 
   /** Human intent -> the same one-shot `PlayerAction` the AI emits. */
@@ -854,6 +915,7 @@ export class GameSystem implements System {
    */
   private assistedYaw(e: RosterEntry, yaw: number, quality: number, power: number): number {
     this.lastAssist = 0;
+    this.lastLeadErr = 0;
     const id = this.selectedReceiver;
     if (id < 0) return yaw;
     const r = this.byId.get(id);
@@ -870,6 +932,7 @@ export class GameSystem implements System {
     }
     const ideal = Math.atan2(lx - _from.x, lz - _from.z);
     const err = wrapPi(ideal - yaw);
+    this.lastLeadErr = err;
     if (Math.abs(err) > ASSIST_WINDOW) return yaw;
     const rot = clampNum(err, -ASSIST_MAX, ASSIST_MAX) * clampNum(quality, 0, 1);
     this.lastAssist = rot;
@@ -1914,6 +1977,12 @@ export class GameSystem implements System {
   get commandedRouteAge(): number { return this.cutRouteAge; }
   /** Signed rotation the last release's aim assist applied, radians. */
   get lastAimAssist(): number { return this.lastAssist; }
+  /**
+   * Signed angle from the last release's raw aim to the ideal lead, radians.
+   * The assist engages only while |this| <= 12 degrees; publishing it is what
+   * lets the window be asserted instead of assumed.
+   */
+  get lastLeadError(): number { return this.lastLeadErr; }
   /** Seconds left of the post-turnover control freeze; 0 when not in one. */
   get controlGrace(): number { return Math.max(0, this.graceUntil - this.simT); }
   /** Diagnostics: how many times control has moved, and why it last moved. */

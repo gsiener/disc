@@ -142,14 +142,29 @@ export class SpringVec3 {
  * Time-optimal approach along the dolly line: run at up to `vMax`, braking in
  * time to arrive without overshoot under an acceleration limit of `aMax`.
  * Returns the new velocity; the caller integrates.
+ *
+ * The admissible speed is solved in DISCRETE time, not continuous. The textbook
+ * `sqrt(2·a·e)` brake is only non-overshooting for a continuous integrator; at a
+ * 60 Hz step it lands a centimetre or two past the mark, and when the target is
+ * the hard end of the dolly track (±36 m) that overshoot is clipped by the
+ * position clamp — which turns a 1.6 m/s velocity into zero inside one frame,
+ * an 96 m/s² step, five times the acceleration cap and clearly visible as a jerk
+ * at the end of the rails. Requiring instead that the rig can still stop from
+ * `v'` AFTER moving `v'·dt` this frame,
+ *
+ *     v'²/(2a) ≤ e − v'·dt   ⇒   v' ≤ −a·dt + sqrt((a·dt)² + 2·a·e)
+ *
+ * makes the approach exactly non-overshooting, so the clamp never fires and the
+ * rig settles onto the end of the track under its own braking.
  */
 export function dollyVelocity(
   pos: number, target: number, vel: number, vMax: number, aMax: number, dt: number,
 ): number {
   const err = target - pos;
-  const slack = Math.max(0, Math.abs(err) - 0.03);
-  const want = clamp(Math.sign(err) * Math.sqrt(2 * aMax * slack), -vMax, vMax);
-  return approach(vel, want, aMax * dt);
+  const ah = aMax * dt;
+  const admissible = -ah + Math.sqrt(ah * ah + 2 * aMax * Math.abs(err));
+  const want = clamp(Math.sign(err) * Math.min(admissible, vMax), -vMax, vMax);
+  return approach(vel, want, ah);
 }
 
 /* ------------------------------------------------------------------ framing */

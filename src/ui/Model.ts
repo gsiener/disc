@@ -108,6 +108,18 @@ export interface HudFrame {
   throwerId: number;
   /** Receiver the thrower has selected, or -1. */
   receiverId: number;
+  /**
+   * True when that selection is the game's stall-7 dump default rather than a
+   * human act.
+   *
+   * The two must not look alike. `Game.ts` auto-aims the panic button at the
+   * reset handler the moment the count reaches seven, which means that from
+   * stall 7 onward the receiver bracket is usually something nobody chose — and
+   * a bracket that reads "I picked him" when the answer is "the count picked
+   * him" is the HUD quietly taking credit for a decision the player never made.
+   * Same bracket, broken stroke.
+   */
+  receiverAuto: boolean;
   /** Defender on the mark, or -1. */
   markerId: number;
   discMode: 'held' | 'flight' | 'ground';
@@ -161,7 +173,8 @@ export function emptyFrame(): HudFrame {
     score: [0, 0], point: 1, half: 1, target: 15, cap: 'none', clock: 0,
     phase: 'PRE_PULL', possession: null,
     stall: 0, stallMax: 10, stallFrozen: false, timeouts: [2, 2],
-    controlledId: -1, throwerId: -1, receiverId: -1, markerId: -1, discMode: 'ground',
+    controlledId: -1, throwerId: -1, receiverId: -1, receiverAuto: false,
+    markerId: -1, discMode: 'ground',
     charging: false, chargePower: 0, chargeQuality: 0, chargeHold: 0, chargeType: 'backhand',
     perfectHold: 0.85, perfectHalf: 0.09, maxHold: 2,
     attackDir: 1,
