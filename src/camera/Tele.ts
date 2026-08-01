@@ -104,6 +104,33 @@ export const TELE = {
   /** How far the operator may skew off the focus point to keep them, degrees. */
   SKEW_PAN: 20,
   SKEW_TILT: 10,
+  /**
+   * How fast the guarantee is allowed to re-frame, degrees per second, and how
+   * much a different framing has to be worth before it re-frames at all. Both
+   * exist because the thing being optimised — how many bodies are inside a box —
+   * is a STEP function of the geometry, and a step function optimised afresh
+   * every frame makes a solver hunt: two framings a dozen degrees apart score
+   * equally, a receiver drifts a metre, the argmax swaps, and the head whips
+   * across at the 38°/s pan cap. Measured on a real match before this existed,
+   * the rig reversed direction 1.85 times per second of live play and swung 18.6°
+   * peak-to-peak inside one second WITH THE DISC STATIONARY — the single worst
+   * thing in the shot, and invisible to every framing assertion, because both
+   * ends of the swing frame the play correctly.
+   *
+   * So the correction gets a memory (it keeps the frame it has unless another is
+   * worth a whole extra body) and a speed limit (it re-frames like an operator
+   * leaning on a pan bar, not like a solver changing its mind). Neither may cost
+   * a hard constraint: see the interval clamp at the end of `correctFraming`.
+   *
+   * Both are ASYMMETRIC, and that is the whole of the design. They damp the
+   * operator's discretion — the choice between two frames that each hold the
+   * play — and they get out of the way completely the moment the frame is
+   * actually short of the five bodies the brief guarantees. Damping a rescue is
+   * how a smoothing pass quietly turns into a framing bug.
+   */
+  SKEW_RATE: 9,
+  /** ...and the rate while the frame is below the ≥5 guarantee: a real whip. */
+  SKEW_RATE_URGENT: 30,
 
   /* flight */
   FLIGHT_FRAC: 0.60,
@@ -185,6 +212,11 @@ export class TeleRig {
   private readonly candV: number[] = [];
   /** Scratch for the lens's ≥5 guarantee: per-offender FOV demand, sorted. */
   private readonly needs: number[] = [];
+  /**
+   * The framing skew currently APPLIED, in degrees — state, not telemetry. It
+   * persists across frames because it is what gives the correction its memory
+   * and its speed limit; see `TELE.SKEW_RATE`.
+   */
   private skewPan = 0;
   private skewTilt = 0;
 
@@ -273,7 +305,7 @@ export class TeleRig {
 
     /* ---- head ----------------------------------------------------------- */
     _dir.set(aim.x - this.pos.x, aim.y - this.pos.y, aim.z - this.pos.z);
-    if (!flight) this.correctFraming(w, aspect, _dir);
+    if (flight) this.clearSkew(); else this.correctFraming(w, aspect, _dir, step);
     const dx = _dir.x, dy = _dir.y, dz = _dir.z;
     const len = Math.hypot(dx, dy, dz) || 1;
     const wantPitch = Math.asin(clamp(dy / len, -1, 1));
@@ -336,9 +368,13 @@ export class TeleRig {
     this.yaw = Math.atan2(-_dir.x / len, -_dir.z / len);
     // One pass of the framing guarantee about the head we just adopted, so the
     // cut lands on a frame that already holds the play rather than one that
-    // slews into holding it over the next tenth of a second.
+    // slews into holding it over the next tenth of a second. A cut is the one
+    // moment the correction is allowed to arrive at full value immediately —
+    // there is no continuity to preserve across a hard cut — so it starts from
+    // no skew and is given an unbounded slew.
+    this.clearSkew();
     if (!flight) {
-      this.correctFraming(w, aspect, _dir);
+      this.correctFraming(w, aspect, _dir, 1e3);
       len = _dir.length() || 1;
       this.pitch = Math.asin(clamp(_dir.y / len, -1, 1));
       this.yaw = Math.atan2(-_dir.x / len, -_dir.z / len);
@@ -443,14 +479,10 @@ export class TeleRig {
    * which is a proportional controller on framing error and settles in two or
    * three frames.
    */
-  private correctFraming(w: WorldView, aspect: number, dir: THREE.Vector3): void {
-    this.skewPan = 0;
-    this.skewTilt = 0;
-    this.telemetry.skewPan = 0;
-    this.telemetry.skewTilt = 0;
-    if (w.phase !== 'LIVE_POSSESSION' && w.phase !== 'CHECK') return;
-    if (w.throwerId < 0) return;
-    if (!(dir.length() > 1)) return;
+  private correctFraming(w: WorldView, aspect: number, dir: THREE.Vector3, step: number): void {
+    if (w.phase !== 'LIVE_POSSESSION' && w.phase !== 'CHECK') { this.clearSkew(); return; }
+    if (w.throwerId < 0) { this.clearSkew(); return; }
+    if (!(dir.length() > 1)) { this.clearSkew(); return; }
 
     /**
      * TWO boxes, in tangent units, at the lens the rig is actually on (`this.fov`
@@ -473,7 +505,7 @@ export class TeleRig {
     const countV = TELE.COUNT_H * half;
     const snugH = TELE.SNUG_W * half * aspect;
     const snugV = TELE.SNUG_H * half;
-    if (!(hardH > 1e-4) || !(hardV > 1e-4)) return;
+    if (!(hardH > 1e-4) || !(hardV > 1e-4)) { this.clearSkew(); return; }
 
     // The head's basis: where the frame being drawn this instant is pointed.
     const cp = Math.cos(this.pitch);
@@ -486,7 +518,7 @@ export class TeleRig {
     // Where the brief's composition wants the frame centred, as a tangent off
     // that axis. Every tie in the solve below is broken toward this.
     const fwd = dir.dot(b.f);
-    if (!(fwd > 1)) return;
+    if (!(fwd > 1)) { this.clearSkew(); return; }
     const prefH = dir.dot(b.r) / fwd;
     const prefV = dir.dot(b.u) / fwd;
 
@@ -528,7 +560,7 @@ export class TeleRig {
       }
       if (near && near.id !== w.markerId) eat(near.x, 1.15, near.z);
     }
-    if (hLo > hHi) return;
+    if (hLo > hHi) { this.clearSkew(); return; }
 
     // ...and the offence, whom the frame holds as many of as it can.
     const gh = this.gh, gv = this.gv;
@@ -551,49 +583,122 @@ export class TeleRig {
      * six offenders give at most thirteen candidate centres per axis — a hundred
      * and sixty-nine boxes to score, a thousand comparisons, once a frame.
      */
-    let ch = prefH, cv = prefV, bestN = -1, bestS = -1;
+    const holdTanH = Math.tan(this.skewPan * DEG);
+    const holdTanV = Math.tan(this.skewTilt * DEG);
+    let ch = prefH, cv = prefV, bestN = -1, bestS = -1, urgent = false;
+    let winLo = prefH, winHi = prefH, winLoV = prefV, winHiV = prefV;
     for (let pass = 0; pass < 2; pass++) {
       const rh = pass === 0 ? hardH : relaxH;
       const rv = pass === 0 ? hardV : relaxV;
-      const hCand = windowCentres(this.candH, prefH, gh, countH, hLo, hHi, rh);
-      const vCand = windowCentres(this.candV, prefV, gv, countV, vLo, vHi, rv);
-      let n0 = -1, s0 = -1, x0 = hCand[0], y0 = vCand[0], d0 = Infinity;
+      axisInterval(hLo, hHi, rh, _ih);
+      axisInterval(vLo, vHi, rv, _iv);
+      // Where the correction already has the frame, dragged into legality if the
+      // hard set has moved out from under it. This is a candidate like any
+      // other; what makes it special is the hysteresis test below.
+      const holdH = clamp(prefH + holdTanH, _ih.lo, _ih.hi);
+      const holdV = clamp(prefV + holdTanV, _iv.lo, _iv.hi);
+      const hCand = windowCentres(this.candH, prefH, holdH, gh, countH, _ih);
+      const vCand = windowCentres(this.candV, prefV, holdV, gv, countV, _iv);
+      let n0 = -1, s0 = -1, x0 = holdH, y0 = holdV, d0 = Infinity;
       for (const x of hCand) {
         for (const y of vCand) {
           // Lexicographic: bodies held, then bodies held with room to spare,
           // then the brief's composition — the last measured in units of each
           // axis's own skew cap so a degree of pan trades against a degree of
           // tilt fairly.
-          let n = 0, snug = 0;
-          for (let i = 0; i < gh.length; i++) {
-            const dh = Math.abs(gh[i] - x), dv = Math.abs(gv[i] - y);
-            if (dh > countH || dv > countV) continue;
-            n++;
-            if (dh <= snugH && dv <= snugV) snug++;
-          }
-          const s = n * 16 + snug;
+          const s = this.frameScore(x, y, countH, countV, snugH, snugV);
           const d = Math.abs(x - prefH) / SKEW_H_TAN + Math.abs(y - prefV) / SKEW_V_TAN;
-          if (s > s0 || (s === s0 && d < d0 - 1e-9)) { n0 = n; s0 = s; d0 = d; x0 = x; y0 = y; }
+          if (s > s0 || (s === s0 && d < d0 - 1e-9)) {
+            n0 = (s / SCORE_BODY) | 0; s0 = s; d0 = d; x0 = x; y0 = y;
+          }
         }
       }
-      if (s0 > bestS) { bestN = n0; bestS = s0; ch = x0; cv = y0; }
+
+      /**
+       * HYSTERESIS, and the exception that keeps it honest.
+       *
+       * The frame the operator already has wins unless another is worth A WHOLE
+       * EXTRA BODY — not a tie, not a body that merely sits more comfortably.
+       * Without that the argmax swaps every time a receiver drifts across a box
+       * edge and the head whips between two framings that are, by the only
+       * measure a viewer has, identically good.
+       *
+       * But when the frame he has is already SHORT of the guarantee, any
+       * improvement is worth taking at once. Holding a four-body frame for a
+       * fifth of a second to avoid a re-frame is not restraint, it is the bug
+       * the smoothing was supposed to be worth having.
+       */
+      const sHold = this.frameScore(holdH, holdV, countH, countV, snugH, snugV);
+      // The thrower is a hard constraint and never enters `gh`, hence the +1.
+      const holdMeets = ((sHold / SCORE_BODY) | 0) + 1 >= TELE.GUARD_MIN;
+      if (s0 < sHold + (holdMeets ? SCORE_BODY : 1)) {
+        n0 = (sHold / SCORE_BODY) | 0; s0 = sHold; x0 = holdH; y0 = holdV;
+      }
+
+      if (s0 > bestS) {
+        bestN = n0; bestS = s0; ch = x0; cv = y0;
+        urgent = !holdMeets;
+        winLo = _ih.lo; winHi = _ih.hi; winLoV = _iv.lo; winHiV = _iv.hi;
+      }
       // The comfortable box did the job. Do not spend the margin to gain a body
       // the brief did not ask for — five is the number, and holding six at the
       // cost of the marker's headroom is a worse shot, not a better one.
       if (bestN + 1 >= TELE.GUARD_MIN) break;
     }
 
-    // The skew is what is left after the brief's own composition: zero on the
-    // overwhelming majority of frames, and never more than the caps.
-    const sh = clamp(ch - prefH, -SKEW_H_TAN, SKEW_H_TAN);
-    const sv = clamp(cv - prefV, -SKEW_V_TAN, SKEW_V_TAN);
-    if (sh === 0 && sv === 0) return;
-    dir.addScaledVector(b.r, sh * fwd);
-    dir.addScaledVector(b.u, sv * fwd);
+    /**
+     * The move onto the chosen frame is rate-limited, so a re-frame is a lean on
+     * the pan bar rather than a step the 38°/s cap then spends a third of a
+     * second paying off...
+     */
+    const rate = (urgent ? TELE.SKEW_RATE_URGENT : TELE.SKEW_RATE) * step;
+    const wantPan = Math.atan(clamp(ch - prefH, -SKEW_H_TAN, SKEW_H_TAN)) / DEG;
+    const wantTilt = Math.atan(clamp(cv - prefV, -SKEW_V_TAN, SKEW_V_TAN)) / DEG;
+    const pan = approach(this.skewPan, wantPan, rate);
+    const tilt = approach(this.skewTilt, wantTilt, rate);
+
+    /**
+     * ...but the speed limit is discretionary and the hard constraints are not.
+     * Clamping back into the feasible interval cannot itself introduce a step:
+     * the interval's endpoints are the disc, the thrower and the mark, which
+     * move at running speed, so the correction the clamp forces is as continuous
+     * as they are. This is the line that keeps the marker in frame when he
+     * sprints across the thrower faster than 9°/s.
+     */
+    const sh = clamp(clamp(prefH + Math.tan(pan * DEG), winLo, winHi) - prefH,
+      -SKEW_H_TAN, SKEW_H_TAN);
+    const sv = clamp(clamp(prefV + Math.tan(tilt * DEG), winLoV, winHiV) - prefV,
+      -SKEW_V_TAN, SKEW_V_TAN);
     this.skewPan = Math.atan(sh) / DEG;
     this.skewTilt = Math.atan(sv) / DEG;
     this.telemetry.skewPan = this.skewPan;
     this.telemetry.skewTilt = this.skewTilt;
+    if (sh === 0 && sv === 0) return;
+    dir.addScaledVector(b.r, sh * fwd);
+    dir.addScaledVector(b.u, sv * fwd);
+  }
+
+  /** Bodies inside the count box about `(x, y)`, weighted toward roomy ones. */
+  private frameScore(
+    x: number, y: number, countH: number, countV: number, snugH: number, snugV: number,
+  ): number {
+    const gh = this.gh, gv = this.gv;
+    let n = 0, snug = 0;
+    for (let i = 0; i < gh.length; i++) {
+      const dh = Math.abs(gh[i] - x), dv = Math.abs(gv[i] - y);
+      if (dh > countH || dv > countV) continue;
+      n++;
+      if (dh <= snugH && dv <= snugV) snug++;
+    }
+    return n * SCORE_BODY + snug;
+  }
+
+  /** No correction is being applied: the head goes back on the focus point. */
+  private clearSkew(): void {
+    this.skewPan = 0;
+    this.skewTilt = 0;
+    this.telemetry.skewPan = 0;
+    this.telemetry.skewTilt = 0;
   }
 
   /**
@@ -796,29 +901,43 @@ function shortAngle(a: number): number {
 
 const SKEW_H_TAN = Math.tan(TELE.SKEW_PAN * DEG);
 const SKEW_V_TAN = Math.tan(TELE.SKEW_TILT * DEG);
+/** A held body is worth more than every comfort bonus a frame can accumulate. */
+const SCORE_BODY = 16;
+
+interface Interval { lo: number; hi: number }
+const _ih: Interval = { lo: 0, hi: 0 };
+const _iv: Interval = { lo: 0, hi: 0 };
+
+/**
+ * The interval a frame centre may occupy on one axis and still hold every hard
+ * constraint inside a box of radius `r`. `[lo, hi]` are the extreme bodies, so
+ * the centre is confined to `[hi − r, lo + r]`. If the hard set does not fit at
+ * all — a marker fifteen metres off his thrower with the lens already at its 30°
+ * stop — there is no framing that holds it, so the interval collapses to the
+ * centre of the set and the shot takes the smallest loss available.
+ */
+function axisInterval(lo: number, hi: number, r: number, out: Interval): Interval {
+  if (hi - lo > 2 * r) { const c = (lo + hi) / 2; out.lo = c; out.hi = c; return out; }
+  out.lo = hi - r; out.hi = lo + r;
+  return out;
+}
 
 /**
  * Candidate window centres on one axis. Everything is a tangent off the HEAD's
- * axis — literally an NDC coordinate scaled by tan(fov/2) — and `pref` is where
- * the brief's own composition wants the frame centred.
- *
- * `[baseLo, baseHi]` are the bodies that must be inside the hard box of radius
- * `baseR`, which confines the centre to `[baseHi − baseR, baseLo + baseR]`. The
- * candidates are `pref` (the brief's framing, taken whenever it is legal and
- * nothing is gained by leaving it) plus each offender's two box edges, all
- * clamped into that interval. If the hard set does not fit at all — a marker
- * fifteen metres off his thrower with the lens already at its 30° stop — there
- * is no framing that holds it, so centre the set and take the smallest loss.
+ * axis — literally an NDC coordinate scaled by tan(fov/2) — `pref` is where the
+ * brief's own composition wants the frame centred, and `hold` is where the
+ * correction already has it. Those two plus each offender's two box edges, all
+ * clamped into the feasible interval, contain the optimum: "cover the most
+ * points with a fixed-size box" always attains its best with a point on an edge.
  */
 function windowCentres(
-  out: number[], pref: number, vals: readonly number[], valR: number,
-  baseLo: number, baseHi: number, baseR: number,
+  out: number[], pref: number, hold: number, vals: readonly number[], valR: number, iv: Interval,
 ): number[] {
   out.length = 0;
-  if (baseHi - baseLo > 2 * baseR) { out.push((baseLo + baseHi) / 2); return out; }
-  const lo = baseHi - baseR, hi = baseLo + baseR;
-  const fit = (c: number): number => (c < lo ? lo : c > hi ? hi : c);
+  if (iv.hi <= iv.lo) { out.push(iv.lo); return out; }
+  const fit = (c: number): number => (c < iv.lo ? iv.lo : c > iv.hi ? iv.hi : c);
   out.push(fit(pref));
+  out.push(fit(hold));
   for (let i = 0; i < vals.length; i++) {
     out.push(fit(vals[i] - valR));
     out.push(fit(vals[i] + valR));
