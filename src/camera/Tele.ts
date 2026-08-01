@@ -59,6 +59,28 @@ export const TELE = {
   /** Metres over which membership of that set fades in — see `aimHeld`. */
   CENTROID_FADE: 4,
   LEAD: 6,
+  /**
+   * Seconds over which the lead room OPENS, and the reason it is not simply
+   * applied.
+   *
+   * There is no lead room during a flight — the rig is aimed down the flight
+   * path — and six metres of it the instant the disc is caught. At a 27 m range
+   * that step swings the composition through twelve degrees in a single frame.
+   * Worse, it swings it the wrong way first: the dolly gain is on `focus.z`, so
+   * the same six metres also moves the dolly target by 4.8 m, and the dolly is
+   * rate-limited to a move that takes the better part of a second. The camera
+   * therefore spends that second travelling to a position that CANCELS the yaw
+   * the step just produced. Measured over a match, that was the largest single
+   * source of unattributable pan left in the rig: nineteen degrees of yaw path
+   * at a catch, for one degree of net displacement, on a stationary thrower.
+   *
+   * Ramping the lead at 7.5 m/s puts the aim and the dolly on the same clock:
+   * the focus point drifts downfield at about the speed the rig is dollying to
+   * follow it, the difference between them — which is the whole of the yaw —
+   * changes by under a metre, and what a viewer sees is a camera opening up the
+   * space in front of the thrower rather than flinching at every completion.
+   */
+  LEAD_RAMP: 0.8,
 
   /* framing solve */
   FIT_WIDTH: 0.72,
@@ -89,6 +111,22 @@ export const TELE = {
   /** ...and the fraction the offence is COUNTED against, near the frame edge. */
   COUNT_W: 0.78,
   COUNT_H: 0.82,
+  /**
+   * ...and the fraction a body ALREADY HELD by the committed framing is counted
+   * against, which is deliberately larger.
+   *
+   * A body count is a step function of running men, and a step function sampled
+   * once per frame is a noisy signal. Measured on a real match, the framing the
+   * rig had committed to held six bodies for half a second, showed five on a
+   * single frame as one of them grazed the edge of the count box, and that one
+   * frame was enough to license a six-degree re-frame — which the rig then had
+   * to walk back. Counting what you already hold against a slightly larger box
+   * is the standard answer to a noisy threshold: a body has to leave properly,
+   * about a metre and a sixth of a second past the edge at match ranges, before
+   * the shot is allowed to conclude it has lost him.
+   */
+  KEEP_W: 0.84,
+  KEEP_H: 0.88,
   /**
    * ...and the box a counted body is COMFORTABLE in. A framing that holds five
    * bodies with one of them a pixel inside the edge is a framing that will hold
@@ -133,6 +171,29 @@ export const TELE = {
   SKEW_RATE: 9,
   /** ...and the rate while the frame is below the ≥5 guarantee: a real whip. */
   SKEW_RATE_URGENT: 30,
+  /**
+   * ...and the rate at which the correction gives skew BACK, which is the
+   * slowest move in the rig because it is the only one with nothing at stake.
+   *
+   * Easing home is pure composition: by the time it runs, the frame already
+   * holds everything the brief asks for, snugly, and the shot is merely tidying
+   * itself. Run it at the same 9°/s as a re-frame and it becomes visible in the
+   * worst way — measured, the last of the yaw waste was an ease running against
+   * an honest tracking pan, the ease briefly winning, the yaw reversing, and a
+   * second of shot in which nothing on the field explained the movement.
+   * Neither component was hunting; their sum was. At 3°/s the ease is always
+   * the smaller term, so it disappears inside whatever the play is doing, which
+   * is exactly where an operator's tidying-up belongs.
+   */
+  SKEW_EASE: 3,
+  /**
+   * How much skew a re-frame has to GIVE BACK before it is worth making, in
+   * units of the skew caps (so 0.12 ≈ 2.4° of pan, or 1.2° of tilt). See the
+   * decay rule in `correctFraming`: the correction is allowed to ease back onto
+   * the brief's composition whenever that costs no bodies, and this is the
+   * deadband that stops it doing so a hundredth of a degree at a time.
+   */
+  SKEW_DECAY: 0.12,
 
   /* flight */
   FLIGHT_FRAC: 0.60,
@@ -141,6 +202,12 @@ export const TELE = {
   HUCK_CARRY: 28,
   HUCK_TIME: 2.0,
   HUCK_RAMP: 0.25,
+
+  /* the front edge of the picture — see `groundFloor` */
+  /** The sideline the rig sits behind. Regulation: the field is 37 m wide. */
+  SIDELINE_X: -18.5,
+  /** Where that sideline is allowed to sit, as a fraction of the half-frame. */
+  FLOOR_GUARD: 0.97,
 
   /* red zone */
   REDZONE_DIST: 18,
@@ -174,6 +241,41 @@ export interface TeleTelemetry {
   /** Degrees of framing skew applied off the focus point this frame. */
   skewPan: number;
   skewTilt: number;
+  /**
+   * Attribution, for `tools/test-camera.ts`. Which of the lens's competing
+   * demands actually set the field of view this frame, and how hard the framing
+   * guarantee's feasible window was squeezing. These are diagnostics, not
+   * control signals — nothing in this file reads them back.
+   */
+  readonly diag: TeleDiag;
+}
+
+export interface TeleDiag {
+  /** Field of view each term of `solveFov` asked for, in degrees. */
+  fovCore: number;
+  fovDisc: number;
+  fovGuard: number;
+  fovBase: number;
+  /** Half-width of the feasible window for the frame centre, in tangents. */
+  winSpan: number;
+  /** True when the hard set does not fit and the window collapsed to a point. */
+  collapsed: boolean;
+  /** True when the interval clamp, not the rate limit, set the skew. */
+  clamped: boolean;
+  /** True when the guarantee was short and the skew ran at the urgent rate. */
+  urgent: boolean;
+  /** Offensive bodies the frame on screen holds, the committed goal, the best. */
+  nHold: number;
+  nGoal: number;
+  nBest: number;
+  /** The committed destination skew, degrees, and whether it was re-chosen. */
+  goalPan: number;
+  reframed: boolean;
+  /** Yaw of the spring-smoothed aim, degrees — the composition the head chases. */
+  springYaw: number;
+  /** The feasible window for the frame centre, relative to the composition. */
+  winRelLo: number;
+  winRelHi: number;
 }
 
 export class TeleRig {
@@ -195,6 +297,8 @@ export class TeleRig {
 
   private huckRamp = 0;
   private redRamp = 0;
+  /** Lead room actually in effect, metres of signed Z — see `TELE.LEAD_RAMP`. */
+  private leadZ = 0;
   private wasFlight = false;
   private sincePredict = 1e3;
   private path: PathPoint[] = [];
@@ -221,11 +325,24 @@ export class TeleRig {
    */
   private skewPan = 0;
   private skewTilt = 0;
+  /**
+   * ...and the framing the correction is TRAVELLING TOWARD, which is a
+   * different thing and is the one the hysteresis is anchored on. See the
+   * commitment note in `correctFraming`.
+   */
+  private goalPan = 0;
+  private goalTilt = 0;
 
   readonly telemetry: TeleTelemetry = {
     panRate: 0, tiltRate: 0, zoomRate: 0, dollySpeed: 0,
     leadFrac: 1, huck: 0, redZone: 0, frozen: false,
     skewPan: 0, skewTilt: 0,
+    diag: {
+      fovCore: 0, fovDisc: 0, fovGuard: 0, fovBase: 0,
+      winSpan: 0, collapsed: false, clamped: false, urgent: false,
+      nHold: 0, nGoal: 0, nBest: 0,
+      goalPan: 0, reframed: false, springYaw: 0, winRelLo: 0, winRelHi: 0,
+    },
   };
 
   /* ------------------------------------------------------------------ step */
@@ -252,6 +369,8 @@ export class TeleRig {
     // not a step — the brief's 0.25 s huck ramp is exactly this.
     this.huckRamp = approach(this.huckRamp, flight && this.isHuck ? 1 : 0, step / TELE.HUCK_RAMP);
     this.redRamp = approach(this.redRamp, this.inRedZone(w) ? 1 : 0, step / TELE.REDZONE_RAMP);
+    this.leadZ = approach(this.leadZ, flight ? 0 : w.attackDir * TELE.LEAD,
+      TELE.LEAD * step / TELE.LEAD_RAMP);
 
     this.solveAim(w, flight);
 
@@ -307,6 +426,8 @@ export class TeleRig {
 
     /* ---- head ----------------------------------------------------------- */
     _dir.set(aim.x - this.pos.x, aim.y - this.pos.y, aim.z - this.pos.z);
+    t.diag.springYaw = Math.atan2(_dir.x, _dir.z) / DEG;
+    this.groundFloor(_dir);
     if (flight) this.clearSkew(); else this.correctFraming(w, aspect, _dir, step);
     const dx = _dir.x, dy = _dir.y, dz = _dir.z;
     const len = Math.hypot(dx, dy, dz) || 1;
@@ -352,6 +473,8 @@ export class TeleRig {
     const flight = (w.discFlight || w.phase === 'PULL_IN_FLIGHT') && this.path.length > 1;
     this.huckRamp = flight && this.isHuck ? 1 : 0;
     this.redRamp = this.inRedZone(w) ? 1 : 0;
+    // A cut arrives on a composed frame, lead room included.
+    this.leadZ = flight ? 0 : w.attackDir * TELE.LEAD;
     this.solveAim(w, flight);
 
     const gain = TELE.DOLLY_GAIN + (TELE.DOLLY_GAIN_HUCK - TELE.DOLLY_GAIN) * this.huckRamp;
@@ -365,6 +488,7 @@ export class TeleRig {
       this.aim.value.x - this.pos.x,
       this.aim.value.y - this.pos.y,
       this.aim.value.z - this.pos.z);
+    this.groundFloor(_dir);
     let len = _dir.length() || 1;
     this.pitch = Math.asin(clamp(_dir.y / len, -1, 1));
     this.yaw = Math.atan2(-_dir.x / len, -_dir.z / len);
@@ -444,6 +568,54 @@ export class TeleRig {
   }
 
   /**
+   * THE FRONT EDGE OF THE PICTURE.
+   *
+   * The composition solve puts the play at the centre of the frame, which is
+   * right, and then the lens — sized to fit a stack strung out along Z into 72%
+   * of the frame WIDTH — makes that frame 30° tall. The play is a band a few
+   * degrees deep, because from a sideline camera a vertical stack is a line
+   * running left to right. So better than twenty degrees of frame height has to
+   * be spent on something that is not the play, and centring splits it evenly:
+   * measured over a match, 35% of the frame above the highest body and 35%
+   * below the lowest, with the bottom edge landing a metre and a half OUTSIDE
+   * the near sideline on average and six metres outside it at the tenth
+   * percentile. That bottom third is turf between the lens and the game.
+   *
+   * The half above is not waste in the same way — it buys the far half of the
+   * pitch, the far sideline, the hoardings and the crowd, which is what a
+   * broadcast frame is made of. The half below buys grass.
+   *
+   * So the surplus is spent upward, and the rule that decides how much is the
+   * one a camera operator uses: THE FRONT ROW OF THE PICTURE IS THE NEAR
+   * TOUCHLINE. Never point below it. That is a floor on the head's pitch, and
+   * it binds by almost nothing when the play is at mid-field (the bottom edge
+   * is already near the sideline) and by eight or nine degrees when the disc is
+   * jammed against the near sideline and the rig would otherwise be staring at
+   * the run-off. It is a preference, not a constraint: it is applied BEFORE
+   * `correctFraming`, so if honouring it would push a body out of the bottom of
+   * the frame the guarantee's feasible interval pulls the head straight back
+   * down. Bodies beat composition, always.
+   */
+  private groundFloor(dir: THREE.Vector3): void {
+    if (!(this.pos.y > 0.5)) return;
+    // Where this shot's own axis crosses the near sideline.
+    const cross = TELE.SIDELINE_X - this.pos.x;
+    if (!(dir.x > 1e-3) || !(cross > 0)) return;
+    const t = cross / dir.x;
+    const hd = Math.hypot(cross, dir.z * t);
+    if (!(hd > 1)) return;
+    // ...and the pitch that puts it exactly on the bottom edge of the frame.
+    const half = Math.atan(TELE.FLOOR_GUARD * Math.tan(this.fov * 0.5 * DEG));
+    const floor = -Math.atan(this.pos.y / hd) + half;
+    if (floor >= 0) return;
+
+    const flat = Math.hypot(dir.x, dir.z);
+    const y = flat * Math.tan(floor);
+    if (dir.y >= y) return;
+    dir.y = y;
+  }
+
+  /**
    * THE FRAMING GUARANTEE.
    *
    * The focus point is the composition the brief asks for — thrower at ~38% of
@@ -507,6 +679,8 @@ export class TeleRig {
     const countV = TELE.COUNT_H * half;
     const snugH = TELE.SNUG_W * half * aspect;
     const snugV = TELE.SNUG_H * half;
+    const keepH = TELE.KEEP_W * half * aspect;
+    const keepV = TELE.KEEP_H * half;
     if (!(hardH > 1e-4) || !(hardV > 1e-4)) { this.clearSkew(); return; }
 
     // The head's basis: where the frame being drawn this instant is pointed.
@@ -585,23 +759,26 @@ export class TeleRig {
      * six offenders give at most thirteen candidate centres per axis — a hundred
      * and sixty-nine boxes to score, a thousand comparisons, once a frame.
      */
-    const holdTanH = Math.tan(this.skewPan * DEG);
-    const holdTanV = Math.tan(this.skewTilt * DEG);
+    const goalTanH = Math.tan(this.goalPan * DEG);
+    const goalTanV = Math.tan(this.goalTilt * DEG);
+    const nowTanH = Math.tan(this.skewPan * DEG);
+    const nowTanV = Math.tan(this.skewTilt * DEG);
     let ch = prefH, cv = prefV, bestN = -1, bestS = -1, urgent = false;
+    let bestGoal = 0, bestNow = 0, reframed = false;
     let winLo = prefH, winHi = prefH, winLoV = prefV, winHiV = prefV;
     for (let pass = 0; pass < 2; pass++) {
       const rh = pass === 0 ? hardH : relaxH;
       const rv = pass === 0 ? hardV : relaxV;
       axisInterval(hLo, hHi, rh, _ih);
       axisInterval(vLo, vHi, rv, _iv);
-      // Where the correction already has the frame, dragged into legality if the
-      // hard set has moved out from under it. This is a candidate like any
-      // other; what makes it special is the hysteresis test below.
-      const holdH = clamp(prefH + holdTanH, _ih.lo, _ih.hi);
-      const holdV = clamp(prefV + holdTanV, _iv.lo, _iv.hi);
-      const hCand = windowCentres(this.candH, prefH, holdH, gh, countH, _ih);
-      const vCand = windowCentres(this.candV, prefV, holdV, gv, countV, _iv);
-      let n0 = -1, s0 = -1, x0 = holdH, y0 = holdV, d0 = Infinity;
+      // Where the correction is HEADING, dragged into legality if the hard set
+      // has moved out from under it. This is a candidate like any other; what
+      // makes it special is the hysteresis test below.
+      const goalH = clamp(prefH + goalTanH, _ih.lo, _ih.hi);
+      const goalV = clamp(prefV + goalTanV, _iv.lo, _iv.hi);
+      const hCand = windowCentres(this.candH, prefH, goalH, gh, countH, _ih);
+      const vCand = windowCentres(this.candV, prefV, goalV, gv, countV, _iv);
+      let n0 = -1, s0 = -1, x0 = goalH, y0 = goalV, d0 = Infinity;
       for (const x of hCand) {
         for (const y of vCand) {
           // Lexicographic: bodies held, then bodies held with room to spare,
@@ -617,51 +794,131 @@ export class TeleRig {
       }
 
       /**
-       * HYSTERESIS, and the exception that keeps it honest.
+       * HYSTERESIS, AND WHAT IT IS ANCHORED ON.
        *
-       * The frame the operator already has wins unless another is worth A WHOLE
-       * EXTRA BODY — not a tie, not a body that merely sits more comfortably.
-       * Without that the argmax swaps every time a receiver drifts across a box
-       * edge and the head whips between two framings that are, by the only
-       * measure a viewer has, identically good.
+       * The framing the operator has already committed to wins unless another
+       * is worth A WHOLE EXTRA BODY — not a tie, not a body that merely sits
+       * more comfortably. Without that the argmax swaps every time a receiver
+       * drifts across a box edge and the head whips between two framings that
+       * are, by the only measure a viewer has, identically good.
        *
-       * But when the frame he has is already SHORT of the guarantee, any
-       * improvement is worth taking at once. Holding a four-body frame for a
-       * fifth of a second to avoid a re-frame is not restraint, it is the bug
-       * the smoothing was supposed to be worth having.
+       * THE ANCHOR IS THE DESTINATION, NOT THE CURRENT POSITION, and that is
+       * the whole of this fix. Anchoring on where the head happens to be is
+       * self-defeating precisely while a re-frame is in progress: a rate-limited
+       * lean takes a third of a second, and every frame of that third the rig is
+       * sitting at an intermediate nobody chose — an aim BETWEEN two good
+       * framings, holding fewer bodies than either end. Score the hysteresis
+       * against that and every candidate beats it, so the commitment evaporates
+       * exactly when it is needed and the solver is free to reverse mid-lean.
+       *
+       * Measured, that is what the worst window in `tools/test-camera.ts` was:
+       * five frames of `hold 4 → best 5` while the skew ramped +1.73° to −1.52°,
+       * then a reversal back to +1.30° — 8.65° of yaw travel to end 0.67° from
+       * where it started. Both ends held five bodies. The trip between them held
+       * four, which is what licensed the U-turn.
+       *
+       * With the goal as the anchor the rig finishes what it starts: it leaves
+       * a framing only for one that beats THE ONE IT IS GOING TO, so a reversal
+       * has to be paid for with a body, and an operator who begins a pan is
+       * allowed to complete it.
        */
-      const sHold = this.frameScore(holdH, holdV, countH, countV, snugH, snugV);
+      const sGoal = this.frameScore(goalH, goalV, countH, countV, snugH, snugV);
       // The thrower is a hard constraint and never enters `gh`, hence the +1.
-      const nHold = (sHold / SCORE_BODY) | 0;
-      const holdMeets = nHold + 1 >= TELE.GUARD_MIN;
+      const nGoal = (sGoal / SCORE_BODY) | 0;
+      // ...and what it holds counted generously, which is the bar a challenger
+      // has to clear. See `TELE.KEEP_W`: a body has to leave properly.
+      const nKeep = (this.frameScore(goalH, goalV, keepH, keepV, snugH, snugV)
+        / SCORE_BODY) | 0;
+      // ...and separately, what the frame ACTUALLY ON SCREEN holds right now,
+      // which is a different question and answers a different one: not "should
+      // I change my mind" but "am I currently making a bad shot".
+      const nNow = (this.frameScore(
+        clamp(prefH + nowTanH, _ih.lo, _ih.hi),
+        clamp(prefV + nowTanV, _iv.lo, _iv.hi),
+        countH, countV, snugH, snugV) / SCORE_BODY) | 0;
 
       /**
        * A RE-FRAME MUST BUY A BODY. Not a tie, not a better-composed frame with
        * the same bodies in it.
        *
-       * The earlier form of this test let any score improvement win whenever the
-       * held frame was short of the guarantee, on the reasoning that a short
-       * frame should grab any help at once. The reasoning is right and the
-       * threshold was wrong: `frameScore` is `bodies·SCORE_BODY + snug`, so "any
+       * An earlier form of this test let any score improvement win whenever the
+       * frame was short of the guarantee, on the reasoning that a short frame
+       * should grab any help at once. The reasoning is right and the threshold
+       * was wrong: `frameScore` is `bodies·SCORE_BODY + snug`, so "any
        * improvement" includes moving one already-held body from near an edge to
        * comfortably inside — no body gained, and the head swings anyway. And the
        * exception fires exactly when it does the most damage: with the lens at
        * its 30° stop the frame is short more or less continuously, so the hatch
-       * that was meant to be rare becomes the rule and the rig hunts between two
-       * equally-good four-body framings for as long as the play stays wide.
+       * that was meant to be rare becomes the rule.
        *
        * Comparing body counts keeps the intent — a short frame still takes a
        * fifth body the instant one is reachable — and costs the viewer nothing,
        * because a swing that gains no body is a swing they cannot attribute to
        * anything on the field.
        */
-      if (((s0 / SCORE_BODY) | 0) <= nHold) {
-        n0 = nHold; s0 = sHold; x0 = holdH; y0 = holdV;
+      /**
+       * ...AND THE DECAY, without which the commitment above is a trap.
+       *
+       * A framing bought under pressure outlives the pressure. The rig leans
+       * five degrees off the composition to hold a sixth body, the play rotates,
+       * and now the composition itself holds six — but the hysteresis says a
+       * challenger must BUY A BODY, and a tie buys nothing, so the operator
+       * stays leaned over on a shot he no longer has any reason to be on. He
+       * stays there until some body flickers across a count-box edge for a
+       * single frame, at which point the challenger is briefly worth a body and
+       * the head is thrown all the way across. That was the worst window
+       * measured: 0.5 s of lean to −5.25°, one frame of `goal 5 → best 6`, and
+       * 0.5 s of lean back, ten degrees of travel to end where it started.
+       *
+       * So the goal decays: it gives back skew it no longer needs, taking the
+       * framing NEAREST THE BRIEF'S COMPOSITION that still holds everything the
+       * goal holds. The rig therefore leaves a framing for exactly two reasons —
+       * it buys a body, or it gives skew back — and the second can only ever
+       * move toward the composition, so the pair cannot cycle: every reversal
+       * has to be paid for with a body the viewer can see.
+       *
+       * IT DECAYS ONLY ONTO A FRAME WITH ROOM TO SPARE, which is not a detail.
+       * The candidate centres are, by construction, the positions at which some
+       * body sits EXACTLY on the edge of the count box — that is where a
+       * fixed-size window attains its maximum coverage, and it is also the most
+       * fragile framing in the set. Decaying onto one costs the body back a
+       * frame later, whereupon the shot buys it again by leaning out, and the
+       * rig chatters between the two at the frame rate; measured, that was 14.4°
+       * of wasted travel, worse than the defect it replaced. Spending margin to
+       * gain a body is a trade a shot can be worth making. Spending margin to
+       * gain COMPOSITION never is, so the decay is scored against the snug box —
+       * it gives skew back only where the bodies are comfortably inside.
+       */
+      const dGoal = Math.abs(goalH - prefH) / SKEW_H_TAN
+        + Math.abs(goalV - prefV) / SKEW_V_TAN;
+      /**
+       * ...but the grace is a courtesy the shot extends out of its own margin,
+       * and a shot that is already short of the brief's five bodies has no
+       * margin to be courteous with. Then the goal is counted strictly: a body
+       * held only by the keep box is a body the viewer cannot see, and pretending
+       * otherwise is how a hysteresis term turns into a framing bug.
+       */
+      const bar = nNow + 1 < TELE.GUARD_MIN ? nGoal : nKeep;
+      let kept = false;
+      if (((s0 / SCORE_BODY) | 0) <= bar) {
+        let xc = goalH, yc = goalV, sc = -1, dc = dGoal - TELE.SKEW_DECAY;
+        for (const x of hCand) {
+          for (const y of vCand) {
+            const d = Math.abs(x - prefH) / SKEW_H_TAN + Math.abs(y - prefV) / SKEW_V_TAN;
+            if (!(d < dc - 1e-9)) continue;
+            const s = this.frameScore(x, y, countH, countV, snugH, snugV);
+            if (s % SCORE_BODY < nGoal) continue;      // not snugly as good
+            dc = d; xc = x; yc = y; sc = s;
+          }
+        }
+        if (sc >= 0) { n0 = (sc / SCORE_BODY) | 0; s0 = sc; x0 = xc; y0 = yc; }
+        else { n0 = nGoal; s0 = sGoal; x0 = goalH; y0 = goalV; kept = true; }
       }
 
       if (s0 > bestS) {
         bestN = n0; bestS = s0; ch = x0; cv = y0;
-        urgent = !holdMeets;
+        urgent = nNow + 1 < TELE.GUARD_MIN;
+        bestGoal = nGoal; bestNow = nNow; reframed = !kept;
         winLo = _ih.lo; winHi = _ih.hi; winLoV = _iv.lo; winHiV = _iv.hi;
       }
       // The comfortable box did the job. Do not spend the margin to gain a body
@@ -675,11 +932,15 @@ export class TeleRig {
      * the pan bar rather than a step the 38°/s cap then spends a third of a
      * second paying off...
      */
-    const rate = (urgent ? TELE.SKEW_RATE_URGENT : TELE.SKEW_RATE) * step;
-    const wantPan = Math.atan(clamp(ch - prefH, -SKEW_H_TAN, SKEW_H_TAN)) / DEG;
-    const wantTilt = Math.atan(clamp(cv - prefV, -SKEW_V_TAN, SKEW_V_TAN)) / DEG;
-    const pan = approach(this.skewPan, wantPan, rate);
-    const tilt = approach(this.skewTilt, wantTilt, rate);
+    this.goalPan = Math.atan(clamp(ch - prefH, -SKEW_H_TAN, SKEW_H_TAN)) / DEG;
+    this.goalTilt = Math.atan(clamp(cv - prefV, -SKEW_V_TAN, SKEW_V_TAN)) / DEG;
+    // ...at the rate the move deserves: a whip to rescue the guarantee, a lean
+    // to buy a body, a drift to give one back. See `TELE.SKEW_EASE`.
+    const rateFor = (cur: number, goal: number): number =>
+      (urgent ? TELE.SKEW_RATE_URGENT
+        : Math.abs(goal) < Math.abs(cur) ? TELE.SKEW_EASE : TELE.SKEW_RATE) * step;
+    const pan = approach(this.skewPan, this.goalPan, rateFor(this.skewPan, this.goalPan));
+    const tilt = approach(this.skewTilt, this.goalTilt, rateFor(this.skewTilt, this.goalTilt));
 
     /**
      * ...but the speed limit is discretionary and the hard constraints are not.
@@ -688,6 +949,14 @@ export class TeleRig {
      * move at running speed, so the correction the clamp forces is as continuous
      * as they are. This is the line that keeps the marker in frame when he
      * sprints across the thrower faster than 9°/s.
+     *
+     * It is also, measured, almost never doing anything: over a full match the
+     * hard set failed to fit on ZERO frames and this clamp changed the skew on
+     * ONE frame in twenty-five thousand. It is a guard rail, not a mechanism,
+     * and it is worth knowing that — the obvious suspect for a rig that hunts is
+     * a feasibility clamp dragging the frame around, and on this rig that
+     * suspect has an alibi. `tools/test-camera.ts` reports both counts so the
+     * alibi is rechecked on every run rather than remembered.
      */
     const sh = clamp(clamp(prefH + Math.tan(pan * DEG), winLo, winHi) - prefH,
       -SKEW_H_TAN, SKEW_H_TAN);
@@ -697,16 +966,48 @@ export class TeleRig {
     this.skewTilt = Math.atan(sv) / DEG;
     this.telemetry.skewPan = this.skewPan;
     this.telemetry.skewTilt = this.skewTilt;
+    const d = this.telemetry.diag;
+    d.winSpan = winHi - winLo;
+    d.collapsed = !(winHi > winLo);
+    d.clamped = Math.abs(this.skewPan - pan) > 1e-9;
+    d.urgent = urgent;
+    d.nHold = bestNow + 1;
+    d.nGoal = bestGoal + 1;
+    d.nBest = bestN + 1;
+    d.goalPan = this.goalPan;
+    d.reframed = reframed;
+    d.winRelLo = winLo - prefH;
+    d.winRelHi = winHi - prefH;
     if (sh === 0 && sv === 0) return;
     dir.addScaledVector(b.r, sh * fwd);
     dir.addScaledVector(b.u, sv * fwd);
   }
 
-  /** Bodies inside the count box about `(x, y)`, weighted toward roomy ones. */
+  /**
+   * Bodies inside the count box about `(x, y)`, weighted toward roomy ones —
+   * AND SATURATED AT THE GUARANTEE.
+   *
+   * The brief asks the shot to hold five offensive players while the disc is
+   * held. It does not ask for six, and the difference is not academic: the
+   * seventh man in a vertical stack is forty metres upfield, he moves
+   * independently of everything the shot is about, and a solver that maximises
+   * a raw count will spend real skew chasing him in and out of frame. Measured,
+   * that was the worst yaw waste left in the rig after the commitment and the
+   * decay were both right — 9.5° in a second, the whole of it a fight over a
+   * SEVENTH body drifting across the edge, with six framed throughout.
+   *
+   * Saturating the count converts that fight into a preference: every framing
+   * that holds the guarantee scores the same on bodies, so the tie-breaks below
+   * it — room to spare, then the brief's own composition — decide, and the rig
+   * sits on the shot it was designed to make. It still fights for the fifth
+   * body as hard as it ever did. It just stops bidding for the seventh.
+   */
   private frameScore(
     x: number, y: number, countH: number, countV: number, snugH: number, snugV: number,
   ): number {
     const gh = this.gh, gv = this.gv;
+    // The thrower is a hard constraint and never enters `gh`, hence the −1.
+    const cap = TELE.GUARD_MIN - 1;
     let n = 0, snug = 0;
     for (let i = 0; i < gh.length; i++) {
       const dh = Math.abs(gh[i] - x), dv = Math.abs(gv[i] - y);
@@ -714,13 +1015,15 @@ export class TeleRig {
       n++;
       if (dh <= snugH && dv <= snugV) snug++;
     }
-    return n * SCORE_BODY + snug;
+    return Math.min(n, cap) * SCORE_BODY + Math.min(snug, cap);
   }
 
   /** No correction is being applied: the head goes back on the focus point. */
   private clearSkew(): void {
     this.skewPan = 0;
     this.skewTilt = 0;
+    this.goalPan = 0;
+    this.goalTilt = 0;
     this.telemetry.skewPan = 0;
     this.telemetry.skewTilt = 0;
   }
@@ -767,7 +1070,7 @@ export class TeleRig {
     this.focus.set(
       TELE.DISC_W * d.x + TELE.CENTROID_W * cx,
       TELE.AIM_Y,
-      TELE.DISC_W * d.z + TELE.CENTROID_W * cz + w.attackDir * TELE.LEAD,
+      TELE.DISC_W * d.z + TELE.CENTROID_W * cz + this.leadZ,
     );
     this.aimTarget.copy(this.focus);
     this.landing.copy(this.focus);
@@ -887,13 +1190,16 @@ export class TeleRig {
     }
 
     const base = TELE.FOV_BASE + (TELE.FOV_REDZONE - TELE.FOV_BASE) * this.redRamp;
-    const need = Math.max(
+    const core = Math.max(
       fovForWidth(coreH, TELE.FIT_WIDTH, aspect),
-      fovForHeight(coreV, TELE.FIT_HEIGHT),
+      fovForHeight(coreV, TELE.FIT_HEIGHT));
+    const dg = Math.max(
       fovForWidth(discH, TELE.DISC_GUARD_W, aspect),
-      fovForHeight(discV, TELE.DISC_GUARD_H),
-      this.guaranteeFov(w, flight, aspect),
-    );
+      fovForHeight(discV, TELE.DISC_GUARD_H));
+    const guard = this.guaranteeFov(w, flight, aspect);
+    const d = this.telemetry.diag;
+    d.fovCore = core; d.fovDisc = dg; d.fovGuard = guard; d.fovBase = base;
+    const need = Math.max(core, dg, guard);
     return clamp(
       Math.max(need, base) + TELE.FOV_HUCK_BONUS * this.huckRamp,
       TELE.FOV_MIN, TELE.FOV_MAX);
