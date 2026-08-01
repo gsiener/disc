@@ -34,9 +34,15 @@ import type { WearMap } from './WearMap';
  *    line), whose width is measured along the line's own normal rather than
  *    from the larger world-axis footprint — see `turfShade` for why the
  *    isotropic estimate dissolved the touchlines at broadcast range. No decal
- *    geometry, no z-fighting, razor sharp in a macro crop. It is eroded by
- *    noise and by the live wear map, and it perturbs the normal so the paint
- *    sits *on* the grass;
+ *    geometry, no z-fighting, razor sharp in a macro crop. Every marking
+ *    carries a paint WEIGHT (see `PW_BOUND`/`PW_GOAL`/`PW_BRICK`) which is the
+ *    fraction of sward its pigment hides, and which also sets its width, its
+ *    overspray and whether it gets the sub-pixel width floor. That weight is
+ *    the pitch's visual hierarchy in one number: the boundary defines the
+ *    field and holds; the brick mark is a restart reference and recedes. Paint
+ *    is mixed INTO the sward rather than replacing it, keeps the sward's
+ *    ambient occlusion and mow lay, and is eroded by noise and by the live
+ *    wear map;
  *  - the wear texture drives the grass→dry→bare-soil→mud progression, flattens
  *    the blade normals and rubs out the chalk.
  */
@@ -77,13 +83,53 @@ vec3  gTurfColor;
 
 ${GROUND_NOISE}
 
-/* nearest point on a segment: (distance, unit direction away from the line) */
-void tryLine(inout vec3 best, vec2 p, vec2 a, vec2 b) {
+/* ---- the paint hierarchy -------------------------------------------------
+   Every marking carries a WEIGHT, which is literally the fraction of the sward
+   its pigment hides. It is the one number that separates the three classes, and
+   the ordering is deliberate:
+
+     boundary (sidelines, end lines)  0.88  — these ARE the field. Out of bounds
+                                             is the most consequential fact on
+                                             the pitch and the line has to hold
+                                             to the far end at broadcast range,
+                                             so it also keeps the sub-pixel
+                                             width floor.
+     goal lines                       0.84  — the same paint, a shade quieter:
+                                             identical in the rulebook, but it
+                                             takes far more traffic than the
+                                             perimeter (pull line-ups, stall
+                                             counts, endzone scrums) and a
+                                             re-lined pitch shows that by the
+                                             second half.
+     brick marks                      0.52  — a restart reference, not a
+                                             boundary. One metre of single-pass
+                                             paint in the most chewed-up square
+                                             metre on the field. It must be
+                                             legible to a player standing near
+                                             it and it must NOT out-read the
+                                             disc from the tele, so it is the
+                                             only class with no width floor: it
+                                             is allowed to fade honestly with
+                                             distance.
+
+   Before this, all eight markings were painted identically at 0.97 opacity in
+   near-display-white, and the brick cross measured 4.5x the luminance of the
+   turf beside it and eight times the disc's pixel area at the tele's working
+   range — ground paint out-reading the object of the sport. */
+const float PW_BOUND = 0.88;
+const float PW_GOAL  = 0.84;
+const float PW_BRICK = 0.52;
+/* Anything under this weight is a brick mark. */
+const float PW_LINE  = 0.68;
+
+/* nearest point on a segment: (distance, unit direction away from the line,
+   the marking's paint weight) */
+void tryLine(inout vec4 best, vec2 p, vec2 a, vec2 b, float w) {
   vec2 pa = p - a, ba = b - a;
   float t = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
   vec2 d = pa - ba * t;
   float l = length(d);
-  if (l < best.x) best = vec3(l, l > 1e-4 ? d / l : vec2(0.0, 1.0));
+  if (l < best.x) best = vec4(l, l > 1e-4 ? d / l : vec2(0.0, 1.0), w);
 }
 
 /**
@@ -96,19 +142,23 @@ void tryLine(inout vec3 best, vec2 p, vec2 a, vec2 b) {
  *
  * Everything is folded into the +X/+Z quadrant and mirrored back out, so one
  * segment does the work of two and the whole set costs five distance tests.
+ *
+ * The brick mark is WFDF's "two crossed one-metre lines" — the arms below are
+ * +/-0.5 m, which is regulation and stays regulation. Its weight, its width and
+ * its wear are what change; its geometry does not.
  */
-vec3 chalkNearest(vec2 p) {
-  vec3 best = vec3(1e6, 0.0, 1.0);
+vec4 chalkNearest(vec2 p) {
+  vec4 best = vec4(1e6, 0.0, 1.0, PW_BOUND);
   const float W = ${FIELD.halfWidth.toFixed(2)};   // sidelines      x = +/-18.5
   const float L = ${FIELD.halfLength.toFixed(2)};  // end lines      z = +/-50
   const float G = ${FIELD.goalLine.toFixed(2)};    // goal lines     z = +/-32
   const float B = ${FIELD.brick.toFixed(2)};       // brick marks    z = +/-14
   vec2 q = vec2(abs(p.x), abs(p.y));
-  tryLine(best, q, vec2(W, 0.0), vec2(W, L));
-  tryLine(best, q, vec2(0.0, L), vec2(W, L));
-  tryLine(best, q, vec2(0.0, G), vec2(W, G));
-  tryLine(best, q, vec2(0.0, B - 0.5), vec2(0.0, B + 0.5));
-  tryLine(best, q, vec2(0.0, B), vec2(0.5, B));
+  tryLine(best, q, vec2(W, 0.0), vec2(W, L), PW_BOUND);
+  tryLine(best, q, vec2(0.0, L), vec2(W, L), PW_BOUND);
+  tryLine(best, q, vec2(0.0, G), vec2(W, G), PW_GOAL);
+  tryLine(best, q, vec2(0.0, B - 0.5), vec2(0.0, B + 0.5), PW_BRICK);
+  tryLine(best, q, vec2(0.0, B), vec2(0.5, B), PW_BRICK);
   // mirror the gradient back out of the folded quadrant
   best.yz *= vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
   return best;
@@ -331,10 +381,21 @@ void turfShade() {
      line; lines seen end-on still fade, which is correct. */
   vec2 dPdx = vec2(dFdx(P.x), dFdx(P.y));
   vec2 dPdy = vec2(dFdy(P.x), dFdy(P.y));
-  const float HW = ${FIELD.lineHalfWidth.toFixed(3)};
-  vec3 cn = chalkNearest(P);
+  /* Line width. WFDF allows 75–120 mm; 'FIELD.lineHalfWidth' paints the
+     boundary set at the wide end of that allowance (and then some) so the far
+     touchline still holds a pixel — that is Layout.ts's call and it stands for
+     the lines that define the field. The brick mark is a different job: a
+     lining machine walks the boundary with a double pass and dabs the brick
+     with a single one, so it goes on at the regulation MINIMUM, 75 mm. Half
+     the width is half the ink, and it is more regulation-correct, not less. */
+  const float HW_LINE  = ${FIELD.lineHalfWidth.toFixed(3)};
+  const float HW_BRICK = 0.0375;
+  vec4 cn = chalkNearest(P);
+  float pw = cn.w;                              // 0.88 bound · 0.84 goal · 0.52 brick
+  float isBrick = 1.0 - step(PW_LINE, pw);
+  float hw = mix(HW_LINE, HW_BRICK, isBrick);
   float aa = max(1.2e-4, length(vec2(dot(cn.yz, dPdx), dot(cn.yz, dPdy))));
-  /* Minimum drawn width.
+  /* Minimum drawn width — for the lines that define the field, and only those.
      Coverage preservation is the correct answer to aliasing and the wrong
      answer to legibility: it is energy-exact, so a line that goes sub-pixel
      fades toward the turf and the viewer loses the state of play. Every
@@ -343,8 +404,14 @@ void turfShade() {
      across-line footprint is a 0.84 px floor — under a pixel, so it never
      grows a fat halo on a line that is genuinely resolved, and it only
      engages past ~18 cm of footprint, i.e. the far third of the pitch at
-     broadcast range and nowhere at all in a macro crop. */
-  float HWe = max(HW, 0.42 * aa);
+     broadcast range and nowhere at all in a macro crop.
+
+     The brick mark is deliberately excluded. A floor is a promise that a
+     marking stays legible however small it gets, and that promise is exactly
+     what turned a one-metre restart cross into the highest-contrast object in
+     a broadcast frame. Below its own resolution the brick is allowed to do
+     what physics says and fade. */
+  float HWe = max(hw, 0.42 * (1.0 - isBrick) * aa);
   float cov = clamp((HWe - cn.x) / aa + 0.5, 0.0, 1.0)
             - clamp((-HWe - cn.x) / aa + 0.5, 0.0, 1.0);
   // Erosion is 40 cm detail. Once it is sub-pixel it must converge to its own
@@ -353,31 +420,70 @@ void turfShade() {
   float near = 1.0 - smoothstep(0.020, 0.13, px);
   float grain = fFbm(P * 2.6 + 7.0, 3);
   cov *= mix(0.94, mix(0.78, 1.0, smoothstep(-0.42, 0.42, grain)), near);
-  /* Scuffing, capped.
+  /* Scuffing, capped — and capped per class.
      This term used to be able to take 55 % of a line away, and the wear map
      hands it a saturated cut channel exactly where the chalk is: the goal
      lines carry a seeded scrimmage band *and* forty pivot stamps, so the two
      lines a viewer most needs — the ones that say where the endzone is — were
      the two being erased hardest. A pitch is re-lined the morning of a match.
-     Play scuffs the paint; it does not remove it. */
-  cov *= 1.0 - 0.24 * chalkCut * mix(0.55, 1.0, near);
-  // Overspray either side of the line — the soft edge is scattered powder on
-  // the blades, not a filtering artefact, so it is authored at a fixed world
-  // width and antialiased the same way.
+     Play scuffs the paint; it does not remove it.
+
+     The brick mark is the exception, and it is not an exception for the
+     convenience of this task: it is the one marking that sits in the middle of
+     the field, every turnover restarts on it, and 'WearMap.seed' accordingly
+     lays a two-metre wear blotch right over it. Paint on chewed ground goes
+     first. So the brick takes both the cut channel harder AND a direct term
+     off raw wear, which is what makes it read as a mark play has been over all
+     afternoon rather than a decal stuck to the grass this morning. */
+  cov *= 1.0 - (0.24 + 0.42 * isBrick) * chalkCut * mix(0.55, 1.0, near);
+  cov *= 1.0 - 0.45 * isBrick * smoothstep(0.18, 0.78, wear);
+  /* Overspray either side of the line — the soft edge is scattered powder on
+     the blades, not a filtering artefact, so it is authored at a fixed world
+     width and antialiased the same way. It is scaled by the class weight
+     twice over (width and amplitude) because a halo is footprint: on the
+     boundary it is the paint bleeding into the sward, on a 1 m cross it was
+     doubling the size of the thing we are trying to stop over-reading. */
   float dw = max(aa, 0.010);
-  float dust = (clamp((HW + 0.075 - cn.x) / dw + 0.5, 0.0, 1.0)
-              - clamp((-HW - 0.075 - cn.x) / dw + 0.5, 0.0, 1.0))
-             * 0.32 * smoothstep(-0.2, 0.5, grain) * near;
+  float dustW = 0.075 * pw;
+  float dust = (clamp((hw + dustW - cn.x) / dw + 0.5, 0.0, 1.0)
+              - clamp((-hw - dustW - cn.x) / dw + 0.5, 0.0, 1.0))
+             * 0.32 * pw * pw * smoothstep(-0.2, 0.5, grain) * near;
   float chalk = clamp(cov + dust * (1.0 - cov), 0.0, 1.0);
 
-  vec3 chalkCol = uColChalk * (0.90 + 0.20 * fNoise(P * 95.0) * fine);
-  col = mix(col, chalkCol, chalk * 0.97);
-  rough = mix(rough, 0.96, chalk);
-  gAO = mix(gAO, 1.0, chalk * 0.7);
+  /* ---- paint is a coat ON the sward, not a decal over it -------------------
+     The old line was 'mix(col, chalkCol, chalk * 0.97)': a 97 % replacement of
+     the surface with near-display-white. That is a sticker. Marking fluid is
+     sprayed onto standing grass — it coats the blade tops, misses the sides and
+     the leaf litter under them, and what you see is a *mixture*, which is why
+     real paint takes the colour, the mottle and the light of the ground it is
+     on and why a line over worn turf is grey-green rather than white. 'coat' is
+     that mixing fraction, and it is the class weight: at 0.88 the boundary
+     still reads as a hard white line, and the 12 % of sward that survives is
+     what puts it in the pitch instead of on it. */
+  float coat = chalk * pw;
+  vec3 pigment = uColChalk * (0.90 + 0.20 * fNoise(P * 95.0) * fine);
+  // the mark rides the ground's own tonal variation instead of ignoring it
+  pigment *= 0.88 + 0.16 * (mott * 0.5 + 0.5);
+  // and it is dirty where the sward under it has gone
+  pigment = mix(pigment, pigment * 0.70 + uColDirt * 0.55, dirt);
+  col = mix(col, pigment, coat);
+  // matte, but it keeps a trace of the sward's own response
+  rough = mix(rough, 0.93, coat);
+  /* Ambient occlusion is NOT cancelled by paint. The old 'mix(gAO, 1.0, 0.7)'
+     lit the line as if the blades under it had stopped shadowing each other,
+     which is most of why the markings glowed: a painted sward is still a sward
+     and still has holes in it. Paint lifts the local response a little because
+     the coated tips scatter more; that is all it does. */
+  gAO = mix(gAO, min(1.0, gAO * 1.18), coat);
 
-  // paint sits proud of the sward: tilt the normal along the bead edges
-  float bead = exp(-pow((cn.x - HW) / 0.030, 2.0)) * chalk * detail;
-  nrm = nrm * (1.0 - 0.72 * chalk) + cn.yz * bead * 1.5;
+  /* Sprayed marking wets and mats the blades. It does not sit proud of them as
+     a bead of gloss — that was a decal cue, at 1.5 the amplitude of everything
+     else in the normal budget. What survives is the flattening (right: the
+     blades under a line are laid over and stuck down) plus a whisper of edge
+     relief that only exists in a macro crop, where the paint genuinely does
+     pile up on the first blades the nozzle hits. */
+  float bead = exp(-pow((cn.x - hw) / 0.030, 2.0)) * chalk * detail;
+  nrm = nrm * (1.0 - 0.55 * coat) + cn.yz * bead * 0.45;
 
   /* ---- assemble ----------------------------------------------------------
      The mow lay is also a real tilt of the effective surface — a pass of bent
@@ -386,7 +492,10 @@ void turfShade() {
      what keeps the stripes alive at broadcast range and is why they respond to
      the sun moving as well as to the camera moving. */
   vec2 pert = nrm * uNormalScale * (1.0 - 0.5 * dirt) * (1.0 - 0.6 * mud);
-  pert.x += lay * 0.30 * stripeFade * (1.0 - 0.70 * wear) * (1.0 - chalk);
+  // The mow lay survives *through* the paint in the same proportion the sward
+  // does — you can see the mower's bands crossing a touchline on any broadcast,
+  // and cutting them at the paint edge is what makes a line read as a cut-out.
+  pert.x += lay * 0.30 * stripeFade * (1.0 - 0.70 * wear) * (1.0 - coat);
   gNrmW = normalize(vFNormal + vec3(pert.x, 0.0, pert.y));
   gRough = clamp(rough, 0.06, 1.0);
 
@@ -396,7 +505,7 @@ void turfShade() {
   float back = clamp(dot(Vw, -uSunDir) * 0.5 + 0.5, 0.0, 1.0);
   float graze = 1.0 - abs(Vw.y);
   gEmis = uSunTint * col * pow(back, 3.0) * (0.28 + 0.72 * graze)
-        * mix(uDataMean.b, dd.b, detail) * 0.85 * (1.0 - dirt) * (1.0 - chalk);
+        * mix(uDataMean.b, dd.b, detail) * 0.85 * (1.0 - dirt) * (1.0 - coat);
 
   gTurfColor = col;
 }
@@ -430,7 +539,18 @@ export function makeTurfMaterial(opts: TurfMaterialOpts): {
     // `turfShade`: a red-brown over green under a warm key reads as pink.
     uColDirt: { value: linearColor(0x6a5b3a) },
     uColMud: { value: linearColor(0x3e352a) },
-    uColChalk: { value: linearColor(0xf2f3ee) },
+    /* Marking-fluid pigment, NOT white.
+       0xf2f3ee is V 95.3 % — three points off the disc's own 0xfafafa (V 98 %)
+       and, in linear terms, an albedo of 0.87: brighter than fresh snow, on the
+       ground, over the whole regulation set. Measured on a broadcast frame that
+       put the peak of a brick mark at sRGB 215 while the disc came in between
+       0.47 and 0.74 relative luminance — i.e. the paint was routinely the
+       highest-value object in the frame, which art-direction §2 gives to the
+       disc alone. This is titanium-white line marking as it actually
+       photographs on grass: V 84.7 %, S 5.6 %, hue 51° (well inside the ≤50 %
+       saturation cap), a linear albedo of 0.67. Thirteen points of value below
+       the disc is the headroom the disc needs. */
+    uColChalk: { value: linearColor(0xd8d6cc) },
     uDetailMean: { value: maps.meanAlbedo.clone() },
     uDataMean: { value: maps.meanData.clone() },
     uTile: { value: DETAIL_TILE },

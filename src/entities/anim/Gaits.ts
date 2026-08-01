@@ -71,6 +71,27 @@ export interface BodyState {
   speed: number;
   sp: number;
 
+  /* ---- per-athlete running signature ---------------------------------- */
+
+  /**
+   * Fourteen bodies driven by one set of equations are fourteen copies of one
+   * athlete, and at 40-90 px on screen that is the loudest failure the roster
+   * can produce. These are fixed, hashed, per-player multipliers on the parts of
+   * the gait that vary most between real runners: how much the arms swing, how
+   * much the trunk counter-rotates, how much the body bobs, how much the pelvis
+   * rotates, how far the elbows are carried and how upright the athlete runs.
+   * None of them touch timing — the feet still land where the simulation says —
+   * so they cost nothing and cannot desynchronise anything.
+   */
+  gSwing: number; gCounter: number; gBob: number; gPelvis: number;
+  gElbow: number; gLean: number;
+  /**
+   * Which of THIS athlete's feet answers the simulation's `foot.planted === 'L'`.
+   * +1 keeps the simulation's naming, −1 swaps it. See `gaitLead` and
+   * `Feet.updateFeet`; resolved once, on the first driver update.
+   */
+  parity: 1 | -1 | 0;
+
   /* ---- posture, and the clock that drives it -------------------------- */
 
   /**
@@ -106,6 +127,33 @@ export interface StanceIntent {
   mark?: number;
 }
 
+/**
+ * WHICH FOOT THIS ATHLETE LEADS WITH.
+ *
+ * `sim/move/Gait.ts` is one phase oscillator per body, integrated at a frequency
+ * that is a pure function of ground speed and started at zero. Two athletes who
+ * happen to be running at the same speed are therefore in *exactly* the same
+ * stride phase, on the same foot, forever — measured over a live match, pairs
+ * within 0.25 m/s of each other sat inside 0.001 of a stride of one another in
+ * about half of all samples. Fourteen bodies whose legs move as one is the
+ * clone read, and it is the one thing on this list a still frame shows.
+ *
+ * The animator cannot change the oscillator, but it can choose which of the
+ * athlete's own feet answers each of its plants. Swapping that mapping puts an
+ * athlete exactly half a stride out from an athlete it would otherwise mirror,
+ * for the cost of reflecting the plant's lateral offset about the travel line
+ * (see `updateFeet`) — the plant stays on the ground, the same distance along
+ * travel, on the side the planting foot is actually on.
+ *
+ * Both `Gaits` and `Feet` resolve it from `loco.id`, so they cannot disagree.
+ */
+export function gaitLead(id: number): 1 | -1 {
+  // Alternating rather than hashed, and that is the point: a hash over eight
+  // ids came out 6-2 in the roster this was measured on, which leaves six
+  // athletes still moving as one. The split has to be exactly half.
+  return (id & 1) === 0 ? 1 : -1;
+}
+
 /** Small deterministic hash — per-player variety without touching an Rng. */
 export function hash01(n: number): number {
   let x = (n | 0) * 0x9e3779b1;
@@ -124,6 +172,17 @@ export function makeBody(seed: number): BodyState {
     stumbleDir: hash01(seed * 13 + 9) < 0.5 ? -1 : 1,
     prevVX: 0, prevVZ: 0, accX: 0, accZ: 0,
     flexL: 0, flexR: 0, strideU: 0, speed: 0, sp: 0,
+    // Six independent hashes off the one seed. Spreads are deliberately modest —
+    // ±15 % on an amplitude is the difference between two runners, ±40 % is the
+    // difference between a runner and a cartoon.
+    gSwing: 0.80 + hash01(seed * 31 + 7) * 0.42,
+    gCounter: 0.78 + hash01(seed * 37 + 19) * 0.48,
+    gBob: 0.80 + hash01(seed * 41 + 29) * 0.44,
+    gPelvis: 0.80 + hash01(seed * 43 + 53) * 0.44,
+    gElbow: (hash01(seed * 47 + 61) - 0.5) * 0.46,
+    gAdduct: (hash01(seed * 61 + 97) - 0.5) * 0.24,
+    gLean: (hash01(seed * 53 + 71) - 0.5) * 0.115,
+    parity: 0,
     // Offset so two athletes stood side by side are never on the same breath,
     // the same weight shift or the same head drift.
     clock: hash01(seed * 23 + 17) * 40,
@@ -145,6 +204,7 @@ export function updateDrivers(
   bs.speed = speed;
   const top = Math.max(4, loco.derived?.topSpeed ?? TOP_REF);
   bs.sp = clamp01(speed / top);
+  if (bs.parity === 0) bs.parity = gaitLead(loco.id);
 
   // --- posture intent, smoothed ---------------------------------------------
   bs.clock += dt;
@@ -186,11 +246,28 @@ export function updateDrivers(
   const along = bs.accX * fx + bs.accZ * fz;
   const lat = bs.accX * -fz + bs.accZ * fx;      // + = to the athlete's right
 
-  let leanT = Math.atan2(along, G) + 0.085 * bs.sp;
-  let sideT = -Math.atan2(lat, G);               // lean INTO the turn
+  /**
+   * LEAN INTO THE TURN, AND THE SIGN IS THE WHOLE THING.
+   *
+   * `lat` is positive when the athlete is accelerating to their own RIGHT.
+   * Rolling the spine positively about its local +Z takes the up-axis toward
+   * −X, and rig +X is the athlete's LEFT — so a POSITIVE roll leans right, and
+   * a right-hand turn therefore wants a positive `side`. This carried a leading
+   * minus, which meant every hard cut leaned the body out of the turn: measured
+   * off the committed chest bone on a 90-degree cut at 7 m/s, 13.7 m/s² of
+   * lateral acceleration (which wants 54 degrees of inward lean) produced 25
+   * degrees of OUTWARD lean — an 80-degree error, and the single most visible
+   * thing a body does in this sport.
+   *
+   * The clamp is 0.60 rad rather than 0.42: a cutter at the top of a hard plant
+   * genuinely gets past 30 degrees, and clipping at 24 flattened exactly the
+   * frame the plant is supposed to sell.
+   */
+  let leanT = Math.atan2(along, G) + 0.085 * bs.sp + bs.gLean;
+  let sideT = Math.atan2(lat, G);
   leanT += stateLeanBias(loco, bs);
   leanT = clamp(leanT, -0.26, 0.62);
-  sideT = clamp(sideT, -0.42, 0.42);
+  sideT = clamp(sideT, -0.60, 0.60);
 
   [bs.lean, bs.leanV] = spring(bs.lean, bs.leanV, leanT, 13, dt);
   [bs.side, bs.sideV] = spring(bs.side, bs.sideV, sideT, 12, dt);
@@ -199,8 +276,12 @@ export function updateDrivers(
   bs.crouch = damp(bs.crouch, stateCrouch(loco, bs), 14, dt);
 
   // --- stride phase, left-foot referenced ------------------------------------
+  // "Left" is THIS athlete's left, which is the simulation's `planted` only when
+  // the lead parity is +1 — see `gaitLead`. Get this wrong and the pelvic drop
+  // lands on the stance side instead of the swing side.
   const f = loco.foot;
-  bs.strideU = f.planted === 'L' ? f.phase * 0.5 : f.phase * 0.5 + 0.5;
+  const leftDown = (f.planted === 'L') === (bs.parity === 1);
+  bs.strideU = leftDown ? f.phase * 0.5 : f.phase * 0.5 + 0.5;
 
   // --- free-body weight ------------------------------------------------------
   const free = loco.air.airborne || loco.prone || loco.state === 'recovery' || loco.state === 'fall';
@@ -287,7 +368,7 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
   /* ---- vertical ---------------------------------------------------------- */
   // Bob runs at STEP rate — two dips per stride, lowest just after each
   // touchdown where the leg is loaded and the knee is at its most flexed.
-  const bobAmp = moving ? 0.011 + 0.031 * sp : 0;
+  const bobAmp = moving ? (0.011 + 0.031 * sp) * bs.gBob : 0;
   const bob = -bobAmp * Math.cos(TAU * (loco.foot.phase - 0.22));
   let hipY = bob - bs.crouch;
 
@@ -300,9 +381,9 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
   if (moving) {
     const swayAmp = 0.013 + 0.014 * (1 - sp);
     sway = swayAmp * Math.cos(TAU * u);
-    pelvisYaw = (0.045 + 0.145 * sp) * Math.sin(TAU * u);
+    pelvisYaw = (0.045 + 0.145 * sp) * bs.gPelvis * Math.sin(TAU * u);
     // Frontal-plane pelvic drop: the swing-side hip falls a couple of degrees.
-    pelvisRoll = (0.026 + 0.042 * sp) * Math.sin(TAU * u);
+    pelvisRoll = (0.026 + 0.042 * sp) * bs.gPelvis * Math.sin(TAU * u);
   } else {
     /**
      * STANDING. `bs.weight` is +1 when the athlete is stood on the left leg.
@@ -367,7 +448,7 @@ export function poseSpine(bs: BodyState, pose: Pose, loco: LocoLike): void {
   /* ---- spine chain -------------------------------------------------------- */
   // Counter-rotation lags the pelvis by ~6% of a stride and overshoots it.
   const counter = moving
-    ? -(0.060 + 0.165 * sp) * Math.sin(TAU * (u - 0.065))
+    ? -(0.060 + 0.165 * sp) * bs.gCounter * Math.sin(TAU * (u - 0.065))
     : -pelvisYaw * 0.5;
   const spineLean = bs.lean * 0.70;
   const spineSide = bs.side * 0.70 + trunkTilt;
@@ -555,15 +636,28 @@ const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0, fwd: 0 };
 export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   const sp = bs.sp;
   const t = armTuneFor(loco, bs);
-  const k = (0.40 + 0.34 * sp) * t.swing;
+  const k = (0.40 + 0.34 * sp) * t.swing * bs.gSwing;
   // Elbow carriage is a function of GROUND SPEED, not of speed-as-a-fraction-
   // of-top-speed, and it saturates: a jogger and a sprinter both run with the
   // elbow near a right angle, and what actually grows with pace is the swing
   // amplitude, which is read off the legs below. Scaling it linearly with `sp`
   // left everyone below a sprint running with near-straight arms.
   const carriage = smooth(clamp01(bs.speed / 3.2));
-  const elbowBase = 0.26 + 1.06 * carriage + t.elbow;
+  const elbowBase = 0.26 + 1.06 * carriage + t.elbow + bs.gElbow * carriage;
   const adductBase = 0.34 + 0.16 * sp + t.adduct;
+  /**
+   * The arms are carried FORWARD of the shoulder line while running, and that
+   * offset is a constant, not a by-product of the swing. It used to arrive as a
+   * deliberate 38 % leak of the thighs' common mode (`- 0.62 * mean` below),
+   * which sounds harmless and is not: the common mode oscillates at stride rate
+   * too, so the leak put a stride-rate component into BOTH arms in phase with
+   * each other. Measured on the committed bones at 7 m/s, the two upper arms
+   * pointed to the same side of the coronal plane for 18 % of every stride and
+   * the swing was biased +0.53/−0.25 forward — the "carrying a tray" read.
+   * Subtracting the filtered mean in full leaves a pure differential, and this
+   * puts the carriage back as an honest constant.
+   */
+  const runFwd = t.swing > 0 ? (0.085 + 0.130 * carriage) * t.swing : 0;
 
   for (let si = 0; si < 2; si++) {
     const s: 1 | -1 = si === 0 ? 1 : -1;
@@ -575,20 +669,22 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
     const cl = s === 1 ? B.clavicle_L : B.clavicle_R;
 
     /**
-     * Anti-phase: the LEFT arm answers the RIGHT thigh — but against the MEAN
-     * of the two thighs, not against zero.
+     * Anti-phase: the LEFT arm answers the RIGHT thigh — measured against the
+     * INSTANTANEOUS MEAN of the two thighs, which leaves exactly ±half the
+     * differential and nothing else.
      *
-     * Through the flight phase of a run both thighs are forward of the hip at
-     * once (one driving through, one not yet extended), so the raw flexion
-     * carries a common-mode offset that pushed BOTH arms forward together on
-     * every stride. Side-on that is the tell: the arms stop looking like they
-     * are counter-rotating against the hips and start looking like the athlete
-     * is carrying a tray. Subtracting most of the mean leaves the differential —
-     * which is the swing — and keeps a little of the forward carriage a runner
-     * genuinely has.
+     * The mean is not a nuisance offset, it is a signal in its own right: both
+     * thighs are forward of the hip through the flight phase, so it carries a
+     * large DC *and* a second harmonic at twice stride rate. Subtracting only
+     * part of it (this was `- 0.62 * mean`) leaves both of those in both arms,
+     * in phase with each other. Measured on the committed bones at 7 m/s the two
+     * upper arms shared 0.34 rad RMS of common-mode swing against 0.78 of
+     * differential and sat on the same side of the coronal plane for 18 % of
+     * every stride — the "carrying a tray" read. Taking the whole mean makes the
+     * swing a pure differential; the forward carriage a runner genuinely has is
+     * then `runFwd`, an honest constant that does not oscillate.
      */
-    const mean = (bs.flexL + bs.flexR) * 0.5;
-    const opp = (s === 1 ? bs.flexR : bs.flexL) - 0.62 * mean;
+    const opp = (s === 1 ? bs.flexR : bs.flexL) - (bs.flexL + bs.flexR) * 0.5;
     const swing = k * opp;
     // The elbow closes on the forward swing and opens on the back swing —
     // a constant elbow angle is the tell that the arms are on a sine curve.
@@ -601,7 +697,7 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
     const fwd = t.fwd > 0
       ? t.fwd * (1 + bs.swayBias * 1.6 * s)
         + 0.030 * t.fwd * Math.sin(TAU * bs.clock * 0.13 + bs.idlePhase + s * 0.9)
-      : 0;
+      : runFwd * (1 + bs.swayBias * 1.1 * s);
 
     pose.setEuler(ua, swing + t.raise + fwd, -0.10 * s * sp, -(adduct) * s);
     pose.setBend(fa, elbow);

@@ -154,6 +154,13 @@ export type HandAnchorFn = (playerId: number, pos: THREE.Vector3, normal: THREE.
 
 /* ------------------------------------------------------------------ roster */
 
+/** What the kit bake knows about one team's slots. See `buildRoster`. */
+interface SquadIdentity {
+  numbers: number[];
+  surnames: string[];
+  given: string[];
+}
+
 export interface RosterEntry {
   id: number;
   team: TeamId;
@@ -353,6 +360,7 @@ export class GameSystem implements System {
   private buildRoster(ctx: Ctx): void {
     const rng = ctx.rand.fork(0x0a11ce);
     const overall: [number, number] = [76, 74];
+
     for (let t = 0 as TeamId; t <= 1; t = (t + 1) as TeamId) {
       for (let i = 0; i < 7; i++) {
         const id = t * 7 + i;
@@ -376,6 +384,8 @@ export class GameSystem implements System {
           },
           pos: new THREE.Vector3(0, 0, 0),
         });
+        // Placeholder identity — `resolveIdentity` replaces it from the kit
+        // bake on the first frame, once PlayersSystem has baked the name strip.
         const entry: RosterEntry = {
           id, team: t, number: i + 1,
           name: `${TEAM_NAMES[t]} ${i + 1}`,
@@ -386,6 +396,42 @@ export class GameSystem implements System {
       }
     }
     this.controlledPlayerId = 0;
+  }
+
+  /**
+   * Take the squad's real names off the kit bake, once.
+   *
+   * This cannot happen in `buildRoster`, and the reason is ordering: this system
+   * is `order = 5` and `PlayersSystem` is `order = 6`, so the roster is built a
+   * whole system before the kits that carry the names exist. Re-ordering them to
+   * suit a cosmetic read would move the sim relative to the animator and the
+   * material library, which is a real risk for a naming change.
+   *
+   * So identity is adopted on the first frame instead. The kit bake owns it
+   * because the name strip is a TEXTURE — its rows are fixed when it is baked
+   * and slot `i` samples row `i` — and reading the same row is the only way the
+   * broadcast lower-third can agree with the back of the shirt. Headless suites
+   * have no renderer at all and simply keep the numbered fallback.
+   */
+  private identityResolved = false;
+  private resolveIdentity(ctx: Ctx): void {
+    if (this.identityResolved) return;
+    const kits = (ctx.sys['players'] as
+      { kits?: { squadOf?(t: number): SquadIdentity | null } } | undefined)?.kits;
+    if (!kits?.squadOf) { this.identityResolved = true; return; }
+    for (let t = 0; t <= 1; t++) {
+      const squad = kits.squadOf(t);
+      if (!squad) continue;
+      for (const r of this.roster) {
+        if (r.team !== t) continue;
+        const i = r.id - t * 7;
+        const given = squad.given?.[i];
+        const surname = squad.surnames?.[i];
+        if (given && surname) r.name = `${given} ${surname}`;
+        if (typeof squad.numbers?.[i] === 'number') r.number = squad.numbers[i];
+      }
+    }
+    this.identityResolved = true;
   }
 
   /**
@@ -415,6 +461,7 @@ export class GameSystem implements System {
   /* ------------------------------------------------------------------ step */
 
   update(dt: number, ctx: Ctx): void {
+    this.resolveIdentity(ctx);
     if (this.posed) {
       if (!ctx.capture) {
         this.poseHold -= dt;

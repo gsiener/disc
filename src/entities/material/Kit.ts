@@ -323,14 +323,26 @@ export function bakeNameStrip(names: readonly string[], width = NAME_W): THREE.D
 /* ------------------------------------------------------------------ names */
 
 /** A roster of surnames so the backs of fourteen jerseys are fourteen names. */
-export const SURNAMES = [
-  'ABARA', 'BAKKEN', 'CASTRO', 'DELACRUZ', 'ELIASSON', 'FONTAINE', 'GRACZYK',
-  'HALVORSEN', 'IKEDA', 'JENSEN', 'KOWALSKI', 'LINDQVIST', 'MBEKI', 'NAKAMURA',
-  'OYELARAN', 'PRZYBYLSKI', 'QUINTERO', 'RASMUSSEN', 'SOARES', 'TREMBLAY',
-  'UNDERHILL', 'VANDERBERG', 'WOJCIK', 'XUEREB', 'YAMASHITA', 'ZIELINSKI',
-  'ADEYEMI', 'BRENNAN', 'CHAUDHARY', 'DIALLO', 'ESPOSITO', 'FERREIRA',
-  'GUSTAFSSON', 'HERNANDEZ', 'ISHIKAWA', 'JOHANSSON', 'KOWALCZYK', 'LARSEN',
+/**
+ * The squad list, as [given, surname]. First and surname travel together so the
+ * broadcast card and the back of the shirt can never disagree about who a
+ * player is — `PlayerMaterial` picks a ROW, and everything downstream reads that
+ * same row. Longest surname here is CHAMGERLAIN at eleven characters, which
+ * `bakeNameStrip` fits by scaling to `W * 0.90`.
+ */
+export const ROSTER: readonly (readonly [string, string])[] = [
+  ['SLEVE', 'MCDICHAEL'], ['ONSON', 'SWEEMEY'], ['DARRYL', 'ARCHIDELD'],
+  ['ANATOLI', 'SMORIN'], ['REY', 'MCSRIFF'], ['GLENALLEN', 'MIXON'],
+  ['MARIO', 'MCRLWAIN'], ['RAUL', 'CHAMGERLAIN'], ['KEVIN', 'NOGILNY'],
+  ['TONY', 'SMEHRIK'], ['BOBSON', 'DUGNUTT'], ['WILLIE', 'DUSTICE'],
+  ['JEROMY', 'GRIDE'], ['SCOTT', 'DOUROUE'], ['SHOWN', 'FURCOTTE'],
+  ['DEAN', 'WESREY'], ['MIKE', 'TRUK'], ['DWIGT', 'RORTUGAL'],
+  ['TIM', 'SANDAELE'], ['KARL', 'DANDLETON'], ['MIKE', 'SERNANDEZ'],
+  ['TODD', 'BONZALEZ'],
 ] as const;
+
+/** A roster of surnames so the backs of fourteen jerseys are fourteen names. */
+export const SURNAMES: readonly string[] = ROSTER.map((r) => r[1]);
 
 /** Squad numbers, drawn without repeats inside a team. */
 export function squadNumbers(count: number, rand: { int(a: number, b: number): number }): number[] {

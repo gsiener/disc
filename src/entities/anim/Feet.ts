@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { stepRate, dutyFactor, stanceHalfWidth, GAIT_MIN_SPEED } from '../../sim/move/Gait.ts';
+import { stepRate, stanceHalfWidth, GAIT_MIN_SPEED } from '../../sim/move/Gait.ts';
 import { B, TAU, angDelta, clamp, clamp01, lerp, smooth, frameQuat, solveLimb, Frame, Kine, Pose } from './Kine.ts';
+import { gaitLead, hash01 } from './Gaits.ts';
 import type { LocoLike, FieldLike } from './Types.ts';
 
 /**
@@ -27,6 +28,13 @@ import type { LocoLike, FieldLike } from './Types.ts';
  * other foot, having planted one step earlier, is at `phase / 2 + 0.5`. No
  * second oscillator, nothing to integrate, nothing to drift.
  *
+ * CONTACT IS PER FOOT, AND IT IS WHAT MAKES A WALK A WALK. The simulation
+ * publishes a single `foot.contact` for the single foot it tracks, so taking it
+ * literally leaves the other foot permanently in the air and the body airborne
+ * for a third of every cycle at walking pace. `footStance` gives each foot its
+ * own share of its own cycle; above 0.5 the shares overlap, both feet are down
+ * together and the gait is a walk. See that function.
+ *
  * WHERE THE SWING FOOT IS GOING. It lands where `advanceGait` will put it:
  * body position at the landing instant, plus 0.30 of a step along travel, plus
  * half a stance width to the side. Re-evaluated every frame against a linear
@@ -51,9 +59,43 @@ import type { LocoLike, FieldLike } from './Types.ts';
 
 /** Toe-out at rest, radians. Nobody's feet point straight ahead. */
 const TOE_OUT = 0.105;
-const SWING_LIFT_BASE = 0.055;
-const SWING_LIFT_RATE = 0.052;
 const SWING_LIFT_MAX = 0.46;
+
+/**
+ * HOW LONG EACH FOOT IS ON THE GROUND, as a fraction of its OWN cycle.
+ *
+ * This is the number that decides whether a gait is a walk or a run, and it is
+ * the one thing the simulation's `dutyFactor` cannot be read as. That function
+ * returns a fraction of a STEP for the single foot it tracks — 0.60 at 0.8 m/s
+ * — and this module used to halve it to get a cycle fraction, which caps every
+ * foot at 0.325 of its cycle whatever the speed. Two feet at 0.325 leaves 35 %
+ * of every cycle with NEITHER foot down: measured across the speed ladder the
+ * body was airborne 39 % of the time at 0.8 m/s and there was no double support
+ * at any speed at all. A walk with a flight phase is a skip, and at 40-90 px on
+ * screen a roster of skipping athletes is the first thing that reads wrong.
+ *
+ * A real cycle duty factor is ~0.65 at a stroll, crosses 0.50 at the walk-run
+ * transition near 2.1 m/s, and falls to ~0.28 at a sprint. Above 0.50 the two
+ * feet overlap and the athlete is walking; below it there is a flight phase and
+ * the athlete is running. One curve, and the transition happens because the
+ * numbers cross, not because a state machine said so.
+ */
+export function footStance(speed: number): number {
+  const r = Math.pow(Math.max(0, speed) / 2.6, 1.9);
+  return clamp(0.22 + 0.50 / (1 + r), 0.24, 0.72);
+}
+
+/**
+ * How high the swing foot lifts, metres. Linear in speed put a 10.7 cm lift on
+ * a 0.8 m/s walk — a parade march. Real ground clearance is ~2 cm at a stroll
+ * and the ankle only gets high once the heel is being recovered toward the
+ * buttock, which is a fast-running behaviour, so the curve is quadratic in the
+ * low range and linear once the athlete is actually running.
+ */
+function swingLift(speed: number): number {
+  const v = Math.max(0, speed);
+  return Math.min(SWING_LIFT_MAX, 0.015 + 0.050 * v * (0.35 + 0.0765 * v));
+}
 /** Plantarflexion at toe-off, radians, before the speed scale. */
 const TOE_OFF = 0.62;
 const TOE_EXT_MAX = 0.80;
@@ -152,6 +194,20 @@ export interface FeetState {
   clock: number;
   /** Deterministic per-athlete phase for the standing fidget. */
   phase: number;
+
+  /* ---- per-athlete gait identity, resolved once from `loco.id` ---------- */
+
+  /**
+   * Which of THIS athlete's feet answers the simulation's `foot.planted === 'L'`.
+   * See `Gaits.gaitLead` for why it exists. 0 until resolved.
+   */
+  parity: 1 | -1 | 0;
+  /** Per-athlete toe-out offset, radians. Feet are a fingerprint. */
+  toeOut: number;
+  /** Last dt handed to `updateFeet`, so `hipDrop` can filter frame-rate-safely. */
+  lastDt: number;
+  /** Held hip drop, metres. Follows a rising demand instantly, releases slowly. */
+  drop: number;
 }
 
 function track(side: 1 | -1): FootTrack {
@@ -174,6 +230,7 @@ export function makeFeet(): FeetState {
     pivot: 0, pivotOn: false, pivotYaw: 0,
     stanceWide: 0.115, stanceLead: 1, stanceStagger: 0.045, heelLift: 0,
     clock: 0, phase: 0,
+    parity: 0, toeOut: TOE_OUT, lastDt: 1 / 60, drop: 0,
   };
 }
 
@@ -199,6 +256,60 @@ function groundAt(field: FieldLike | null, x: number, z: number, fallback: numbe
   return field?.heightAt ? field.heightAt(x, z) : fallback;
 }
 
+/**
+ * HOW FAR AHEAD OF THE BODY THE FOOT LANDS, as a share of the whole contact.
+ *
+ * A foot is pinned for `2·ds·stride` metres of body travel, and where in that
+ * span the touchdown sits is a reach problem, not a taste one. The rig's hip
+ * bind height is 0.954 m and its leg is 0.883 m long, so with the pelvis at
+ * standing height the leg reaches exactly straight down and NOTHING else: every
+ * centimetre of fore-aft foot placement is bought with a hip drop of
+ * `0.883 − sqrt(0.883² − x²)`. At the back of stance the ankle is plantarflexed
+ * and sits 6 cm higher, which buys reach for free; at the front it does not.
+ * So the split is 0.46 rather than the symmetric 0.50: solving
+ * `frontDrop(a) = backDrop(contact - a)` over the ladder puts the crossing at
+ * 0.455-0.465 at every speed from a walk to a sprint, and it costs 0.036 m of
+ * drop at 0.8 m/s rising to 0.125 m at 7 m/s — which is the vertical excursion
+ * a running body actually has.
+ */
+const FRONT_SHARE = 0.46;
+
+/**
+ * Where this athlete's foot goes down.
+ *
+ * `advanceGait` answers the same question with `pos + travel·0.30·stride +
+ * right·half`, and for the short stance the simulation's own duty implies that
+ * is fine. It is not fine once each foot holds a realistic share of its cycle:
+ * at 1.6 m/s the foot would land 0.23 m in front of the body and leave 0.65 m
+ * behind it, which is 1.08 m from a hip that owns 0.88 m of leg — measured, the
+ * foot skidded 44 mm per stance chasing a plant it could not reach.
+ *
+ * So the animator places its own plant, from the same body position, the same
+ * travel direction and the same stance width the simulation used — only the
+ * fore-aft share and the side come from `footStance` and from which foot is
+ * actually landing. It is the exact point this foot's own swing has been
+ * converging on all through the swing, so committing it produces no snap at all.
+ *
+ * The simulation's plant is still what fires `player:footstep`, on the same
+ * frame, so audio and turf scuffs stay on the beat; they land within 0.25 m of
+ * the visible foot, inside the 0.42 m radius those systems already blur over.
+ */
+function placePlant(
+  out: THREE.Vector3, loco: LocoLike, side: 1 | -1, ds: number, stride: number,
+  half: number, field: FieldLike | null,
+): void {
+  const speed = Math.hypot(loco.vel.x, loco.vel.z);
+  const inv = 1 / Math.max(1e-6, speed);
+  const tx = loco.vel.x * inv, tz = loco.vel.z * inv;
+  const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
+  const rx = -fz, rz = fx;                                    // athlete's right
+  const ahead = FRONT_SHARE * 2 * ds * stride;
+  const sgn = side === 1 ? -1 : 1;                            // R goes to the right
+  const x = loco.pos.x + tx * ahead + rx * half * sgn;
+  const z = loco.pos.z + tz * ahead + rz * half * sgn;
+  out.set(x, groundAt(field, x, z, loco.groundY), z);
+}
+
 /* ---------------------------------------------------------------- update */
 
 /**
@@ -212,26 +323,59 @@ export function updateFeet(
   const speed = Math.hypot(loco.vel.x, loco.vel.z);
   const moving = speed >= GAIT_MIN_SPEED;
   st.clock += dt;
+  st.lastDt = dt;
 
+  if (st.parity === 0) {
+    st.parity = gaitLead(loco.id);
+    st.toeOut = TOE_OUT + (hash01((loco.id | 0) * 59 + 83) - 0.5) * 0.075;
+  }
   if (!st.seeded) { seedStance(st, loco, field); st.seeded = true; }
 
   // --- consume the sim's plant edge -----------------------------------------
   if (f.t !== st.seenPlantT) {
     st.seenPlantT = f.t;
     if (moving || st.wasMoving) {
-      const t = f.planted === 'L' ? st.L : st.R;
-      t.plant.set(f.pos.x, f.pos.y, f.pos.z);
+      /**
+       * WHICH FOOT, AND WHERE.
+       *
+       * A hard cut plants the OUTSIDE foot, 0.26 m to the outside of the turn,
+       * and that is a physical fact about the turn rather than a bookkeeping
+       * convention — so a hard plant is always taken at face value and resets
+       * this athlete's parity to the simulation's. Everywhere else the animator
+       * is free to answer with either foot, and half the roster answers with the
+       * other one so that two athletes at the same speed are half a stride apart
+       * instead of in lock-step (`Gaits.gaitLead`).
+       *
+       * The plant then has to move with the foot: `advanceGait` offsets it half
+       * a stance width toward the side of the foot it named. Reflecting that
+       * offset about the travel line puts it under the foot that is actually
+       * landing — same ground, same distance along travel, other side. The
+       * displacement is 0.17-0.32 m, which is inside the 0.42 m radius the grass
+       * and turf systems scuff with, and the plant TIME is untouched, so
+       * footstep audio stays exactly on the frame the foot lands.
+       */
+      if (f.hard) st.parity = 1;
+      const simL = f.planted === 'L';
+      const t = (simL === (st.parity === 1)) ? st.L : st.R;
+      if (f.hard) {
+        t.plant.set(f.pos.x, f.pos.y, f.pos.z);
+      } else {
+        const mode = loco.state === 'shuffle' ? 'shuffle'
+          : loco.state === 'backpedal' ? 'backpedal' : 'run';
+        placePlant(t.plant, loco, t.side, footStance(speed),
+          speed / stepRate(speed), stanceHalfWidth(speed, mode), field);
+      }
       t.hard = f.hard;
       t.stepT = -1;
       // The heading is latched HERE, at the touchdown, and held all of stance.
       t.plantYaw = loco.facing
-        + (TOE_OUT + (f.hard && loco.state === 'cut' ? 0.22 : 0)) * t.side;
+        + (st.toeOut + (f.hard && loco.state === 'cut' ? 0.22 : 0)) * t.side;
     }
   }
   // Starting to move: the sim's stale plant point is wherever this player last
   // ran, possibly metres away. Adopt the feet where they are actually standing.
   if (moving && !st.wasMoving) {
-    const t = f.planted === 'L' ? st.L : st.R;
+    const t = ((f.planted === 'L') === (st.parity === 1)) ? st.L : st.R;
     t.plant.copy(t.pos);
     t.plantYaw = t.worldYaw;
     t.hard = false;
@@ -274,8 +418,8 @@ export function updateFeet(
   if (!moving) { idleFeet(st, loco, dt, field); return; }
 
   const rate = stepRate(speed);
-  const duty = dutyFactor(speed);
-  const ds = Math.max(1e-3, duty * 0.5);
+  // Cycle stance fraction, not the sim's step-relative duty — see `footStance`.
+  const ds = footStance(speed);
   const stride = speed / rate;
   const mode = loco.state === 'shuffle' ? 'shuffle' : loco.state === 'backpedal' ? 'backpedal' : 'run';
   const half = stanceHalfWidth(speed, mode);
@@ -285,16 +429,20 @@ export function updateFeet(
   const tx = loco.vel.x * inv, tz = loco.vel.z * inv;         // travel, world
   const fx = Math.sin(loco.facing), fz = Math.cos(loco.facing);
   const rx = -fz, rz = fx;                                     // athlete's right
-  const lift = Math.min(SWING_LIFT_MAX, SWING_LIFT_BASE + SWING_LIFT_RATE * speed);
+  const lift = swingLift(speed);
 
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
     t.stepT = -1;
-    const isSimFoot = (f.planted === 'L') === (t.side === 1);
+    const isSimFoot = (f.planted === 'L') === (t.side === st.parity);
     // Own cycle position, derived from the sim's step phase — see the header.
     const u = isSimFoot ? f.phase * 0.5 : f.phase * 0.5 + 0.5;
     t.u = u;
-    t.contact = isSimFoot && f.contact;
+    // Contact is this foot's OWN business: it bears load from its touchdown
+    // until it has used up its share of the cycle. Below the walk-run crossover
+    // the two shares overlap and both feet are down at once, which is the whole
+    // of what makes a walk a walk.
+    t.contact = u < ds;
     t.uStance = clamp01(u / ds);
 
     if (t.contact) {
@@ -302,11 +450,13 @@ export function updateFeet(
       stancePitch(t, t.uStance, sp, dt);
     } else {
       const s = clamp01((u - ds) / (1 - ds));
-      // Where advanceGait will put it, evaluated at the landing instant.
+      // Where `placePlant` will put it, evaluated at the landing instant. Same
+      // formula, so the prediction converges exactly onto the commit.
       const tau = (1 - u) * 2 / rate;
       const sgn = t.side === 1 ? -1 : 1;          // the R foot goes to the right
-      const px = loco.pos.x + loco.vel.x * tau + tx * stride * 0.30 + rx * half * sgn;
-      const pz = loco.pos.z + loco.vel.z * tau + tz * stride * 0.30 + rz * half * sgn;
+      const ahead = FRONT_SHARE * 2 * ds * stride;
+      const px = loco.pos.x + loco.vel.x * tau + tx * ahead + rx * half * sgn;
+      const pz = loco.pos.z + loco.vel.z * tau + tz * ahead + rz * half * sgn;
       t.land.set(px, groundAt(field, px, pz, loco.groundY), pz);
 
       const h = smootherstep(s);
@@ -321,7 +471,7 @@ export function updateFeet(
 
     // Toe-out, plus more on the braced outside foot of a hard cut.
     const cut = t.hard && loco.state === 'cut';
-    const yawTarget = loco.facing + (TOE_OUT + (cut ? 0.22 : 0)) * t.side;
+    const yawTarget = loco.facing + (st.toeOut + (cut ? 0.22 : 0)) * t.side;
     if (t.contact) {
       t.worldYaw = t.plantYaw;
     } else {
@@ -379,7 +529,7 @@ function seedStance(st: FeetState, loco: LocoLike, field: FieldLike | null): voi
     t.plant.set(x, groundAt(field, x, z, loco.groundY), z);
     t.pos.copy(t.plant);
     t.contact = true;
-    t.worldYaw = loco.facing + TOE_OUT * t.side;
+    t.worldYaw = loco.facing + st.toeOut * t.side;
     t.plantYaw = t.worldYaw;
   }
 }
@@ -452,14 +602,14 @@ function idleFeet(st: FeetState, loco: LocoLike, dt: number, field: FieldLike | 
       t.pitch = 0.20 * Math.sin(Math.PI * s);
       t.contact = false;
       t.uStance = 1;
-      t.worldYaw = t.plantYaw + angDelta(idleYaw + TOE_OUT * t.side, t.plantYaw) * h;
+      t.worldYaw = t.plantYaw + angDelta(idleYaw + st.toeOut * t.side, t.plantYaw) * h;
       if (s >= 1) {
         t.stepT = -1;
         t.plant.set(wx, gy, wz);
         t.pos.copy(t.plant);
         t.contact = true;
         t.uStance = 0.4;
-        t.plantYaw = idleYaw + TOE_OUT * t.side;
+        t.plantYaw = idleYaw + st.toeOut * t.side;
       }
     } else if (Math.hypot(t.plant.x - wx, t.plant.z - wz) > trigger) {
       t.stepT = 0;
@@ -546,7 +696,22 @@ export function hipDrop(
 
     if (need > reach) worst = Math.max(worst, need - reach);
   }
-  return Math.min(worst, 0.16);
+  /**
+   * ASYMMETRIC FOLLOW. The raw demand is a hard geometric fact that changes as
+   * fast as the hips move — measured on a 7 m/s run it swung 24 mm between
+   * consecutive frames, and since the whole pelvis rides on it, that is 24 mm of
+   * per-frame vertical jitter through every athlete's torso and 9.5 mm of skid
+   * out of the leg that could not keep up.
+   *
+   * Rising has to be instant: falling short of the demand is exactly the state
+   * where the ankle stops reaching its pin. Releasing does not — a body that has
+   * sunk to clear a plant comes back up over about a fifth of a second — so the
+   * release is rate-limited and the drop becomes a smooth trough through stance
+   * instead of a sawtooth.
+   */
+  const want = Math.min(worst, 0.19);
+  st.drop = want >= st.drop ? want : Math.max(want, st.drop - 0.62 * st.lastDt);
+  return st.drop;
 }
 const _hw = new THREE.Vector3();
 

@@ -11,7 +11,7 @@ import {
 } from './material/Tone.ts';
 import type { Colourway, SkinBio } from './material/Tone.ts';
 import {
-  bakeKitAtlas, bakeNameStrip, SURNAMES, squadNumbers, NAME_ROW_V, NAME_ROWS,
+  bakeKitAtlas, bakeNameStrip, ROSTER, squadNumbers, NAME_ROW_V, NAME_ROWS,
 } from './material/Kit.ts';
 import type { KitAtlas } from './material/Kit.ts';
 import { makeSkinMaterial } from './material/Skin.ts';
@@ -100,6 +100,8 @@ interface TeamKit {
   names: THREE.DataTexture;
   numbers: number[];
   surnames: string[];
+  /** Given names, index-aligned with `surnames` and `numbers`. */
+  given: string[];
 }
 
 const DEFAULT_TEAMS = ['home', 'away'] as const;
@@ -125,6 +127,8 @@ export class PlayerMaterialLibrary {
   private unbind: (() => void) | null = null;
   private squad: number;
   private bakeMs: number;
+  /** Squad-list rows already dealt, so the two teams never share a name. */
+  private readonly usedRows = new Set<number>();
   /** Night materials dilate the pupil; set from the sun elevation. */
   private dilation = 0;
   private nightMix = 0;
@@ -141,13 +145,22 @@ export class PlayerMaterialLibrary {
       const colourway = colourwayById(ids[t]);
       const rand = ctx.rand.fork(0x11713 + t * 7919);
       const numbers = squadNumbers(this.squad, rand);
+
+      /**
+       * Draw a ROW of the squad list, not a surname. The row carries the given
+       * name too, so `given[i]`, `surnames[i]` and `numbers[i]` describe one
+       * person and the broadcast card can never name someone the shirt does not.
+       * Rows already taken by the other team are skipped, so no two athletes on
+       * the pitch share a name.
+       */
       const surnames: string[] = [];
-      const used = new Set<string>();
+      const given: string[] = [];
       while (surnames.length < this.squad) {
-        const n = SURNAMES[Math.floor(rand.next() * SURNAMES.length)];
-        if (used.has(n)) continue;
-        used.add(n);
-        surnames.push(n);
+        const row = Math.floor(rand.next() * ROSTER.length);
+        if (this.usedRows.has(row)) continue;
+        this.usedRows.add(row);
+        given.push(ROSTER[row][0]);
+        surnames.push(ROSTER[row][1]);
       }
       this.teams.push({
         colourway,
@@ -155,6 +168,7 @@ export class PlayerMaterialLibrary {
         names: bakeNameStrip(surnames, KIT_SIZE[this.tier]),
         numbers,
         surnames,
+        given,
       });
     }
 
@@ -325,6 +339,19 @@ export class PlayerMaterialLibrary {
   }
 
   /** One line, for the boot log. Measured, not estimated. */
+  /**
+   * Who a team's slots actually are. The kit bake is the single source of truth
+   * for identity because the name strip is a TEXTURE — the row is fixed when it
+   * is baked, and slot `i` samples row `i`. Anything that wants to name a player
+   * (the broadcast card, the roster, a commentary line) reads it from here
+   * rather than deriving its own, which is how the card and the shirt stay in
+   * agreement.
+   */
+  squadOf(team: TeamId): { numbers: number[]; surnames: string[]; given: string[] } | null {
+    const k = this.teams[team];
+    return k ? { numbers: k.numbers, surnames: k.surnames, given: k.given } : null;
+  }
+
   report(): string {
     const mb = (n: number) => `${(n / 1048576).toFixed(2)} MB`;
     let team = 0;

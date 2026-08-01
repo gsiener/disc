@@ -163,7 +163,12 @@ export class PlayersSystem implements System {
   private byId = new Map<number, PlayerView>();
 
   private anim = new Animator();
-  private kits: PlayerMaterialLibrary | null = null;
+  /**
+   * Readable so the sim can ask who a slot IS. The kit bake owns identity —
+   * the name strip is a texture whose rows are fixed at bake time — so the
+   * roster reads names from here rather than inventing its own set.
+   */
+  kits: PlayerMaterialLibrary | null = null;
   private game: GameLike | undefined;
   private disc: DiscRuntimeLike | undefined;
   private offs: Array<() => void> = [];
