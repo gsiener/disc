@@ -1,8 +1,37 @@
 # ULTIMATE — engineering brief
 
 A 7v7 Ultimate Frisbee game in Three.js, targeting the visual and systemic
-quality bar of a current-generation sports title (Madden / NBA 2K). Read this
-before touching anything.
+quality bar of a current-generation sports title. Read this before touching
+anything.
+
+## The reference is FIFA, not Madden
+
+Earlier drafts of this brief said "Madden / NBA 2K". That was wrong and it shaped
+decisions badly. Ultimate is a **continuous-flow field sport** — no downs, no line
+of scrimmage, 7v7 on a large pitch, possession turning over live and play
+restarting immediately. FIFA's grammar fits that; Madden's does not.
+
+What this changes, concretely:
+
+- **Camera.** The default is a FIFA "Tele Broadcast"-style elevated sideline long
+  lens that *tracks the disc with lead room* and widens as play spreads. Never a
+  camera anchored behind a line of scrimmage — Ultimate has none. Cut to a tighter
+  follow on a deep cut, a low endzone angle in the red zone, an aerial for the pull.
+- **Player switching** is continuous and central, not per-play: cycle to
+  nearest-to-disc plus a right-stick manual select, with a clear indicator under
+  the controlled player.
+- **Passing** maps onto FIFA's through-ball / lofted-pass power meter almost
+  directly, including the risk of overcharging. A disc throw is a pass with
+  curve, not a snap.
+- **Off-ball legibility.** FIFA reads as shape — lines, width, overlaps. Ultimate
+  reads as stack, force, cutter lanes and dump resets. Either way the job is the
+  same: a viewer must be able to read structure from players who do not have the
+  disc.
+- **Set pieces.** The pull is a kickoff, not a snap.
+
+Visual references (light, grass, crowd, broadcast presentation) still come from
+top-tier sports titles generally; see docs/art-direction.md, which commits to
+"summer-evening club final, first TV deal".
 
 ## Hard rules
 
