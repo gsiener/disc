@@ -65,7 +65,7 @@ import {
   type ZoneRole, type CutRoute, type RandomSource,
   clamp, lerp, smoothstep, dist2, sigmoid, clampToField, yardsToGoal,
   inAttackEndzone, openSideSign, breakSideSign, releaseSideType,
-  formationStations, chooseFormation, buildCut,
+  formationStations, chooseFormation, buildCut, handlerCount, stackColumnX,
   markPoint, zoneStations, shouldPlayZone,
 } from './Playbook.ts';
 
@@ -484,9 +484,13 @@ export class TeamAI {
 
   /* offence */
   private formation: FormationName = 'vertical';
+  private formWant: FormationName = 'vertical';
+  private formHold = 0;
   private anchor: Vec2 = { x: 0, z: 0 };
   private stackOrder: number[] = [];
   private handlerRing: number[] = [];
+  /** Everyone, best hands first. The handler/cutter split is a prefix of this. */
+  private rankedIds: number[] = [];
   private handlerStation = new Map<number, number>();
   private liveLanes = new Map<LaneKey, number>();
   private lastCutStart = -99;
@@ -496,8 +500,41 @@ export class TeamAI {
   private threwThisPossession = false;
   private throwCooldown = 0;
   private noGoodLook = false;
-  /** Smoothed read of which side the mark is giving up. */
+  /** Seconds the current carrier has actually held the disc. */
+  private holdTime = 0;
+  private holdCarrier: number | null = null;
+  /**
+   * The count the OFFENCE plays to.
+   *
+   * Normally this is the marker's stall count. But the count is produced by the
+   * defence, and a defence that cannot establish a mark does not produce one —
+   * and an offence whose only source of urgency is a number the opposition
+   * failed to increment will stand there holding the disc forever. A whole
+   * four-hundred-second match once sat motionless on exactly that: a marker
+   * pinned on the sideline a few centimetres outside the stall radius, a count
+   * frozen at 0.49, and fourteen players in a textbook formation waiting for
+   * something that was never going to happen.
+   *
+   * So the offence also watches its own clock. `holdTime` is real seconds with
+   * the disc in the hand, offset by more than the mark ever takes to establish
+   * so that it never overtakes a healthy count: with a mark set in half a
+   * second the count always leads, and this term changes nothing at all. It
+   * only becomes the larger of the two when the count has stopped, and then it
+   * bounds how long the deadlock can last to about eleven seconds — which is
+   * what the count would have done.
+   */
+  private stallRead = 0;
+  /** Smoothed read of which side the mark is giving up, -1..1. */
   private openRead = 0;
+  /**
+   * The side the offence is actually PLAYING to. Separate from `openRead`
+   * because the whole shape — stack column, handler stations, which side every
+   * cut attacks — hangs off it, and a shape that mirrors itself whenever the
+   * marker's hips wobble is not a shape. It snaps once when the mark is first
+   * seen, then needs sustained contrary evidence to flip.
+   */
+  private openCommit: Sign = 1;
+  private forceSeen = false;
 
   /* defence */
   private scheme: 'person' | 'zone' = 'person';
@@ -505,8 +542,31 @@ export class TeamAI {
   private matchup = new Map<number, number>();   // defenderId -> offenceId
   private zoneRole = new Map<number, ZoneRole>();
   private stallClock = 0;
+  /** Which defender the running count belongs to. */
+  private stallMarker = -1;
   private markerId = -1;
   private deepHelpId = -1;
+
+  /**
+   * The stall count belongs to a mark that is actually THERE.
+   *
+   * The count advances only while the marker is inside `markMax`, and it goes
+   * back to zero when the mark is handed to a DIFFERENT defender — a body
+   * sprinting in from six metres has not established anything, and counting on
+   * through the handover is both wrong by rule and the only thing that ever put
+   * a "marker" four metres from the disc while the count ran.
+   *
+   * What this deliberately does NOT do is add a margin to the threshold the
+   * count starts at. An earlier version required the marker inside
+   * `markMax - 0.35` to begin, which is nearer than the radius the disc-space
+   * guard backs him out to — so a marker who had once been too close could
+   * never start the count, the thrower was never put under pressure, no cutter
+   * ever went, and the entire match sat motionless for four hundred seconds.
+   * The start condition and the standing geometry are not allowed to disagree.
+   */
+  private tickStall(clock: number, markDist: number, dt: number): number {
+    return markDist <= PLAY.markMax ? clock + dt : clock;
+  }
 
   /* scratch, refreshed per update */
   private mates: AIPlayer[] = [];
@@ -522,6 +582,7 @@ export class TeamAI {
     this.formation = this.cfg.formation;
     this.force = this.cfg.force;
     this.openRead = openSideSign(this.force, dir);
+    this.openCommit = this.openRead >= 0 ? 1 : -1;
   }
 
   /** Current stall count the marker has reached (0 when not marking). */
@@ -529,7 +590,24 @@ export class TeamAI {
   get currentScheme(): 'person' | 'zone' { return this.scheme; }
   get currentFormation(): FormationName { return this.formation; }
   /** X sign of the open side, as this team currently understands it. */
-  get openSign(): Sign { return this.openRead >= 0 ? 1 : -1; }
+  get openSign(): Sign { return this.openCommit; }
+  /** X of the column this team's stack is built on. Telemetry for the HUD. */
+  get stackAxisX(): number {
+    return stackColumnX(this.formation, this.anchor, this.openCommit);
+  }
+  /** Telemetry: cutter ids currently HOLDING the stack, front to back. */
+  stackHolding(): number[] {
+    const out: number[] = [];
+    for (const id of this.stackOrder) if (this.m(id).cutState === 'stack') out.push(id);
+    return out;
+  }
+  /** Telemetry: the handler the offence would reset to, or -1. */
+  get resetHandler(): number {
+    for (const id of this.handlerRing) {
+      if (this.handlerStation.get(id) === 0) return id;
+    }
+    return this.handlerRing.length ? this.handlerRing[0] : -1;
+  }
   /** Telemetry: id of the player currently marking the disc, or -1. */
   get marker(): number { return this.markerId; }
   /** Telemetry: who a defender is assigned to. null in zone / unassigned. */
@@ -712,8 +790,12 @@ export class TeamAI {
     this.windup = 0;
     this.threwThisPossession = false;
     this.stallClock = 0;
+    this.holdTime = 0;
+    this.holdCarrier = null;
+    this.stallRead = 0;
     this.lastCarrier = null;
     this.lastCutStart = -99;
+    this.forceSeen = false;
     for (const m of this.mem.values()) {
       m.cut = null; m.cutState = 'stack'; m.cutT = 0; m.cutCooldown = 0;
       m.poach = 0; m.poachHold = 0; m.bidCommit = false; m.flightCommit = -1;
@@ -721,7 +803,7 @@ export class TeamAI {
     this.anchor.x = world.disc.pos.x;
     this.anchor.z = world.disc.pos.z;
 
-    // Roles: the three best decision-makers with hands become handlers.
+    // Roles: the best decision-makers with hands become handlers.
     const ranked = this.mates.slice().sort((a, b) => {
       const s = (p: AIPlayer) =>
         p.attr.decision * 1.0 + p.attr.throwAccuracy.backhand * 0.5 +
@@ -729,25 +811,77 @@ export class TeamAI {
         (p.archetype === 'handler' ? 60 : 0) - p.id * 1e-4;
       return s(b) - s(a);
     });
-    this.handlerRing = ranked.slice(0, 3).map((p) => p.id);
-    const cutters = ranked.slice(3);
-    for (const p of ranked) p.role = this.handlerRing.includes(p.id) ? 'handler' : 'cutter';
-
-    // Stack order: front of the stack is whoever is closest to the disc.
-    const d = world.disc.pos;
-    this.stackOrder = cutters
-      .slice()
-      .sort((a, b) =>
-        (dist2(a.pos.x, a.pos.z, d.x, d.z) - dist2(b.pos.x, b.pos.z, d.x, d.z)) || (a.id - b.id))
-      .map((p) => p.id);
-
-    this.handlerStation.clear();
-    this.assignHandlerStations(world);
+    this.rankedIds = ranked.map((p) => p.id);
+    this.applyRoleSplit(world, true);
 
     if (world.possession !== this.team) {
       this.pickScheme(world);
       this.assignMatchups(world);
     }
+  }
+
+  /**
+   * Split the roster into handlers and stack to match the formation actually
+   * being run. This used to be a hard three handlers whatever the look, which
+   * left the vertical stack — a five-cutter set — with only four bodies. Two
+   * of those are always cutting and one is always clearing, so the column that
+   * the whole sport is read by was chronically down to a body or two, and the
+   * spare handler wandered behind the disc with nothing to do.
+   */
+  private applyRoleSplit(world: AIWorld, rebuild: boolean): void {
+    const ranked = this.rankedIds.filter((id) => this.byId.has(id));
+    if (ranked.length === 0) return;
+    const want = Math.min(handlerCount(this.formation), ranked.length);
+    const ring = ranked.slice(0, want);
+    const cutters = ranked.slice(want);
+    const same = ring.length === this.handlerRing.length
+      && ring.every((id, i) => this.handlerRing[i] === id);
+    if (same && !rebuild) return;
+
+    // Handlers and cutters run different cut state machines. A player crossing
+    // between them mid-cut would leave a lane reserved forever.
+    if (!rebuild) {
+      for (const id of ranked) {
+        if (this.handlerRing.includes(id) !== ring.includes(id)) this.abandonCut(id);
+      }
+    }
+
+    this.handlerRing = ring;
+    for (const id of ranked) {
+      const p = this.byId.get(id);
+      if (p) p.role = ring.includes(id) ? 'handler' : 'cutter';
+    }
+
+    if (rebuild) {
+      // Front of the stack is whoever is closest to the disc.
+      const d = world.disc.pos;
+      this.stackOrder = cutters.slice().sort((a, b) => {
+        const pa = this.byId.get(a)!, pb = this.byId.get(b)!;
+        return (dist2(pa.pos.x, pa.pos.z, d.x, d.z) - dist2(pb.pos.x, pb.pos.z, d.x, d.z))
+          || (a - b);
+      });
+    } else {
+      // Keep the order the stack already has; a demoted handler joins the back.
+      const next = this.stackOrder.filter((id) => cutters.includes(id));
+      for (const id of cutters) if (!next.includes(id)) next.push(id);
+      this.stackOrder = next;
+    }
+
+    this.handlerStation.clear();
+    this.assignHandlerStations(world);
+  }
+
+  /** Drop a cut on the floor and release its lane. */
+  private abandonCut(id: number): void {
+    const m = this.m(id);
+    if (m.cut) {
+      const holder = this.liveLanes.get(m.cut.lane);
+      if (holder === id) this.liveLanes.delete(m.cut.lane);
+    }
+    m.cut = null;
+    m.cutState = 'stack';
+    m.cutT = 0;
+    m.cutCooldown = 0.4;
   }
 
   /* =========================================================== line up */
@@ -776,6 +910,7 @@ export class TeamAI {
     const disc = world.disc;
     const dir = this.dir;
     const out: PlayerIntent[] = [];
+    this.refreshStackSlots(dt);
 
     // Disc on the ground: nearest player picks it up, the rest re-form.
     if (disc.state === 'ground') {
@@ -802,18 +937,32 @@ export class TeamAI {
     this.anchor.x += (disc.pos.x - this.anchor.x) * k;
     this.anchor.z += (disc.pos.z - this.anchor.z) * k;
 
-    this.readForce(world);
-    const openSign = this.openSign;
+    this.readForce(world, dt);
     const windSpeed = Math.hypot(world.wind.x, world.wind.z);
-    const form = chooseFormation(this.anchor, dir, this.cfg.formation, windSpeed);
-    if (form !== this.formation) {
-      this.formation = form;
-      this.assignHandlerStations(world);
+    // Formation calls are held for a beat before they are honoured. The
+    // triggers are thresholds on the disc position, and a disc sitting on one
+    // of them made the whole stack slide 20 m across the field and back at
+    // whatever rate the thrower pivoted. A shape that teleports is not a shape.
+    const want = chooseFormation(this.anchor, dir, this.cfg.formation, windSpeed);
+    if (want === this.formation) {
+      this.formWant = want;
+      this.formHold = 0;
+    } else {
+      if (want !== this.formWant) { this.formWant = want; this.formHold = 0; }
+      this.formHold += dt;
+      if (this.formHold >= 0.6) {
+        this.formation = want;
+        this.formHold = 0;
+        this.applyRoleSplit(world, false);
+      }
     }
 
     if (disc.state === 'flight') return this.offenceInFlight(world, dt);
 
     const thrower = disc.carrier != null ? this.byId.get(disc.carrier) ?? null : null;
+    if (thrower && thrower.id === this.holdCarrier) this.holdTime += dt;
+    else { this.holdCarrier = thrower ? thrower.id : null; this.holdTime = 0; }
+    this.stallRead = Math.max(disc.stall, this.holdTime - 2.5);
     if (thrower && thrower.id !== this.lastCarrier) {
       this.lastCarrier = thrower.id;
       this.threwThisPossession = false;
@@ -858,8 +1007,16 @@ export class TeamAI {
         const aim = this.choice?.aim;
         const fx = aim ? aim.x - p.pos.x : 0;
         const fz = aim ? aim.z - p.pos.z : dir;
-        out.push(this.intent(p, p.pos.x, p.pos.z, fx, fz,
-          throwAction ? 'throw' : this.choice ? 'throw' : 'pivot', 0,
+        // The thrower holds his ground — but he is the one body in the game
+        // asked to stand still next to a defender pressing in, and a pivot on
+        // the sideline can be nudged over the line by contact separation with
+        // no intent that ever brings him back. So his "stand here" is the
+        // nearest legal point, and he steps in if he is not on one.
+        const foot = clampToField({ x: p.pos.x, z: p.pos.z }, FIELD.edgeMargin + 0.25);
+        const outBy = Math.hypot(foot.x - p.pos.x, foot.z - p.pos.z);
+        out.push(this.intent(p, foot.x, foot.z, fx, fz,
+          throwAction ? 'throw' : this.choice ? 'throw' : 'pivot',
+          outBy > 0.05 ? 0.22 : 0,
           throwAction, { role: 'thrower', state: this.choice ? 'windup' : 'pivot', lane: null }, dt));
         continue;
       }
@@ -868,8 +1025,19 @@ export class TeamAI {
     return out;
   }
 
-  /** Infer the force from where the mark is actually standing. */
-  private readForce(world: AIWorld): void {
+  /**
+   * Infer the force from where the mark is actually standing.
+   *
+   * The first sight of the mark in a possession is taken at face value — a
+   * team is told the force before the pull, and the offence should not spend
+   * two seconds working it out. After that it takes sustained contrary
+   * evidence to flip, because `openSign` is the axis the entire shape is
+   * built on: the stack column, both handler stations and the side every cut
+   * attacks. A shape that mirrors itself every time the marker shuffles is
+   * not a shape, and it is the difference between "the offence is playing a
+   * force" and "the offence is milling about".
+   */
+  private readForce(world: AIWorld, dt: number): void {
     const disc = world.disc;
     if (disc.carrier == null) return;
     const t = this.byId.get(disc.carrier);
@@ -879,11 +1047,25 @@ export class TeamAI {
       const d = dist2(f.pos.x, f.pos.z, t.pos.x, t.pos.z);
       if (d < bd) { bd = d; markX = f.pos.x - t.pos.x; }
     }
-    if (bd < 3.6 && Math.abs(markX) > 0.25) {
-      // The mark stands on the side it is taking away, so open is the other side.
-      const observed = -Math.sign(markX);
-      this.openRead = clamp(this.openRead * 0.94 + observed * 0.06, -1, 1);
-      if (Math.abs(this.openRead) < 0.12) this.openRead = observed * 0.12;
+    // Too far off or square in front: the marker is not saying anything yet.
+    if (!(bd < 3.6 && Math.abs(markX) > 0.45)) return;
+    // The mark stands on the side it is taking away, so open is the other side.
+    const observed = (-Math.sign(markX)) as Sign;
+
+    if (!this.forceSeen) {
+      this.forceSeen = true;
+      this.openRead = observed;
+      if (this.openCommit !== observed) {
+        this.openCommit = observed;
+        this.assignHandlerStations(world);
+      }
+      return;
+    }
+    const k = Math.min(1, dt / 0.45);
+    this.openRead = clamp(this.openRead + (observed - this.openRead) * k, -1, 1);
+    if (this.openRead * this.openCommit < 0 && Math.abs(this.openRead) > 0.55) {
+      this.openCommit = (this.openRead >= 0 ? 1 : -1) as Sign;
+      this.assignHandlerStations(world);
     }
   }
 
@@ -893,21 +1075,88 @@ export class TeamAI {
     const stations = formationStations(this.formation, this.anchor, this.dir, this.openSign)
       .filter((s) => s.role === 'handler');
     const throwerId = world.disc.carrier;
-    const free = stations.slice();
     const ids = this.handlerRing.filter((id) => id !== throwerId && this.byId.has(id));
     this.handlerStation.clear();
-    // Greedy nearest-station assignment; recomputed only on reform / thrower change.
-    for (const id of ids) {
-      const p = this.byId.get(id);
-      if (!p || free.length === 0) continue;
+    // Fill stations IN ORDER, nearest free handler to each. Station 0 is the
+    // reset; with two handlers and one of them holding the disc there is only
+    // ever one body to place, and it has to be the one the dump goes to.
+    // Greedy-by-handler filled whichever station happened to be closer, which
+    // is how a reset ends up standing in front of the disc.
+    for (let s = 0; s < stations.length && ids.length; s++) {
       let bi = 0; let bd = 1e9;
-      for (let i = 0; i < free.length; i++) {
-        const d = dist2(p.pos.x, p.pos.z, free[i].x, free[i].z);
+      for (let i = 0; i < ids.length; i++) {
+        const p = this.byId.get(ids[i])!;
+        const d = dist2(p.pos.x, p.pos.z, stations[s].x, stations[s].z);
         if (d < bd) { bd = d; bi = i; }
       }
-      this.handlerStation.set(id, stations.indexOf(free[bi]));
-      free.splice(bi, 1);
+      this.handlerStation.set(ids[bi], s);
+      ids.splice(bi, 1);
     }
+  }
+
+  /**
+   * Which slot in the column each cutter holds — over the cutters actually
+   * STANDING IN IT, not over the whole squad. Two things are being fixed here.
+   *
+   * Counting absent bodies leaves a 4.2 m hole wherever somebody is away
+   * cutting, so a five-man stack with two cuts out reads as three people with
+   * no relationship to each other. Real stacks collapse to fill.
+   *
+   * And the slots are handed out in PHYSICAL order down the column, not by
+   * squad rank, so filling in never asks two settled players to swap through
+   * each other. A player on his way back from a cut is sorted to the tail,
+   * because the tail is where a clear goes.
+   */
+  private slotOf = new Map<number, number>();
+  private slotScratch: number[] = [];
+  private slotSig = -1;
+  private slotPending = -1;
+  private slotPendingT = 0;
+
+  private refreshStackSlots(dt: number): void {
+    const holders = this.slotScratch;
+    holders.length = 0;
+    let sig = 17;
+    for (const id of this.stackOrder) {
+      const st = this.m(id).cutState;
+      if (st === 'stack' || st === 'clear') { holders.push(id); sig = sig * 31 + id; }
+    }
+    // Slots are piecewise constant: they are re-dealt when somebody joins or
+    // leaves the column, not continuously. Re-sorting by depth every frame lets
+    // two bodies of nearly equal depth trade places at 120 Hz, which converges
+    // them onto each other instead of onto their slots. A stack re-forms on an
+    // event; it does not renegotiate itself every step.
+    if (sig === this.slotSig) { this.slotPending = sig; this.slotPendingT = 0; return; }
+    if (sig !== this.slotPending) { this.slotPending = sig; this.slotPendingT = 0; }
+    this.slotPendingT += dt;
+    // And it re-forms once, not twice. A cut that starts and a cut that ends
+    // 200 ms apart would otherwise shuffle every body 4.2 m up the column and
+    // then 4.2 m back down it. A body with no slot at all is dealt in at once.
+    let orphan = false;
+    for (const id of holders) if (!this.slotOf.has(id)) { orphan = true; break; }
+    if (!orphan && this.slotPendingT < 0.35) return;
+    this.slotSig = sig;
+    const key = (q: number): number => {
+      const p = this.byId.get(q);
+      if (!p) return 1e9;
+      const clearing = this.m(q).cutState === 'clear' ? 1e5 : 0;
+      return clearing + this.dir * (p.pos.z - this.anchor.z);
+    };
+    holders.sort((a, b) => (key(a) - key(b)) || (a - b));
+    this.slotOf.clear();
+    for (let i = 0; i < holders.length; i++) this.slotOf.set(holders[i], i);
+  }
+
+  private stackSlot(id: number): number {
+    const s = this.slotOf.get(id);
+    return s ?? Math.max(0, this.slotOf.size);
+  }
+
+  /** How many cutters are holding the column right now. */
+  private stackedCount(): number {
+    let n = 0;
+    for (const id of this.stackOrder) if (this.m(id).cutState === 'stack') n++;
+    return n;
   }
 
   /** Where this player wants to stand when not cutting. */
@@ -925,8 +1174,8 @@ export class TeamAI {
         z: az - this.dir * 9.5,
       });
     }
-    const si = this.stackOrder.indexOf(p.id);
-    const slot: Station | undefined = cutters[clamp(si < 0 ? cutters.length - 1 : si, 0, cutters.length - 1)];
+    const si = this.stackOrder.includes(p.id) ? this.stackSlot(p.id) : cutters.length - 1;
+    const slot: Station | undefined = cutters[clamp(si, 0, cutters.length - 1)];
     return slot ?? { x: ax, z: az };
   }
 
@@ -976,9 +1225,16 @@ export class TeamAI {
           break;
         }
         case 'clear': {
+          // A clear is finished when the body is OUT OF THE LANE, not when it
+          // has jogged all the way to the back of the stack. Waiting for the
+          // latter kept every cutter in the "clearing" state for most of the
+          // possession and emptied the column; the lane is vacated the moment
+          // he is back on the line of the stack.
           const back = this.stationFor(p, world);
+          const axis = this.stackAxisX;
+          const lat = Math.abs(p.pos.x - axis);
           const d = dist2(p.pos.x, p.pos.z, back.x, back.z);
-          if (d < 2.2 || m.cutT >= 2.6) {
+          if (lat < 3.2 || d < 2.4 || m.cutT >= 2.2) {
             m.cutState = 'stack'; m.cutT = 0; m.cut = null;
             m.cutCooldown = 0.55 + 1.0 * (1 - p.attr.stamina / 100) * (1.4 - p.energy);
           }
@@ -991,10 +1247,16 @@ export class TeamAI {
     if (!thrower || world.disc.state !== 'held') return;
     if (this.liveCutCount() >= PLAY.maxLiveCuts) return;
     if (world.time - this.lastCutStart < PLAY.cutStagger) return;
+    // The stack has to survive the cut. At stall 8 the shape stops mattering
+    // and getting rid of the disc starts to; before then, a cutter who would
+    // leave fewer than `stackHold` bodies in the column stays where he is.
+    const hold = this.stallRead >= 8 ? PLAY.stackHold - 2
+      : this.stallRead >= 6 ? PLAY.stackHold - 1 : PLAY.stackHold;
+    if (this.stackedCount() - 1 < hold) return;
 
     const openSign = this.openSign;
     const brk = -openSign as Sign;
-    const stall = world.disc.stall;
+    const stall = this.stallRead;
     let best: { id: number; cut: CutRoute; score: number } | null = null;
 
     for (let si = 0; si < this.stackOrder.length; si++) {
@@ -1116,7 +1378,7 @@ export class TeamAI {
   /** Handler resets: dump, swing and the up-line when the mark breaks down. */
   private tickHandlerCuts(world: AIWorld, dt: number, thrower: AIPlayer | null): void {
     if (!thrower || world.disc.state !== 'held') return;
-    const stall = world.disc.stall;
+    const stall = this.stallRead;
     const disc = { x: world.disc.pos.x, z: world.disc.pos.z };
     const openSign = this.openSign;
 
@@ -1127,6 +1389,16 @@ export class TeamAI {
       if (d < markDist) { markDist = d; markSide = Math.sign(f.pos.x - thrower.pos.x); }
     }
     const markBeaten = markDist > 2.9 || (markSide !== 0 && markSide === openSign);
+
+    // How many bodies are behind the disc at all. A vertical stack runs two
+    // handlers, so when one has the disc the other IS the reset — and if he
+    // goes up the line there is suddenly nothing behind the thrower at all.
+    // Nobody vacates the reset unless somebody else is already there.
+    let behindCount = 0;
+    for (const q of this.mates) {
+      if (q.id === thrower.id) continue;
+      if (this.dir * (q.pos.z - world.disc.pos.z) < 1.0) behindCount++;
+    }
 
     for (const id of this.handlerRing) {
       if (id === thrower.id) continue;
@@ -1148,7 +1420,15 @@ export class TeamAI {
           const d = dist2(p.pos.x, p.pos.z, cut.target.x, cut.target.z);
           if (d < 1.2 || m.cutT >= cut.maxTime) { this.endHandlerCut(id); }
         } else if (m.cutState === 'clear') {
-          if (m.cutT >= 0.8) { m.cutState = 'stack'; m.cutT = 0; m.cut = null; m.cutCooldown = 0.6; }
+          // Once the count is high the reset does not get to rest between
+          // attempts — he keeps working until the disc moves. A handler who
+          // resets once and then stands still is never open at stall 8, which
+          // is the only moment the throw actually has to be there.
+          const urgent = stall >= 6;
+          if (m.cutT >= (urgent ? 0.35 : 0.8)) {
+            m.cutState = 'stack'; m.cutT = 0; m.cut = null;
+            m.cutCooldown = urgent ? 0.15 : 0.6;
+          }
         }
         continue;
       }
@@ -1159,11 +1439,16 @@ export class TeamAI {
       let kind: CutKind | null = null;
       let side: Sign = openSign;
 
-      if (behind && (stall >= 5.5 || this.noGoodLook)) {
+      // The reset starts working at 4, not at 5.5. A handler who only moves
+      // once the count is nearly out is a handler who is never open when the
+      // throw has to go — and the reset being live is most of what makes the
+      // back of the offence readable while the count climbs.
+      if (behind && (stall >= 4.0 || this.noGoodLook)) {
         kind = 'dump'; side = -openSign as Sign;
-      } else if (markBeaten && stall >= 1.2 && stall < 7 && behind) {
+      } else if (markBeaten && stall >= 1.2 && stall < 7 && behind && behindCount >= 2) {
         kind = 'up-line'; side = openSign;
-      } else if (stall >= 3.5 && stall < 6 && behind && this.rng.next() < 0.02) {
+      } else if (stall >= 3.5 && stall < 6 && behind && behindCount >= 2
+        && this.rng.next() < 0.02) {
         kind = 'swing'; side = openSign;
       }
       if (!kind) continue;
@@ -1209,16 +1494,40 @@ export class TeamAI {
         tx = cut!.target.x; tz = cut!.target.z; effort = 1.0; mode = 'sprint';
         break;
       case 'clear': {
+        // Clear SIDEWAYS out of the lane first, then run the column back to
+        // the tail of the stack. Cutting a corner straight to the back station
+        // drags the body diagonally through the throwing lane it was supposed
+        // to be vacating, which is the difference between a cut resolving and
+        // a cutter loitering in the way of the next one.
         const st = this.stationFor(p, world);
-        tx = st.x; tz = st.z; effort = 0.52; mode = 'jog';
+        const axis = this.stackAxisX;
+        const lat = p.pos.x - axis;
+        if (Math.abs(lat) > 3.2) {
+          tx = axis;
+          tz = p.pos.z + dir * 1.2;
+          effort = 0.92; mode = 'sprint';
+        } else {
+          tx = st.x; tz = st.z;
+          effort = dist2(p.pos.x, p.pos.z, st.x, st.z) > 5 ? 0.7 : 0.5;
+          mode = 'jog';
+        }
         break;
       }
       default: {
         const st = this.stationFor(p, world);
         tx = st.x; tz = st.z;
         const d = dist2(p.pos.x, p.pos.z, tx, tz);
-        effort = d > 6 ? 0.7 : d > 2 ? 0.42 : 0.16;
-        mode = d > 2 ? 'jog' : 'idle';
+        // A handler out of position is a possession with no reset in it. After
+        // a 20 m gain the handlers are a long way behind the disc and jogging
+        // back at 70% means the thrower spends the first four seconds of the
+        // stall with nothing behind him. Handlers hustle.
+        if (p.role === 'handler') {
+          effort = d > 10 ? 1.0 : d > 5 ? 0.82 : d > 2 ? 0.45 : 0.16;
+          mode = d > 8 ? 'sprint' : d > 2 ? 'jog' : 'idle';
+        } else {
+          effort = d > 6 ? 0.7 : d > 2 ? 0.42 : 0.16;
+          mode = d > 2 ? 'jog' : 'idle';
+        }
         state = 'stack';
         break;
       }
@@ -1241,7 +1550,7 @@ export class TeamAI {
     this.noGoodLook = opts.length === 0;
     if (opts.length === 0) { this.choice = null; return; }
 
-    const stall = world.disc.stall;
+    const stall = this.stallRead;
     // Decision noise: a poor decision-maker misvalues options.
     const noise = (1 - effectiveDecision(thrower) / 100) * 0.055;
     let best: ThrowOption | null = null;
@@ -1253,9 +1562,15 @@ export class TeamAI {
 
     // The bar for pulling the trigger. High (selective) under a low stall,
     // collapsing as the count climbs; at 8.5 the best available goes up.
+    // The bar for pulling the trigger. Raised at the low end from -0.085: with
+    // the stack actually holding its shape and the mark actually on the break
+    // side, the option in front of a thrower early in the count is more often a
+    // covered body than it used to be, and the old bar took those throws. It is
+    // calibrated — his own estimate tracked the outcome to within a point — so
+    // this is not a confidence problem, it is a patience one.
     const hold = stall >= 8.5
       ? -1e9
-      : (-0.085 - 0.32 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
+      : (-0.040 - 0.36 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
     this.noGoodLook = best.ev < hold - 0.03;
     this.choice = best.ev > hold ? best : null;
     if (this.choice && this.windup === 0) this.windup = 1e-6;
@@ -1711,13 +2026,19 @@ export class TeamAI {
       this.markerId = markerP ? markerP.id : -1;
     }
 
-    // ---- stall clock
+    // ---- stall clock. It STARTS only once the mark is properly set and then
+    // survives small drift, rather than starting the instant the marker grazes
+    // the stall radius on his way in. Without the margin the count can be
+    // running while the marker is still outside 3 m, which is both wrong by
+    // rule and the only thing that ever put him there.
     if (thrower && this.markerId >= 0) {
+      if (this.markerId !== this.stallMarker) { this.stallMarker = this.markerId; this.stallClock = 0; }
       const mk = this.byId.get(this.markerId)!;
       const d = dist2(mk.pos.x, mk.pos.z, thrower.pos.x, thrower.pos.z);
-      if (d <= PLAY.markMax) this.stallClock += dt;
+      this.stallClock = this.tickStall(this.stallClock, d, dt);
     } else {
       this.stallClock = 0;
+      this.stallMarker = -1;
     }
     if (!thrower) this.stallClock = 0;
 
@@ -1744,6 +2065,35 @@ export class TeamAI {
         const mp = markPoint(
           { x: thrower.pos.x, z: thrower.pos.z }, odir, brk, PLAY.markDistance);
         let tx = mp.x, tz = mp.z;
+        /* A marker who is on the wrong side of the thrower has to get to the
+         * break side, and the straight line to the mark point goes through the
+         * thrower. Steered at it directly he runs into disc space, the
+         * disc-space guard shoves him back out radially — which preserves the
+         * side he is already on — and he can sit there for the whole stall
+         * forcing the wrong way. That is how a force ends up being a label on
+         * a config object rather than a thing on the field.
+         *
+         * So the mark travels AROUND the thrower on the stand-off circle,
+         * which is both legal and what a marker actually does. */
+        const bearNow = Math.atan2(p.pos.z - thrower.pos.z, p.pos.x - thrower.pos.x);
+        const bearWant = Math.atan2(mp.z - thrower.pos.z, mp.x - thrower.pos.x);
+        let dBear = bearWant - bearNow;
+        while (dBear > Math.PI) dBear -= 2 * Math.PI;
+        while (dBear < -Math.PI) dBear += 2 * Math.PI;
+        const radNow = dist2(p.pos.x, p.pos.z, thrower.pos.x, thrower.pos.z);
+        // Only sweep from marking range. From further out the straight line is
+        // the fast way in and does not cross disc space anyway; orbiting in
+        // from 5 m would just keep him outside the stall radius for longer.
+        if (Math.abs(dBear) > 0.45 && radNow < 4.2) {
+          // Sweeping must also CLOSE: a marker orbiting at 4 m is not marking,
+          // because the stall clock only runs inside `markMax`. So the target
+          // sits ON the stand-off circle and only the BEARING is stepped —
+          // the marker spirals in rather than orbiting out.
+          const step = clamp(dBear, -0.65, 0.65);
+          const r = PLAY.markDistance;
+          tx = thrower.pos.x + Math.cos(bearNow + step) * r;
+          tz = thrower.pos.z + Math.sin(bearNow + step) * r;
+        }
         // Respect disc space: back out rather than crowd the thrower. The
         // check anticipates a step of travel so momentum cannot carry the
         // marker inside the legal radius.
@@ -1752,11 +2102,13 @@ export class TeamAI {
         const fz = p.pos.z + p.vel.z * ahead - thrower.vel.z * ahead;
         const cur = dist2(fx, fz, thrower.pos.x, thrower.pos.z);
         if (cur < PLAY.discSpace + 1.10) {
-          const now = dist2(p.pos.x, p.pos.z, thrower.pos.x, thrower.pos.z) || 1;
-          const ux = (p.pos.x - thrower.pos.x) / now;
-          const uz = (p.pos.z - thrower.pos.z) / now;
-          tx = thrower.pos.x + ux * (PLAY.discSpace + 1.75);
-          tz = thrower.pos.z + uz * (PLAY.discSpace + 1.75);
+          // Back out ALONG THE CIRCLE toward the break side, not straight
+          // outward: a purely radial retreat preserves whichever side the
+          // marker is already on, so a marker who arrives open-side is pinned
+          // there for the whole stall.
+          const bail = bearNow + clamp(dBear, -0.55, 0.55);
+          tx = thrower.pos.x + Math.cos(bail) * (PLAY.discSpace + 1.75);
+          tz = thrower.pos.z + Math.sin(bail) * (PLAY.discSpace + 1.75);
         }
         // Closing effort tapers so the mark settles at range instead of
         // barrelling through the thrower; backing out of disc space is done at
@@ -1919,12 +2271,13 @@ export class TeamAI {
     for (const [id, role] of this.zoneRole) if (role === 'cup-mark') markerId = id;
     this.markerId = markerId;
     if (thrower && markerId >= 0) {
+      if (markerId !== this.stallMarker) { this.stallMarker = markerId; this.stallClock = 0; }
       const mk = this.byId.get(markerId);
-      if (mk && dist2(mk.pos.x, mk.pos.z, thrower.pos.x, thrower.pos.z) <= PLAY.markMax) {
-        this.stallClock += dt;
-      }
+      const dd = mk ? dist2(mk.pos.x, mk.pos.z, thrower.pos.x, thrower.pos.z) : 99;
+      this.stallClock = this.tickStall(this.stallClock, dd, dt);
     } else {
       this.stallClock = 0;
+      this.stallMarker = -1;
     }
 
     for (const p of this.mates) {
@@ -2123,7 +2476,7 @@ export class TeamAI {
       maxAccel: effectiveAccel(p),
       maxDecel: decel,
       turnRate: turnRateOf(p),
-      arriveRadius: settle ? 1.5 : mode === 'sprint' ? 0.6 : mode === 'mark' ? 1.9 : 1.1,
+      arriveRadius: settle ? 1.5 : mode === 'sprint' ? 0.6 : mode === 'mark' ? 1.5 : 1.1,
       personalSpace: 0.72,
       action,
       debug: {

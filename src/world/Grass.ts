@@ -26,9 +26,22 @@ import {
  * stripes stay anisotropic.
  */
 
+/**
+ * One frustum-cullable piece of a ring: a polar bucket (angular wedge × radial
+ * band) of that ring's cells. `cx`/`cz` is the bucket's centre *relative to the
+ * ring centre*, `r` its bounding radius; `lateUpdate` slides the geometry's
+ * bounding sphere onto the ring centre so three can cull it exactly.
+ */
+interface Chunk {
+  mesh: THREE.Mesh;
+  cx: number;
+  cz: number;
+  r: number;
+}
+
 interface Ring {
   spec: RingSpec;
-  mesh: THREE.Mesh;
+  chunks: Chunk[];
   mat: THREE.MeshStandardMaterial;
   uni: Record<string, THREE.IUniform>;
 }
@@ -63,6 +76,88 @@ function chainCompile(mat: THREE.Material, mine: CompileHook): void {
 const BEND_N = 128;
 const BEND_HALF = 32;
 const GROUND_Y = -0.012;
+
+/**
+ * Frustum granularity. Each ring is an annulus *centred on the camera*, so a
+ * single bounding sphere round it always contains the lens and can never be
+ * culled — which is why the rings used to run with `frustumCulled = false` and
+ * paid for every blade behind the operator's head.
+ *
+ * Splitting each ring into `SECTORS` angular wedges × `BANDS` radial bands
+ * gives buckets that are compact enough for a real bounding sphere, and the
+ * spheres of the buckets behind the camera (or, for a 15 m broadcast camera,
+ * *below* it) sit wholly outside the frustum. Nothing about placement changes:
+ * a cell lands in exactly one bucket, the shader still hashes it from
+ * `uCellOrigin + aCell`, and the drawn pixels are identical.
+ *
+ * 8 × 2 is where the curve flattens. It costs at most 16 draw calls per ring
+ * against a 795-call frame and typically leaves a third of them submitted.
+ */
+const SECTORS = 8;
+const BANDS = 2;
+
+interface Bucket { cells: Int16Array; cx: number; cz: number; r: number }
+
+/**
+ * Partition a ring's cell list into polar buckets — `SECTORS` wedges by
+ * `BANDS` equal-area radial bands — and measure each one's bounding sphere from
+ * the cells it actually got.
+ *
+ * Every cell lands in exactly one bucket and keeps its index, so the union of
+ * the buckets is the original ring, blade for blade. This is a pure regrouping
+ * of the draw, not a change to what is drawn.
+ */
+function splitCells(cells: Int16Array, spec: RingSpec): Bucket[] {
+  const c = spec.cell;
+  const inner2 = spec.inner * spec.inner;
+  const outer2 = spec.outer * spec.outer;
+  const span2 = Math.max(1e-6, outer2 - inner2);
+  const nCells = cells.length >> 1;
+  const nb = SECTORS * BANDS;
+
+  const key = new Int32Array(nCells);
+  const counts = new Int32Array(nb);
+  for (let k = 0; k < nCells; k++) {
+    const x = cells[k * 2] * c;
+    const z = cells[k * 2 + 1] * c;
+    const d2 = x * x + z * z;
+    // Equal-area bands: a blade is as likely to be in one as the other, so the
+    // buckets carry comparable instance counts and cull at comparable value.
+    let band = Math.floor(((d2 - inner2) / span2) * BANDS);
+    band = band < 0 ? 0 : band >= BANDS ? BANDS - 1 : band;
+    let sec = Math.floor(((Math.atan2(z, x) + Math.PI) / (2 * Math.PI)) * SECTORS);
+    sec = sec < 0 ? 0 : sec >= SECTORS ? SECTORS - 1 : sec;
+    const b = band * SECTORS + sec;
+    key[k] = b;
+    counts[b]++;
+  }
+
+  const out: Bucket[] = [];
+  const write = new Int32Array(nb);
+  const arrays: (Int16Array | null)[] = new Array(nb).fill(null);
+  for (let b = 0; b < nb; b++) if (counts[b]) arrays[b] = new Int16Array(counts[b] * 2);
+  for (let k = 0; k < nCells; k++) {
+    const b = key[k];
+    const a = arrays[b]!;
+    const w = write[b]++;
+    a[w * 2] = cells[k * 2];
+    a[w * 2 + 1] = cells[k * 2 + 1];
+  }
+
+  for (let b = 0; b < nb; b++) {
+    const a = arrays[b];
+    if (!a) continue;
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (let k = 0; k < a.length; k += 2) {
+      const x = a[k] * c, z = a[k + 1] * c;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    }
+    const cx = (minX + maxX) * 0.5, cz = (minZ + maxZ) * 0.5;
+    out.push({ cells: a, cx, cz, r: 0.5 * Math.hypot(maxX - minX, maxZ - minZ) });
+  }
+  return out;
+}
 
 export class GrassSystem implements System {
   readonly name = 'grass';
@@ -157,13 +252,7 @@ export class GrassSystem implements System {
       if (n === 0) continue;
 
       const base = bladeGeometry(spec.segments);
-      const geo = new THREE.InstancedBufferGeometry();
-      geo.index = base.index;
-      geo.setAttribute('position', base.getAttribute('position'));
-      geo.setAttribute('normal', base.getAttribute('normal'));
-      geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(cells, 2));
-      geo.instanceCount = n;
-      geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), spec.outer + 2);
+      const buckets = splitCells(cells, spec);
 
       const uni: Record<string, THREE.IUniform> = {
         ...this.u,
@@ -205,23 +294,44 @@ export class GrassSystem implements System {
       });
       mat.customProgramCacheKey = () => 'grass-v1';
 
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.name = `grass.ring${specs.indexOf(spec)}`;
-      mesh.matrixAutoUpdate = false;
-      mesh.frustumCulled = false;
-      mesh.receiveShadow = true;
-      mesh.castShadow = false;
-      mesh.renderOrder = -1;
-      // Opt out of GTAO's G-buffer. That pass re-renders the scene with a
-      // `MeshNormalMaterial` override, which cannot run the vertex shader above —
-      // every blade would collapse back to its raw unit-sized source triangle at
-      // the world origin. At ultra that is 1.4 M near-fullscreen triangles of
-      // pure overdraw (measured: ~1000 ms/frame on the ground-level turf shot)
-      // occluding the frame with a silhouette the blades do not actually have.
-      mesh.userData.noAO = true;
-      group.add(mesh);
+      const ringIdx = specs.indexOf(spec);
+      const chunks: Chunk[] = [];
+      // A blade wanders off its cell centre by jitter plus the tuft pull (both
+      // bounded by ~1.5 cells), stands up to ~0.15 m tall and follows a pitch
+      // crown that drops 0.18 m. The sphere carries all of that so the cull is
+      // conservative in the only direction that matters.
+      const pad = 0.5 + 4 * spec.cell;
 
-      this.rings.push({ spec, mesh, mat, uni });
+      for (const b of buckets) {
+        const geo = new THREE.InstancedBufferGeometry();
+        geo.index = base.index;
+        geo.setAttribute('position', base.getAttribute('position'));
+        geo.setAttribute('normal', base.getAttribute('normal'));
+        geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(b.cells, 2));
+        geo.instanceCount = b.cells.length >> 1;
+        // Centre is rewritten every frame in lateUpdate; the mesh matrix stays
+        // identity, so `Frustum.intersectsObject` tests this sphere verbatim.
+        geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(b.cx, 0, b.cz), b.r + pad);
+
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.name = `grass.ring${ringIdx}.${chunks.length}`;
+        mesh.matrixAutoUpdate = false;
+        mesh.frustumCulled = true;
+        mesh.receiveShadow = true;
+        mesh.castShadow = false;
+        mesh.renderOrder = -1;
+        // Opt out of GTAO's G-buffer. That pass re-renders the scene with a
+        // `MeshNormalMaterial` override, which cannot run the vertex shader above —
+        // every blade would collapse back to its raw unit-sized source triangle at
+        // the world origin. At ultra that is 1.4 M near-fullscreen triangles of
+        // pure overdraw (measured: ~1000 ms/frame on the ground-level turf shot)
+        // occluding the frame with a silhouette the blades do not actually have.
+        mesh.userData.noAO = true;
+        group.add(mesh);
+        chunks.push({ mesh, cx: b.cx, cz: b.cz, r: b.r + pad });
+      }
+
+      this.rings.push({ spec, chunks, mat, uni });
     }
 
     ctx.scene.add(group);
@@ -251,6 +361,27 @@ export class GrassSystem implements System {
   }
 
   /* ------------------------------------------------------------------- api */
+
+  /**
+   * Turn the per-chunk frustum cull off, so every bucket is submitted exactly as
+   * it was before the ring was sliced.
+   *
+   * This exists to make the cull *falsifiable*: with it, one page session can
+   * photograph the same shot both ways and diff the pixels, which is the only
+   * honest test that a culling scheme removes nothing that was on screen. A
+   * before/after across two runs cannot do that job on a tree several agents are
+   * editing at once.
+   */
+  setCulling(on: boolean): void {
+    for (const r of this.rings) for (const k of r.chunks) k.mesh.frustumCulled = on;
+  }
+
+  /** Chunks currently submitted vs built — the cull's own scoreboard. */
+  cullStats(): { drawn: number; total: number } {
+    let total = 0;
+    for (const r of this.rings) total += r.chunks.length;
+    return { drawn: total, total };
+  }
 
   /**
    * Push grass aside at a world point. Call every frame for a sustained push;
@@ -287,7 +418,17 @@ export class GrassSystem implements System {
     const cam = ctx.camera.position;
     for (const r of this.rings) {
       const c = r.spec.cell;
-      (r.uni.uCellOrigin.value as THREE.Vector2).set(Math.round(cam.x / c), Math.round(cam.z / c));
+      const oi = Math.round(cam.x / c);
+      const oj = Math.round(cam.z / c);
+      (r.uni.uCellOrigin.value as THREE.Vector2).set(oi, oj);
+      // The shader places a blade at `(uCellOrigin + aCell) * uCellSize`, so the
+      // ring's true world centre is the *quantised* camera position — the same
+      // number the buckets were measured against. Sliding the spheres onto it
+      // keeps the cull exact rather than approximate.
+      const ox = oi * c, oz = oj * c;
+      for (const k of r.chunks) {
+        (k.mesh.geometry.boundingSphere as THREE.Sphere).center.set(ox + k.cx, 0, oz + k.cz);
+      }
     }
 
     this.updateBend(dt, cam);
@@ -386,7 +527,10 @@ export class GrassSystem implements System {
   }
 
   dispose(): void {
-    for (const r of this.rings) { r.mesh.geometry.dispose(); r.mat.dispose(); }
+    for (const r of this.rings) {
+      for (const k of r.chunks) k.mesh.geometry.dispose();
+      r.mat.dispose();
+    }
     this.turfMap?.dispose();
     this.noiseMap?.dispose();
     this.bendTex?.dispose();

@@ -49,6 +49,56 @@ const OFF_BODY = 24;
 
 const MAX_NEAR_DIST = 26;
 const MAX_MID_DIST = 74;
+
+/**
+ * How many pieces the far LOD is cut into.
+ *
+ * The bowl wraps the camera, and a broadcast lens sees maybe a third of it — but
+ * the far mesh was one draw over every spectator with `frustumCulled = false`,
+ * so the two thirds behind the operator were vertex-shaded every frame. The
+ * master buffer is ordered section-then-row, so a *contiguous* instance range is
+ * a contiguous arc of the bowl: slicing it costs nothing but a few extra draw
+ * calls and hands three an exact per-frame cull.
+ */
+const FAR_SLICES = 24;
+/**
+ * Metres of slack on the block-level frustum test that feeds the near/mid
+ * gather. Unlike the far slices (world-static spheres, culled against the live
+ * camera), the gather runs in `lateUpdate` — one system ahead of the camera
+ * director — and is only redone when the camera has moved, turned or zoomed
+ * enough to matter. The margin has to cover everything that can happen between
+ * two gathers.
+ *
+ * Sized against the tele rig's own caps (docs/gameplay-design.md §1.1): 38°/s
+ * pan, 12 m/s dolly, 7°/s zoom. Between gathers that is at most REFRESH_TURN +
+ * one frame of pan (2.1°), REFRESH_MOVE of dolly (1.2 m) and REFRESH_FOV of
+ * half-angle (1.5°) — about 6.2 m at the 74 m mid cut. Six metres was measured
+ * to leave a 1–2 block gap on ~9 % of live frames, i.e. a handful of spectators
+ * blinking at the frame edge during a pan; fourteen is a 2.2× margin over the
+ * worst case and still discards the two thirds of the bowl behind the operator.
+ */
+const GATHER_MARGIN = 14;
+/** Radians of camera turn that force a re-gather (~0.86°). */
+const REFRESH_TURN = 0.99997;
+/** Degrees of vertical FOV change that force a re-gather. */
+const REFRESH_FOV = 1.5;
+/**
+ * Metres of hysteresis past each LOD cut when gathering.
+ *
+ * `d` for a block is measured at gather time and the shader partitions at
+ * `uNearEnd`/`uMidEnd` at render time, so a block sitting exactly on a cut can
+ * be excluded by a gather and then drift a centimetre inside it — leaving the
+ * sliver of spectators between the two values drawn by nobody. Gathering a few
+ * metres past the cut costs a handful of instances that the shader degenerates
+ * anyway and removes the boundary case entirely. The published cuts do not
+ * move, so nothing about the LOD partition changes.
+ *
+ * Sized off the refresh gate, not guessed: a block's `d` can change by at most
+ * the dolly slack the gate tolerates (1.22 m) plus one frame of travel (0.2 m)
+ * before the gather re-runs. Two metres covers that; three cost 2.2 M triangles
+ * a frame at broadcast because a 3 m shell at 26 m is a lot of seats.
+ */
+const GATHER_BAND = 2;
 /** Seconds of simulation the capture rig settles for; staged waves aim at it. */
 const CAPTURE_SETTLE = 2.5;
 const WAVE_SPEED = 13.5;
@@ -83,6 +133,7 @@ function pickW(rand: () => number, arr: THREE.Color[], w: number[]): THREE.Color
 
 const _v = new THREE.Vector3();
 const _c = new THREE.Color();
+const _sphere = new THREE.Sphere();
 
 /* --------------------------------------------------------------------- sys */
 
@@ -91,7 +142,8 @@ export class CrowdSystem implements System {
   readonly order = 5;
 
   private group = new THREE.Group();
-  private uni!: LightUniforms & Record<string, THREE.IUniform>;
+  /** Shared shader uniforms. Public so the pop test can read the live LOD cuts. */
+  uni!: LightUniforms & Record<string, THREE.IUniform>;
   private nearGeo!: THREE.InstancedBufferGeometry;
   private midGeo!: THREE.InstancedBufferGeometry;
 
@@ -100,7 +152,8 @@ export class CrowdSystem implements System {
   private nearBuf!: THREE.InstancedInterleavedBuffer;
   private midData!: Float32Array;
   private midBuf!: THREE.InstancedInterleavedBuffer;
-  private blocks: Block[] = [];
+  /** Spectator blocks, exposed read-only alongside `gathered` for the pop test. */
+  readonly blocks: Block[] = [];
   private order2: number[] = [];
   private dists!: Float32Array;
 
@@ -108,8 +161,24 @@ export class CrowdSystem implements System {
   private nearCap = 0;
   private midCap = 0;
   private lastCam = new THREE.Vector3(1e9, 0, 0);
+  private lastQuat = new THREE.Quaternion(2, 0, 0, 0);
+  private lastFov = -1;
   private lastRefresh = -999;
   private nearDirty = true;
+
+  private frustum = new THREE.Frustum();
+  private frustumM = new THREE.Matrix4();
+  /** Per-block "is any part of this inside the widened frustum" cache. */
+  private blockSeen!: Uint8Array;
+  /**
+   * Which blocks the last gather actually wrote into the near / mid buffers.
+   *
+   * Published so a headless run can assert the property that matters for a
+   * moving camera: no block that the *exact, current-frame* frustum says is on
+   * screen may be missing from the buffers. That is what popping is, stated as
+   * something a test can fail on rather than something you hope to notice.
+   */
+  readonly gathered = { near: new Uint8Array(0), mid: new Uint8Array(0) };
 
   private energy = 0.14;
   private energyTarget = 0.14;
@@ -127,8 +196,26 @@ export class CrowdSystem implements System {
   private rowsUsed = BOWL.rows;
   private disposables: { dispose(): void }[] = [];
 
+  /** Debug: false restores the pre-cull behaviour exactly. See `setCulling`. */
+  private culling = true;
+
   /** Published for peers: the scene node holding every crowd mesh. */
   get root(): THREE.Group { return this.group; }
+
+  /**
+   * Turn view culling off — far slices always submitted, gather ignores the
+   * frustum — so a single page session can photograph the crowd both ways and
+   * diff the pixels. That is the only test that proves the cull drops nothing
+   * the lens could see; a capture taken an hour apart on a tree seven agents are
+   * editing proves nothing at all.
+   */
+  setCulling(on: boolean): void {
+    this.culling = on;
+    for (const c of this.group.children) {
+      if (c.name === 'crowd-far') c.frustumCulled = on;
+    }
+    this.nearDirty = true;
+  }
   /** Published for peers: the seat grid the crowd actually used. */
   bowl: BowlSpec = { ...BOWL };
   stats = { spectators: 0, seats: 0, nearCap: 0, midCap: 0, meshes: 0 };
@@ -386,6 +473,9 @@ export class CrowdSystem implements System {
     this.master = master.subarray(0, n * STRIDE);
     this.order2 = this.blocks.map((_, i) => i);
     this.dists = new Float32Array(this.blocks.length);
+    this.blockSeen = new Uint8Array(this.blocks.length);
+    (this.gathered as { near: Uint8Array }).near = new Uint8Array(this.blocks.length);
+    (this.gathered as { mid: Uint8Array }).mid = new Uint8Array(this.blocks.length);
     return { pos: chairPos, yaw: chairYaw, col: chairCol, emptyIdx };
   }
 
@@ -412,22 +502,30 @@ export class CrowdSystem implements System {
     return tex;
   }
 
+  /**
+   * `first` is an instance offset into `buf`. WebGL takes a byte offset per
+   * attribute, so starting a geometry partway through a shared interleaved
+   * buffer costs nothing — no copy, no second upload, just a different pointer.
+   * That is what lets the far LOD be sliced into cullable arcs of one buffer.
+   */
   private instancedFrom(
     base: THREE.BufferGeometry, buf: THREE.InstancedInterleavedBuffer, count: number,
+    first = 0,
   ): THREE.InstancedBufferGeometry {
     const g = new THREE.InstancedBufferGeometry();
+    const o = first * STRIDE;
     g.setIndex(base.getIndex());
     for (const name of Object.keys(base.attributes)) g.setAttribute(name, base.attributes[name]);
-    g.setAttribute('iPos', new THREE.InterleavedBufferAttribute(buf, 3, OFF_POS));
-    g.setAttribute('iYaw', new THREE.InterleavedBufferAttribute(buf, 1, OFF_YAW));
-    g.setAttribute('iRand', new THREE.InterleavedBufferAttribute(buf, 4, OFF_RAND));
-    g.setAttribute('iSize', new THREE.InterleavedBufferAttribute(buf, 2, OFF_SIZE));
-    g.setAttribute('iShirt', new THREE.InterleavedBufferAttribute(buf, 3, OFF_SHIRT));
-    g.setAttribute('iSkin', new THREE.InterleavedBufferAttribute(buf, 3, OFF_SKIN));
-    g.setAttribute('iHair', new THREE.InterleavedBufferAttribute(buf, 3, OFF_HAIR));
-    g.setAttribute('iFlags', new THREE.InterleavedBufferAttribute(buf, 4, OFF_FLAGS));
-    g.setAttribute('iRowT', new THREE.InterleavedBufferAttribute(buf, 1, OFF_ROWT));
-    g.setAttribute('iBody', new THREE.InterleavedBufferAttribute(buf, 4, OFF_BODY));
+    g.setAttribute('iPos', new THREE.InterleavedBufferAttribute(buf, 3, o + OFF_POS));
+    g.setAttribute('iYaw', new THREE.InterleavedBufferAttribute(buf, 1, o + OFF_YAW));
+    g.setAttribute('iRand', new THREE.InterleavedBufferAttribute(buf, 4, o + OFF_RAND));
+    g.setAttribute('iSize', new THREE.InterleavedBufferAttribute(buf, 2, o + OFF_SIZE));
+    g.setAttribute('iShirt', new THREE.InterleavedBufferAttribute(buf, 3, o + OFF_SHIRT));
+    g.setAttribute('iSkin', new THREE.InterleavedBufferAttribute(buf, 3, o + OFF_SKIN));
+    g.setAttribute('iHair', new THREE.InterleavedBufferAttribute(buf, 3, o + OFF_HAIR));
+    g.setAttribute('iFlags', new THREE.InterleavedBufferAttribute(buf, 4, o + OFF_FLAGS));
+    g.setAttribute('iRowT', new THREE.InterleavedBufferAttribute(buf, 1, o + OFF_ROWT));
+    g.setAttribute('iBody', new THREE.InterleavedBufferAttribute(buf, 4, o + OFF_BODY));
     g.instanceCount = count;
     g.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 8, 0), 280);
     this.disposables.push(g);
@@ -479,13 +577,60 @@ export class CrowdSystem implements System {
     this.midGeo = mid.geo; this.midData = mid.data; this.midBuf = mid.buf;
 
     const farBuf = new THREE.InstancedInterleavedBuffer(this.master, STRIDE);
-    const farMesh = new THREE.Mesh(
-      this.instancedFrom(buildBody(2), farBuf, this.count), mk('crowd-far', {}));
-    farMesh.frustumCulled = false;
-    farMesh.name = 'crowd-far';
-    farMesh.userData.noAO = true;
+    const farBody = buildBody(2);
+    const farMat = mk('crowd-far', {});
+    // Slice the far LOD along the block order, which is already an arc walk of
+    // the bowl, and give each slice the true bounding sphere of the seats it
+    // holds. Everything else about it is unchanged: same buffer, same shader,
+    // same per-instance LOD partition — three simply stops submitting the arcs
+    // that are off screen.
+    for (const s of this.farSlices()) {
+      const m = new THREE.Mesh(
+        this.instancedFrom(farBody, farBuf, s.count, s.start), farMat);
+      (m.geometry.boundingSphere as THREE.Sphere).set(
+        new THREE.Vector3(s.cx, s.cy, s.cz), s.r);
+      m.frustumCulled = true;
+      m.name = 'crowd-far';
+      m.userData.noAO = true;
+      this.group.add(m);
+    }
 
-    this.group.add(farMesh, mid.mesh, near.mesh);
+    this.group.add(mid.mesh, near.mesh);
+  }
+
+  /**
+   * Contiguous instance ranges of roughly equal population, each with a sphere
+   * that bounds its seats plus the head-room the vertex shader can add (a
+   * spectator standing up with both arms over their head is about 1.4 m taller
+   * than the seated bound the blocks were measured at).
+   */
+  private farSlices(): Array<{ start: number; count: number; cx: number; cy: number; cz: number; r: number }> {
+    const out: Array<{ start: number; count: number; cx: number; cy: number; cz: number; r: number }> = [];
+    if (!this.blocks.length) {
+      return [{ start: 0, count: this.count, cx: 0, cy: 8, cz: 0, r: 280 }];
+    }
+    const per = Math.max(1, Math.ceil(this.count / FAR_SLICES));
+    let i = 0;
+    while (i < this.blocks.length) {
+      const start = this.blocks[i].start;
+      let n = 0;
+      let minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
+      while (i < this.blocks.length && (n === 0 || n < per)) {
+        const b = this.blocks[i++];
+        n += b.count;
+        if (b.cx - b.r < minX) minX = b.cx - b.r; if (b.cx + b.r > maxX) maxX = b.cx + b.r;
+        if (b.cy - b.r < minY) minY = b.cy - b.r; if (b.cy + b.r > maxY) maxY = b.cy + b.r;
+        if (b.cz - b.r < minZ) minZ = b.cz - b.r; if (b.cz + b.r > maxZ) maxZ = b.cz + b.r;
+      }
+      if (!n) continue;
+      maxY += 1.4;
+      out.push({
+        start, count: n,
+        cx: (minX + maxX) * 0.5, cy: (minY + maxY) * 0.5, cz: (minZ + maxZ) * 0.5,
+        r: 0.5 * Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) + 0.5,
+      });
+    }
+    return out;
   }
 
   private buildFallbackDeck(
@@ -781,33 +926,61 @@ export class CrowdSystem implements System {
    */
   private refreshNear(ctx: Ctx): void {
     const cam = ctx.camera.position;
-    if (!this.nearDirty
+    // Rotation now matters as much as translation: the gather is frustum-aware,
+    // so a pure pan changes which blocks belong in the buffers. ~1.5° of turn is
+    // well inside GATHER_MARGIN at bowl range.
+    const turned = Math.abs(ctx.camera.quaternion.dot(this.lastQuat)) < REFRESH_TURN;
+    const zoomed = Math.abs(ctx.camera.fov - this.lastFov) > REFRESH_FOV;
+    if (!this.nearDirty && !turned && !zoomed
       && cam.distanceToSquared(this.lastCam) < 1.5
       && ctx.frame - this.lastRefresh < 30) return;
     this.nearDirty = false;
     this.lastCam.copy(cam);
+    this.lastQuat.copy(ctx.camera.quaternion);
+    this.lastFov = ctx.camera.fov;
     this.lastRefresh = ctx.frame;
     if (!this.blocks.length || this.nearCap === 0) return;
 
     const B = this.blocks;
     const d = this.dists;
+
+    // Widened view frustum. The near and mid LODs are ~2.3× and ~6× the far
+    // body, and a bowl camera has most of the stand behind it — gathering only
+    // what can be on screen is where the crowd's triangle bill actually lives.
+    this.frustumM.multiplyMatrices(
+      ctx.camera.projectionMatrix, ctx.camera.matrixWorldInverse);
+    this.frustum.setFromProjectionMatrix(this.frustumM);
+    for (let p = 0; p < 4; p++) this.frustum.planes[p].constant += GATHER_MARGIN;
+    const seen = this.blockSeen;
+
     for (let i = 0; i < B.length; i++) {
       const b = B[i];
       const dx = b.cx - cam.x, dy = b.cy - cam.y, dz = b.cz - cam.z;
       d[i] = Math.max(0, Math.sqrt(dx * dx + dy * dy + dz * dz) - b.r);
+      if (!this.culling) { seen[i] = 1; continue; }
+      _sphere.center.set(b.cx, b.cy, b.cz);
+      _sphere.radius = b.r + 1.4;
+      seen[i] = this.frustum.intersectsSphere(_sphere) ? 1 : 0;
     }
     const ord = this.order2;
     ord.sort((a, b) => d[a] - d[b]);
+    const gN = this.gathered.near, gM = this.gathered.mid;
+    gN.fill(0); gM.fill(0);
 
     let w = 0;
     let cut = MAX_NEAR_DIST;
     for (let i = 0; i < ord.length; i++) {
       const bi = ord[i];
       const b = B[bi];
-      if (d[bi] >= MAX_NEAR_DIST) break;
-      if (w + b.count > this.nearCap) { cut = d[bi]; break; }
+      if (d[bi] >= MAX_NEAR_DIST + GATHER_BAND) break;
+      // Off-screen blocks are skipped rather than counted against the cap: the
+      // budget goes to seats the lens can actually see, so `cut` stays at or
+      // beyond where it was and the LOD boundary never pulls *in*.
+      if (!seen[bi]) continue;
+      if (w + b.count > this.nearCap) { cut = Math.min(MAX_NEAR_DIST, d[bi]); break; }
       this.nearData.set(
         this.master.subarray(b.start * STRIDE, (b.start + b.count) * STRIDE), w * STRIDE);
+      gN[bi] = 1;
       w += b.count;
     }
     this.nearGeo.instanceCount = w;
@@ -825,11 +998,13 @@ export class CrowdSystem implements System {
     for (let i = 0; i < ord.length; i++) {
       const bi = ord[i];
       const b = B[bi];
-      if (d[bi] >= MAX_MID_DIST) break;
+      if (d[bi] >= MAX_MID_DIST + GATHER_BAND) break;
+      if (!seen[bi]) continue;
       if (d[bi] + 2 * b.r < nearFloor) continue;
-      if (m + b.count > this.midCap) { midCut = d[bi]; break; }
+      if (m + b.count > this.midCap) { midCut = Math.min(MAX_MID_DIST, d[bi]); break; }
       this.midData.set(
         this.master.subarray(b.start * STRIDE, (b.start + b.count) * STRIDE), m * STRIDE);
+      gM[bi] = 1;
       m += b.count;
     }
     this.midGeo.instanceCount = m;

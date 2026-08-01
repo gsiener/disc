@@ -73,10 +73,23 @@ export const PLAY = {
   stackSpacing: 4.2,
   /** How far downfield the front of a vertical stack sits from the disc. */
   stackLead: 11,
+  /**
+   * How many cutters must still be STANDING IN THE COLUMN before another one
+   * is allowed to go. Without this the cut budget plus the clear-out drains
+   * the stack completely — every cutter is always either cutting or jogging
+   * back — and the offence stops being a shape at all. A stack is the bodies
+   * that are not cutting; if there are none, there is no stack, only traffic.
+   */
+  stackHold: 3,
   /** Max live downfield cuts at once. */
   maxLiveCuts: 2,
-  /** Minimum gap between the starts of two cuts, seconds. */
-  cutStagger: 0.5,
+  /**
+   * Minimum gap between the starts of two cuts, seconds. This is what makes a
+   * second cut read as a SECOND cut rather than as two people leaving at once:
+   * the first attacks, the defence commits, and the next one goes into what
+   * that opened. It is also most of what keeps bodies in the column.
+   */
+  cutStagger: 1.1,
   /** Setup-step duration before the plant, seconds. */
   setupTime: 0.45,
   /** Plant / change-of-direction duration, seconds. */
@@ -192,6 +205,24 @@ export interface Station {
  * Where the seven offensive players want to stand, given the disc position.
  * The thrower is not expected to run to a station — the AI leaves one unused.
  */
+/**
+ * How far off centre a reset station is ever allowed to sit. The reset is the
+ * throw the offence falls back on, so it must be somewhere a disc can be
+ * thrown FROM next — and eighteen metres out, hard against a line, is not.
+ */
+const RESET_BAND = 10.5;
+const SWING_BAND = 13.0;
+
+/**
+ * X of the column a stack set is built on. One source of truth: the formation
+ * builds the stack here, the AI clears cutters back to here, and the HUD can
+ * draw the same line without guessing.
+ */
+export function stackColumnX(name: FormationName, a: Vec2, openSign: Sign): number {
+  if (name === 'side') return (-openSign as Sign) * 12.5;
+  return clamp(a.x * 0.3, -5, 5);
+}
+
 export function formationStations(
   name: FormationName, a: Vec2, dir: AttackDir, openSign: Sign,
 ): Station[] {
@@ -206,10 +237,23 @@ export function formationStations(
     case 'vertical': {
       // 2 handlers behind, 5 cutters stacked through the middle of the field so
       // both sidelines stay live.
-      const vhx = clamp(a.x, -(FIELD.halfWidth - 5.5), FIELD.halfWidth - 5.5);
-      push(vhx + brk * 3.5, a.z - dir * 6.5, 'handler', 0);
-      push(vhx + openSign * 7.5, a.z - dir * 3.0, 'handler', 1);
-      const sx = clamp(a.x * 0.3, -5, 5);
+      //
+      // Station 0 is THE RESET and it is deliberately first: with two handlers
+      // one of them is usually holding the disc, so whichever station gets
+      // filled has to be the one a dump can be thrown to. It sits behind the
+      // disc on the OPEN side — a reset thrown through the mark is the single
+      // most punished decision in the sport, so the reset does not stand there.
+      //
+      // Both stations are held inside a central band. A reset that simply sits
+      // `openSign * 4.5` off a disc already two metres from the line is a reset
+      // into the sideline: complete it and the next disc is further out still,
+      // and the offence walks itself into the paint and throws it away. Real
+      // handlers bring a trapped disc back to the middle, and the geometry has
+      // to want that rather than fight it.
+      const vhx = clamp(a.x, -(FIELD.halfWidth - 6.0), FIELD.halfWidth - 6.0);
+      push(clamp(vhx + openSign * 4.5, -RESET_BAND, RESET_BAND), a.z - dir * 6.5, 'handler', 0);
+      push(clamp(vhx + brk * 6.5, -SWING_BAND, SWING_BAND), a.z - dir * 3.5, 'handler', 1);
+      const sx = stackColumnX('vertical', a, openSign);
       for (let i = 0; i < 5; i++) {
         push(sx, a.z + dir * (PLAY.stackLead + PLAY.stackSpacing * i), 'cutter', i);
       }
@@ -230,22 +274,25 @@ export function formationStations(
     case 'side': {
       // 5 cutters stacked on the break sideline, isolating the whole open side.
       const shx = clamp(a.x, -(FIELD.halfWidth - 5.5), FIELD.halfWidth - 5.5);
-      push(shx + brk * 3.0, a.z - dir * 6.5, 'handler', 0);
-      push(shx + openSign * 7.0, a.z - dir * 3.0, 'handler', 1);
-      const lx = brk * 12.5;
+      push(clamp(shx + openSign * 4.0, -RESET_BAND, RESET_BAND), a.z - dir * 6.5, 'handler', 0);
+      push(clamp(shx + brk * 6.0, -SWING_BAND, SWING_BAND), a.z - dir * 3.0, 'handler', 1);
+      const lx = stackColumnX('side', a, openSign);
       for (let i = 0; i < 5; i++) {
         push(lx, a.z + dir * (9 + PLAY.stackSpacing * i), 'cutter', i);
       }
       break;
     }
     case 'endzone': {
-      // 3 handlers behind the disc, 4 cutters spread across the back of the
-      // endzone ready to strike to the front cone.
+      // 3 handlers behind the disc, 4 cutters spread across the endzone ready
+      // to strike to the front cone. They sit a little over half the endzone
+      // deep, not against the back line: pinned to the back line they are 25 m
+      // from a disc 12 m out, and the team reads as two disconnected knots of
+      // people with the whole middle of the field empty between them.
       const ehx = clamp(a.x, -(FIELD.halfWidth - 8.0), FIELD.halfWidth - 8.0);
-      push(ehx + brk * 6.5, a.z - dir * 5.0, 'handler', 0);
+      push(clamp(ehx + openSign * 6.5, -RESET_BAND, RESET_BAND), a.z - dir * 5.0, 'handler', 0);
       push(ehx, a.z - dir * 6.5, 'handler', 1);
-      push(ehx + openSign * 6.5, a.z - dir * 5.0, 'handler', 2);
-      const ez = dir * (FIELD.goalLine + FIELD.endzoneDepth - 4.5);
+      push(clamp(ehx + brk * 6.5, -SWING_BAND, SWING_BAND), a.z - dir * 5.0, 'handler', 2);
+      const ez = dir * (FIELD.goalLine + FIELD.endzoneDepth * 0.52);
       const xs = [-11, -4, 4, 11];
       for (let i = 0; i < 4; i++) push(xs[i], ez, 'cutter', i);
       break;
@@ -262,8 +309,16 @@ export function handlerCount(name: FormationName): number {
 export function chooseFormation(
   disc: Vec2, dir: AttackDir, prefer: FormationName, windSpeed: number,
 ): FormationName {
-  if (yardsToGoal(disc.z, dir) <= 22) return 'endzone';
-  if (Math.abs(disc.x) > 11.5) return 'side';
+  // The endzone set is a real look but it is not a column, so it is worth
+  // asking for it only when it is genuinely an endzone situation. At 22 m it
+  // was firing from a third of the way up the field and the stack — the shape
+  // the sport is read by — was on screen far less than it should have been.
+  if (yardsToGoal(disc.z, dir) <= 17) return 'endzone';
+  // The side stack is called when the disc is genuinely trapped on a line. At
+  // 11.5 m it was firing on a third of possessions, and every call moved the
+  // whole column across the field — the shape changed more often than the
+  // disc did.
+  if (Math.abs(disc.x) > 14.0) return 'side';
   if (windSpeed > 7.5) return 'vertical';
   return prefer === 'endzone' ? 'vertical' : prefer;
 }
@@ -336,13 +391,25 @@ export function buildCut(
     case 'dump':
       // A reset goes to the OPEN side and behind. Throwing the reset through
       // the mark is the single most punished decision in the sport.
-      setup = { x: from.x + brk * 1.6, z: from.z + dir * 0.8 };
-      target = { x: disc.x + openSign * (3.5 + 2 * j), z: disc.z - dir * (5 + 1.5 * j) };
-      maxTime = 1.8;
+      //
+      // It also has to MOVE. The reset already stands behind the disc on the
+      // open side, so a two-metre shuffle to a target he is practically
+      // standing on generates no separation and dies on the arrival test the
+      // moment it starts. The setup sells the up-line hard the other way, then
+      // he breaks back into the reset space with a real change of direction.
+      setup = { x: from.x + brk * 2.4, z: from.z + dir * 2.8 };
+      target = {
+        x: clamp(disc.x + openSign * (6.5 + 2.5 * j), -RESET_BAND - 2, RESET_BAND + 2),
+        z: disc.z - dir * (7.5 + 2 * j),
+      };
+      maxTime = 2.0;
       break;
     case 'swing':
       setup = { x: from.x - openSign * 1.4, z: from.z - dir * 1.2 };
-      target = { x: disc.x + openSign * (8 + 2 * j), z: disc.z - dir * (2 + 2 * j) };
+      target = {
+        x: clamp(disc.x + openSign * (8 + 2 * j), -SWING_BAND, SWING_BAND),
+        z: disc.z - dir * (2 + 2 * j),
+      };
       maxTime = 1.8;
       break;
   }
