@@ -211,7 +211,8 @@ export function buildSideline(ctx: Ctx, M: StadiumMaterials): SidelineBuild {
       cooler(hard, plastic, { TUB, CYL }, APRON_X - 0.5, z, rnd.range(-0.3, 0.3), [0.88, 0.55, 0.14]);
     }
     for (let i = 0; i < 4; i++) {
-      waterJug(plastic, hard, { JUG, CYL, BAIL }, APRON_X - 1.5, z0 - 3.6 + i * 0.55, rnd.range(-0.5, 0.5));
+      waterJug(plastic, hard, { JUG, CYL, BAIL },
+        APRON_X - 1.5 + rnd.range(-0.16, 0.16), z0 - 3.6 + i * 0.58, rnd.range(-0.9, 0.9), i + t);
     }
     for (let i = 0; i < 5; i++) {
       // Spaced past their own diameter and jittered off the line: five bags at
@@ -267,7 +268,8 @@ export function buildSideline(ctx: Ctx, M: StadiumMaterials): SidelineBuild {
     // Water jugs and a bin at the head of the line, on their own scuff mat.
     matting(lineX + 0.6, z0 + side * 8.6, 2.0, 2.0, 4.2);
     for (let i = 0; i < 3; i++) {
-      waterJug(plastic, hard, { JUG, CYL, BAIL }, lineX + 0.3 + (i % 2) * 0.5, z0 + side * 8.6 + (i - 1) * 0.5, 0.4 * i);
+      waterJug(plastic, hard, { JUG, CYL, BAIL },
+        lineX + 0.3 + (i % 2) * 0.5, z0 + side * 8.6 + (i - 1) * 0.52, 0.4 * i, i + t + 1);
     }
     plastic.push({ geo: JUG, m: mat(lineX + 1.2, 0.42, z0 + side * 9.4, 0, 0, 0, 0.62, 0.84, 0.62), color: [0.14, 0.20, 0.15] });
   }
@@ -390,7 +392,6 @@ export function buildSideline(ctx: Ctx, M: StadiumMaterials): SidelineBuild {
 
   for (const s of scratch) s.dispose();
   crowd.dispose();
-  console.warn(`[sideline] people ${crowd.count} bodies, ${crowd.triangles} tris, ${crowd.ms.toFixed(1)}ms`);
   return {
     group: g,
     people: crowd.count,
@@ -651,7 +652,9 @@ function applyPose(P: Poser, m: Measure, pose: PoseName, r: Rand, o: PoseOpts): 
       P.arm(1, [0.24, -0.72, 0.66], [-0.10, -0.62, 0.78]);
       P.arm(-1, [0.22, -0.74, 0.64], [-0.08, -0.64, 0.76]);
       P.head(r.range(-0.35, 0.35), r.range(0.02, 0.14));
-      return groundOn(P, FEET(m));
+      // Heels are up in a squat, so the ball of the foot is the contact and the
+      // ankle sits lower than it does standing.
+      return groundOn(P, [['foot_L', m.ankleY * 0.72], ['foot_R', m.ankleY * 0.72]]);
     }
     case 'sit': {
       const seat = o.seat ?? 0.46;
@@ -974,7 +977,7 @@ function sheet(
  * broadcast camera — the largest single "prop" tell on the touchline.
  */
 function canopy(cloth: ClothFn, cx: number, y: number, cz: number, dx: number, dz: number, col: RGB): void {
-  const hx = dx / 2, hz = dz / 2, rise = 0.42, ridge = dz * 0.17;
+  const hx = dx / 2, hz = dz / 2, rise = 0.56, ridge = dz * 0.12;
   const bright: RGB = [col[0] * 1.22, col[1] * 1.22, col[2] * 1.22];
   const sag = (amp: number) => (u: number, v: number) => -amp * Math.sin(Math.PI * u) * Math.sin(Math.PI * v);
   // Long sides: eave → ridge.
@@ -1069,12 +1072,17 @@ function cooler(
  * matrix scale here is a *diameter* of 0.44 m — the first pass passed 0.88 and
  * put four one-metre hay bales on the touchline in the `sideline` frame.
  */
+// Art direction §2 allows exactly three saturated things in the frame and none
+// of them is a drinks cooler, so the jug run is mixed rather than a row of
+// identical orange drums: one team-issue orange, then grey and utility blue.
+const JUG_COL: RGB[] = [[0.62, 0.30, 0.06], [0.34, 0.35, 0.36], [0.09, 0.14, 0.26], [0.50, 0.24, 0.05]];
+
 function waterJug(
   plastic: Part[], hard: Part[],
   P: { JUG: THREE.BufferGeometry; CYL: THREE.BufferGeometry; BAIL: THREE.BufferGeometry },
-  x: number, z: number, yaw: number,
+  x: number, z: number, yaw: number, i = 0,
 ): void {
-  plastic.push({ geo: P.JUG, m: mat(x, 0.31, z, 0, yaw, 0, 0.44, 0.62, 0.44), color: [0.92, 0.55, 0.12] });
+  plastic.push({ geo: P.JUG, m: mat(x, 0.31, z, 0, yaw, 0, 0.44, 0.62, 0.44), color: JUG_COL[i % JUG_COL.length] });
   plastic.push({ geo: P.CYL, m: mat(x, 0.635, z, 0, 0, 0, 0.38, 0.06, 0.38), color: [0.90, 0.92, 0.94] });
   hard.push({ geo: P.BAIL, m: mat(x, 0.63, z, 0, yaw, 0, 0.42, 0.24, 0.42), color: [0.55, 0.56, 0.58] });
   hard.push({

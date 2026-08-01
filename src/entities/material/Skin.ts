@@ -237,15 +237,30 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // a 28 mm pucker — and a small central mouth is one of the two or three
         // cues that reads a face as juvenile, which is exactly the note this
         // roster keeps getting. The sculpt fades over 1.10 → 0.55; match it.
-        float lipX = smoothstep(mw * 1.08, mw * 0.80, axf);
+        float lipX = smoothstep(mw * 1.12, mw * 0.86, axf);
         float lips = clamp(pHead * lipX * clamp(hz * 1.6 - 0.38, 0.0, 1.0)
-          * (g1(hy, -0.598, 0.033) + g1(hy, -0.716, 0.040)), 0.0, 1.0);
+          * (g1(hy, -0.598, 0.039) + g1(hy, -0.716, 0.047)), 0.0, 1.0);
         // The vermilion BORDER is a pale ridge one millimetre wide, and it is
         // the single feature that makes a mouth read as a mouth rather than as
         // a smear of darker skin.
         float lipBorder = pHead * lipX * fr
           * (g1(hy, -0.563, 0.008) + g1(hy, -0.752, 0.009));
         lips *= 1.0 - 0.80 * g1(hy, -0.655, 0.013);   // the lip line itself is skin
+
+        /* ---- scalp ----------------------------------------------------- */
+        // THE SKULL ABOVE THE HAIRLINE IS NOT BARE SKIN and must never render as
+        // it. There is a centimetre of hair over it; the follicles under it are
+        // themselves pigmented; and material/Hair.ts erodes the shell's alpha at
+        // clump scale, which is a real haircut's parting and NOT a bald patch —
+        // but it can only read as a parting if what shows through is darker than
+        // the face. Left at skin albedo every gap in the cap reads as scalp
+        // disease, which is exactly what the first pass with holes in it did.
+        //
+        // Two zones: above the frontal hairline, and the whole occiput, which
+        // sits under hair from much lower down.
+        float scalp = pHead * max(
+            smoothstep(0.36, 0.58, hy),
+            smoothstep(0.10, -0.28, hz) * smoothstep(-0.12, 0.24, hy));
 
         /* ---- brows, lashes, lid margin -------------------------------- */
         // A brow has a head, a peak and a tail: the medial end sits lower and
@@ -467,7 +482,16 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // A real vermilion is 15–25 % redder and ~10 % darker, and the extra
         // comes from the fact that it is a MUCOSA: no stratum corneum, so it is
         // wet, and wet drops the value on top of everything the pigment does.
-        skin = mix(skin, uToneFlush, lips * 0.30);
+        // Measured off the palette rather than guessed at: uToneLip comes back
+        // about six per cent off the cheek it sits in, which is under the
+        // complexion mottle two lines above. So the rest is stated as the RATIO
+        // a vermilion actually holds against the skin around it — up in red,
+        // down in green and blue, down in value — and applied as a rotation OF
+        // THE SKIN rather than a mix toward a fixed colour, so it lands the same
+        // 18 % redder on every athlete in the roster instead of turning the deep
+        // end of it pink.
+        skin = mix(skin, uToneFlush, lips * 0.28);
+        skin *= mix(vec3(1.0), vec3(1.17, 0.89, 0.87), lips);
         skin *= 1.0 - 0.085 * lips;
         // The white roll of the vermilion border, and the fine vertical creases
         // across the lip itself.
@@ -477,6 +501,9 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         skin *= 1.0 - 0.045 * wrinkle;
         // Hair, last, because it sits on top of all of it.
         vec3 hairAlbedo = uHairCol * 0.85;
+        // Scalp first: it is under the hair, not on it, so it keeps most of the
+        // skin's own hue and only takes the pigment's value.
+        skin = mix(skin, mix(skin * 0.62, hairAlbedo, 0.55), scalp * 0.80);
         skin = mix(skin, hairAlbedo * 0.82, clamp(brow * 1.25 + lash * 1.45, 0.0, 1.0));
         skin = mix(skin, mix(skin, hairAlbedo, 0.62), beard);
         skin = mix(skin, mix(skin, hairAlbedo, 0.45), bhair);

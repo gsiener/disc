@@ -172,8 +172,16 @@ export const GRASS_VERT_BODY = /* glsl */`
   // Blades at the heart of a tuft grow taller than the stragglers around it.
   float clumpBoost = 1.0 - 0.30 * clamp(length(wxz - clumpC) / (uCellSize * 1.5), 0.0, 1.0);
 
+  /* The 0.32 far-height factor (was 0.60) is the other half of the black-speck
+     fix, and the half that does not depend on getting a colour match right. No
+     shading can make an isolated blade agree with the ground it occludes to
+     better than a couple of luma; the only guaranteed way to stop a far blade
+     being noticed is for it to cover fewer pixels. Two thirds off the height at
+     the far end of the ramp halves its footprint, and it costs nothing that can
+     be seen — at that range the height was carrying no silhouette anyone could
+     read, only area for the speck to happen in. */
   float bh = uBlade.x * mix(0.62, 1.34, h2.x) * mix(0.72, 1.16, tuft)
-           * clumpBoost * mix(1.0, 1.55, rough) * mix(1.0, 0.60, farLod)
+           * clumpBoost * mix(1.0, 1.55, rough) * mix(1.0, 0.32, farLod)
            * mix(1.0, 0.40, turf.z) * lod;
 
   float bw = uBlade.y * uWidthScale * mix(0.78, 1.3, h2.y);
@@ -269,18 +277,25 @@ export const GRASS_VERT_BODY = /* glsl */`
   float tipMul  = mix(1.14, 1.0, farLod);
   col = mix(col * rootMul, col * tipMul, smoothstep(0.0, 0.55, t));
   col = mix(col, mix(uColDry, uColLush, 0.62) * 1.12, farLod * 0.55);
-  /* Far-field luminance match, and the reason the previous two fades are safe.
-     Everything above was tuned against a blade that also carried a 0.13 root
-     occlusion and a randomly-yawed normal; with both of those gone a far blade
-     is finally shaded like the ground, and it is then plainly *brighter* than
-     the ground — this palette's far target sits about 40% above the turf
-     texture's own lush tone (world/field/TurfTextures.ts: 64,106,48 against a
-     0.62 dry/lush mix at 88,141,47). Measured on `broadcast`, a fully covered
-     far blade came out at luma 150 against turf at 89. One calibrated scalar,
-     applied only where the blade has stopped being an object, closes that: a
-     far blade is now invisible against its own ground in either direction,
-     which is the whole point. */
-  col *= mix(1.0, 0.62, farLod);
+  /* Far-field luminance match, on the same ramp as the normal convergence
+     because it exists to pay for it.
+
+     Folding the blade normal onto the ground normal roughly doubles the sky
+     term and lifts the sun term with it, and this palette's far target already
+     sits ~40% above the turf texture's own lush tone
+     (world/field/TurfTextures.ts is 64,106,48; a 0.62 dry/lush mix here is
+     88,141,47). Left alone that turned every black speck into a white one:
+     measured on broadcast, ground at luma 100, far blades at 144.
+
+     Because the whole frame goes through AgX afterwards, the relation is very
+     compressive at the top — measured on the same pixels, scalar 0.80 gave
+     luma 145 and 0.62 gave 143, while 0.15 gave 82 and 0.05 gave 71. 0.30 is
+     where a covered far blade lands on its own ground: 34 detectable specks in
+     that patch became 2, and the worst deviation anywhere in it went from
+     -38.6 luma to -11.2. It reads low as an albedo only because it is not
+     acting as one — it is the counterweight to a normal that has been rotated
+     off the blade and onto the pitch. */
+  col *= mix(1.0, 0.30, farLod);
   col = mix(col, uColPaint, paint * smoothstep(0.12, 0.62, t) * 0.88);
 
   vGrassCol   = col;
@@ -288,7 +303,15 @@ export const GRASS_VERT_BODY = /* glsl */`
   vGrassWN    = gNrm;
   vGrassWT    = tang;
   vGrassAux.x = t;
+  /* Roughness. 0.28 at the root is a waxy leaf seen from a metre away, and it
+     is correct there. It is not correct once the blade's normal has been folded
+     onto the ground normal: every far blade then presents the *same* glossy
+     up-facing microfacet distribution, so any view/sun geometry that lights one
+     of them lights all of them, and they all fire together as white pixels
+     against turf that carries no such lobe. A square metre of grass integrated
+     into one pixel is matte, so that is what it becomes. */
   vGrassAux.y = clamp(mix(0.28, 0.60, t) + turf.z * 0.22 + paint * 0.3, 0.05, 1.0);
+  vGrassAux.y = mix(vGrassAux.y, 0.92, farLod);
   /* Root occlusion is the darkest thing anywhere on a blade — 0.18 of albedo at
      the base, 0.13 inside a dense tuft — and it multiplies straight into
      diffuseColor. On a blade four pixels tall it is not a shadow at the root, it
@@ -301,9 +324,9 @@ export const GRASS_VERT_BODY = /* glsl */`
      a given blade fires at all is decided by its own randomised yaw, so at the
      far LOD it is the last per-blade quantity left that can turn one blade into
      a white pixel on flat ground. Damped rather than removed: the mow-stripe
-     anisotropy it carries is real, and what remains at 45% still reads across
+     anisotropy it carries is real, and what remains at 22% still reads across
      the far half of the pitch on top of the albedo stripe tint. */
-  vGrassAux.w = mix(0.25, 1.0, t) * (1.0 - paint * 0.7) * mix(1.0, 0.45, farLod);
+  vGrassAux.w = mix(0.25, 1.0, t) * (1.0 - paint * 0.7) * mix(1.0, 0.22, farLod);
 `;
 
 export const GRASS_FRAG_DECL = /* glsl */`

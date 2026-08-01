@@ -449,7 +449,44 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
     sh.fragmentShader = at(sh.fragmentShader, 'normal_fragment_maps', {
       replace: /* glsl */`
         {
-          vec2 kn = (weave.xy - 0.5) * 2.0 * 0.9;
+          /**
+           * HOW DEEP THE KNIT READS HAS TO BE A FUNCTION OF HOW BIG A LOOP IS
+           * ON SCREEN — and it was a constant.
+           *
+           * wuv counts weave TILES and a tile is 14 interlock loops, so
+           * fwidth(wuv) * 14 is loops per pixel. Two framings, two different
+           * problems, and one number was serving both:
+           *
+           *   broadcast   hundreds of loops per pixel. The mip chain has
+           *               averaged the tangent normal back to (0,0,1) long
+           *               before it gets here, so the map contributes nothing
+           *               and a deep setting costs nothing.
+           *   closeup     about half a loop per pixel — the loops are RESOLVED.
+           *               A 1.4 mm interlock loop carries maybe 0.15 mm of
+           *               relief and its crown is matte. At amplitude 0.9 it
+           *               carried nearer half a millimetre and put a specular
+           *               crown on every crossing, and 682 crowns around the
+           *               torso at two pixels each integrate into a bright grey
+           *               lattice lying over the shirt. That is the single
+           *               loudest thing in the hero crop: the jersey reads as
+           *               tulle stretched over a mannequin rather than as knit.
+           *
+           * Ramping the amplitude on loop density gives the near field the
+           * shallow relief cloth actually has and leaves the far field the deep
+           * setting that survives mip averaging. It is the same fix as a
+           * detail-normal fade, run in the opposite direction, and it is why
+           * the grain is still there at ten metres.
+           *
+           * The density that matters is the MINIMUM of the two axes, not the
+           * maximum. Anisotropic filtering keeps a sharp mip along whichever
+           * axis is least compressed, so a shoulder turning away at eighty
+           * degrees still resolves its knit perfectly well along the wale even
+           * though the footprint across it is enormous. Keying on the max
+           * boosted the amplitude at exactly those grazing angles — which is
+           * where the lattice was worst.
+           */
+          float loopPx = max(min(fwidth(wuv.x), fwidth(wuv.y)), 1e-5) * 14.0;
+          vec2 kn = (weave.xy - 0.5) * 2.0 * mix(0.32, 0.80, smoothstep(1.0, 6.0, loopPx));
           ${i.quality > 0 ? `
           // Panel drape. Deliberately NOT a second tap of the knit map at a
           // tenth of its rate: that prints a 13 mm waffle across the whole
@@ -468,11 +505,21 @@ export function makeClothMaterials(i: ClothInputs): ClothMaterial {
           // over a panel that is under tension. A taut panel is smooth. That is
           // most of why real cloth reads as cloth: not that it is wrinkled, but
           // that it is wrinkled in some places and not in others.
+          //
+          // Two octaves was one octave too few, and the finite difference was
+          // taken at a third of the lattice spacing. vnoise is C1, so its
+          // gradient is only C0 — differencing a single octave inside one cell
+          // returns a value that is very nearly constant across that cell and
+          // steps at the cell wall, which draws the drape as a field of flat
+          // chevrons about 5 cm across. With the knit lattice removed from over
+          // the top of it that faceting is the next thing the eye finds. A
+          // third octave and a tighter epsilon break the cell structure without
+          // changing the scale of the fold.
           vec2 dsc = uvF * vec2(19.0, 4.2) + uPattern.w * 17.0;
-          float d0 = mfbm(dsc, 2);
-          kn += vec2(d0 - mfbm(dsc + vec2(0.016, 0.0), 2),
-                     d0 - mfbm(dsc + vec2(0.0, 0.016), 2))
-                * (2.4 + 7.0 * vCrease) * (1.0 + 0.7 * squash);` : ''}
+          float d0 = mfbm(dsc, 3);
+          kn += vec2(d0 - mfbm(dsc + vec2(0.010, 0.0), 3),
+                     d0 - mfbm(dsc + vec2(0.0, 0.010), 3))
+                * (3.2 + 9.5 * vCrease) * (1.0 + 0.7 * squash);` : ''}
           // Flat-lock seams stand proud, and the number is a pressed transfer
           // with a bevelled edge — that bevel is most of why it reads as applied.
           kn.y += stitchRelief * 0.75;

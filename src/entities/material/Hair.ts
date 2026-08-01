@@ -150,7 +150,16 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         float grey = step(1.0 - uHairCtl.y, st.r * 0.6 + st2.r * 0.4);
       `,
       after: /* glsl */`
-        vec3 hair = mix(uRoot, uTip, clamp(tip * 1.20 - 0.18, 0.0, 1.0));
+        // ON A CAP, vLen IS NOT ROOT-TO-TIP. It is hairline-to-crown, and the
+        // strand at the crown has its root under it exactly like the strand at
+        // the temple does — what varies along it is how much sun the lock has
+        // had, not which end of the fibre you are looking at. Ramping to the
+        // FULL bleached tip colour at the crown therefore painted every athlete
+        // a two-tone dome with a cream skullcap on top, which is most of what
+        // read as "a mask over a lighter skull": the skull was the hair. A card
+        // (ponytail, curtain) does run root-to-tip and gives up a little of its
+        // bleach here, which is the cheaper of the two errors by a long way.
+        vec3 hair = mix(uRoot, uTip, clamp(tip * 0.70 - 0.06, 0.0, 1.0));
         hair *= strandVal * mix(0.74, 1.26, sc.r);
         hair = mix(hair, vec3(0.42, 0.41, 0.40), grey * 0.9);
         // The scalp side of a shell is always darker: no light reaches it.
@@ -220,14 +229,16 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // round an adult skull, which is the centimetre this wants. suv itself
         // carries 220 repeats and would have put the gaps at a fifth of a
         // millimetre, i.e. under a pixel at every framing in the shot list.
-        float lock = texture2D(uStrand, vec2(huv.x * 2.0, huv.y * 1.1 + 0.37)).a * 0.72
-                   + texture2D(uStrand, vec2(huv.x * 7.0, huv.y * 2.3 + 0.11)).a * 0.28;
-        // Denser toward the hairline and thinner over the crown, because that is
-        // where a head actually shows scalp, and because a perforated crown on a
-        // long style reads as mange rather than as hair. The window sits on the
-        // dissolve field's own lower quantile so a KNOWN fraction of the cap —
-        // about a seventh — falls through the alpha test.
-        float holes = smoothstep(0.47, 0.33, lock) * (0.74 + 0.16 * (1.0 - tip));
+        // ANISOTROPIC, because the gap between two locks is a SLOT and not a
+        // blob: long down the strand, narrow across it. Sampled at 3.2 u repeats
+        // of a 26-cell field (≈ 83 gaps round a skull, 6 mm apart) against 0.75
+        // v repeats of a 6-cell one (≈ 4 down the cap, 30 mm long). Isotropic
+        // 20 mm blobs — the first attempt — read as alopecia, not as hair.
+        float lock = texture2D(uStrand, vec2(huv.x * 3.2, huv.y * 0.75 + 0.37)).a * 0.74
+                   + texture2D(uStrand, vec2(huv.x * 11.0, huv.y * 2.1 + 0.11)).a * 0.26;
+        // The window sits on the dissolve field's own lower quantile so a KNOWN
+        // and small fraction of the cap falls through the alpha test.
+        float holes = smoothstep(0.41, 0.31, lock) * 0.76;
         float cut = max(max(graze * (1.0 - fibre) * 1.25, holes), fringe) * erode;
         diffuseColor.a *= 1.0 - clamp(cut, 0.0, 1.0);
 

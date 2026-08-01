@@ -276,7 +276,19 @@ export const COMPRESS = 0.72;
  * same way BETA_RN and COMPRESS are — the dome and the env bake have to agree or
  * the horizon shows a seam.
  */
-export const GLOW_DOME: readonly [number, number, number] = [0.0260, 0.0176, 0.0092];
+/*
+ * Measured, not guessed. At the `night` framing the visible sky band runs from
+ * 7° to 18° above the eye — h = 0.12 to 0.31 — and the residual twilight there
+ * is (0.007, 0.010, 0.020): blue-dominant by three to one. A dome amplitude of
+ * 0.026 landed the band at 8-bit (37, 36, 41), i.e. still faintly *cool*, which
+ * is a black sky with the contrast turned up rather than a stadium glowing into
+ * its own weather. These numbers put the same band near (0.052, 0.038, 0.032) —
+ * warm by half a stop over blue, ~0.20 of display white — while the lit turf
+ * measures 0.32–0.39, so the pitch stays the brightest thing in the frame by a
+ * clear margin and the rule that the boards must never out-contrast it is
+ * untouched.
+ */
+export const GLOW_DOME: readonly [number, number, number] = [0.0720, 0.0452, 0.0202];
 export const GLOW_DOME_FALLOFF = 3.0;
 
 export function sunIntensityAt(zenithCos: number): number {

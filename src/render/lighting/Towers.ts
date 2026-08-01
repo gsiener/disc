@@ -375,7 +375,11 @@ export class TowerRig {
 
   /** Lens halos and the soft scatter cone hanging off each head. */
   private buildAtmospherics(glowPts?: Array<{ p: THREE.Vector3; s: number }>): void {
-    const pts = glowPts ?? this.slots.map((s) => ({ p: s.head.clone(), s: 5.5 }));
+    // 5.5 → 8.5 m of halo for a stadium-owned rack. The halo is what the bloom
+    // pass has to bite on, and a 24-lamp cluster seen from the far touchline is
+    // 130 m away: at 5.5 the glow died inside the rack's own silhouette and the
+    // fixtures read as white stickers rather than as something radiating.
+    const pts = glowPts ?? this.slots.map((s) => ({ p: s.head.clone(), s: 8.5 }));
 
     this.glowMat = makeGlowMaterial();
     this.glowMesh = new THREE.Mesh(buildGlowQuads(pts), this.glowMat);
@@ -626,8 +630,17 @@ export class TowerRig {
    * matter in any given frame without a per-tower CPU sort.
    */
   private buildBeam(slot: TowerSlot): THREE.BufferGeometry {
-    const len = Math.min(46, slot.head.distanceTo(slot.aim) * 0.42);
-    const g = new THREE.ConeGeometry(len * Math.tan(0.36), len, 22, 1, true);
+    /* 46 m → 26 m, and that is a geometry fix rather than a taste one.
+     *
+     * A mast head stands 15 m clear of the roof it looks over, and the beam
+     * leaves it descending at ~19°. At 46 m the cone has already dropped 15 m
+     * and gone *behind* the far roofline as seen from the opposite touchline, so
+     * three quarters of the shaft was being depth-rejected and only a stub near
+     * the apex ever reached the frame — which is why the scatter term read as
+     * nothing at all. 26 m keeps the whole cone in open sky above the parapet,
+     * which is exactly the portion a camera on the other side can see. */
+    const len = Math.min(22, slot.head.distanceTo(slot.aim) * 0.22);
+    const g = new THREE.ConeGeometry(len * Math.tan(0.46), len, 22, 1, true);
     g.translate(0, -len / 2, 0);
     const dir = new THREE.Vector3().subVectors(slot.aim, slot.head).normalize();
     _q.setFromUnitVectors(new THREE.Vector3(0, -1, 0), dir);
@@ -952,7 +965,13 @@ function makeSheenMaterial(heads: THREE.Vector3[]): THREE.ShaderMaterial {
           // the lobe peaks where the half-vector is perpendicular to the blade.
           float th = dot( T, H );
           float sp = pow( max( 0.0, 1.0 - th * th ), 26.0 );
-          acc += sp * max( 0.0, L.y ) * ( 11000.0 / d2 );
+          // 11 000 → 4 200 after looking at it: the first pass put the bands at
+          // roughly the turf's own diffuse level, which reads as fog lying on
+          // the pitch rather than as light coming off it, and it desaturated the
+          // sward past the 4d7a38 the palette pins. A highlight that lifts
+          // the lit stripe by a third of a stop is a sheen; one that doubles it
+          // is weather.
+          acc += sp * max( 0.0, L.y ) * ( 4200.0 / d2 );
         }
 
         /* Grazing only. Wet grass mirrors along the sightline and does nothing
@@ -966,9 +985,22 @@ function makeSheenMaterial(heads: THREE.Vector3[]): THREE.ShaderMaterial {
         float edge = ( 1.0 - smoothstep( HALF_X - 6.0, HALF_X - 0.5, abs( vW.x ) ) )
                    * ( 1.0 - smoothstep( HALF_Z - 6.0, HALF_Z - 0.5, abs( vW.z ) ) );
 
-        float a = acc * graze * mott * edge * uIntensity;
+        /* Nothing inside 12 m. Two reasons, and both of them are hard limits
+           rather than taste. The plane is flat and the pitch is crowned, so the
+           10 cm standoff is only invisible while the parallax is small compared
+           with the feature — at arm's length it is not. And inside ~16 m the
+           real blade geometry is what the camera is looking at, and blades have
+           their own Kajiya-Kay term; painting a ground plane over them would
+           double-count the sheen exactly where it is already modelled. A
+           ground-level macro framing therefore sees none of this pass at all. */
+        float near = smoothstep( 4.0, 12.0, distance( cameraPosition, vW ) );
+
+        float a = acc * graze * mott * edge * near * uIntensity;
         if ( a < 0.0015 ) discard;
-        a = min( a, 0.85 );
+        // Ceiling, so no accumulation of four lobes can ever take a stripe to
+        // white — the brightest square metre in a night frame has to stay the
+        // turf around the disc, not whichever band four masts happen to agree on.
+        a = min( a, 0.34 );
         gl_FragColor = vec4( uColor * a, a );
         #include <tonemapping_fragment>
         #include <colorspace_fragment>

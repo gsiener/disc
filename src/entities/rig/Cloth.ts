@@ -296,10 +296,22 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
        * intersection has no wedge in it. It is narrow in azimuth (the sleeve
        * subtends about ±35° of the loop) and it is gone by the neck root, so it
        * cannot become the shoulder shelf this file has twice been rid of.
+       *
+       * THE SIZE OF THE LAP IS MEASURED, TOO, and 0.40 was over it. The panel
+       * under the cap is 154 mm out and the cap crown is 185 mm out, so the lap
+       * that makes them intersect is 1.20 — at 1.40 the shell arrives 31 mm
+       * PAST the sleeve and becomes a fin standing proud of it, with its own
+       * underside in shadow. That is not a closed seam, it is the same black
+       * wedge one shell further out, and it is what has been sitting on the
+       * point of the shoulder in the hero crop.
+       *
+       * The window is also wider than the 16 mm of torso it used to occupy.
+       * Five loops now carry a share of the swell instead of one carrying all
+       * of it, which is the difference between a shoulder seam and a flange.
        */
-      const seamLap = smooth(1.002, 1.016, u) * smooth(1.040, 1.020, u);
+      const seamLap = smooth(0.986, 1.012, u) * smooth(1.054, 1.024, u);
       if (seamLap > 0) {
-        mx *= 1 + seamLap * 0.26 * Math.pow(Math.abs(Math.cos(t * Math.PI * 2)), 2.2);
+        mx *= 1 + seamLap * 0.21 * Math.pow(Math.abs(Math.cos(t * Math.PI * 2)), 2.2);
       }
       /**
        * CLOTH BRIDGES A HOLLOW; IT NEVER SINKS INTO THE BODY.
@@ -374,8 +386,14 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
   rings.push(collar(1.230, 1.190, 0.0036, 1.00, 0.975, 0.15));
   rings.push(collar(1.170, 1.132, 0.0095, 1.015, 0.998, 0.16));
   if (d.clothFold) {
-    rings.push(collar(1.116, 1.080, 0.0078, 1.015, 1.0, 0.55));
-    rings.push(collar(1.146, 1.108, 0.0034, 1.00, 1.0, 0.75));
+    // The rib turns back INSIDE ITSELF and lands on the neck. At 1.116 / 1.146
+    // of the neck section the returning band closed on a 6–8 mm annulus facing
+    // straight up the collar, lit by nothing, which renders as a black notch
+    // beside the throat in every closeup — the same defect as the sleeve hem,
+    // one garment up. A crew rib sits ON the neck; 1.06 is a rib's own
+    // thickness away from it.
+    rings.push(collar(1.062, 1.030, 0.0078, 1.015, 1.0, 0.55));
+    rings.push(collar(1.092, 1.056, 0.0034, 1.00, 1.0, 0.75));
   }
 
   m.group(GROUP.jersey).loft(rings, seg, { part: PART.JERSEY, side: 0 });
@@ -417,6 +435,13 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       const c = 0.5 - 0.5 * Math.cos(Math.PI * 2 * (t * 5 + 0.18));
       let rel = 0.30 * cuff * c;
       let shade = 0.26 * cuff * (1 - c);
+      // …and the band GRIPS. A sleeve hem is a doubled, denser knit under
+      // tension; it is the one loop of the whole garment that is closer to the
+      // arm than the panel above it, and leaving it at the panel's own 12 mm of
+      // drape is what made the cuff stand off the bicep as a bell with a black
+      // annulus inside it — read on the hero crop as a strap round the arm
+      // rather than as the end of a sleeve.
+      rel -= 0.55 * smooth(sleeveEnd - 0.11, sleeveEnd, q);
       // Underarm. The arm carried at the side pushes the panel into the pit.
       const pit = smooth(-0.05, 0.14, q) * smooth(0.58, 0.26, q) * lobe(t, pitT, 0.13);
       rel -= 0.48 * pit;
@@ -439,8 +464,17 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
       // meet the shell; between them the two surfaces cross instead of grazing,
       // and the black V that used to sit on the point of the shoulder has no
       // volume left to live in.
-      const lap = CLOTH * 0.62 * smooth(0.04, -0.26, q);
-      const drape = extra + lap + CLOTH * (0.97 + 0.73 * smooth(0.05, 0.50, q));
+      // Kept small on purpose. The shell and the sleeve bind through DIFFERENT
+      // functions where they overlap — `torsoSkin`'s clavicle corner against
+      // `armSkin`'s deltoid cap — so a raised arm slides the sleeve outboard of
+      // the panel it is sewn to. Every millimetre of cap inflation is a
+      // millimetre more of that slip, so the lap that closes the seam belongs on
+      // the SHELL (see `seamLap` above) and only a token of it here.
+      const lap = CLOTH * 0.55 * smooth(0.04, -0.26, q);
+      // 0.73 put 12 mm of air between the cuff and the bicep. A short sleeve on
+      // a fitted athletic cut hangs about 7; the extra five were the volume the
+      // black annulus at the hem was living in.
+      const drape = extra + lap + CLOTH * (0.92 + 0.28 * smooth(0.05, 0.50, q));
       const R = ring(si, q, drape);
       // Cloth bridges muscle detail rather than following it into the valleys.
       const soft = R.lobes.map((L) => ({ ...L, amp: L.amp * 0.45 }));
@@ -466,9 +500,23 @@ export function buildJersey(m: RigMesh, a: Anthro, d: DetailSpec): void {
     };
     for (const q of qs) sr.push(push(q, 0));
     if (d.clothFold) {
-      // Hem turned back under itself so the sleeve has a readable inside edge.
-      sr.push(push(sleeveEnd - 0.010, -0.0030));
-      sr.push(push(sleeveEnd - 0.050, -0.0052));
+      /**
+       * Hem turned back under itself so the sleeve has a readable inside edge —
+       * and the return has to arrive AT THE ARM, not 7 mm off it.
+       *
+       * The panel drape at the cuff is 1.70 × CLOTH ≈ 12 mm. The turn-back used
+       * to subtract 3.0 and 5.2 mm of that, so the fold closed on a 7 mm annulus
+       * whose inner wall faces up the sleeve and is therefore lit by nothing at
+       * all. Seven millimetres is ten pixels at the hero framing, and ten pixels
+       * of pure black wrapped round a bicep is not a hem, it is a strap.
+       *
+       * The two numbers below are the drape less about 2 mm, so the returning
+       * lip lands a garment-thickness off the skin: the slot is still there —
+       * you can see into the sleeve, which is the whole point of modelling the
+       * fold — but it is 2 mm deep instead of 7.
+       */
+      sr.push(push(sleeveEnd - 0.010, -0.0020));
+      sr.push(push(sleeveEnd - 0.050, -0.0046));
     }
     // Same reason as the shell: five flutes round a sleeve need twenty-odd
     // columns before they stop being a pentagon.

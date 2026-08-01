@@ -45,10 +45,19 @@ const MAX_RADIUS = 0.013;
  * dither cures it because it is not dither, it is undersampling.
  *
  * 6.5 px² per sample — 95 taps at the 1080p ceiling — is where the weave stops
- * resolving and the truss becomes what a lens would actually show: a soft
- * grey. Measured on `closeup` at high: 41.5 ms/frame at 32 taps, 43.0 at 96.
- * One and a half milliseconds for the single most visible artefact in the
- * frame is not a close call.
+ * resolving and the truss becomes what a lens would actually show: a soft grey.
+ *
+ * Measured back to back on `closeup`, the worst framing in the shot list
+ * (nearly every pixel at the CoC ceiling), 1080p at high:
+ *
+ *   pass disabled  42.3 ms      32 taps  44.4 ms
+ *   64 taps        47.4 ms      96 taps  52.4 ms
+ *
+ * So the whole pass costs 10 ms there and the rise from the tier's 32 costs 8,
+ * and 64 is visibly still stippled where 96 is not. Every gameplay camera
+ * early-outs the gather entirely — `broadcast` does not even enable the pass —
+ * so this is 8 ms spent on the framings whose entire purpose is to be looked at
+ * closely, and nothing anywhere else.
  *
  * Only `high` and `ultra` ever construct this pass (`quality.dof` is false
  * below), so this is not a cost imposed on hardware that asked to be spared;

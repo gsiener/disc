@@ -68,8 +68,15 @@ export const SHOTS = {
     // pass's own sub-pixel early-out (the whole face is genuinely resolved) and
     // still runs the background to the 14 px blur ceiling, because at 1.38 m
     // focus everything past 15 m is at the cap regardless.
+    //
+    // Measured on the rendered frame: the head spans 88–497 px, i.e. 38 % of
+    // frame height against the 11 % it had, the eyes sit on the upper quarter
+    // and the chest number is still inside the bottom edge. 26° put the crown
+    // 45 px off the top rail — a legitimate crop right up until the hair
+    // silhouette grows — so it is 27° with a shade less tilt, which buys 40 px
+    // of headroom for 2 % of subject size.
     about: 'Character hero shot — chest-up on a receiver, judging skin, cloth, jersey weave, stitching, hair and eyes.',
-    pos: [0.79, 1.44, 1.13], target: [0, 1.31, 0], fov: 26, hour: 17.2, tableau: 'portrait', focus: 1.38, aperture: 0.6,
+    pos: [0.79, 1.44, 1.13], target: [0, 1.325, 0], fov: 27, hour: 17.2, tableau: 'portrait', focus: 1.38, aperture: 0.6,
   },
   layout: {
     about: 'Peak-action layout — receiver fully extended horizontal, disc at fingertips, turf spray, defender trailing.',
