@@ -42,6 +42,7 @@ const _qb = new THREE.Quaternion();
 const _va = new THREE.Vector3();
 const _vb = new THREE.Vector3();
 const _eul = new THREE.Euler(0, 0, 0, 'XZY');
+const _eulz = new THREE.Euler(0, 0, 0, 'ZXY');
 
 export const NB = BONE_NAMES.length;
 export const B = BONE_INDEX;
@@ -138,6 +139,33 @@ export class Pose {
   setEuler(i: number, x: number, y: number, z: number): void {
     _eul.set(x, y, z, 'XZY');
     _qa.setFromEuler(_eul);
+    const o = i * 4;
+    this.q[o] = _qa.x; this.q[o + 1] = _qa.y; this.q[o + 2] = _qa.z; this.q[o + 3] = _qa.w;
+  }
+
+  /**
+   * Bend / abduct / twist with the ABDUCTION APPLIED LAST — order 'ZXY' rather
+   * than the 'XZY' every other writer here uses.
+   *
+   * The difference is not cosmetic and it is the whole of a running arm. In
+   * 'XZY' the bend is a rotation about the bone's BIND lateral axis, which for
+   * an arm is the A-pose's 46-degree diagonal. That is perpendicular to the
+   * bone while the bone is still in the A-pose, so the swing is a clean plane —
+   * but the moment abduction lays the arm against the ribs, the bone is only
+   * about 52 degrees off that axis and the swing becomes a narrow cone that
+   * throws the hand outward at the back of the stroke. Measured at 6 m/s, the
+   * hand's fore-aft excursion collapsed to 0.28 m while its lateral excursion
+   * ran to 0.48 m: the arm was swinging sideways more than it was swinging.
+   *
+   * Composing as `Rz(abduct) · Rx(bend) · Ry(twist)` swings the arm fore-aft
+   * first, in the plane the bind axis is genuinely perpendicular to, and then
+   * lays the WHOLE swept arc in toward the body. That is what a runner's arm
+   * does, and it is the only way to have both a narrow carriage and a long
+   * drive at once.
+   */
+  setSwing(i: number, bend: number, abduct: number, twist: number): void {
+    _eulz.set(bend, twist, abduct, 'ZXY');
+    _qa.setFromEuler(_eulz);
     const o = i * 4;
     this.q[o] = _qa.x; this.q[o + 1] = _qa.y; this.q[o + 2] = _qa.z; this.q[o + 3] = _qa.w;
   }

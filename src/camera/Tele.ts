@@ -26,7 +26,60 @@ import {
  */
 
 export const TELE = {
-  /* rig geometry */
+  /**
+   * ------------------------------------------------------------------------
+   * THE SEAT, AND WHY SUBJECT SCALE CANNOT BE BOUGHT FROM IT
+   * ------------------------------------------------------------------------
+   *
+   * Reviewers keep arriving at the same complaint — the players are small, the
+   * bottom third of the frame is grass — and then at the same two proposed
+   * fixes, which are to move the rig in and to move it up. Both have now been
+   * measured. Neither works. This paragraph exists so the third reviewer does
+   * not spend a session rediscovering it.
+   *
+   * THE SHAPE OF THE PROBLEM. From this seat the play subtends about 43° across
+   * and about 5° up: an 8:1 angular aspect being fitted into a 16:9 frame. Fit
+   * the width — which is what the brief's 72% rule does — and the lens is 29°
+   * tall over 5° of play, so roughly 24° of frame height has to be spent on
+   * something that is not the game. That is a conservation law of the geometry,
+   * not an aiming error, and it is why `groundFloor` spends the surplus upward
+   * rather than trying to abolish it.
+   *
+   * MOVING IN (`POS_X`) BREAKS THE ≥5 GUARANTEE, measured: 99.8% held at −42,
+   * 85% at −34, 64% at −28. Closer means the near bodies are nearer while the
+   * far ones barely move, the play's angular width grows faster than the
+   * subject does, and the lens — already against its 30° stop for a quarter of
+   * the match — has nothing left to give.
+   *
+   * MOVING UP (`POS_Y`) HELPS THE COMPOSITION AND HURTS THE SUBJECT, which is
+   * the opposite of what it is always proposed for. The gantry bay in
+   * `src/world/Stadium.ts` has since cleared the corridor, so y = 20–25 is now
+   * physically available and was photographed; at y = 20, over three seeds:
+   *
+   *     dead foreground   31.6% → 29.9%          better
+   *     pitch fills       57.3% → 64.0%          better
+   *     ≥5 guarantee      99.78% → 99.87%        better, and consistently so
+   *     bottom edge at    −16.4 m → −14.9 m      better (inside the touchline)
+   *     crowd in frame    41.8% → 35.2%          WORSE, and visibly
+   *     thrower height     7.76% → 7.49%         WORSE — the range grows
+   *     wasted yaw p99    3.90 → 2.07 on one seed, 2.96 → 4.19 on another:
+   *                       a match roll, not a camera improvement
+   *
+   * So the seat stays at the brief's 20° elevation (atan(15/42) = 19.7° to
+   * mid-field play, which is where that number in the design doc comes from).
+   * Raising it trades the crowd — which is most of what says "televised match"
+   * — for a percentage point of turf, and makes the players SMALLER, because
+   * the range from (−42, 25) to the far side of the play is 8% longer than from
+   * (−42, 15).
+   *
+   * WHAT WOULD ACTUALLY MOVE SUBJECT SCALE is `FIT_WIDTH`, `GUARD_MIN` or the
+   * 30° stop — how much of the field the shot is required to hold. It is a
+   * choice about coverage, not about where the camera stands, and it is the
+   * brief's to make. `tools/test-camera.ts` reports the thrower's on-screen
+   * height every run so the cost of that choice is always on the table:
+   * currently 7.8% of frame height at the mean, against a broadcast
+   * game-follow norm of 8–15%.
+   */
   POS_X: -42,
   POS_Y: 15,
 
@@ -36,6 +89,49 @@ export const TELE = {
   DOLLY_LIMIT: 36,
   DOLLY_SPEED: 12,
   DOLLY_ACCEL: 18,
+  /**
+   * THE TRAVEL GOVERNOR — metres per second the dolly TARGET may drift while
+   * the play itself is standing still, and the multiple of the play's own
+   * along-track speed it may add on top. See `governDolly`.
+   *
+   * `DOLLY_SPEED` and `DOLLY_ACCEL` bound how fast the rig may move. Neither
+   * bounds how far it may move FOR A GIVEN AMOUNT OF PLAY, and that is a
+   * different quantity and the one a viewer actually reads. Twelve metres a
+   * second is faster than a sprinter: a rig obeying every rate cap in this file
+   * can still travel twenty metres down the rails while the disc sits in one
+   * man's hand, and it does, because `focus.z` carries two terms that are not
+   * the play — the lead room, which reverses sign on a turnover, and the
+   * red-zone overshoot, which reverses with it. Between them that is twelve
+   * metres of focus travel, 9.6 m of dolly, bought with nothing on the field.
+   *
+   * Measured on a 420 s match before this existed, by the travel meter in
+   * `tools/test-camera.ts`: over 2.5 s windows the 99th percentile of unpaid
+   * travel was 12.07 m and the worst was 15.93 m, and every one of the worst
+   * windows was a turnover. A real operator does not ride the track because
+   * possession changed; he stays where he is and pans, and lets the new
+   * possession walk him back down over the following seconds. With the governor
+   * the same run reads p99 3.62 m, worst 6.96 m.
+   *
+   * `DOLLY_TRACK` is the multiple of the play's speed that passes through
+   * ungoverned, and one is the right number because the target's own tracking
+   * term is `gain·play` with `gain ≤ 0.90` — so honest tracking never binds and
+   * there is still a tenth of the play's speed in hand for the centroid and the
+   * flight prediction, while everything else has to be spent out of
+   * `DOLLY_CREEP`. Loosening it to 1.15 was tried and bought 0.04 points of the
+   * ≥5 guarantee for 0.4 m of p99 travel and 0.9 m of worst-case, which is the
+   * wrong side of that trade.
+   *
+   * `DOLLY_CREEP` was swept at 0.8 / 1.0 / 1.5 / 2.0 m/s. Every framing
+   * outcome in the suite is flat across the whole range — the guarantee, the
+   * marker, the disc on screen, all identical — so it is chosen on what it
+   * looks like rather than on what it scores: at 23.5 m from the touchline one
+   * metre a second is 2.4°/s of parallax, which is under the rate at which a
+   * viewer starts to read camera movement as movement. Above about 1.5 it
+   * becomes a visible push; below about 0.8 a ten-metre residual outlives the
+   * possession that created it.
+   */
+  DOLLY_CREEP: 1.0,
+  DOLLY_TRACK: 1.0,
 
   /* lens */
   FOV_BASE: 22,
@@ -81,6 +177,36 @@ export const TELE = {
    * space in front of the thrower rather than flinching at every completion.
    */
   LEAD_RAMP: 0.8,
+  /**
+   * ...and the seconds over which it REVERSES, which is a different move and
+   * four times slower.
+   *
+   * `LEAD_RAMP` above is sized for the lead OPENING: six metres, once, at a
+   * catch, on a play that is already going that way. A turnover asks for
+   * something else entirely — the attack direction flips, so the target lead
+   * goes from +6 to −6 and the aim point is asked to travel TWELVE metres,
+   * against a disc that is usually lying still in the grass or in the hands of
+   * a man who has just picked it up. At 7.5 m/s that is 1.6 s of aim travel and
+   * (before the governor above) 9.6 m of dolly, all of it unattributable: the
+   * viewer sees the whole shot slide sideways for no reason he can point at.
+   *
+   * The operator's version of the same beat is to hold, pan, and let the lead
+   * open the other way over the next several seconds as the new offence
+   * actually starts going somewhere. Two seconds per six metres is that: twelve
+   * metres of aim over four seconds is about 6°/s at match range, a lean rather
+   * than a lurch, where the single ramp put the same move at 15°/s.
+   *
+   * It costs the dolly NOTHING, and that is worth knowing before anybody
+   * retunes it: with the travel governor in place the whole sweep 0.8 → 3.0 s
+   * produces byte-identical unpaid-travel numbers, because the governor
+   * absorbs the lead reversal whatever speed it arrives at. This constant now
+   * buys exactly one thing, which is the yaw rate of the re-composition, and it
+   * is paid for in the seconds during which the shot is holding lead room for a
+   * direction the play is no longer going. Swept against both meters, 2.0 is
+   * the joint optimum: settled lead room 98.90% at 0.8 s and 98.93% at 3.0 s
+   * against 99.15% here, and wasted yaw p99 4.02° and 3.92° against 3.93°.
+   */
+  LEAD_RAMP_TURN: 2.0,
 
   /* framing solve */
   FIT_WIDTH: 0.72,
@@ -299,6 +425,8 @@ export class TeleRig {
   private redRamp = 0;
   /** Lead room actually in effect, metres of signed Z — see `TELE.LEAD_RAMP`. */
   private leadZ = 0;
+  /** The attack direction that lead room is built for — see `LEAD_RAMP_TURN`. */
+  private leadDir: 1 | -1 = 1;
   private wasFlight = false;
   private sincePredict = 1e3;
   private path: PathPoint[] = [];
@@ -311,6 +439,21 @@ export class TeleRig {
   private readonly guardBasis = new Basis();
   private readonly focus = new THREE.Vector3();
   private readonly landing = new THREE.Vector3();
+  /**
+   * THE PLAY ANCHOR — where the bodies and the disc actually are, along the
+   * track, with none of the composition on top: no lead room, no red-zone
+   * overshoot, no flight prediction. `focus` is the shot the rig wants to make
+   * and moves for reasons of its own; this is the only thing on the field the
+   * camera is entitled to move BECAUSE OF, and it is what the travel governor
+   * measures its allowance against.
+   */
+  private anchorZ = 0;
+  /** Last frame's anchor, its speed along the track, and whose possession. */
+  private playZ = 0;
+  private playV = 0;
+  private playOff: number = -1;
+  /** Scratch: the feathered offensive centroid, shared by the aim and anchor. */
+  private readonly cent = { x: 0, z: 0 };
   /** Scratch for the framing guarantee: offence tangents, and window centres. */
   private readonly gh: number[] = [];
   private readonly gv: number[] = [];
@@ -369,10 +512,10 @@ export class TeleRig {
     // not a step — the brief's 0.25 s huck ramp is exactly this.
     this.huckRamp = approach(this.huckRamp, flight && this.isHuck ? 1 : 0, step / TELE.HUCK_RAMP);
     this.redRamp = approach(this.redRamp, this.inRedZone(w) ? 1 : 0, step / TELE.REDZONE_RAMP);
-    this.leadZ = approach(this.leadZ, flight ? 0 : w.attackDir * TELE.LEAD,
-      TELE.LEAD * step / TELE.LEAD_RAMP);
+    this.stepLead(w, flight, step);
 
     this.solveAim(w, flight);
+    this.trackPlay(w, step);
 
     /**
      * The turnover beat. On a drop or a block the operator does not push in and
@@ -405,9 +548,7 @@ export class TeleRig {
     }
 
     /* ---- dolly ---------------------------------------------------------- */
-    const gain = TELE.DOLLY_GAIN + (TELE.DOLLY_GAIN_HUCK - TELE.DOLLY_GAIN) * this.huckRamp;
-    const overshoot = TELE.REDZONE_OVERSHOOT * this.redRamp * w.attackDir;
-    this.dollyTarget = clamp(gain * this.focus.z + overshoot, -TELE.DOLLY_LIMIT, TELE.DOLLY_LIMIT);
+    this.dollyTarget = this.governDolly(this.rawDollyTarget(w), step);
     this.dollyVel = dollyVelocity(
       this.pos.z, this.dollyTarget, this.dollyVel, TELE.DOLLY_SPEED, TELE.DOLLY_ACCEL, step);
     // Clamping the position without killing the velocity leaves the rig pressed
@@ -475,12 +616,16 @@ export class TeleRig {
     this.redRamp = this.inRedZone(w) ? 1 : 0;
     // A cut arrives on a composed frame, lead room included.
     this.leadZ = flight ? 0 : w.attackDir * TELE.LEAD;
+    this.leadDir = w.attackDir;
     this.solveAim(w, flight);
+    // ...and on a position the governor is already satisfied with. A cut is not
+    // a move, so it owes nothing to the play; what it must not do is leave the
+    // governor holding an allowance that then licenses a crawl on the first
+    // frame after it.
+    this.playZ = this.anchorZ; this.playV = 0; this.playOff = w.offence;
 
-    const gain = TELE.DOLLY_GAIN + (TELE.DOLLY_GAIN_HUCK - TELE.DOLLY_GAIN) * this.huckRamp;
-    const overshoot = TELE.REDZONE_OVERSHOOT * this.redRamp * w.attackDir;
-    this.pos.set(TELE.POS_X, TELE.POS_Y,
-      clamp(gain * this.focus.z + overshoot, -TELE.DOLLY_LIMIT, TELE.DOLLY_LIMIT));
+    this.dollyTarget = this.rawDollyTarget(w);
+    this.pos.set(TELE.POS_X, TELE.POS_Y, this.dollyTarget);
     this.dollyVel = 0;
 
     this.aim.set(this.aimTarget.x, this.aimTarget.y, this.aimTarget.z);
@@ -525,6 +670,75 @@ export class TeleRig {
     cam.updateMatrixWorld(true);
   }
 
+  /* ------------------------------------------------------------- the dolly */
+
+  /**
+   * The lead room's own clock, which has two speeds because it makes two
+   * different moves. See `TELE.LEAD_RAMP` and `TELE.LEAD_RAMP_TURN`.
+   *
+   * The direction the lead is BUILT FOR is remembered rather than read fresh,
+   * so a reversal runs at the turnover rate for the whole of its twelve metres
+   * rather than crawling to zero and then snapping the rest of the way at the
+   * catch rate — which is the same defect the ramp exists to prevent, moved
+   * half a beat later.
+   */
+  private stepLead(w: WorldView, flight: boolean, step: number): void {
+    if (flight) {
+      this.leadZ = approach(this.leadZ, 0, TELE.LEAD * step / TELE.LEAD_RAMP);
+      return;
+    }
+    const to = w.attackDir * TELE.LEAD;
+    const turning = w.attackDir !== this.leadDir;
+    this.leadZ = approach(this.leadZ, to,
+      TELE.LEAD * step / (turning ? TELE.LEAD_RAMP_TURN : TELE.LEAD_RAMP));
+    if (this.leadZ === to) this.leadDir = w.attackDir;
+  }
+
+  /**
+   * The play anchor and its speed. Re-seeded, rather than differenced, when
+   * possession changes: the centroid term is the mean of a DIFFERENT SET OF MEN
+   * either side of a turnover, so the jump in it is a change of subject and not
+   * a movement of one, and licensing camera travel with it would hand the
+   * governor its allowance back at exactly the moment it is meant to bind.
+   */
+  private trackPlay(w: WorldView, step: number): void {
+    const z = this.anchorZ;
+    if (this.playOff !== w.offence) { this.playV = 0; this.playOff = w.offence; }
+    else this.playV = Math.abs(z - this.playZ) / step;
+    this.playZ = z;
+  }
+
+  private rawDollyTarget(w: WorldView): number {
+    const gain = TELE.DOLLY_GAIN + (TELE.DOLLY_GAIN_HUCK - TELE.DOLLY_GAIN) * this.huckRamp;
+    const overshoot = TELE.REDZONE_OVERSHOOT * this.redRamp * w.attackDir;
+    return clamp(gain * this.focus.z + overshoot, -TELE.DOLLY_LIMIT, TELE.DOLLY_LIMIT);
+  }
+
+  /**
+   * THE TRAVEL GOVERNOR. See `TELE.DOLLY_CREEP`.
+   *
+   * It is a rate limit on the dolly's TARGET, not on the dolly, and the
+   * distinction is the whole of it: the rig's own speed and acceleration caps
+   * are already tight enough to look like a camera, and a target that walks
+   * twenty metres in two seconds produces a perfectly smooth, perfectly
+   * well-damped, completely unmotivated move. What the caps cannot express is
+   * that a camera is only allowed to travel BECAUSE THE PLAY DID, so that is
+   * stated here directly, in the play's own units.
+   *
+   * Honest tracking passes through untouched — the tracking term of the target
+   * is `gain·anchor` and `gain ≤ 0.90` against an allowance of 1.15 — so a huck,
+   * where the disc is doing 20 m/s down the field, is governed by nothing and
+   * looks exactly as it did. What it costs is the composition's own moves: the
+   * lead reversal, the red-zone overshoot flipping ends, the gain stepping from
+   * 0.80 to 0.90 and back. Those now arrive at a metre and a half a second,
+   * which is a drift a viewer reads as the operator settling rather than as the
+   * operator being yanked.
+   */
+  private governDolly(raw: number, step: number): number {
+    const cap = TELE.DOLLY_CREEP + TELE.DOLLY_TRACK * this.playV;
+    return approach(this.dollyTarget, raw, cap * step);
+  }
+
   /* ------------------------------------------------------------ prediction */
 
   private repredict(dt: number, w: WorldView): void {
@@ -564,7 +778,49 @@ export class TeleRig {
    * mark and the shape on screen — but it is the shot the rig is trying to make.
    */
   private solveAim(w: WorldView, flight: boolean): void {
+    this.offCentroid(w);
+    // The anchor is the SAME blend in every phase, deliberately. Measuring the
+    // play's speed off one formula while the disc is held and another while it
+    // is airborne puts a step in that speed at every release and every catch,
+    // and a step in the governor's allowance is a step the governor exists to
+    // stop. This is the play; the phase is the camera's business, not its.
+    this.anchorZ = TELE.DISC_W * w.disc.z + TELE.CENTROID_W * this.cent.z;
     if (flight) this.aimFlight(w); else this.aimHeld(w);
+  }
+
+  /**
+   * Mean XZ of the offence within `CENTROID_R` of the disc, FEATHERED at the
+   * edge — and that is not a refinement, it is the difference between a camera
+   * and a twitch.
+   *
+   * A hard "offensive players within 25 m" test is a step function of the
+   * geometry: a receiver drifting across the radius adds a whole body to a
+   * six-body mean, which moves the centroid by a metre in a single frame, moves
+   * the focus point by 0.35 of that, and the head chases it. With seven players
+   * running there is nearly always somebody sitting on the boundary, so the step
+   * fires over and over, and because it comes straight through the aim spring it
+   * is indistinguishable from the camera deciding to look somewhere else.
+   * Weighting the last four metres to zero keeps exactly the brief's set —
+   * nobody past 25 m contributes anything — and makes joining it a movement
+   * rather than an event.
+   */
+  private offCentroid(w: WorldView): void {
+    const d = w.disc;
+    let cx = 0, cz = 0, sum = 0;
+    const rIn = TELE.CENTROID_R - TELE.CENTROID_FADE;
+    for (const p of w.players) {
+      if (p.team !== w.offence) continue;
+      const dist = Math.hypot(p.x - d.x, p.z - d.z);
+      if (dist >= TELE.CENTROID_R) continue;
+      let g = 1;
+      if (dist > rIn) {
+        const t = (TELE.CENTROID_R - dist) / TELE.CENTROID_FADE;
+        g = t * t * (3 - 2 * t);
+      }
+      cx += p.x * g; cz += p.z * g; sum += g;
+    }
+    if (sum <= 1e-6) { this.cent.x = d.x; this.cent.z = d.z; }
+    else { this.cent.x = cx / sum; this.cent.z = cz / sum; }
   }
 
   /**
@@ -1037,40 +1293,10 @@ export class TeleRig {
    */
   private aimHeld(w: WorldView): void {
     const d = w.disc;
-    /**
-     * The centroid membership is FEATHERED at its edge, and that is not a
-     * refinement — it is the difference between a camera and a twitch.
-     *
-     * A hard "offensive players within 25 m" test is a step function of the
-     * geometry: a receiver drifting across the radius adds a whole body to a
-     * six-body mean, which moves the centroid by a metre in a single frame,
-     * moves the focus point by 0.35 of that, and the head chases it. With seven
-     * players running there is nearly always somebody sitting on the boundary,
-     * so the step fires over and over, and because it comes straight through the
-     * aim spring it is indistinguishable from the camera deciding to look
-     * somewhere else. Weighting the last four metres to zero keeps exactly the
-     * brief's set — nobody past 25 m contributes anything — and makes joining it
-     * a movement rather than an event.
-     */
-    let cx = 0, cz = 0, sum = 0;
-    const rIn = TELE.CENTROID_R - TELE.CENTROID_FADE;
-    for (const p of w.players) {
-      if (p.team !== w.offence) continue;
-      const dist = Math.hypot(p.x - d.x, p.z - d.z);
-      if (dist >= TELE.CENTROID_R) continue;
-      let g = 1;
-      if (dist > rIn) {
-        const t = (TELE.CENTROID_R - dist) / TELE.CENTROID_FADE;
-        g = t * t * (3 - 2 * t);
-      }
-      cx += p.x * g; cz += p.z * g; sum += g;
-    }
-    if (sum <= 1e-6) { cx = d.x; cz = d.z; } else { cx /= sum; cz /= sum; }
-
     this.focus.set(
-      TELE.DISC_W * d.x + TELE.CENTROID_W * cx,
+      TELE.DISC_W * d.x + TELE.CENTROID_W * this.cent.x,
       TELE.AIM_Y,
-      TELE.DISC_W * d.z + TELE.CENTROID_W * cz + this.leadZ,
+      this.anchorZ + this.leadZ,
     );
     this.aimTarget.copy(this.focus);
     this.landing.copy(this.focus);

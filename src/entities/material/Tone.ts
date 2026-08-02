@@ -364,25 +364,141 @@ export interface Colourway {
  * accent with one structural pattern, and the shorts, socks and cleats are
  * derived from the same three colours — which is what makes a team read as a
  * team from 40 m instead of as seven people in similar shirts.
+ *
+ * ============================================================================
+ *  THE LEGIBILITY CONTRACT — why the two lead kits are the values they are
+ * ============================================================================
+ *
+ * At the tele framing an athlete is 30–50 px tall. Nothing on a body at that
+ * size survives except its AVERAGE VALUE: the jersey, shorts, socks, shoes and
+ * bare arms resolve into one vertical smear, and the viewer reads teams off
+ * that smear while looking somewhere else on the pitch. So the pair has to be
+ * designed as two BLOCK VALUES that straddle the turf, not as two hues.
+ *
+ * The kit this replaced was designed as two hues and measured accordingly. Its
+ * jersey albedos were a full 7.3:1 apart on paper — and the rendered blocks came
+ * out at 1.27:1, because:
+ *
+ *   the render is compressive       turf albedo 0.158 lands at 0.144 rendered;
+ *                                   white albedo 0.886 lands at ~0.38. The top
+ *                                   of the range loses more than half its
+ *                                   distance from the turf on the way to screen.
+ *   the away kit fought itself      a white shirt (relLum 0.886) over near-black
+ *                                   shorts (0.021) averages to mid grey — which
+ *                                   is the turf's own value. A kit whose halves
+ *                                   straddle the background reads as background.
+ *   white is not a colour outdoors  #f2f2ee under a warm key with green bounce
+ *                                   off the turf renders MINT. The critic named
+ *                                   it as such. A near-neutral kit takes the
+ *                                   colour of whatever it is standing on, which
+ *                                   is the one thing it must not resemble.
+ *
+ * So: one team is committed DARK and one committed LIGHT, every garment on the
+ * body pulling the same way, and both far enough off the green axis that the
+ * turf's own bounce cannot drag either of them home.
+ *
+ *   home  deep royal navy      block lands ~2× BELOW turf luma
+ *   away  marigold gold        block lands ~1.5× ABOVE turf luma
+ *
+ * DEUTERANOPIA (~6 % of men) is not an afterthought here, it is the reason the
+ * axis is blue↔gold rather than, say, red↔green or the blue↔mint we had.
+ * Deuteranopia collapses the red-green opponent channel and leaves the
+ * blue-yellow one and luminance intact, so a navy/gold pair loses *nothing*: it
+ * simulates to indigo #2d2d7e against chartreuse #c5c518, ΔE 137, while the turf
+ * simulates to a dull khaki #6e6e3a that sits between them in value and below
+ * both in chroma. Every separation this pair relies on is one a deuteranope can
+ * see. Measured, not assumed — see the probe numbers in the round-5 notes.
+ *
+ * The accents are deliberately the OTHER team's exclusion zone: the navy kit
+ * carries sky-blue piping (never gold), the gold kit carries bitumen-dark trim
+ * (never blue). No pixel on one team's body can be mistaken for the other's.
  */
 export const COLOURWAYS: readonly Colourway[] = [
   // The two the art direction names, first, because they are the two kits the
   // frame is allowed to saturate. Everything else on the pitch — turf, crowd,
   // boards, concrete — sits under 50 % saturation so these read.
   {
+    // Deep royal navy, top to toe. Yoke and shorts go DARKER than the shirt, not
+    // lighter: every garment has to pull the block down or the block averages
+    // back into the turf. The one light element is 2 mm of sky piping, which is
+    // sub-pixel at broadcast range and only exists for the closeup.
     id: 'home', name: 'Riverside Current', code: 'RVR',
-    primary: 0x1d4e94, secondary: 0x14315c, accent: 0xe8b23c,
-    numberFill: 0xf6f8fb, numberOutline: 0xe8b23c, pattern: 3,
-    shorts: 0x14315c, shortsTrim: 0xe8b23c, sock: 0x1d4e94, sockBand: 0xf6f8fb,
-    shoe: 0x14181f, shoeAccent: 0xe8b23c, mark: 2,
+    primary: 0x10265e, secondary: 0x07112b, accent: 0x3d7ad2,
+    numberFill: 0xeef4fc, numberOutline: 0x07112b, pattern: 3,
+    shorts: 0x0b1739, shortsTrim: 0x3d7ad2, sock: 0x10265e, sockBand: 0x3d7ad2,
+    shoe: 0x0d1117, shoeAccent: 0x3d7ad2, mark: 2,
   },
   {
+    // Marigold, top to toe. The shorts are a half-stop deeper than the shirt —
+    // enough to read as a designed kit at 3 m, not enough to break the block at
+    // 40 m. Numbers are ink-on-gold, which is both the highest-contrast pairing
+    // available on this shirt and what a real gold kit actually does.
     id: 'away', name: 'Cutbank Union', code: 'CUT',
-    primary: 0xf2f2ee, secondary: 0xb3372e, accent: 0x2a2724,
-    numberFill: 0xb3372e, numberOutline: 0x2a2724, pattern: 1,
-    shorts: 0x2a2724, shortsTrim: 0xb3372e, sock: 0xf2f2ee, sockBand: 0xb3372e,
-    shoe: 0xeceae4, shoeAccent: 0xb3372e, mark: 0,
+    primary: 0xf0b83c, secondary: 0xc9821a, accent: 0x2b2116,
+    numberFill: 0x241a0e, numberOutline: 0xfdf4e0, pattern: 1,
+    shorts: 0xf6efdd, shortsTrim: 0xc9821a, sock: 0xf6efdd, sockBand: 0xf0b83c,
+    shoe: 0xf4efe2, shoeAccent: 0xc9821a, mark: 0,
   },
+
+  /* ------------------------------------------------------------------------
+   * TOUCHLINE COLOURWAYS
+   *
+   * Ultimate is played off a LINE, not a bench: the whole squad stands the
+   * touchline and the seven on come out of it. `world/stadium/Sideline.ts`
+   * models that correctly — and then dresses those twelve standing bodies in
+   * the *match* kit, so a broadcast frame contains two rows of team-coloured
+   * athletes who are not in play, immediately behind seven who are. A critic
+   * reading the frame cold called it "the action played out on top of a bench
+   * crowd wearing identical kit", and they are right: the confusion is not that
+   * the sideline exists, it is that nothing distinguishes an on-pitch body from
+   * a waiting one.
+   *
+   * The real-world fix is the one every squad sport uses — the players not on
+   * wear a training top over the kit — and it is also the legibility fix,
+   * because it drops the touchline out of the saturation budget entirely. These
+   * two colourways are that top: unmistakably each team's colour, but at under
+   * half the chroma and pulled toward the turf's own value band so they sit
+   * BEHIND the match kits in the frame's hierarchy rather than beside them.
+   *
+   * The geometry is not mine to edit. `Sideline.ts` carries its own hardcoded
+   * linear-RGB `kits[]` array (around line 148) and does not import this module;
+   * its owner should swap those entries for these, which in linear RGB are:
+   *
+   *   home-bench  jersey (0.0467, 0.0685, 0.1248)  shorts (0.0232, 0.0319, 0.0561)
+   *               socks  (0.0369, 0.0513, 0.1022)  shoes  (0.0075, 0.0091, 0.0123)
+   *   away-bench  jersey (0.2122, 0.1500, 0.0685)  shorts (0.0704, 0.0513, 0.0296)
+   *               socks  (0.1651, 0.1170, 0.0497)  shoes  (0.0103, 0.0091, 0.0075)
+   *
+   * Until that lands the sideline still wears match kit and the confusion is
+   * still there; the colourways below are the drop-in, not the cure.
+   * ------------------------------------------------------------------------ */
+  {
+    // Riverside training top: the navy taken to 38 % saturation and mid value.
+    // Reads "that team" and not "that team, playing".
+    id: 'home-bench', name: 'Riverside Current — training', code: 'RVR',
+    primary: 0x3d4a63, secondary: 0x2a3243, accent: 0x7d8aa0,
+    numberFill: 0xc9d1de, numberOutline: 0x2a3243, pattern: 0,
+    shorts: 0x2a3243, shortsTrim: 0x7d8aa0, sock: 0x36405a, sockBand: 0x2a3243,
+    shoe: 0x15181d, shoeAccent: 0x7d8aa0, mark: 2,
+  },
+  {
+    // Cutbank training top: the marigold taken to 42 % saturation and mid value,
+    // which lands it as an ochre-taupe — team-legible, and no longer competing
+    // with the gold kit for the eye.
+    id: 'away-bench', name: 'Cutbank Union — training', code: 'CUT',
+    primary: 0x7f6c4a, secondary: 0x59492f, accent: 0xb8a882,
+    numberFill: 0xe0d5bd, numberOutline: 0x3a3122, pattern: 0,
+    shorts: 0x4b4030, shortsTrim: 0xb8a882, sock: 0x71603f, sockBand: 0x3a3122,
+    shoe: 0x1a1815, shoeAccent: 0xb8a882, mark: 0,
+  },
+
+  /* ------------------------------------------------------------------------
+   * ALTERNATES. Not used by default. PAIRING RULE: any two of these put on the
+   * pitch together must straddle the turf in value the way home/away do — one
+   * block clearly below it, one clearly above — and must not share the
+   * blue-yellow axis position. `sun` and `away` are the same gold and must never
+   * meet; `storm` and `home` are the same navy and must never meet.
+   * ------------------------------------------------------------------------ */
   {
     id: 'storm', name: 'Seattle Storm', code: 'SEA',
     primary: 0x16305e, secondary: 0xeef2f7, accent: 0x37c0ef,

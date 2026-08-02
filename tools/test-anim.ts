@@ -27,6 +27,9 @@
  *   7  defensive gaits are not reversed running
  *   8  pose diversity — two athletes at one speed are not one athlete twice
  *   9  determinism and cost
+ *  10  joint limits — a leg is never a stick, an arm is never a plank
+ *  11  arm drive — the hand's arc, and the swept volume it costs
+ *  12  the layout is flat and extended, not a body falling over
  */
 
 import * as THREE from 'three';
@@ -693,6 +696,54 @@ function testDiversity(): void {
   ok('no two athletes hold the same pose', closestPose > 0.60,
     `closest pair ${closestPair}: ${closestPose.toFixed(2)} rad`);
 
+  /**
+   * AND THE ASSERTION ABOVE IS TOO WEAK ON ITS OWN, which is worth saying out
+   * loud because it passed while a critic was calling two athletes in the same
+   * frame identical.
+   *
+   * 0.60 rad summed over 60 bones is 0.6 degrees per bone, and most of those 60
+   * bones are fingers — which a viewer cannot see at 35 px and which the throw
+   * and catch layers move a long way for reasons that have nothing to do with
+   * whether two runners look alike. A roster can clear it comfortably while
+   * every silhouette on screen is the same silhouette.
+   *
+   * The honest metric is the twelve bones that decide an outline at the tele's
+   * range: two thighs, two shins, two upper arms, two forearms, pelvis, chest,
+   * mid-spine, head. Measured on the committed poses, eight athletes at 5 m/s
+   * had a closest pair of 0.514 rad over those twelve — 2.5 degrees a bone,
+   * which is the clone read exactly. `gsig` decorrelating its axes and the
+   * per-athlete arm lag take it to 0.88 (4.2 degrees a bone).
+   *
+   * The ceiling on this number is not in this file: `sim/move/Gait.ts` is one
+   * oscillator per body started at zero, so athletes at equal speed share a
+   * stride phase to within a thousandth, and `gaitLead` splitting the roster in
+   * two is the only leg-phase variety the animator can produce without
+   * unpinning the feet. Everything above that is amplitude and arm phase.
+   */
+  const SIL: readonly number[] = [
+    B.thigh_L, B.shin_L, B.thigh_R, B.shin_R,
+    B.upperArm_L, B.foreArm_L, B.upperArm_R, B.foreArm_R,
+    B.pelvis, B.chest, B.spine02, B.head,
+  ];
+  let closestSil = Infinity, silPair = '';
+  for (let i = 0; i < N; i++) {
+    for (let j = i + 1; j < N; j++) {
+      let sum = 0;
+      for (const bone of SIL) {
+        const o = bone * 4;
+        const a = st.handles[i].pose.q, b = st.handles[j].pose.q;
+        let dot = a[o] * b[o] + a[o + 1] * b[o + 1] + a[o + 2] * b[o + 2] + a[o + 3] * b[o + 3];
+        dot = Math.min(1, Math.abs(dot));
+        sum += 2 * Math.acos(dot);
+      }
+      if (sum < closestSil) { closestSil = sum; silPair = `${i}/${j}`; }
+    }
+  }
+  note(`closest SILHOUETTE pair ${silPair}: ${closestSil.toFixed(3)} rad over `
+    + `${SIL.length} bones (${(closestSil / SIL.length * 180 / Math.PI).toFixed(2)} deg per bone)`);
+  ok('no two athletes share a silhouette', closestSil > 0.75,
+    `${silPair} at ${closestSil.toFixed(3)} rad over ${SIL.length} outline bones`);
+
   // And the signature must be a per-athlete constant, not noise: rebuilding the
   // same roster has to reproduce it exactly.
   const st2 = new Stage(0x5EED);
@@ -735,6 +786,180 @@ function testCost(): void {
   ok('the pose path does not allocate per frame', grew < 24, `${grew.toFixed(1)} MB`);
 }
 
+/* ===================================================================== 10 */
+
+/** Angle between two bones, degrees. 0 = the joint is locked dead straight. */
+function jointAngle(h: AnimHandle, a: number, b: number): number {
+  const u = boneDir(h, a), v = boneDir(h, b);
+  return Math.acos(Math.max(-1, Math.min(1, u.dot(v)))) * 180 / Math.PI;
+}
+
+/**
+ * How far the thigh trails BEHIND the pelvis's vertical, degrees. Positive is
+ * the knee behind the hip; 90 would be a thigh horizontal behind the body.
+ */
+function hipExtension(h: AnimHandle, thigh: number): number {
+  const t = boneDir(h, thigh);
+  return Math.atan2(-t.z, -t.y) * 180 / Math.PI;
+}
+
+function testJointLimits(): void {
+  section('10. Joint limits — a leg is never a stick');
+  note('twoBone clamps an unreachable target to l1 + l2, which is a knee at literal');
+  note('full extension, and it does it silently. Measured before the swing-reach');
+  note('clamp landed, the knee sat inside 5 deg of straight for 21 % of a 1.6 m/s');
+  note('stride and 33-36 % from 4 m/s up, with a floor of 1.5 deg, and the trailing');
+  note('thigh reached 58 deg behind vertical. Both are the "legs lock straight and');
+  note('over-extend to near-horizontal" note, and both are measurable.');
+  let worstLock = 0, worstKnee = 999, worstExt = 0, worstElbow = 999;
+  for (const v of [1.6, 2.6, 4.0, 5.5, 7.0]) {
+    const st = new Stage(0xA12);
+    const h = st.add(0);
+    st.run(480, straight(v));
+    let kneeMin = 999, ext = -999, locked = 0, n = 0, elbowMin = 999;
+    st.run(300, straight(v), () => {
+      for (const [th, sh] of [[B.thigh_L, B.shin_L], [B.thigh_R, B.shin_R]] as const) {
+        const k = jointAngle(h, th, sh);
+        kneeMin = Math.min(kneeMin, k);
+        if (k < 5) locked++;
+        n++;
+        ext = Math.max(ext, hipExtension(h, th));
+      }
+      elbowMin = Math.min(elbowMin,
+        jointAngle(h, B.upperArm_L, B.foreArm_L), jointAngle(h, B.upperArm_R, B.foreArm_R));
+    });
+    note(`v=${v.toFixed(1)}  knee floor ${kneeMin.toFixed(1)} deg  locked(<5 deg) `
+      + `${(100 * locked / n).toFixed(1)} %  thigh extension ${ext.toFixed(1)} deg  `
+      + `elbow floor ${elbowMin.toFixed(1)} deg`);
+    worstLock = Math.max(worstLock, locked / n);
+    worstKnee = Math.min(worstKnee, kneeMin);
+    worstExt = Math.max(worstExt, ext);
+    worstElbow = Math.min(worstElbow, elbowMin);
+  }
+  // A human knee is never at full extension under load, and never at all during
+  // the recovery half of a stride. Zero frames, not "few".
+  ok('the knee is never locked straight at any running speed', worstLock === 0,
+    `${(100 * worstLock).toFixed(2)} % of frames inside 5 deg of straight`);
+  ok('the knee keeps at least 12 deg of flexion everywhere', worstKnee > 12,
+    `floor ${worstKnee.toFixed(1)} deg`);
+  // A sprinter's thigh reaches ~25 deg of hip extension at toe-off and the
+  // recovery folds it immediately. Past 45 the silhouette is the splits.
+  ok('the trailing thigh never over-extends toward horizontal', worstExt < 45,
+    `worst ${worstExt.toFixed(1)} deg behind vertical`);
+  // The elbow may open a long way at the back of the drive — that is the point
+  // of section 11 — but a straight arm on a running body is a plank.
+  ok('the elbow never straightens out on a running body', worstElbow > 15,
+    `floor ${worstElbow.toFixed(1)} deg`);
+}
+
+/* ===================================================================== 11 */
+
+function testArmDrive(): void {
+  section('11. Arm drive — the hand\'s arc, and what it costs in width');
+  note('a shoulder can swing 70 deg and still produce a hand that never leaves the');
+  note('front of the body, because the elbow decides where the hand is. Measured');
+  note('before this landed, the hand ran +0.064..+0.409 m fore-aft at 6 m/s — it');
+  note('never once passed behind the hip at any speed — while sweeping 0.477 m');
+  note('either side of the body axis, which is 0.26 m OUTBOARD of the shoulder.');
+  note('sim/move/Separation.ts settles bodies 1.26 m apart and relaxes toward the');
+  note('0.64 m hard tier near a live disc, so a 0.477 m half-span is an arm inside');
+  note('the other player\'s torso. Both numbers are this file\'s to hold.');
+  const rows: { v: number; back: number; front: number; lat: number; arc: number; rise: number }[] = [];
+  for (const v of [2.0, 4.0, 6.0]) {
+    const st = new Stage(0xA12);
+    const h = st.add(0);
+    st.run(480, straight(v));
+    let back = 9, front = -9, lat = 0, lo = 9, hi = -9, arcLo = 9, arcHi = -9;
+    st.run(300, straight(v), () => {
+      for (const hd of [B.hand_L, B.hand_R]) {
+        const o = hd * 3;
+        const x = h.kine.wp[o], y = h.kine.wp[o + 1], z = h.kine.wp[o + 2];
+        back = Math.min(back, z); front = Math.max(front, z);
+        lat = Math.max(lat, Math.abs(x));
+        lo = Math.min(lo, y); hi = Math.max(hi, y);
+      }
+      for (const ua of [B.upperArm_L, B.upperArm_R]) {
+        const d = boneDir(h, ua);
+        const a = Math.atan2(d.z, -d.y);
+        arcLo = Math.min(arcLo, a); arcHi = Math.max(arcHi, a);
+      }
+    });
+    const arc = (arcHi - arcLo) * 180 / Math.PI;
+    rows.push({ v, back, front, lat, arc, rise: hi - lo });
+    note(`v=${v.toFixed(1)}  hand fore-aft ${back.toFixed(3)}..${front.toFixed(3)} m  `
+      + `half-span ${lat.toFixed(3)} m  shoulder arc ${arc.toFixed(1)} deg  `
+      + `hand rise ${(hi - lo).toFixed(3)} m`);
+  }
+  const fast = rows[rows.length - 1];
+  // The single most legible thing an arm does from a side-on broadcast lens.
+  ok('the hand passes behind the hip at running pace', fast.back < -0.03,
+    `${fast.back.toFixed(3)} m at ${fast.v.toFixed(1)} m/s`);
+  ok('the hand travels at least 0.40 m fore-aft at running pace',
+    fast.front - fast.back > 0.40, `${(fast.front - fast.back).toFixed(3)} m`);
+  ok('the hand climbs at least 0.45 m over the drive', fast.rise > 0.45,
+    `${fast.rise.toFixed(3)} m`);
+  ok('the shoulder arc opens past 75 deg at a sprint', fast.arc > 75,
+    `${fast.arc.toFixed(1)} deg`);
+  // The swept volume has to stay inside a body's own personal space, or the
+  // limbs of two athletes who are merely near each other intersect.
+  const widest = Math.max(...rows.map((r) => r.lat));
+  ok('the hands stay inside a 0.33 m half-span at every speed', widest < 0.33,
+    `${widest.toFixed(3)} m (was 0.477 m; personal-space radius is 0.63 m)`);
+  // And the drive has to be a function of pace, not a constant.
+  ok('the arm arc grows monotonically with speed',
+    rows.every((r, i) => i === 0 || r.arc > rows[i - 1].arc * 1.15),
+    rows.map((r) => r.arc.toFixed(0)).join(' -> ') + ' deg');
+}
+
+/* ===================================================================== 12 */
+
+function testLayout(): void {
+  section('12. The layout is flat and extended');
+  note('the layout is the signature moment of this sport and it is one of the ten');
+  note('named framings. Measured before this landed: peak body pitch 65 deg from');
+  note('vertical — a diagonal, which reads as falling over — with the reaching hand');
+  note('at 0.125 m, UNDER the hips and 0.43 m below the trailing foot. A nosedive.');
+  const st = new Stage(0x1A70);
+  const h = st.add(0);
+  st.run(240, straight(6.5));
+  const p = st.bodies[0];
+  let best: { pitch: number; hip: number; chest: number; head: number; hand: number; foot: number } | null = null;
+  let sawAir = false;
+  const y = (b: number): number => h.kine.wp[b * 3 + 1] + p.groundY;
+  st.run(220, () => ({ dir: FWD, speed: 6.5, layout: true }), () => {
+    if (p.state !== 'layout' || !p.air.airborne) return;
+    sawAir = true;
+    const pitch = Math.asin(Math.max(-1, Math.min(1, boneDir(h, B.chest).z))) * 180 / Math.PI;
+    if (!best || pitch > best.pitch) {
+      best = {
+        pitch, hip: y(B.pelvis), chest: y(B.chest), head: y(B.head),
+        hand: y(B.hand_L), foot: y(B.foot_R),
+      };
+    }
+  });
+  ok('the athlete actually leaves the ground on a layout', sawAir, 'airborne frames seen');
+  if (!best) return;
+  const b: { pitch: number; hip: number; chest: number; head: number; hand: number; foot: number } = best;
+  note(`peak body pitch ${b.pitch.toFixed(1)} deg from vertical; hip ${b.hip.toFixed(2)} `
+    + `chest ${b.chest.toFixed(2)} head ${b.head.toFixed(2)} hand ${b.hand.toFixed(2)} `
+    + `foot ${b.foot.toFixed(2)} m`);
+  ok('the body goes past 70 deg from vertical — flat, not diagonal', b.pitch > 70,
+    `${b.pitch.toFixed(1)} deg`);
+  // Level, within a body's thickness. A body whose head is far below its hips is
+  // diving into the turf; one whose feet are far above them is somersaulting.
+  ok('hips, chest and head are level within 0.15 m',
+    Math.abs(b.head - b.hip) < 0.15 && Math.abs(b.chest - b.hip) < 0.15,
+    `hip ${b.hip.toFixed(2)} chest ${b.chest.toFixed(2)} head ${b.head.toFixed(2)}`);
+  ok('the trailing foot rides above the hips but not over the top',
+    b.foot - b.hip > 0.02 && b.foot - b.hip < 0.35,
+    `foot is ${(b.foot - b.hip).toFixed(2)} m above the hips`);
+  // The reach is the whole shot. The hand leads, at or above shoulder line.
+  ok('the reaching hand is the leading edge, not ploughing the turf',
+    b.hand >= b.chest - 0.02, `hand ${b.hand.toFixed(2)} vs chest ${b.chest.toFixed(2)} m`);
+  ok('the reaching hand is clear of the ground', b.hand > 0.30,
+    `${b.hand.toFixed(2)} m`);
+}
+
 /* ------------------------------------------------------------------- run */
 
 console.log(`\nanimation acceptance — fixed step ${(DT * 1000).toFixed(3)} ms, `
@@ -749,6 +974,9 @@ testPosture();
 testArms();
 testDefensiveGaits();
 testDiversity();
+testJointLimits();
+testArmDrive();
+testLayout();
 testCost();
 
 console.log(`\n${'='.repeat(72)}`);

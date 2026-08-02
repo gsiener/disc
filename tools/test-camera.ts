@@ -166,8 +166,30 @@ class Composition {
   readonly crowd: number[] = [];
   /** Fraction of frame height the pitch itself occupies. */
   readonly pitch: number[] = [];
+  /**
+   * SUBJECT SCALE — how tall the man with the disc actually is on screen, as a
+   * fraction of frame height.
+   *
+   * The composition numbers above say where the frame's height is SPENT. This
+   * says whether there is a game inside it. A reviewer's version of the same
+   * complaint is "the players are forty pixels tall"; broadcast game-follow
+   * holds the primary attacker at roughly 8–15% of frame height, and everything
+   * below about 5% reads as a wide establishing shot that forgot to come back.
+   *
+   * It is a pure consequence of two numbers and no aiming at all —
+   * `1.8 / range / (2·tan(fov/2))` — which is why it belongs here as a reported
+   * quantity rather than as an assertion the rig could satisfy by cheating. The
+   * rig cannot buy it without giving something up: the lens is already against
+   * its 30° stop for a quarter of the match holding the ≥5 guarantee, and
+   * moving the dolly in from x = −42 is measured to break that guarantee
+   * outright (85% at −34, 64% at −28).
+   */
+  readonly subject: number[] = [];
 
-  sample(cam: THREE.PerspectiveCamera, bodies: readonly { x: number; z: number }[]): void {
+  sample(
+    cam: THREE.PerspectiveCamera, bodies: readonly { x: number; z: number }[],
+    thrower: { x: number; z: number } | undefined,
+  ): void {
     let lo = Infinity, hi = -Infinity;
     for (const b of bodies) {
       const q = ndc(cam, b.x, 1.1, b.z);
@@ -186,10 +208,21 @@ class Composition {
     const near = sidelineNdcY(cam, fwd, -18.5);
     const far = sidelineNdcY(cam, fwd, 18.5);
     if (Number.isFinite(far)) this.crowd.push(Math.max(0, (1 - far) / 2));
+    this.subject.push(subjectHeight(cam, thrower));
     if (Number.isFinite(near) && Number.isFinite(far)) {
       this.pitch.push((Math.min(1, far) - Math.max(-1, near)) / 2);
     }
   }
+}
+
+/** A 1.8 m body's height as a fraction of frame height, at its own range. */
+function subjectHeight(
+  cam: THREE.PerspectiveCamera, p: { x: number; z: number } | undefined,
+): number {
+  if (!p) return NaN;
+  const r = Math.hypot(p.x - cam.position.x, 0.9 - cam.position.y, p.z - cam.position.z);
+  if (!(r > 1)) return NaN;
+  return (1.8 / r) / (2 * Math.tan(cam.fov * 0.5 * Math.PI / 180));
 }
 
 /** NDC.y of the point where the shot's own axis crosses the sideline at `x`. */
@@ -347,6 +380,139 @@ class Steadiness {
     this.prevYaw = yaw; this.prevX = dx; this.prevZ = dz; this.have = true;
   }
 }
+/**
+ * THE TRAVEL METER — the assertion class the whole file was missing, and the
+ * one that would have caught the worst frame in the last review.
+ *
+ * Every rate assertion above bounds how FAST the rig may move: 38°/s of pan,
+ * 12 m/s of dolly, 18 m/s² of acceleration. Not one of them bounds how FAR it
+ * may move for a given amount of play, and that is a different quantity and the
+ * one a viewer actually reads. Twelve metres a second is faster than a
+ * sprinter, so a rig obeying every cap in this file can — and did — travel
+ * twenty metres down the rails across a turnover while the disc sat in one
+ * man's hand, flinging the play from the middle of the frame to the edge. Every
+ * assertion in the file passed on those frames, because the disc, the thrower,
+ * the mark and five offenders were all inside the frame at both ends of the
+ * move. What was wrong was the move.
+ *
+ * So: over a sliding window of continuous tele coverage, compare the PATH
+ * LENGTH the camera travelled along its track with the path length of the play
+ * it is following — the same `0.65·disc + 0.35·centroid` blend the rig's own
+ * dolly is anchored on, which is the only thing on the field the camera is
+ * entitled to move because of. The excess,
+ *
+ *     camPath − TELE.DOLLY_TRACK · playPath
+ *
+ * is metres of camera travel that nothing on the field paid for. It is
+ * displacement-invariant in the same way the steadiness meter is: a camera
+ * tracking a 20 m huck scores zero because the play moved 20 m too, and a
+ * camera sitting still scores zero because neither moved. It can only be
+ * tripped by the rig going somewhere the play did not.
+ *
+ * `TELE.DOLLY_CREEP` is the allowance the rig is designed to spend this out of,
+ * so the budget below is that rate times the window, plus a little, and it is
+ * therefore a direct test of the governor in `Tele.governDolly` rather than a
+ * number tuned onto a match.
+ */
+class Travel {
+  private readonly camPath: number[] = [0];
+  private readonly playPath: number[] = [0];
+  private readonly ok: boolean[] = [];
+  private camZ = 0;
+  private playZ = 0;
+  private have = false;
+
+  sample(camZ: number, playZ: number, eligible: boolean): void {
+    if (this.have) {
+      this.camPath.push(this.camPath[this.camPath.length - 1] + Math.abs(camZ - this.camZ));
+      this.playPath.push(this.playPath[this.playPath.length - 1] + Math.abs(playZ - this.playZ));
+    }
+    this.ok.push(eligible);
+    this.camZ = camZ; this.playZ = playZ; this.have = true;
+  }
+
+  /** Every fully eligible window's excess travel, and the worst one's index. */
+  window(frames: number): { all: number[]; worst: number; at: number } {
+    const all: number[] = [];
+    let worst = -Infinity, at = -1;
+    for (let i = frames; i < this.camPath.length; i++) {
+      let good = true;
+      for (let k = i - frames; k <= i; k++) if (!this.ok[k]) { good = false; break; }
+      if (!good) continue;
+      const e = (this.camPath[i] - this.camPath[i - frames])
+        - TELE.DOLLY_TRACK * (this.playPath[i] - this.playPath[i - frames]);
+      all.push(e);
+      if (e > worst) { worst = e; at = i; }
+    }
+    return { all, worst: Number.isFinite(worst) ? worst : 0, at };
+  }
+}
+
+/**
+ * THE LEAD-ROOM METER.
+ *
+ * The brief asks for the thrower at roughly 38% of frame width with the space
+ * he is throwing into occupying the other 62% — a signed quantity, and the
+ * only framing rule in §1 that a frame can satisfy BACKWARDS. Every assertion
+ * in this file up to here is unsigned: the disc is on screen, the marker is on
+ * screen, five offenders are on screen. A shot with the disc at 62% of the
+ * frame and the empty field behind it passes all of them and is a shot with the
+ * lead room on the wrong side, which is the specific thing a reviewer sees and
+ * calls "panning against the play".
+ *
+ * Measured per held-possession tele frame: which way downfield runs on screen
+ * (the NDC.x of a point 10 m along the attack direction, minus the disc's), and
+ * where the disc sits relative to frame centre. Lead room is correct when those
+ * two have OPPOSITE signs — the play upfield of centre, the space it is
+ * attacking open in front of it.
+ *
+ * SETTLED PLAY AND THE TURNOVER TRANSIENT ARE COUNTED SEPARATELY, and that
+ * split is the whole reason this is a usable assertion rather than a tuning
+ * knob. When possession changes, the attack direction reverses, so the lead
+ * room the rig is holding is by definition on the wrong side until it has been
+ * rebuilt the other way — there is no framing that is correct on both sides of
+ * that instant. Counting those frames against the shot would mean the metric is
+ * optimised by re-composing FASTER, which is exactly the whip this whole review
+ * is about; the rig would score better the worse it looked. So the guarantee is
+ * stated over settled play, where an inverted frame is a real defect, and the
+ * transient is reported as what it is: the cost of the re-composition, in
+ * frames, to be read against how fast the re-composition is allowed to run.
+ */
+const LEAD_SETTLE = 3.0;
+
+class LeadRoom {
+  /** Signed lead: +1 is a full half-frame of room downfield, −1 is inverted. */
+  readonly frac: number[] = [];
+  right = 0;
+  total = 0;
+  /** ...and the same, over frames more than `LEAD_SETTLE` s from a turnover. */
+  settledRight = 0;
+  settledTotal = 0;
+  private lastPoss = -1;
+  private since = 1e3;
+
+  sample(
+    cam: THREE.PerspectiveCamera, dx: number, dz: number, attackDir: number,
+    poss: number, dt: number,
+  ): void {
+    if (poss !== this.lastPoss) { this.since = 0; this.lastPoss = poss; } else this.since += dt;
+    const a = ndc(cam, dx, 1.1, dz);
+    const b = ndc(cam, dx, 1.1, dz + attackDir * 10);
+    if (a.d <= 0.5 || b.d <= 0.5) return;
+    const down = Math.sign(b.x - a.x);
+    if (down === 0) return;
+    // Positive when the disc sits on the side of centre AWAY from downfield.
+    const f = -down * a.x;
+    this.total++;
+    this.frac.push(f);
+    if (f >= 0) this.right++;
+    if (this.since >= LEAD_SETTLE) {
+      this.settledTotal++;
+      if (f >= 0) this.settledRight++;
+    }
+  }
+}
+
 const wrap = (a: number): number => {
   const t = (a + Math.PI) % (2 * Math.PI);
   return (t < 0 ? t + 2 * Math.PI : t) - Math.PI;
@@ -656,7 +822,30 @@ dir.init(ctxB);
 const meter = new Meter();
 const steady = new Steadiness();
 const comp = new Composition();
+const travel = new Travel();
+const lead = new LeadRoom();
 const prevB: Prev = { yaw: 0, pitch: 0, fov: 38 };
+
+/**
+ * The play anchor the travel meter measures against — recomputed here off the
+ * roster rather than read out of the rig, so the assertion is a statement about
+ * the world and not a restatement of the rig's own bookkeeping.
+ */
+function playAnchorZ(): number {
+  const gs = game.gs;
+  const d = gs.discPos;
+  const rIn = TELE.CENTROID_R - TELE.CENTROID_FADE;
+  let cz = 0, sum = 0;
+  for (const e of game.roster) {
+    if (e.team !== gs.possession) continue;
+    const dist = Math.hypot(e.loco.pos.x - d.x, e.loco.pos.z - d.z);
+    if (dist >= TELE.CENTROID_R) continue;
+    let g = 1;
+    if (dist > rIn) { const u = (TELE.CENTROID_R - dist) / TELE.CENTROID_FADE; g = u * u * (3 - 2 * u); }
+    cz += e.loco.pos.z * g; sum += g;
+  }
+  return TELE.DISC_W * d.z + TELE.CENTROID_W * (sum > 1e-6 ? cz / sum : d.z);
+}
 
 let frames = 0;
 let liveFrames = 0, liveOnScreen = 0;
@@ -731,6 +920,11 @@ for (let f = 0; f < steps; f++) {
     + `${td.urgent ? ' URGENT' : ''}`);
   if (td.collapsed) collapseFrames++;
   if (td.clamped) clampFrames++;
+  travel.sample(cam.position.z, playAnchorZ(), t.shot === 'tele' && !t.cutThisFrame);
+  if (gs.phase === 'LIVE_POSSESSION' && t.shot === 'tele' && gs.thrower !== null) {
+    lead.sample(cam, gs.discPos.x, gs.discPos.z, gs.attackDir[gs.possession ?? 0],
+      gs.possession ?? -1, FRAME);
+  }
   if (gs.phase === 'LIVE_POSSESSION' && t.shot === 'tele' && gs.thrower !== null) {
     fovDriver.set(fovTerm(td, cam.fov), (fovDriver.get(fovTerm(td, cam.fov)) ?? 0) + 1);
     fovHist.push(cam.fov);
@@ -790,7 +984,10 @@ for (let f = 0; f < steps; f++) {
 
     if (gs.thrower !== null) {
       heldFrames++;
-      if (t.shot === 'tele') comp.sample(cam, game.roster.map((e) => e.loco.pos));
+      if (t.shot === 'tele') {
+        comp.sample(cam, game.roster.map((e) => e.loco.pos),
+          thrower ? thrower.loco.pos : undefined);
+      }
       let n = 0;
       for (const e of game.roster) {
         if (e.team !== gs.possession) continue;
@@ -941,6 +1138,74 @@ info('wasted yaw, p50 / p90 / p99', `${stat(steady.all, 0.5).toFixed(2)} / `
 info('yaw reversals while the disc is held', String(steady.reversals)
   + ` over ${(steady.eligibleFrames / FPS).toFixed(0)} s`);
 
+/**
+ * THE TRAVEL BUDGET. See `Travel` above for what is being measured and why the
+ * rate caps cannot express it.
+ *
+ * The budget is derived, not fitted: the governor in `Tele.governDolly` lets
+ * the dolly target drift at `TELE.DOLLY_CREEP` m/s over and above the play's
+ * own speed, so a window of `T` seconds may honestly accumulate `DOLLY_CREEP·T`
+ * metres of unpaid travel and no more. On top of that sits the rig's own lag
+ * behind its target — the dolly is speed- and acceleration-limited, so it
+ * arrives late, and a lag that opens and closes inside a window adds path the
+ * target did not have. Measured over three seeds that term tops out around
+ * 2.3 m, hence `SETTLE` below; the blow-up guards are far looser because they
+ * are there to catch a mechanism failing, not to grade a match.
+ *
+ * Measured on this match before the governor existed: 1 s windows p99 8.26 m,
+ * max 11.21 m; 2.5 s windows p99 12.07 m, max 15.93 m — the worst of them a
+ * turnover in the red zone, where the lead room reversing (12 m of aim, 9.6 m
+ * of dolly) and the red-zone overshoot changing ends (another 12 m of target in
+ * 0.7 s) between them walked the rig twenty metres down the rails against a
+ * disc that had moved four. That is the frame two independent reviewers picked
+ * out of an eight-frame series, and every other assertion in this file passed
+ * on it.
+ */
+console.log('');
+const trav1 = travel.window(FPS);
+const trav25 = travel.window(Math.round(2.5 * FPS));
+const SETTLE = 2.5;
+const budget = (secs: number): number => TELE.DOLLY_CREEP * secs + SETTLE;
+le(stat(trav1.all, 0.99), budget(1), 'unpaid dolly travel, p99 of 1 s windows', ' m');
+le(trav1.worst, budget(1) + 4.5, 'worst unpaid dolly travel, 1 s (blow-up guard)', ' m');
+le(stat(trav25.all, 0.99), budget(2.5), 'unpaid dolly travel, p99 of 2.5 s windows', ' m');
+le(trav25.worst, budget(2.5) + 4.5, 'worst unpaid dolly travel, 2.5 s (blow-up guard)', ' m');
+info('unpaid dolly travel 1 s, p50 / p90 / p99', `${stat(trav1.all, 0.5).toFixed(2)} / `
+  + `${stat(trav1.all, 0.9).toFixed(2)} / ${stat(trav1.all, 0.99).toFixed(2)} m`);
+info('unpaid dolly travel 2.5 s, p50 / p90 / p99', `${stat(trav25.all, 0.5).toFixed(2)} / `
+  + `${stat(trav25.all, 0.9).toFixed(2)} / ${stat(trav25.all, 0.99).toFixed(2)} m`);
+if (trav25.at >= 0) info('  worst 2.5 s window ends at', `${(trav25.at / FPS).toFixed(1)} s`);
+
+/**
+ * ...and the LEAD ROOM, which is the one framing rule in the brief that a shot
+ * can satisfy backwards. See `LeadRoom`.
+ *
+ * The brief's number is the thrower at ~38% of frame width, i.e. NDC.x = −0.24
+ * on the upfield side of centre, so the signed lead fraction below wants to sit
+ * around +0.24. It is stated as a floor on the FRACTION OF FRAMES with the room
+ * on the correct side rather than as a bound on the mean, because the mean is
+ * dragged around by the framing guarantee legitimately spending lead room to
+ * hold the mark, and a shot that has spent all its lead is not a shot that has
+ * inverted it.
+ *
+ * The floor is where it is because the guarantee cannot be absolute: the same
+ * correction that keeps the mark on screen is allowed to spend the whole of the
+ * lead room and a little past it, and a dump behind the disc puts the offensive
+ * centroid genuinely upfield of the thrower, so a handful of frames per match
+ * are correctly composed with the room on the other side. Measured over three
+ * seeds: 99.15%, 98.98%, 97.98%.
+ */
+console.log('');
+geSoft(pct(lead.settledRight, lead.settledTotal), 100, 97.5,
+  `lead room on the attacking side, settled (>${LEAD_SETTLE}s)`, '%');
+ge(stat(lead.frac, 0.5), 0.12, 'signed lead room, median (0.24 = the brief)');
+info('signed lead room p10 / p50 / p90', `${stat(lead.frac, 0.1).toFixed(2)} / `
+  + `${stat(lead.frac, 0.5).toFixed(2)} / ${stat(lead.frac, 0.9).toFixed(2)}`);
+info('lead room correct, all held frames',
+  `${pct(lead.right, lead.total).toFixed(2)}%`);
+info('  ...of which spent re-composing after a turnover',
+  `${(lead.total - lead.settledTotal)} fr`);
+
 console.log('');
 le(sidelineXmax, CUTS.SIDELINE_X, 'worst sideline camera x', ' m');
 le(endzoneXmax, CUTS.ENDZONE_X, 'worst endzone camera |x|', ' m');
@@ -971,6 +1236,10 @@ info('bottom edge lands at x, mean', mean(comp.bottomX).toFixed(1) + ' m');
 info('bottom edge lands at x, p10', stat(comp.bottomX, 0.1).toFixed(1) + ' m');
 info('pitch fills, mean', (100 * mean(comp.pitch)).toFixed(1) + '%');
 info('above the far sideline (crowd), mean', (100 * mean(comp.crowd)).toFixed(1) + '%');
+const subj = comp.subject.filter((v) => Number.isFinite(v));
+info('thrower height on screen, mean', (100 * mean(subj)).toFixed(2) + '% of frame');
+info('thrower height on screen, p10 / p90', `${(100 * stat(subj, 0.1)).toFixed(2)} / `
+  + `${(100 * stat(subj, 0.9)).toFixed(2)}%`);
 info('frames the hard set did not fit', String(collapseFrames));
 info('frames the interval clamp bound', String(clampFrames));
 info('tele fov, mean / p50 / p90', `${mean(fovHist).toFixed(1)} / `

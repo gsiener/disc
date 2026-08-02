@@ -112,6 +112,56 @@ function swingLift(speed: number, mode: FootMode): number {
   const k = mode === 'shuffle' ? 0.42 : mode === 'backpedal' ? 0.58 : 1;
   return Math.min(SWING_LIFT_MAX, (0.015 + 0.050 * v * (0.35 + 0.0765 * v)) * k);
 }
+/**
+ * A LEG IS NEVER A STICK.
+ *
+ * `twoBone` clamps an unreachable target to `l1 + l2 - 1e-4`, which is a knee
+ * at literal full extension, and the solve is silent about it — the limb simply
+ * comes out straight. Measured over the speed ladder on the committed bones,
+ * the knee sat inside 5 degrees of dead straight for **21 % of every stride at
+ * 1.6 m/s and 33-36 % from 4 m/s up**, with a minimum of 1.5 degrees. A human
+ * knee does not do that under any circumstances: the smallest flexion in a
+ * running cycle is 10-20 degrees, at the very end of the drive, and it happens
+ * for a few hundredths of a second.
+ *
+ * Binning that by stance phase found the lock is NOT in stance — the hip drop
+ * keeps the loaded leg at 45-67 degrees of flexion. It is in the first third of
+ * SWING: the trailing plant is 0.5-0.6 m behind the body, the horizontal swing
+ * path is a smootherstep that has covered 6 % of its distance at s = 0.2, and
+ * the hips have kept travelling. The ankle target ends up 1.05-1.10 m from a hip
+ * that owns 0.88 m of leg, so the leg is solved as a rigid rod trailing the
+ * body. That is exactly the "trailing leg locks at the knee and extends to hip
+ * height behind the body" read, and it is why the sprint pose looks like the
+ * splits rather than like a stride.
+ *
+ * The swing foot is IN THE AIR, so there is nothing to slide: the fix is simply
+ * to refuse the target. Shortening the hip→ankle vector to `SWING_REACH` of the
+ * chain guarantees a floor on knee flexion — 0.955 gives about 34 degrees on an
+ * even-length chain — and because the shortening is along the hip→ankle line,
+ * the foot rises and tucks toward the buttock, which is the heel recovery a
+ * runner actually has. `t.pos` is untouched, so footstep timing, turf scuffs and
+ * the swing-height measurements all see the same numbers as before.
+ *
+ * `STANCE_REACH` is the softer figure the hip drop aims at rather than a clamp;
+ * see `hipDrop`. It is not applied to the target, because moving a PLANTED
+ * ankle is a slide by definition.
+ */
+const SWING_REACH = 0.955;
+
+/**
+ * How straight the LOADED leg is allowed to get, as a fraction of the chain,
+ * against ground speed. It is not one number, because a walk and a sprint carry
+ * completely different knees: an inverted-pendulum walk passes over a nearly
+ * straight support leg (5-15 degrees of flexion at the ends of stance, ~20 at
+ * mid-stance) whereas a run absorbs on a deeply flexed one (40-50 at
+ * mid-stance, never under about 25). Holding a single figure at the run's value
+ * gave a flat 27 degrees at every instant of a 1.6 m/s stance, which is a
+ * Groucho walk — the bob disappears because the hip drop is doing all of it.
+ */
+function stanceReach(speed: number): number {
+  return lerp(0.990, 0.968, clamp01(speed / 4.5));
+}
+
 /** Plantarflexion at toe-off, radians, before the speed scale. */
 const TOE_OFF = 0.62;
 const TOE_EXT_MAX = 0.80;
@@ -226,6 +276,8 @@ export interface FeetState {
   widthK: number;
   /** Last dt handed to `updateFeet`, so `hipDrop` can filter frame-rate-safely. */
   lastDt: number;
+  /** Ground speed at the last `updateFeet`. `hipDrop` runs after it and needs it. */
+  speed: number;
   /** Held hip drop, metres. Follows a rising demand instantly, releases slowly. */
   drop: number;
 }
@@ -250,7 +302,7 @@ export function makeFeet(): FeetState {
     pivot: 0, pivotOn: false, pivotYaw: 0,
     stanceWide: 0.115, stanceLead: 1, stanceStagger: 0.045, heelLift: 0,
     clock: 0, phase: 0,
-    parity: 0, toeOut: TOE_OUT, widthK: 1, lastDt: 1 / 60, drop: 0,
+    parity: 0, toeOut: TOE_OUT, widthK: 1, lastDt: 1 / 60, speed: 0, drop: 0,
   };
 }
 
@@ -265,6 +317,8 @@ const _fwd = new THREE.Vector3();
 const _quat = new THREE.Quaternion();
 const _yawInv = new THREE.Quaternion();
 const _n = new THREE.Vector3();
+const _hip = new THREE.Vector3();
+const _reach = new THREE.Vector3();
 const UP = new THREE.Vector3(0, 1, 0);
 
 const smootherstep = (t: number): number => {
@@ -344,6 +398,7 @@ export function updateFeet(
   const moving = speed >= GAIT_MIN_SPEED;
   st.clock += dt;
   st.lastDt = dt;
+  st.speed = speed;
 
   if (st.parity === 0) {
     st.parity = gaitLead(loco.id);
@@ -712,10 +767,32 @@ export function hipDrop(
   st: FeetState, kine: Kine, frame: Frame, hipL: THREE.Vector3, hipR: THREE.Vector3,
 ): number {
   if (st.free) return 0;
-  const reach = (kine.thigh + kine.shin) * 0.995;
+  /**
+   * TWO REACHES, AND THEY ANSWER DIFFERENT QUESTIONS.
+   *
+   * `hard` is the geometric limit — past it the ankle physically cannot be
+   * where the plant says, and the plant has to give (below). `soft` is where
+   * the hips would rather be: a loaded leg carries 15-25 degrees of knee
+   * flexion even at the instant of maximum extension, so asking the pelvis to
+   * settle at 0.972 of the chain rather than 0.995 is the difference between a
+   * body standing over its stride and a body on stilts. It costs about a
+   * centimetre and a half of extra hip drop and it is the whole of the stance
+   * half of the "legs lock straight" note.
+   *
+   * A SWING foot no longer votes. It used to, and it dominated: the trailing
+   * ankle is out of reach through early swing (see `SWING_REACH`), so the
+   * demand sat pinned at the 0.19 m ceiling for 100 % of frames at 4 m/s and
+   * above — the pelvis was permanently crouched by the maximum this function
+   * can ask for, and it had nothing left to give the foot that was actually on
+   * the ground. `solveLegs` now shortens that target instead, which is free,
+   * so the drop is spent where it does work.
+   */
+  const hard = (kine.thigh + kine.shin) * 0.995;
+  const reach = (kine.thigh + kine.shin) * stanceReach(st.speed);
   let worst = 0;
   for (let i = 0; i < 2; i++) {
     const t = i === 0 ? st.L : st.R;
+    if (!t.contact) continue;
     const hip = i === 0 ? hipL : hipR;
     // Work in world space: distance is preserved by the rig transform, and it
     // lets the plant be clamped where it lives.
@@ -742,12 +819,12 @@ export function hipDrop(
      * amount the leg cannot cover, which is what a dragged foot does.
      */
     const slack = 0.16;
-    if (t.contact && need > reach + slack) {
+    if (need > hard + slack) {
       const dx = t.plant.x - _hw.x;
       const dz = t.plant.z - _hw.z;
       const dy = t.plant.y - _hw.y;
       const flat = Math.hypot(dx, dz);
-      const want = Math.sqrt(Math.max(0.0025, (reach + slack) * (reach + slack) - dy * dy));
+      const want = Math.sqrt(Math.max(0.0025, (hard + slack) * (hard + slack) - dy * dy));
       if (flat > want && flat > 1e-5) {
         const k = want / flat;
         t.plant.x = _hw.x + dx * k;
@@ -802,6 +879,20 @@ export function solveLegs(
     ankleWorld(t, kine, st.normal, _p);
     footQuat(t, st.normal, _quat);
     frame.toLocal(_p.x, _p.y, _p.z, _tgt);
+
+    /**
+     * Refuse an unreachable SWING target rather than solving a straight leg at
+     * it. See `SWING_REACH`. Shortening along the hip→ankle line raises the
+     * foot and folds it toward the buttock, so the knee flexion the clamp buys
+     * arrives as heel recovery rather than as a limb that stops short.
+     */
+    if (!t.contact) {
+      kine.worldPos(rootB, _hip);
+      _reach.subVectors(_tgt, _hip);
+      const d = _reach.length();
+      const lim = (kine.thigh + kine.shin) * SWING_REACH;
+      if (d > lim && d > 1e-6) _tgt.copy(_hip).addScaledVector(_reach, lim / d);
+    }
 
     const swing = t.contact ? 0 : 1;
     _pole.set(

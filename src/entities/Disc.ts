@@ -299,21 +299,36 @@ function bakeAlbedo(seed: number): THREE.Texture {
         // because at the tele's obliquity this band is most of what is seen.
         // The disc has to stay the highest-value object in the frame while it
         // is being coloured, so the band runs hot and narrow.
+        //
+        // ROUND 6 — measured again, and the band was still too wide and too
+        // dark. Sampled off the rig at 40 m through a 30° lens the disc read
+        // `#c0b8a5`: a *sand-coloured* lozenge, S = 13 %. Two things had gone
+        // wrong at once. The band ran rr 0.93 → 1.0, which after the
+        // foreshortening of a level disc is most of the visible silhouette, so
+        // "narrow band on a white disc" rendered as "the disc is beige". And
+        // its darkest stop `#f08a12` is luma 0.59 against turf at 0.44 — a
+        // third of a stop of separation, where the plate has more than a stop.
+        // So the band lost the disc its whiteness and bought no saturation
+        // back, because wear, rotational blur and the grade average it away.
+        //
+        // It is now half as wide and a stop hotter in VALUE: the same warm
+        // identity, but every stop above luma 0.78, so the band can never be
+        // the thing that drags the silhouette down to the turf.
         const rg = c.createLinearGradient(cx - rad, cy - rad, cx + rad, cy + rad);
-        rg.addColorStop(0.00, '#f08a12');
-        rg.addColorStop(0.32, '#ffae2e');
-        rg.addColorStop(0.60, '#ffd07a');
-        rg.addColorStop(1.00, '#f2921a');
+        rg.addColorStop(0.00, '#ffc14e');
+        rg.addColorStop(0.32, '#ffdc8e');
+        rg.addColorStop(0.60, '#fff0c6');
+        rg.addColorStop(1.00, '#ffcb63');
         c.fillStyle = rg;
         c.beginPath();
         c.arc(cx, cy, rad, 0, Math.PI * 2);
-        c.arc(cx, cy, rad * (isTop ? 0.932 : 0.944), 0, Math.PI * 2, true);
+        c.arc(cx, cy, rad * (isTop ? 0.958 : 0.966), 0, Math.PI * 2, true);
         c.fill();
         // A hair of unstamped plastic inboard of the band, so the edge of the
         // stamp reads as a printed edge rather than as the end of the object.
         c.strokeStyle = 'rgba(252,252,251,0.6)';
         c.lineWidth = Math.max(1, rad * 0.009);
-        c.beginPath(); c.arc(cx, cy, rad * (isTop ? 0.926 : 0.938), 0, Math.PI * 2); c.stroke();
+        c.beginPath(); c.arc(cx, cy, rad * (isTop ? 0.951 : 0.960), 0, Math.PI * 2); c.stroke();
       }
 
       if (isTop) {
@@ -792,24 +807,132 @@ const TRAIL_METRES = 6.5;
  * here fires inside ~25 m, so the beauty framings are untouched.
  */
 /** Projected major axis, in device pixels, the disc never falls below. */
-const MIN_DISC_PX = 12.5;
-/** Ceiling on the isotropic size compensation. 1.75 × 27.3 cm = 48 cm. */
-const MAX_SIZE_GAIN = 1.75;
+const MIN_DISC_PX = 14.0;
+/** Ceiling on the isotropic size compensation. 1.9 × 27.3 cm = 52 cm. */
+const MAX_SIZE_GAIN = 1.9;
 /**
- * Projected MINOR axis floor. A level disc is a sliver, and the sliver is what
- * the eye actually has to follow across the frame, so it gets its own budget —
- * paid in thickness, along the disc normal only, where it costs nothing to a
- * silhouette that is two pixels tall in the first place.
+ * THE MINOR-AXIS FLOOR MADE A PUCK, AND A PUCK IS THE GUMDROP.
+ *
+ * The previous round budgeted the projected MINOR axis at 5.6 px and paid the
+ * shortfall in THICKNESS along the disc normal, capped at 2.6×, on the argument
+ * that "at these sizes it is one or two pixels of rim and nothing else".
+ * Photographed, it is not. At 60 m through a 30° lens the compensator ran
+ * `scale = [1.75, 3.20, 1.75]` — a disc 48 cm across and 8.3 cm deep — and the
+ * frame showed a **10 × 5 px white domino**. At 40 m it was a 16 × 6 capsule
+ * with straight sides and rounded ends. Two independent critics called the disc
+ * a gumdrop; the gumdrop was manufactured here.
+ *
+ * The arithmetic is unforgiving. A disc's silhouette is an ellipse of aspect
+ * 1/cos(obliquity), and from a tele 13 m above the flight plane that is between
+ * 2.2 : 1 and 4.7 : 1 — a *lens*, thin and pointed. Adding thickness adds a
+ * constant band across the whole width, which converts an ellipse into a
+ * rounded rectangle at exactly the size where the outline is the only thing
+ * carrying the object's identity. It buys minor-axis pixels and spends the
+ * shape they were bought for.
+ *
+ * Isotropic gain has no such cost: it makes the same ellipse bigger. So the
+ * budget moves there — `MIN_DISC_PX` 12.5 → 14 and the cap 1.75 → 1.9 — and the
+ * thickness term is left as a last resort for genuinely edge-on attitudes, at a
+ * cap where it can round a corner but never build a puck. From the tele the
+ * obliquity never falls below sin 12° ≈ 0.21, so with the gain above the minor
+ * axis clears 4.2 px on its own and this term almost never fires.
  */
-const MIN_MINOR_PX = 5.0;
-const MAX_THICK_GAIN = 2.6;
+const MIN_MINOR_PX = 4.2;
+const MAX_THICK_GAIN = 1.35;
 /**
- * Dark separation rim, in device pixels per side. This is what keeps a white
- * disc off a white kit; value contrast against turf was never the problem.
- * Kept under a pixel: at 60 m the whole disc is five pixels tall, and a rim
- * that eats two of them has traded one invisibility for another.
+ * THE SEPARATION RIM IS GONE, AND THE MEASUREMENT THAT KILLED IT.
+ *
+ * There used to be an inverted hull here — the same lathe a hair larger, back
+ * faces only — drawing a dark ring around the silhouette on the argument that
+ * "value contrast against turf was never the problem; this is what keeps a
+ * white disc off a white kit". The argument is sound and the device was, at
+ * this scale, arithmetically impossible.
+ *
+ * Photographed on the rig at 40 m through a 30° lens, a level disc over turf
+ * occupied 14 × 6 px. Turf metered 0.44 luma. Of the six rows the disc had, the
+ * top one ran 0.19–0.27 and the bottom 0.27–0.31; the left and right caps ran
+ * 0.30. At 60 m — where the disc is four pixels tall — **68 % of the disc's own
+ * pixels were DARKER than the grass they covered**, and its mean luma was
+ * 0.371 against a background of 0.366. The one thing `docs/art-direction.md`
+ * asks of this object, that it be the highest-value thing on the pitch in every
+ * daylight frame, was being inverted by its own outline.
+ *
+ * Two of those were bugs and were fixed first: the hull was scaled by
+ * `gain * (1 + rimM/R)`, so a rim specified as 0.85 px arrived as 1.5; and it
+ * was scaled isotropically *through* the `thick` term, so the axis the disc
+ * could least afford was the axis that got the most rim. Fixing both, and
+ * confining the growth to the disc plane, cleared the bottom band and took the
+ * dark fraction from 68 % to 24 %.
+ *
+ * It was still wrong. Toggling the hull alone in one frame — everything else
+ * identical — the disc went from a mean of 0.70 with a solid 0.22 row above it
+ * to a mean of 0.84 with no sub-turf pixel anywhere, at BOTH 40 m over grass
+ * and 60 m against the perimeter boards, which is the pale background the rim
+ * existed for. A ring cannot be thinner than a pixel, and an object four pixels
+ * tall cannot spend one on a border: whatever it buys against a white jersey it
+ * pays for against everything else, every frame, and the grass is what the disc
+ * is in front of essentially all the time.
+ *
+ * So separation is bought where it is free instead — in VALUE, below — and the
+ * disc keeps all four of its pixels. Against a pale body it still has its own
+ * tonal structure to work with: the plate is lit and the rim wall is in its own
+ * shade, which at this size is a bright half over a dark half, and that is an
+ * edge. Against a white jersey for two frames of a catch it is genuinely
+ * ambiguous, which is also true on television and is what motion is for.
  */
-const OUTLINE_PX = 0.85;
+/**
+ * BROADCAST VALUE, and why a small disc is allowed to be brighter than a large
+ * one.
+ *
+ * `docs/art-direction.md` pins the disc at `#fafafa` and calls it "the highest
+ * value object on the pitch in every daylight frame". At arm's length it is.
+ * At fifty metres it measured 0.26–0.37 mean luma against turf at 0.37–0.44:
+ * over the grass it was not the brightest object in the frame, it was slightly
+ * darker than the grass, which is the whole of the "you never see a disc"
+ * complaint in one number.
+ *
+ * The reason is not a bug, it is filtering. A disc is a white membrane with a
+ * shaded rim wall and a shaded underside; up close those are three surfaces and
+ * the eye integrates them into "white plastic". At four pixels the RASTERISER
+ * integrates them, and the average of one lit face, one shaded face and a rim
+ * in its own shadow is mid grey. Every shipped sports title solves this the
+ * same way and it has a name: as the object drops below the size at which
+ * shading can be resolved, its shading converges on its albedo.
+ *
+ * So the disc keeps a term it already had — the thin-section forward scatter,
+ * which multiplies *the light that landed on it* and is therefore zero in
+ * shadow and zero at night — and applies it across the whole silhouette instead
+ * of only the plate, ramped in on projected size. Neutral rather than warm,
+ * because this is a value correction and not a backlight. At 10 px of minor
+ * axis it is nothing; at 4 px it is full; it can never make the disc brighter
+ * than the light falling on it, and it never fires in any framing a viewer
+ * could use to check the shading.
+ */
+const FAR_LIFT_ON_PX = 10.0;
+const FAR_LIFT_FULL_PX = 4.0;
+/**
+ * ROUND 7 — measured, and the lift had gone one stop past its own argument.
+ *
+ * Differenced against the same frame with the disc hidden, the body at 40–60 m
+ * metered a **mean of 0.84–0.88 against turf at 0.44, with a peak of 0.96**.
+ * The disc was not merely the highest-value object on the pitch; it was a
+ * clipped white pill with eight hundredths of a stop of internal range, which
+ * is the definition of a marker. Both critics called it a gumdrop and this is
+ * the other half of why.
+ *
+ * The lift's own justification — shading converges on albedo once the object
+ * falls below the size that can resolve it — is a statement about the MEAN, not
+ * a licence to erase the object's tonal structure wherever there are still
+ * pixels to carry it. A disc reads as a disc because a lit plate sits over a
+ * rim wall in its own shade; that is one internal edge, it survives to about
+ * five pixels of minor axis, and it was being paved over.
+ *
+ * So the gain comes down and the lift is weighted by `gThin` — full on the
+ * membrane, a little over half on the rim bead. Same term, same guarantees
+ * (multiplies the light that landed, so zero in shadow and zero at night), but
+ * it now converges the disc on a lit white PLATE rather than on a white blob.
+ */
+const FAR_LIFT_GAIN = 0.46;
 /** Minor axis of the sun shadow, in device pixels, never below this. */
 const SHADOW_MIN_PX = 8.5;
 /** Ribbon half-width floor, device pixels. A huck must leave a mark at 50 m. */
@@ -849,9 +972,6 @@ export class DiscSystem implements System {
   private trailCol!: THREE.BufferAttribute;
   private contact!: THREE.Mesh;
   private contactMat!: THREE.MeshBasicMaterial;
-  /** Inverted-hull separation rim; see `OUTLINE_PX`. */
-  private outline!: THREE.Mesh;
-  private outlineMat!: THREE.MeshBasicMaterial;
   /** Unit vector toward the sun, from `sun:changed`. Golden-hour default. */
   private sunDir = new THREE.Vector3(-0.62, 0.26, -0.74).normalize();
   private unsub: Array<() => void> = [];
@@ -870,6 +990,8 @@ export class DiscSystem implements System {
    * what `docs/art-direction.md` requires of it in every daylight frame.
    */
   private uScatter = { value: new THREE.Color(1.62, 1.52, 1.34) };
+  /** Neutral broadcast value lift; see `FAR_LIFT_GAIN`. */
+  private uFarLift = { value: 0 };
 
   init(ctx: Ctx): void {
     const game = ctx.sys['game'] as unknown as { discRuntime?: DiscRuntime } | undefined;
@@ -929,31 +1051,6 @@ export class DiscSystem implements System {
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = 2;
     this.group.add(this.mesh);
-
-    /**
-     * ---- separation rim ----
-     *
-     * An inverted hull: the same lathe, a hair larger, back faces only. The
-     * disc writes depth first, so all that survives is a ring one pixel wide
-     * around the silhouette. Its thickness is specified in PIXELS and converted
-     * to metres per frame, so it is one pixel at 20 m and one pixel at 60 m,
-     * and it is faded out entirely inside 13 m where nothing needs it.
-     *
-     * This is the half of the fix that size compensation cannot do. Against
-     * turf the disc already has two stops of value contrast; against the away
-     * kit (`#f2f2ee`), a forearm, or the pale sand of the surrounds it has
-     * none, and those are exactly the pixels a thrower and a receiver occupy.
-     */
-    this.outlineMat = new THREE.MeshBasicMaterial({
-      color: 0x151c17, side: THREE.BackSide, transparent: true, opacity: 0,
-      depthWrite: false, toneMapped: false, name: 'disc-edge',
-    });
-    this.outline = new THREE.Mesh(geo, this.outlineMat);
-    this.outline.frustumCulled = false;
-    this.outline.castShadow = false;
-    this.outline.renderOrder = 2;
-    this.outline.visible = false;
-    this.group.add(this.outline);
 
     /* ---- trail ---- */
     const tg = new THREE.BufferGeometry();
@@ -1103,16 +1200,15 @@ export class DiscSystem implements System {
     }
     this.mesh.scale.set(gain, gain * thick, gain);
 
-    // The rim, in metres of whatever a pixel is worth out here.
-    const rimM = OUTLINE_PX / Math.max(1e-4, pxm);
-    const k = 1 + rimM / R;
-    this.outline.scale.set(gain * k, gain * thick * k, gain * k);
-    // Fade on ANGULAR size, not on range: a wide lens at 25 m and a long lens
-    // at 55 m present the same disc, and the rim should be there for the second
-    // and gone for the first.
-    const vis = smoothstep(MIN_DISC_PX * 2.6, MIN_DISC_PX * 1.35, majorPx);
-    this.outlineMat.opacity = 0.72 * vis;
-    this.outline.visible = vis > 0.01;
+    /**
+     * The broadcast value lift, ramped on the axis that is actually starved.
+     * `minorPx` is the post-compensation projected minor axis — the same number
+     * `MIN_MINOR_PX` budgets — so the lift is a pure function of how many
+     * pixels the rasteriser has left to describe the disc with.
+     */
+    const minorPx = facePx + edgePx * thick;
+    this.uFarLift.value = FAR_LIFT_GAIN
+      * smoothstep(FAR_LIFT_ON_PX, FAR_LIFT_FULL_PX, minorPx);
   }
 
   /**
@@ -1197,6 +1293,7 @@ export class DiscSystem implements System {
     const uWear = this.uWear;
     const uWearAmt = this.uWearAmt;
     const uScatter = this.uScatter;
+    const uFarLift = this.uFarLift;
     const N = Math.max(1, taps);
 
     this.mat.onBeforeCompile = (shader) => {
@@ -1204,6 +1301,7 @@ export class DiscSystem implements System {
       shader.uniforms.uWear = uWear;
       shader.uniforms.uWearAmt = uWearAmt;
       shader.uniforms.uScatter = uScatter;
+      shader.uniforms.uFarLift = uFarLift;
 
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', /* glsl */`
@@ -1212,6 +1310,7 @@ export class DiscSystem implements System {
           uniform float uWearAmt;
           uniform sampler2D uWear;
           uniform vec3 uScatter;
+          uniform float uFarLift;
           float gScuff = 0.0;
           float gStain = 0.0;
           float gThin = 0.0;
@@ -1278,15 +1377,35 @@ export class DiscSystem implements System {
             // Across the plate the scatter is broad and view-independent (light
             // coming through a membrane); at the rim it is a grazing-angle
             // effect only. Hence the fixed floor plus the fresnel lobe.
-            gScatter = gThin * (0.52 + 0.48 * fres) * (1.0 - 0.5 * gStain);
+            //
+            // ROUND 7: the floor was 0.52, which is a flat +50 % of the landed
+            // light over the ENTIRE flight plate at every viewing angle. That
+            // is not forward scatter, it is a glow, and stacked on the
+            // broadcast lift it took the disc to a clipped 0.96 with no
+            // internal range left. Forward scatter through a 1.2 mm membrane is
+            // real but it is a grazing, back-lit effect: the lobe keeps almost
+            // all of the weight and the floor keeps only enough to say the
+            // plate is translucent at all.
+            gScatter = gThin * (0.16 + 0.84 * fres) * (1.0 - 0.5 * gStain);
           }
         `)
         .replace('#include <lights_fragment_end>', /* glsl */`
           #include <lights_fragment_end>
           // Scaled by the light actually landing on the disc rather than added
           // as emissive, so the rim stops glowing the moment it is in shadow.
-          reflectedLight.indirectDiffuse +=
-            (reflectedLight.directDiffuse + reflectedLight.indirectDiffuse) * uScatter * gScatter;
+          {
+            vec3 landed = reflectedLight.directDiffuse + reflectedLight.indirectDiffuse;
+            // Warm, thin-section backlight — the term this file has always had.
+            vec3 lift = uScatter * gScatter;
+            // Neutral, size-driven broadcast lift. Same multiplicative form, so
+            // it inherits the same guarantees: it scales the light that landed,
+            // which means it is zero in shadow, zero at night, and zero at any
+            // range where the shading it is standing in for can be resolved.
+            // Weighted by gThin so it converges the disc on a lit PLATE and
+            // not on a featureless lozenge -- see FAR_LIFT_GAIN.
+            lift += vec3(uFarLift * (0.42 + 0.58 * gThin));
+            reflectedLight.indirectDiffuse += landed * lift;
+          }
         `);
     };
     this.mat.customProgramCacheKey = () => `ultimate-disc-${N}`;
@@ -1304,10 +1423,16 @@ export class DiscSystem implements System {
         const p = uvPolar(u, v);
         const i = (y * S + x) * 4;
         // A match-worn disc starts with a little life on it already.
+        // The rim term used to run 0.34 from rr 0.90 out. That is a tenth of
+        // the disc's whole silhouette at tele obliquity, pre-chalked before a
+        // single point has been played — and `uWearAmt` never drops below 0.35,
+        // so the outer band shipped permanently desaturated and half a stop
+        // down. A match-worn disc has a scuffed rim; it does not have a grey
+        // one. Half the strength, and only on the outermost sliver.
         let scuff = 0;
         if (p.rr <= 1.02) {
           scuff = 0.16 * fbm2(u * 22, v * 22, { octaves: 3, seed: salt })
-            + 0.34 * smoothstep(0.90, 1.02, p.rr);
+            + 0.18 * smoothstep(0.945, 1.02, p.rr);
         }
         data[i] = clamp(scuff, 0, 1) * 255;
         data[i + 1] = p.top ? 0 : clamp(0.10 * fbm2(u * 31 + 4, v * 31, { octaves: 2, seed: salt + 3 }), 0, 1) * 255;
@@ -1441,7 +1566,6 @@ export class DiscSystem implements System {
   dispose(): void {
     for (const u of this.unsub) u();
     this.unsub.length = 0;
-    this.outlineMat?.dispose();
     this.mesh?.geometry.dispose();
     this.mat?.dispose();
     this.trail?.geometry.dispose();

@@ -64,12 +64,28 @@ export function buildHands(m: RigMesh, a: Anthro, meas: Measure, d: DetailSpec):
       // Past the knuckle line the mitt closes; before it, the palm widens. The
       // proximal loops are a cuff over the end of the forearm, so they have to
       // be wider than the forearm is there, not narrower.
+      /**
+       * THE MITT MUST NOT TAPER TO A POINT.
+       *
+       * `LOD_DISTANCE` is [0, 7.5, 24] and the tele broadcast camera sits about
+       * 48 m from the play, so level 2 — `fingers: false` — is the hand every
+       * gameplay frame actually renders. This closing curve took the width to
+       * 0.38 of the knuckle breadth and the thickness to 0.45 of it, which is a
+       * cone, and a cone on the end of a forearm reads exactly as the note a
+       * critic wrote against the live frames: "forearms taper to nubs".
+       *
+       * Four fingers held together are about two thirds of the knuckle breadth
+       * at the fingertips and barely thin at all through the middle phalanges,
+       * so the closure is much later and much gentler. The exponent comes down
+       * with it: 1.5 front-loads the taper into the first third of the mitt,
+       * where a real hand is at its widest.
+       */
       const wid = q <= 1.10
         ? lerp(g.wristA * 1.14, g.handW, smooth(-0.10, 0.55, q)) * (1 - 0.10 * smooth(0.9, 1.1, q))
-        : g.handW * (1 - 0.62 * smooth(1.10, 2.05, q) ** 1.5);
+        : g.handW * (1 - 0.34 * smooth(1.10, 2.05, q) ** 2.2);
       const thick = q <= 1.10
         ? lerp(g.wristB * 1.22, g.handT * 1.30, smooth(-0.10, 0.5, q)) * (1 - 0.18 * smooth(0.7, 1.1, q))
-        : g.handT * 1.10 * (1 - 0.55 * smooth(1.10, 2.05, q) ** 1.5);
+        : g.handT * 1.10 * (1 - 0.38 * smooth(1.10, 2.05, q) ** 2.0);
       const lobes: Lobe[] = [];
       const thenar = smooth(0.05, 0.35, q) * smooth(1.15, 0.80, q);
       if (thenar > 0.01) {

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { slerpFlat, multiplyQuaternionsFlat } from './flat.ts';
 import { B, clamp, clamp01, lerp, smooth, ease, damp, spring, TAU, Kine, Pose } from './Kine.ts';
+import { stepRate } from '../../sim/move/Gait.ts';
 import type { LocoLike } from './Types.ts';
 
 /**
@@ -66,6 +67,31 @@ export interface BodyState {
   accX: number; accZ: number;
   /** Thigh flexion measured off the solved legs, radians. */
   flexL: number; flexR: number;
+  /**
+   * The thigh DIFFERENTIAL and its filtered time derivative. Together they are a
+   * quadrature pair, which is what lets `poseArms` phase-shift the arm swing by
+   * a per-athlete lag without a delay line — see `gArmLag`.
+   */
+  diff: number; diffRate: number;
+  /**
+   * HOW FAR THIS ATHLETE'S ARMS LAG THEIR LEGS, in fractions of a stride.
+   *
+   * This is the only axis of the running signature that is a PHASE rather than
+   * an amplitude, and it is the one that matters most for the clone read. Eight
+   * athletes at one speed share a stride phase exactly — `sim/move/Gait.ts` is a
+   * single oscillator started at zero and the animator cannot move it without
+   * unpinning the feet — so `gaitLead` splits the roster into two groups half a
+   * stride apart and that is all the leg variety there is. Everything else in
+   * this block is a gain on the same waveform, and scaling a pose does not stop
+   * it being the same pose: measured over eight athletes, widening every gain
+   * by a third moved the closest silhouette pair from 0.51 to 0.58 rad.
+   *
+   * Arm lag is different in kind. Real runners differ by a good tenth of a
+   * stride in how far their arm swing trails their leg swing, it is plainly
+   * visible at 35 px because the arms are a third of the silhouette, and the
+   * feet never see it.
+   */
+  gArmLag: number;
   /** Stride phase, left-foot referenced, 0..1. */
   strideU: number;
   speed: number;
@@ -85,6 +111,10 @@ export interface BodyState {
    */
   gSwing: number; gCounter: number; gBob: number; gPelvis: number;
   gElbow: number; gAdduct: number; gLean: number;
+  /** How high this athlete carries the hands. Radians of shoulder flexion. */
+  gRaise: number;
+  /** How low this athlete runs. Metres on the pelvis, at pace. */
+  gCrouch: number;
   /**
    * Which of THIS athlete's feet answers the simulation's `foot.planted === 'L'`.
    * +1 keeps the simulation's naming, −1 swaps it. See `gaitLead` and
@@ -167,9 +197,45 @@ export function gaitLead(id: number): 1 | -1 {
  * axis and identical on the next.
  */
 export function gsig(id: number, axis: number): number {
-  const x = (id | 0) * 0.61803398875 + axis * 0.38196601125 + 0.137;
+  const a = SIG_ALPHA[(axis | 0) % SIG_ALPHA.length];
+  const x = (id | 0) * a + axis * 0.38196601125 + 0.137;
   return x - Math.floor(x);
 }
+
+/**
+ * A DIFFERENT irrational per axis, and this is the correction that made the
+ * signature block do its job.
+ *
+ * The original used one multiplier and only OFFSET it per axis. An offset is a
+ * rigid translation of the whole sequence, so it preserves every pairwise
+ * difference exactly: athletes 0 and 2 sat 0.236 of the range apart on axis 0,
+ * and therefore 0.236 apart on axis 1, and axis 2, and every axis at once. The
+ * comment above claimed the opposite — "no pair can be adjacent on one axis and
+ * identical on the next" — and it was simply not true of the code, which is why
+ * widening every spread by a third moved the closest measured silhouette pair
+ * by 14 %: the pair was 23.6 % different on everything, and scaling everything
+ * up scales that difference up with it.
+ *
+ * Distinct multipliers decorrelate the axes: within one axis the three-distance
+ * theorem still bounds the smallest gap, and across axes a pair that lands
+ * close on one lands somewhere else on the next. Values are chosen to be
+ * mutually well separated — two nearby multipliers would re-correlate their two
+ * axes over the small id range a roster actually uses.
+ */
+const SIG_ALPHA = [
+  0.61803398875,  // phi - 1
+  0.41421356237,  // sqrt2 - 1
+  0.23606797750,  // sqrt5 - 2
+  0.75487766625,  // plastic number - 1
+  0.31830988618,  // 1 / pi
+  0.86602540378,  // sqrt3 / 2
+  0.54368901269,
+  0.14159265359,  // pi - 3
+  0.69314718056,  // ln 2
+  0.95531661812,
+  0.28318530718,
+  0.47712125472,  // log10 3
+];
 
 /** Small deterministic hash — per-player variety without touching an Rng. */
 export function hash01(n: number): number {
@@ -188,17 +254,33 @@ export function makeBody(seed: number): BodyState {
     swayBias: (hash01(seed * 11 + 3) - 0.5) * 0.3,
     stumbleDir: hash01(seed * 13 + 9) < 0.5 ? -1 : 1,
     prevVX: 0, prevVZ: 0, accX: 0, accZ: 0,
-    flexL: 0, flexR: 0, strideU: 0, speed: 0, sp: 0,
-    // Six independent hashes off the one seed. Spreads are deliberately modest —
-    // ±15 % on an amplitude is the difference between two runners, ±40 % is the
-    // difference between a runner and a cartoon.
-    gSwing: 0.80 + gsig(seed, 0) * 0.42,
-    gCounter: 0.78 + gsig(seed, 1) * 0.48,
-    gBob: 0.80 + gsig(seed, 2) * 0.44,
-    gPelvis: 0.80 + gsig(seed, 3) * 0.44,
-    gElbow: (gsig(seed, 4) - 0.5) * 0.46,
-    gAdduct: (gsig(seed, 5) - 0.5) * 0.24,
-    gLean: (gsig(seed, 6) - 0.5) * 0.115,
+    flexL: 0, flexR: 0, diff: 0, diffRate: 0, strideU: 0, speed: 0, sp: 0,
+    gArmLag: (gsig(seed, 11) - 0.5) * 0.19,
+    /**
+     * Eight independent low-discrepancy coordinates off the one seed.
+     *
+     * The spreads below are wider than they were, and the reason is a
+     * measurement: over eight athletes held at one speed, the closest pair
+     * differed by 0.51 rad summed over the twelve bones that actually decide a
+     * 35-px silhouette — 2.5 degrees per bone, which is nothing. Two of that
+     * roster were the pair the critic called "identical". The axes that carry
+     * the most silhouette per radian are the ones opened up most: arm swing
+     * amplitude, elbow carriage, how high the hands ride and how low the athlete
+     * runs. Trunk lean and adduction follow. Timing is still untouched, so none
+     * of this can desynchronise a foot from its plant.
+     *
+     * They are still bounded by observation, not by taste: ±25 % on a swing
+     * amplitude is the difference between two club runners; ±60 % is a cartoon.
+     */
+    gSwing: 0.76 + gsig(seed, 0) * 0.52,
+    gCounter: 0.74 + gsig(seed, 1) * 0.58,
+    gBob: 0.78 + gsig(seed, 2) * 0.50,
+    gPelvis: 0.78 + gsig(seed, 3) * 0.50,
+    gElbow: (gsig(seed, 4) - 0.5) * 0.62,
+    gAdduct: (gsig(seed, 5) - 0.5) * 0.34,
+    gLean: (gsig(seed, 6) - 0.5) * 0.19,
+    gRaise: (gsig(seed, 9) - 0.5) * 0.26,
+    gCrouch: (gsig(seed, 10) - 0.5) * 0.045,
     parity: 0,
     // Offset so two athletes stood side by side are never on the same breath,
     // the same weight shift or the same head drift.
@@ -245,6 +327,26 @@ export function updateDrivers(
   const raw = Math.sin(TAU * wt) * 0.78 + Math.sin(TAU * wt * 0.41 + 1.73) * 0.42;
   const amp = (1 - 0.55 * bs.alert) * clamp01(1 - speed / 0.9) * (1 - bs.mark * 0.7);
   bs.weight = clamp(raw * 2.1, -1, 1) * amp;
+
+  /**
+   * THE THIGH DIFFERENTIAL AND ITS RATE, a quadrature pair for the arm lag.
+   *
+   * It lives here rather than in `measureLegs` because this is the only entry
+   * point the owner hands a `dt` to. The flexions it differences were written
+   * by LAST frame's `measureLegs`, so the rate is one 1/120 s step stale —
+   * 8 ms, against a stride that lasts half a second. `poseArms` differences the
+   * current flexions itself and uses only the rate from here, so the in-phase
+   * term is exact and only the quadrature correction carries the lag.
+   *
+   * Filtered hard: this is a first difference of an IK output and the raw
+   * signal carries the solver's own frame-to-frame quantisation.
+   */
+  if (dt > 1e-5) {
+    const d = bs.flexR - bs.flexL;
+    const raw = (d - bs.diff) / dt;
+    bs.diffRate += (clamp(raw, -80, 80) - bs.diffRate) * (1 - Math.exp(-25 * dt));
+    bs.diff = d;
+  }
 
   // --- acceleration, filtered ------------------------------------------------
   if (dt > 1e-5 && !loco.air.airborne) {
@@ -315,7 +417,19 @@ export function updateDrivers(
   const prone = loco.prone || loco.state === 'fall'
     || (loco.state === 'layout' && loco.air.airborne)
     || (loco.state === 'recovery');
-  bs.proneW = damp(bs.proneW, prone ? 1 : 0, 11, dt);
+  /**
+   * GOING FLAT IS FAST; GETTING UP IS NOT.
+   *
+   * One symmetric rate of 11 meant the prone weight needed ~0.2 s to reach
+   * even 0.9, and a layout's whole flight is 0.4-0.5 s — so the pose spent the
+   * first half of the signature moment of the sport at partial weight and
+   * peaked at 65 degrees from vertical when the target was past 90. Measured on
+   * the committed chest bone across a full layout, the maximum body pitch was
+   * 65.4 degrees: a diagonal, which reads as falling over rather than as
+   * extending. A dive is a commitment made in a tenth of a second; standing
+   * back up is a second and a half.
+   */
+  bs.proneW = damp(bs.proneW, prone ? 1 : 0, prone ? 24 : 9, dt);
   bs.rise = loco.pos.y - loco.groundY - loco.hipHeight;
 }
 
@@ -362,7 +476,10 @@ function stateCrouch(loco: LocoLike, bs: BodyState): number {
    * 0.085 m is a real knee bend that still stops well short of the mark's
    * sit-in-a-stance crouch, so the two shapes stay distinguishable.
    */
-  const stance = still * (0.115 * bs.mark + 0.050 * bs.alert + 0.085 * bs.handler);
+  const stance = still * (0.115 * bs.mark + 0.050 * bs.alert + 0.085 * bs.handler)
+    // Per-athlete: some club players run tall, some sit into it. ±2.2 cm on a
+    // 0.95 m hip is a proportion change a viewer reads before they read a face.
+    + bs.gCrouch * bs.sp;
   switch (loco.state) {
     case 'backpedal': return 0.055 * H + stance * 0.6;
     case 'shuffle': return 0.095 * H + stance;
@@ -520,12 +637,18 @@ function proneAngle(loco: LocoLike): number {
   if (loco.state === 'layout' && loco.air.airborne) {
     const span = Math.max(0.08, loco.air.tLand - loco.air.tTakeoff);
     const k = clamp01((loco.t - loco.air.tTakeoff) / span);
-    // 1.42 rad is 81 degrees, and the residual nine degrees are the difference
-    // between a dive and a stumble — measured off the committed bones the body
-    // was sitting around 50 degrees off horizontal at the moment the `layout`
-    // framing catches it. The shot's whole brief is "receiver fully extended
-    // horizontal", so the target is past square: the chest leads the hips.
-    return 1.62 * ease(clamp01(k / 0.34));
+    /**
+     * This is the PELVIS angle, and the chest ends up ~20 degrees short of it
+     * because `proneSpine` extends the thoracic spine backwards (chin off the
+     * turf, which is right). So the pelvis has to overshoot horizontal for the
+     * chest to reach it. At 1.62 the chest measured 65 degrees from vertical —
+     * a body falling forward. 1.92 puts the chest at 88 and the athlete flat.
+     *
+     * It also arrives sooner: `k / 0.26` rather than `k / 0.34`. A layout is
+     * committed at the takeoff, not a third of the way through the flight, and
+     * the extra tenth of a second is most of what the `layout` framing catches.
+     */
+    return 1.82 * ease(clamp01(k / 0.26));
   }
   return 1.46;
 }
@@ -586,9 +709,26 @@ export function poseFreeLegs(bs: BodyState, pose: Pose, loco: LocoLike): void {
       const sh = s === 1 ? B.shin_L : B.shin_R;
       const ft = s === 1 ? B.foot_L : B.foot_R;
       const lead = s === 1 ? 1 : -1;
+      /**
+       * THE LEGS TRAIL; THEY DO NOT KICK OVER THE TOP.
+       *
+       * These are angles relative to a PELVIS that is now pitched past
+       * horizontal (`proneAngle`), so a hip EXTENSION here compounds with the
+       * pelvis and throws the feet up. At −0.22 ∓ 0.10 the measured trailing
+       * foot sat 0.50 m above the hips — 33 degrees above horizontal, with the
+       * head 0.6 m below it. That is a nosedive, not a layout. Small positive
+       * flexion holds the legs a few degrees above the body's own line, which
+       * is where a real extension puts them, and the ±0.08 scissor keeps the
+       * silhouette from being a symmetric plank.
+       */
+      // Blended on `proneW` so the first frames off the ground — where the body
+      // is still upright and the pelvis is not yet pitched — keep the gathered
+      // takeoff shape instead of swinging a leg through the turf.
+      const flatT = lerp(-0.22 + 0.10 * lead, 0.10 + 0.08 * lead, bs.proneW);
+      const flatS = lerp(-0.34 - 0.16 * lead, -0.30 - 0.18 * lead, bs.proneW);
       // Get-up: the lead leg folds under the hips and takes the weight.
-      pose.setEuler(th, lerp(-0.22 + 0.10 * lead, lead > 0 ? 1.15 : -0.10, tuck), 0.06 * s, 0.10 * s);
-      pose.setBend(sh, lerp(-0.34 - 0.16 * lead, lead > 0 ? -1.55 : -0.55, tuck));
+      pose.setEuler(th, lerp(flatT, lead > 0 ? 1.15 : -0.10, tuck), 0.06 * s, 0.10 * s);
+      pose.setBend(sh, lerp(flatS, lead > 0 ? -1.55 : -0.55, tuck));
       pose.setBend(ft, lerp(-0.45, -0.05, tuck));
     }
     return;
@@ -655,6 +795,27 @@ export interface ArmTune {
 const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0, fwd: 0 };
 
 /**
+ * This athlete's thigh differential, phase-shifted by `gArmLag`.
+ *
+ * `diff` is a sinusoid at stride rate and `diffRate / ω` is its quadrature
+ * partner, so `diff·cos a − (diffRate/ω)·sin a` is the same sinusoid delayed by
+ * `a` radians — no delay line, no allocation, exact for a pure tone and
+ * gracefully wrong for anything else, which is what a stumble should be.
+ *
+ * Faded in over 1.0-2.0 m/s: below a jog the signal is not a tone, ω is small
+ * and the quadrature term is noise divided by a small number.
+ */
+function laggedDiff(bs: BodyState): number {
+  const cur = bs.flexR - bs.flexL;
+  const w = smooth((bs.speed - 1.0) / 1.0);
+  if (w <= 0 || bs.gArmLag === 0) return cur;
+  const omega = TAU * Math.max(0.7, stepRate(bs.speed) * 0.5);
+  const q = clamp(bs.diffRate / omega, -1.8, 1.8);
+  const a = TAU * bs.gArmLag * w;
+  return cur * Math.cos(a) - q * Math.sin(a);
+}
+
+/**
  * Arm swing, counter-phase to the legs by construction. `side` is +1 for the
  * left arm; a positive `x` delta swings any arm forward (the rig binds every
  * limb with local +Z anatomically forward, so the sign is the same on both).
@@ -662,15 +823,68 @@ const RUN_TUNE: ArmTune = { elbow: 0, adduct: 0, swing: 1, raise: 0, fwd: 0 };
 export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
   const sp = bs.sp;
   const t = armTuneFor(loco, bs);
-  const k = (0.46 + 0.40 * sp) * t.swing * bs.gSwing;
+  /**
+   * Shoulder gain on the leg differential. Raised from `0.46 + 0.40·sp`: the
+   * leg fix in `Feet.solveLegs` (a swing leg may no longer over-extend behind
+   * the body) took about 8 % off the thigh's own range, and the arms are read
+   * straight off it, so holding the old gain would have quietly narrowed the
+   * arm swing at exactly the moment the note was that the arms do not swing.
+   */
+  const k = (0.50 + 0.62 * sp) * t.swing * bs.gSwing;
   // Elbow carriage is a function of GROUND SPEED, not of speed-as-a-fraction-
   // of-top-speed, and it saturates: a jogger and a sprinter both run with the
   // elbow near a right angle, and what actually grows with pace is the swing
   // amplitude, which is read off the legs below. Scaling it linearly with `sp`
   // left everyone below a sprint running with near-straight arms.
   const carriage = smooth(clamp01(bs.speed / 3.2));
-  const elbowBase = 0.26 + 1.06 * carriage + t.elbow + bs.gElbow * carriage;
-  const adductBase = 0.34 + 0.16 * sp + t.adduct + bs.gAdduct * carriage;
+  const elbowBase = 0.28 + 1.02 * carriage + t.elbow + bs.gElbow * carriage;
+  /**
+   * HOW WIDE THE ARMS ARE CARRIED, and it is the number that decided the
+   * "well-proportioned mannequins" read.
+   *
+   * Measured off the committed bones, the hands swept to **0.477 m either side
+   * of the body axis at every speed from 2 m/s up**, against a shoulder joint
+   * that sits at 0.22 m — a quarter of a metre of daylight outboard of the
+   * shoulder, held there for the whole stride. Two consequences, and the critic
+   * named both without knowing they were the same bug:
+   *
+   *   the SILHOUETTE. A runner whose hands are outside their shoulders is a
+   *   figure with its arms held away from it. That is a mannequin on a stand,
+   *   and at 30-40 px it is most of what a body's outline is.
+   *
+   *   INTERPENETRATION. `sim/move/Separation.ts` settles two athletes 1.26 m
+   *   apart and fades that personal space out near a live disc, so a contest
+   *   routinely closes to the 0.64 m hard tier. Two bodies 0.64 m apart with
+   *   hands 0.477 m off each axis overlap by 0.31 m — the arm is inside the
+   *   other player's torso, which is exactly what live-01, live-02 and live-06
+   *   show. Nothing about that is fixable by pushing body CENTRES apart; the
+   *   swept volume of the limbs has to come in.
+   *
+   * Two independent terms bring it in, and they do different jobs. Adduction
+   * lays the upper arm against the ribs. Humeral internal rotation turns the
+   * elbow's hinge so the flexed forearm sweeps ACROSS the front of the body
+   * instead of out from the side of it — which is what a runner's arms actually
+   * do, and which no amount of adduction alone can produce, because the
+   * forearm's contribution to width comes from the direction the elbow points.
+   *
+   * The twist has to go on the upper arm's own `y`, not on `upperArmTwist`:
+   * that bone is a leaf sibling (rig/Types.ts), so writing it rotates skin and
+   * nothing else. The sign is `+k · s`, measured rather than derived — swept
+   * over ±0.9 rad at 6 m/s, the left hand's peak lateral excursion ran 0.539 m
+   * at −0.6 through 0.395 at 0 to 0.274 at +0.6, monotone, so `+` is inboard.
+   * The old code carried `-0.10 · s · sp` here, which is that sweep on its
+   * WRONG side: it was pushing the hands a further 2 cm out at pace.
+   *
+   * Both terms ramp on `tuckIn`, not on `carriage`. The elbow's carriage curve
+   * saturates at 3.2 m/s because a jogger and a sprinter genuinely carry the
+   * same right-angled elbow; the arms come IN much sooner than that — the
+   * moment you are jogging rather than strolling, they are against the ribs.
+   * Sharing the elbow's curve left a bulge at 2 m/s where the hands swept
+   * 0.333 m, wider than the same athlete standing still.
+   */
+  const tuckIn = smooth(clamp01(bs.speed / 2.0));
+  const adductBase = 0.34 + 0.30 * tuckIn + t.adduct + bs.gAdduct * carriage;
+  const inRot = (0.10 + 0.50 * tuckIn) * (t.swing > 0 ? 1 : 0.4);
   /**
    * The arms are carried FORWARD of the shoulder line while running, and that
    * offset is a constant, not a by-product of the swing. It used to arrive as a
@@ -691,6 +905,7 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
    * carried forward by the ELBOW, not by parking the whole arm there.
    */
   const runFwd = t.swing > 0 ? (0.045 + 0.070 * carriage) * t.swing : 0;
+  const lagged = laggedDiff(bs);
 
   for (let si = 0; si < 2; si++) {
     const s: 1 | -1 = si === 0 ? 1 : -1;
@@ -717,13 +932,27 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
      * swing a pure differential; the forward carriage a runner genuinely has is
      * then `runFwd`, an honest constant that does not oscillate.
      */
-    const opp = (s === 1 ? bs.flexR : bs.flexL) - (bs.flexL + bs.flexR) * 0.5;
+    const opp = s * lagged * 0.5;
     const swing = k * opp;
-    // The elbow closes on the forward swing and opens on the back swing — a
-    // constant elbow angle is the tell that the arms are on a sine curve, and
-    // an elbow that stays shut through the back swing keeps the hand in front of
-    // the hip where a runner's hand has long since passed it.
-    const elbow = clamp(elbowBase + 0.55 * Math.max(0, swing) - 0.46 * Math.max(0, -swing), 0.12, 2.3);
+    /**
+     * THE ELBOW IS THE ARM DRIVE.
+     *
+     * A shoulder that swings 70 degrees while the elbow stays inside a 34-degree
+     * band produces a hand that never leaves the front of the body: measured on
+     * the committed bones at 6 m/s the hand's fore-aft excursion was
+     * +0.064 to +0.409 m — it never once passed behind the hip, at any speed.
+     * That is the whole of "every athlete runs with limp, dangling arms". The
+     * arc a viewer reads at 35 px is the HAND's arc, and the hand's arc is
+     * mostly the elbow's.
+     *
+     * A runner's elbow closes to roughly a right angle at the front of the drive
+     * and opens toward 140 degrees at the back, where the hand passes the hip
+     * pocket. Asymmetric on purpose: the closing coefficient is small (the
+     * elbow is already near its front value) and the opening one is nearly three
+     * times it, so the back of the swing is where the shape changes — which is
+     * also the half of the cycle a side-on broadcast camera sees most of.
+     */
+    const elbow = clamp(elbowBase + 0.60 * Math.max(0, swing) - 1.30 * Math.max(0, -swing), 0.12, 2.3);
     const adduct = adductBase - 0.10 * Math.max(0, swing);
     // Standing carriage: forward of the coronal plane, and never the same on
     // both sides. `swayBias` is a fixed per-player number, so one arm sits a
@@ -734,10 +963,13 @@ export function poseArms(bs: BodyState, pose: Pose, loco: LocoLike): void {
         + 0.030 * t.fwd * Math.sin(TAU * bs.clock * 0.13 + bs.idlePhase + s * 0.9)
       : runFwd * (1 + bs.swayBias * 1.1 * s);
 
-    pose.setEuler(ua, swing + t.raise + fwd, -0.10 * s * sp, -(adduct) * s);
+    pose.setSwing(ua, swing + t.raise + fwd + bs.gRaise * carriage, -(adduct) * s, inRot * s);
     pose.setBend(fa, elbow);
-    // Humeral and forearm roll: the palms turn in on the forward swing.
-    pose.setTwist(uaT, -0.22 * s * sp * 0.5);
+    // Humeral and forearm roll: the palms turn in on the forward swing. This is
+    // the skinning twist only — `upperArmTwist` is a leaf, so the chain's own
+    // internal rotation is the `y` written above and this just spreads a share
+    // of it down the deltoid instead of creasing it all at the shoulder.
+    pose.setTwist(uaT, (inRot * 0.45 - 0.11 * sp) * s);
     pose.setTwist(faT, (0.30 + 0.35 * sp) * s * 0.65);
     pose.setEuler(hd, -0.10 - 0.14 * Math.max(0, swing), 0.30 * s, 0.06 * s);
     // The shoulder girdle rides the counter-rotation, and shrugs a little at
@@ -841,11 +1073,28 @@ export function poseFreeArms(bs: BodyState, pose: Pose, loco: LocoLike, reachSid
       continue;
     }
 
-    const extend = lead ? 1 : 0.82;
-    pose.setEuler(ua, 2.36 * extend, -0.08 * s, -(0.30 + (lead ? 0 : 0.14)) * s);
-    pose.setBend(fa, lead ? 0.14 : 0.34);
-    pose.setEuler(hd, -0.22, 0.18 * s, 0);
+    /**
+     * WHERE THE REACHING ARM POINTS, relative to a body that is now flat.
+     *
+     * `2.36` rad is 135 degrees of shoulder flexion measured from hanging. On a
+     * STANDING athlete that is an arm 45 degrees above horizontal, which is
+     * what it was tuned against; on a body pitched past square it is 45 degrees
+     * BELOW the body's own long axis, and the hand ploughs into the turf.
+     * Measured through a layout the lead hand ended at 0.125 m above the
+     * ground, under the hips and 0.43 m below the trailing foot — a nosedive.
+     *
+     * The correct figure comes out of the geometry rather than out of taste.
+     * With the trunk pitched θ from vertical and the shoulder flexed φ, the arm
+     * points `(0, −cos(φ−θ), sin(φ−θ))` in world — so a horizontal reach needs
+     * φ − θ = π/2, and with the trunk now flat at θ ≈ 1.43 that is φ ≈ 3.0 rad.
+     * A body lying face down reaching forward IS a body reaching overhead; the
+     * shoulder angle has to say so. The trail arm sits a quarter-radian lower
+     * and wider so the two arms are not one shape.
+     */
+    const extend = lead ? 1 : 0.91;
+    pose.setSwing(ua, 3.00 * extend, -(0.26 + (lead ? 0 : 0.20)) * s, -0.10 * s);
+    pose.setBend(fa, lead ? 0.12 : 0.40);
+    pose.setEuler(hd, -0.16, 0.18 * s, 0);
     pose.setTwist(faT, 0.42 * s);
   }
-  void bs;
 }
