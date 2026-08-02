@@ -34,6 +34,9 @@ export {
  *             and row numbering.
  *   roof      cantilever ring canopy on 44 radial trusses and 22 lattice
  *             columns. Casts the hard shadow line across the stands at low sun.
+ *             Over the west straight the cantilever is cut back to a rear
+ *             canopy so the broadcast rig can rise off its 15 m seat — see
+ *             `openGantryBay`, which is the reason this file is not just glue.
  *   screens   pitch-side LED ring, roof ribbon board and four corner
  *             jumbotrons, all through one LED-dot shader. The perimeter ring
  *             also drives four RectAreaLights so the boards spill onto the turf.
@@ -127,7 +130,7 @@ export class StadiumSystem implements System {
     this.exterior = buildExterior(ctx, this.mats);
     this.root.add(this.exterior);
 
-    this.openGantryBay(ctx);
+    if (!AB_DISABLE_BAY) this.openGantryBay(ctx);
 
     this.shardSeats(ctx);
     this.shardExterior(ctx);
@@ -224,7 +227,7 @@ export class StadiumSystem implements System {
     }
 
     /* --- radial trusses: the ones over the bay lose their cantilever ------ */
-    removed += this.stubBayTrusses(roof, box);
+    removed += this.stubBayTrusses(roof);
 
     /* --- the hung camera pods move back onto the new edge ----------------- */
     this.rehangCameraPods();
@@ -244,7 +247,7 @@ export class StadiumSystem implements System {
    * exactly the stub the bay needs. Two InstancedMeshes come out of one: the
    * full truss everywhere else, the stub over the straight.
    */
-  private stubBayTrusses(roof: THREE.Object3D | undefined, box: Box): number {
+  private stubBayTrusses(roof: THREE.Object3D | undefined): number {
     const src = roof?.getObjectByName('roof-trusses') as THREE.InstancedMesh | undefined;
     if (!src || !(src as any).isInstancedMesh) return 0;
     const m = new THREE.Matrix4();
@@ -295,13 +298,16 @@ export class StadiumSystem implements System {
     const side = this.root.getObjectByName('sideline');
     if (!side) return;
     const dx = PODS.dx, dy = PODS.dy;
+    // Two meshes sharing a buffer would otherwise be translated twice.
+    const seen = new Set<THREE.BufferGeometry>();
     side.traverse((o) => {
       // Instanced props share one buffer across every copy — moving vertices
       // there would move all of them, so they are never candidates.
       if ((o as any).isInstancedMesh) return;
       const geo = (o as THREE.Mesh).geometry;
       const pos = geo?.attributes?.position as THREE.BufferAttribute | undefined;
-      if (!pos) return;
+      if (!pos || seen.has(geo)) return;
+      seen.add(geo);
       let moved = false;
       for (let i = 0; i < pos.count; i++) {
         if (pos.getY(i) <= PODS.pickY) continue;
@@ -633,6 +639,9 @@ function emit(
 }
 
 /* ========================================================== the gantry bay */
+
+/** Flip to photograph the venue with the bay closed again, for an A/B. */
+const AB_DISABLE_BAY = false;
 
 /**
  * Where the west canopy stops, and how much air the rig gets.
