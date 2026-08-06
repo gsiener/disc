@@ -446,6 +446,7 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   const catches: { t: number; id: number }[] = [];
   let catchControl = 0;
   let catchChecked = 0;
+  const catchMisses: { t: number; catcher: number; controlled: number; intended: number; flight: number }[] = [];
   let unavailableTo = 0;
   let unavailableFrom = 0;
 
@@ -602,7 +603,20 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
     }
     if (catches.length && catches[catches.length - 1].t === simT) {
       catchChecked++;
-      if (g.controlledPlayerId === catches[catches.length - 1].id) catchControl++;
+      const cid = catches[catches.length - 1].id;
+      if (g.controlledPlayerId === cid) catchControl++;
+      else {
+        // Why did control miss the catcher? Record enough to tell a real
+        // invariant violation from a measurement blind spot.
+        const lastRel = releases.length ? releases[releases.length - 1] : null;
+        catchMisses.push({
+          t: simT,
+          catcher: cid,
+          controlled: g.controlledPlayerId,
+          intended: lastRel ? lastRel.target : -1,
+          flight: lastRel ? simT - lastRel.t : -1,
+        });
+      }
     }
     if (it.release.fired) { assists.push(g.lastAimAssist); leadErrs.push(g.lastLeadError); }
     void preLive; void bufferLiveAtFlip;
@@ -610,7 +624,7 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   return {
     game: g, ctx: c, stub, control, flips, selects, cuts, assists, leadErrs, releases,
     dumpSelects, dumpBehind, bufferLiveAfterFlip, unavailableTo, unavailableFrom,
-    catchChecked, catchControl,
+    catchChecked, catchControl, catchMisses,
   };
 }
 
@@ -753,6 +767,10 @@ group('control handoff (§3)');
   ok(onTime === handoffs, 'every handoff fired at release + 0.1 s, to the step',
     `${onTime}/${handoffs}`);
   ge(R.catchChecked, 2, 'completions landed for the human team');
+  for (const m of R.catchMisses) {
+    console.log(`\x1b[2m    control miss: t=${m.t.toFixed(2)} catcher=${m.catcher} `
+      + `controlled=${m.controlled} intended=${m.intended} flight=${m.flight.toFixed(3)}s\x1b[0m`);
+  }
   ok(R.catchControl === R.catchChecked, 'and control was on the catcher on the catch frame',
     `${R.catchControl}/${R.catchChecked}`);
   ok(R.unavailableTo === 0, 'control never landed on a body Locomotion.isAvailable rejects',
@@ -1030,11 +1048,21 @@ group('you cannot walk with the disc');
     const q = (f: number): number => srt[Math.min(srt.length - 1, Math.floor(srt.length * f))] ?? 0;
     console.log(`\x1b[2m  settled drift: p50 ${q(0.5).toFixed(2)}  p90 ${q(0.9).toFixed(2)}`
       + `  p99 ${q(0.99).toFixed(2)}  max ${worstSettled.toFixed(2)} m\x1b[0m`);
-    ok(q(0.5) <= 1.35, 'median SETTLED thrower drift from the pivot',
-      `p50 ${q(0.5).toFixed(2)} m > 1.35 m`);
-    ok(q(0.99) <= 2.6, 'p99 SETTLED thrower drift from the pivot',
-      `p99 ${q(0.99).toFixed(2)} m > 2.6 m`);
-    ok(worstSettled <= 3.2, 'worst SETTLED thrower drift from the pivot',
+    // Measured now: p50 0.75 (exactly PIVOT_R), p90 1.11, p99 2.33, max 2.93.
+    // The bounds below are TIGHTER THAN THE SINGLE `max <= 2.5` THEY REPLACED,
+    // not looser, and that is the point of the change: p50 <= 0.9 fails the
+    // instant a thrower carries systematically, which one worst frame out of
+    // twenty thousand cannot detect. The max is kept only as an outlier guard,
+    // and it is deliberately the loosest of the three because it was the least
+    // informative — it swung 2.32 / 2.45 / 2.76 / 2.80 / 2.93 across states of
+    // the sim that never touched the pivot code at all.
+    ok(q(0.5) <= 0.9, 'median SETTLED thrower drift sits on the pivot radius',
+      `p50 ${q(0.5).toFixed(2)} m > 0.9 m`);
+    ok(q(0.9) <= 1.4, 'p90 SETTLED thrower drift from the pivot',
+      `p90 ${q(0.9).toFixed(2)} m > 1.4 m`);
+    ok(q(0.99) <= 2.5, 'p99 SETTLED thrower drift from the pivot',
+      `p99 ${q(0.99).toFixed(2)} m > 2.5 m`);
+    ok(worstSettled <= 3.2, 'worst SETTLED thrower drift (outlier guard only)',
       `${worstSettled.toFixed(2)} m > 3.2 m`);
   }
   // Momentum is legal but not unlimited: a sprint stop is a few metres, not ten.
@@ -1042,6 +1070,63 @@ group('you cannot walk with the disc');
     `${worstDrift.toFixed(2)} m > 4.5 m`);
   console.log(`\x1b[2m  drift: settled ${worstSettled.toFixed(2)} m over ${settled} frames, `
     + `peak-with-momentum ${worstDrift.toFixed(2)} m over ${sampled}\x1b[0m`);
+}
+
+group('a match makes progress on every seed, not just the lucky one');
+{
+  /**
+   * ONE SEED IS NOT A TEST OF AN EMERGENT SIMULATION.
+   *
+   * Everything above runs a single 600 s match from a single seed, so any
+   * assertion over a small sample is partly measuring which possessions
+   * happened to occur. That was written off as flakiness once. It was not
+   * flakiness: swept across twelve seeds, TWO OF THEM SCORED NOTHING AT ALL in
+   * ten minutes of play, and a third managed two pulls. A match that cannot
+   * produce a goal is the most serious thing this file can find, and the
+   * single-seed run walked straight past it.
+   *
+   * So the sweep is part of the suite. It is short on purpose — the failure it
+   * catches shows up in the first few points or not at all — and it asserts the
+   * floor only: the disc moves, somebody scores, nothing wedges.
+   */
+  const SWEEP_SEEDS = [20260729, 77777, 54321, 12345, 33333, 99999];
+  const SWEEP_S = 420;
+  const results: { seed: number; score: number; throws: number; dead: number }[] = [];
+
+  for (const seed of SWEEP_SEEDS) {
+    const c = makeCtx(seed);
+    const g = new GameSystem();
+    c.sys['game'] = g;
+    let throws = 0;
+    c.events.on('disc:released', () => { throws++; });
+    g.init(c);
+    let dead = 0;
+    const n = Math.round(SWEEP_S / DT);
+    for (let i = 0; i < n; i++) {
+      c.time += DT; c.dt = DT; c.frame++;
+      g.update(DT, c);
+      if (g.gs.phase === 'TURNOVER_DEAD') dead++;
+    }
+    results.push({
+      seed, score: g.gs.score[0] + g.gs.score[1], throws, dead: dead / n,
+    });
+  }
+
+  for (const r of results) {
+    console.log(`\x1b[2m  seed ${String(r.seed).padEnd(9)} score ${r.score}`
+      + `  throws ${String(r.throws).padStart(3)}  dead ${(r.dead * 100).toFixed(1)}%\x1b[0m`);
+  }
+
+  const scoreless = results.filter((r) => r.score === 0);
+  const wedged = results.filter((r) => r.dead > 0.25);
+  const quiet = results.filter((r) => r.throws < 15);
+
+  ok(scoreless.length === 0, 'every seed produced a goal inside seven minutes',
+    scoreless.length ? `scoreless: ${scoreless.map((r) => r.seed).join(', ')}` : '');
+  ok(quiet.length === 0, 'every seed moved the disc',
+    quiet.length ? `under 15 throws: ${quiet.map((r) => `${r.seed}(${r.throws})`).join(', ')}` : '');
+  ok(wedged.length === 0, 'no seed wedged the match in a dead disc',
+    wedged.length ? `dead>25%: ${wedged.map((r) => `${r.seed}(${(r.dead * 100).toFixed(0)}%)`).join(', ')}` : '');
 }
 
 /* ---------------------------------------------------------------- summary */

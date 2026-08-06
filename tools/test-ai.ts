@@ -46,7 +46,7 @@
 
 import {
   createTeamAI, updateTeam, makePlayer, catchProbability, reachHeight,
-  restBetweenPoints, layoutExtend,
+  restBetweenPoints, layoutExtend, effectiveMaxSpeed, effectiveAccel, shouldBid,
   type AIPlayer, type AIWorld, type PlayerIntent, type DiscState,
   type Archetype, type FlightSample, type TeamAI, type PlayerAction,
   type TeamConfig,
@@ -118,6 +118,56 @@ function sampleFlight(fl: Flight, at: number): { x: number; y: number; z: number
     y: Math.max(0.02, fl.ty - 2.4 * e * e - 0.9 * e),
     z: fl.tz + dz * e * 0.45,
   };
+}
+
+/* --------------------------------------------------------- layout audit
+ *
+ * A layout is a full-extension dive and in ultimate it is a LAST RESORT: you
+ * leave your feet because you cannot get there on them, and it reads as
+ * dramatic precisely because it is rare. The AI once bid on any disc that was
+ * not already at a player's feet — the defensive gate was a 0.2 m deficit and
+ * the offensive one 0.7 m, both INSIDE the 0.82 m a standing catch reaches —
+ * and the result was more layouts than completions.
+ *
+ * Everything below re-derives, from the disc stub's own flight and the
+ * player's own ratings, whether the bidder could have run it down upright. It
+ * never asks the AI what it thought the gap was, so the assertions cannot be
+ * satisfied by the AI agreeing with itself.
+ */
+
+/** Horizontal reach for a standing catch, and the height below which there is
+ *  no standing catch at all. Both quoted from Game.ts (`CATCH_REACH`, `bot`). */
+const STAND_REACH = 0.82;
+const STAND_FLOOR = 0.20;
+
+/**
+ * Could this player have caught/blocked it ON HIS FEET?
+ *
+ * Walks the rest of the flight and asks, at every step where the disc is still
+ * high enough for a standing catch, whether he can cover the ground to within
+ * standing reach of it in the time available. The sprint model is deliberately
+ * GENEROUS — a straight line from his current speed at his own acceleration and
+ * top speed, no turn cost, no traffic — so a bid it condemns is one no amount of
+ * running would have justified. `slack` is the metres to spare at the best such
+ * moment: positive means he could have got there with room, negative means the
+ * disc was genuinely out of reach and the dive was the only play.
+ */
+function standingSlack(p: AIPlayer, fl: Flight): number {
+  const v = Math.hypot(p.vel.x, p.vel.z);
+  const top = effectiveMaxSpeed(p);
+  const acc = Math.max(0.1, effectiveAccel(p));
+  const tTop = Math.max(0, (top - v) / acc);
+  let best = -1e9;
+  for (let T = 1 / 60; T <= 2.5; T += 1 / 60) {
+    const s = sampleFlight(fl, fl.t + T);
+    if (s.y < STAND_FLOOR) break;               // gone; no standing catch below this
+    const need = Math.hypot(s.x - p.pos.x, s.z - p.pos.z) - STAND_REACH;
+    const run = T <= tTop
+      ? v * T + 0.5 * acc * T * T
+      : v * tTop + 0.5 * acc * tTop * tTop + top * (T - tTop);
+    best = Math.max(best, run - need);
+  }
+  return best;
 }
 
 /* ------------------------------------------------------ locomotion stub */
@@ -571,6 +621,10 @@ interface Sim {
     worstTargets: string;
     minEnergySeen: number;
     liveSeconds: number;
+    /** one entry per bid: metres of slack a standing play would have had */
+    bidSlack: number[];
+    bidsOff: number; bidsDef: number;
+    worstBids: string[];
     expectedSum: number;
     byTeam: { throws: number; comp: number; gain: number; turns: number; poss: number }[];
     buckets: { n: number; ok: number; gain: number; stall: number }[];
@@ -630,6 +684,7 @@ function buildSim(
       zonePoints: 0, personPoints: 0, endEnergy: [],
       markEstablish: [], worstStack: '', worstTargets: '',
       minEnergySeen: 1, liveSeconds: 0, expectedSum: 0,
+      bidSlack: [], bidsOff: 0, bidsDef: 0, worstBids: [],
       byTeam: [0, 1].map(() => ({ throws: 0, comp: 0, gain: 0, turns: 0, poss: 1 })),
       buckets: Array.from({ length: 10 }, () => ({ n: 0, ok: 0, gain: 0, stall: 0 })),
     },
@@ -692,6 +747,8 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
   let bIdx = -1;
   const ring: string[] = [];
   let throwFromZ = 0;
+  /** bodies that have already declared a bid on the live flight */
+  const bidSeen = new Set<number>();
   let lastThrow: { aimX: number; aimZ: number; recv: number; exp: number; d: number; atRelease: number; tf: number; vAtRelease: number; minGap: number; minGapY: number } | null = null;
 
   while (t < maxT) {
@@ -737,6 +794,28 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
     const iB = updateTeam(teams[1], world, DT);
     const intents = [...iA, ...iB];
     sim.lastIntents = intents;
+
+    /* ------------------------------------------------------- layout audit
+     * One entry per body per flight, taken on the frame the bid is first
+     * declared and against the disc state the AI itself was looking at.
+     */
+    if (disc.state.state === 'flight' && disc.flight) {
+      for (const it of intents) {
+        if (it.action?.kind !== 'bid' && it.mode !== 'layout') continue;
+        if (bidSeen.has(it.id)) continue;
+        bidSeen.add(it.id);
+        const p = byId.get(it.id)!;
+        const slack = standingSlack(p, disc.flight);
+        sim.totals.bidSlack.push(slack);
+        if (it.team === world.possession) sim.totals.bidsOff++;
+        else sim.totals.bidsDef++;
+        if (slack > 0 && sim.totals.worstBids.length < 8) {
+          sim.totals.worstBids.push(
+            `#${it.id}${it.team === world.possession ? 'O' : 'D'} bid with ${f2(slack)}m of `
+            + `standing slack at ${(disc.flight.t / disc.flight.tf).toFixed(2)} of the flight`);
+        }
+      }
+    }
 
     /* ------------------------------------------------- structural checks */
     if (world.phase === 'live') {
@@ -891,6 +970,7 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
           arc: a.throwType === 'hammer' ? 3.2 : 0.28 + 0.05 * d,
         };
         disc.state.state = 'flight';
+        bidSeen.clear();
         disc.state.thrownBy = it.id;
         disc.state.intendedReceiver = a.receiverId;
         disc.state.carrier = null;
@@ -1184,6 +1264,32 @@ function unitTests(): void {
   ok('layout extension scales with agility',
     layoutExtend(fast) > 0 && layoutExtend(fast) < 2.5,
     `${f2(layoutExtend(fast))}m for a ${Math.round(fast.attr.agility)} agility player`);
+
+  /* The bid gate, pinned directly. The sim assertions below bound how often a
+   * layout happens; these say what a layout IS, so the rate cannot be met by a
+   * gate that has simply been turned off — or drift back to the 0.2 m deficit
+   * that produced more layouts than completions. `short` is metres from the
+   * disc at the last moment a standing catch is still legal. */
+  const bidder = makePlayer(96, 0, 'cutter', rng.fork(6), 75);
+  const midfield = 0;                     // stakes: a possession, not a goal
+  const bidCases: Array<[string, boolean, number, number, number]> = [
+    // label                              expect  short  deadline  stakes
+    ['0.5 m short — he runs it down',     false,  0.50,  0.30, midfield],
+    ['0.8 m short — still inside reach',  false,  0.80,  0.30, midfield],
+    ['1.3 m short — only a dive gets it', true,   1.30,  0.30, midfield],
+    ['3.0 m short — a dive misses too',   false,  3.00,  0.30, midfield],
+    ['1.3 m short but 1.5 s early',       false,  1.30,  1.50, midfield],
+    ['1.05 m short at midfield',          false,  1.05,  0.30, midfield],
+    ['1.05 m short with a goal on it',    true,   1.05,  0.30, 1],
+  ];
+  let gateOk = true;
+  const wrong: string[] = [];
+  for (const [label, want, short, deadline, stakes] of bidCases) {
+    const got = shouldBid(bidder, short, deadline, stakes);
+    if (got !== want) { gateOk = false; wrong.push(label); }
+  }
+  ok('a layout is only for a disc out of standing reach', gateOk,
+    wrong.length ? `wrong: ${wrong.join("; ")}` : `${bidCases.length} cases`);
 }
 
 /* ------------------------------------------------------------------ main */
@@ -1244,6 +1350,40 @@ async function main(): Promise<void> {
     `${T.minCutTargetGap < 5 ? T.worstTargets : ''}`);
   ok('stack keeps >= 2 m between bodies', T.minStackGap >= 2.0,
     `tightest stack pair ${f2(T.minStackGap)}m  ${T.minStackGap < 2 ? T.worstStack : ''}`);
+
+  console.log('\n[assert] layouts');
+  /**
+   * A layout is a last resort. Two things have to hold and they are different
+   * failures: the rate (how often anybody leaves his feet at all) and the
+   * justification (whether the man who did could have run it down instead).
+   *
+   * All three FAILED before the bid gate went in. On this exact run the AI made
+   * 98 bids against 57 completions — 1.72 per completion — every one of them
+   * with over 0.35 m of standing slack and 72 of them with over 1.2 m, because
+   * the gate asked only whether the disc was already at the player's feet
+   * (0.2 m on defence, 0.7 m on offence) when a standing catch reaches 0.82 m.
+   *
+   * Zero bids is a pass and is the usual result here: the disc stub puts a real
+   * arc on every throw, so the disc comes down through chest height and gets
+   * met on the run. The rate this bounds is the one the full game produces —
+   * measured against `src/sim/Game.ts` it is 1.8 layouts a minute, 0.46 per
+   * completion, down from 5.8 and 1.47. `shouldBid` above is pinned separately
+   * so this cannot be satisfied by a gate that has been switched off.
+   */
+  const bids = T.bidSlack.length;
+  const free = T.bidSlack.filter((s) => s > 0.35).length;
+  const perComp = T.completions ? bids / T.completions : 0;
+  ok('layouts are rare (< 0.35 per completion)', perComp <= 0.35,
+    `${bids} bids over ${T.completions} completions = ${f2(perComp)} `
+    + `(${T.bidsOff} offensive, ${T.bidsDef} defensive)`);
+  ok('nobody dives for a disc he could run down',
+    bids === 0 || free / bids <= 0.20,
+    `${pct(bids ? free / bids : 0)} of ${bids} bids had > 0.35 m of standing slack`
+    + `${T.worstBids.length ? `; e.g. ${T.worstBids[0]}` : ''}`);
+  ok('a bid that is made is a bid that was needed',
+    bids === 0 || T.bidSlack.filter((s) => s > 1.2).length === 0,
+    `${T.bidSlack.filter((s) => s > 1.2).length} bids had over 1.2 m of slack — `
+    + `a dive nobody had to make`);
 
   console.log('\n[assert] defence');
   const est = T.markEstablish;

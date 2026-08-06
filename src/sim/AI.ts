@@ -211,6 +211,15 @@ export interface PlayerIntent {
 
 export interface FlightSample { t: number; x: number; y: number; z: number }
 
+/**
+ * The two points on a flight anybody in-flight cares about: where to run to,
+ * and where the disc stops being playable on your feet. See `predictCatchPoint`.
+ */
+interface CatchPoint {
+  x: number; y: number; z: number; t: number;
+  lastX: number; lastZ: number; lastT: number;
+}
+
 export interface LocomotionPeer {
   timeToReach?(p: AIPlayer, x: number, z: number): number;
   isAirborne?(p: AIPlayer): boolean;
@@ -285,6 +294,148 @@ export function effectiveDecision(p: AIPlayer): number {
   return p.attr.decision * (0.80 + 0.20 * p.energy);
 }
 
+/* ---------------------------------------------------------------- layouts
+ *
+ * A layout is a full-extension dive, and in ultimate it is a LAST RESORT: you
+ * leave your feet because you cannot get there on them. It reads as dramatic
+ * precisely because it is rare, so the decision has to be priced like one.
+ *
+ * The constants below are the whole model. Every one of them is a fact about
+ * the world — a reach the rules engine pays out on, a height it will not, the
+ * airtime of the dive itself — rather than a taste knob, and the two that are
+ * not (`BID_HESITATION`, the stakes relief) are the noise floor of an estimate
+ * and are quoted with the measurement that set them.
+ *
+ * Over 50 sim-minutes against `src/sim/Game.ts` this took the rate from 5.80
+ * layouts a minute to 1.66, and defensive dives from 1.30 a minute to 0.06,
+ * with the completion rate unmoved at 58%.
+ */
+
+/**
+ * Horizontal reach for a standing catch and for a full extension, in metres.
+ * Both are quoted from `CATCH_REACH` / `LAYOUT_REACH` in Game.ts, which are the
+ * radii the rules engine actually awards a catch or a block inside — and note
+ * that the engine's extension is a FLAT 1.55 m, so `layoutExtend` below is the
+ * AI's own athleticism model and buys nothing the rules will honour.
+ *
+ * A dive therefore converts exactly 0.73 m of reach. Anything inside 0.82 m a
+ * player runs down on his feet; anything past 1.55 m he does not reach lying
+ * down either, and pays two seconds on the turf for finding out.
+ *
+ * This is the gate that was missing. The old thresholds were 0.2 m (defence)
+ * and 0.7 m (offence), both INSIDE standing reach, so "not already at my feet"
+ * qualified as a layout: 1.47 layouts per completion, 29% of them for discs the
+ * player could have caught standing up and 7% for discs he could not have
+ * reached extended either.
+ */
+const STANDING_REACH = 0.82;
+const EXTENDED_REACH = 1.55;
+
+/**
+ * The height band a rendezvous with the disc is allowed to be picked in, in
+ * metres. Game.ts takes a standing catch between `groundY + 0.20` and the
+ * player's reach; `CATCH_FLOOR` sits above the bottom of that with a stride of
+ * margin, and `CATCH_CEILING` is chest height on a descending disc. See
+ * `predictCatchPoint` for what happens when the floor is set below the band the
+ * rules engine will actually pay out on.
+ */
+const CATCH_FLOOR = 0.85;
+const CATCH_CEILING = 1.45;
+
+/**
+ * Below this the disc is gone: Game.ts refuses a standing catch under
+ * `groundY + 0.20`, and this leaves a frame of margin on top of that. The point
+ * where the flight crosses it is the player's LAST CHANCE on his feet, and that
+ * — not the rendezvous — is the deadline a layout has to beat. Measured: with
+ * the rendezvous as the deadline, three quarters of the surviving bids were for
+ * discs the player went on to catch standing anyway a tenth of a second later.
+ */
+const CATCH_DEAD = 0.25;
+
+/**
+ * How much further than his standing reach a player has to be short before he
+ * believes it, in metres — the noise floor of `arrivalShortfall` below.
+ *
+ * It is small because that estimate is a distance measured from a distance.
+ * The number this replaced was tuned against `gap`, which is a distance
+ * inferred from a time and runs hot by a factor of several; sizing a 0.73 m
+ * decision against it is what produced 1.5 layouts per completion.
+ *
+ * Swept at 0.20 / 0.35 / 0.40 over 5 seeds x 600 s: 0.35 gave the fewest bids
+ * for the most completions. Raising it further only trades catches for nothing,
+ * because the bids it removes are the ones inside the reach band that work.
+ */
+const BID_HESITATION = 0.35;
+
+/**
+ * Seconds of dive. Locomotion's layout takeoff is ~1.2 m/s of lift carrying the
+ * body from hip height to prone, which is a little under half a second in the
+ * air. Bidding earlier than this is not a bid, it is a belly-flop with a good
+ * view of the catch: measured, defensive bids fired on the first frame the gap
+ * turned positive and touched the disc 4.7% of the time. Tightening 0.65 -> 0.45
+ * cut the rate a fifth and raised the share of bids that touch the disc from
+ * 50% to 61%, which is the same statement twice.
+ */
+const BID_LEAD = 0.45;
+
+/**
+ * How far from the disc a player will actually BE when it arrives, in metres.
+ *
+ * The in-flight code's `gap` — `(timeToReach - arrival) * topSpeed` — is a
+ * coarse "am I in the neighbourhood of this disc" test and it runs hot by a
+ * factor of several: `timeToReach` charges a plant and an acceleration from
+ * rest in SECONDS, and pricing those seconds at 8-9 m/s says a man standing
+ * half a metre off the disc is three metres short of it. That is tolerable for
+ * gating a chase. It is useless for a decision whose whole content is a 0.73 m
+ * band of reach, which is why every threshold built on it drifted below
+ * standing reach until "not already at my feet" meant "dive".
+ *
+ * So measure the distance instead of inferring it from a time. He covers `d` in
+ * `t` seconds; in the `arrival` seconds he actually has, he covers that
+ * fraction of it. The linear split flatters a player starting from rest — he
+ * covers less than half the ground in the first half of the run — so this reads
+ * slightly SHORT of the true shortfall, which is the direction a last resort
+ * should err in.
+ */
+function arrivalShortfall(d: number, t: number, arrival: number): number {
+  return d * clamp(1 - arrival / Math.max(t, 1e-3), 0, 1);
+}
+
+/**
+ * How much is riding on this disc, 0..1. A disc dropping in or near the endzone
+ * is a goal whichever way it goes; one at midfield is a possession. Same idea
+ * as `possessionValue`, one step later in the play — and it is symmetric, so
+ * the defender covering that endzone reads exactly the same stakes the receiver
+ * does.
+ */
+export function discStakes(z: number, attackDir: AttackDir): number {
+  return clamp(1 - yardsToGoal(z, attackDir) / 25, 0, 1);
+}
+
+/**
+ * Should this player leave his feet? `short` is `arrivalShortfall` measured
+ * against the LAST CHANCE — how far from the disc he will still be standing at
+ * the moment it drops out of the standing catch band for good. Three things
+ * have to be true at once:
+ *
+ *   1. he cannot reach it on his feet (`short` past standing reach, plus the
+ *      hesitation margin, which the stakes buy most of the way down);
+ *   2. the dive actually reaches it — a bid at four metres is not brave, it is
+ *      a player removing himself from the point for two seconds;
+ *   3. that last chance falls inside the time the dive is airborne.
+ *
+ * `deadline` is seconds until the disc is unplayable; `stakes` is `discStakes`.
+ * Agility does not appear: the rules engine's extension is flat, so a quicker
+ * player earns his layouts by getting into the band, not by widening it.
+ */
+export function shouldBid(
+  p: AIPlayer, short: number, deadline: number, stakes: number,
+): boolean {
+  if (!(deadline <= BID_LEAD)) return false;
+  const need = STANDING_REACH + BID_HESITATION * (1 - 0.60 * clamp(stakes, 0, 1));
+  return short > need && short < EXTENDED_REACH;
+}
+
 /**
  * Rough probability a possession starting `yards` from the goal line ends in a
  * score. This is the currency the thrower's decision model trades in: every
@@ -292,7 +443,20 @@ export function effectiveDecision(p: AIPlayer): number {
  * turnover is charged exactly what it costs, the disc.
  */
 export function possessionValue(yards: number): number {
-  return 0.40 + 0.42 * (1 - clamp(yards, 0, 64) / 64);
+  /**
+   * Past 64 the disc is INSIDE YOUR OWN ENDZONE and it keeps getting worse: a
+   * turnover there is a goal against, not a field-position swing.
+   *
+   * `yardsToGoal` reaches 82 at the back of your own endzone, so clamping at 64
+   * priced eighteen metres deep in your own endzone identically to standing on
+   * your own goal line. The model literally could not see the difference, which
+   * is why a legal-looking reset could walk an offence backwards over its own
+   * line one locally-rational pass at a time (traced: -30.2, -36.1, -42.1,
+   * -46.4). The geometry fix in `Playbook.buildCut` stops the cut being offered;
+   * this stops it being wanted.
+   */
+  const core = 0.40 + 0.42 * (1 - clamp(yards, 0, 64) / 64);
+  return core - 0.42 * clamp((yards - 64) / 18, 0, 1);
 }
 
 /** Max range in metres for a throw type, including the wind along the throw. */
@@ -947,9 +1111,25 @@ export class TeamAI {
         const d = dist2(p.pos.x, p.pos.z, disc.pos.x, disc.pos.z);
         if (d < bd) { bd = d; best = p; }
       }
+      /**
+       * A turnover very often leaves the disc ON the line, and this is the one
+       * target in the file that was not clamped inside it. It has to be.
+       * `boundaryRoom` measures room along a ray, so a body standing on the
+       * perimeter and pointed even slightly further out has ZERO room — and the
+       * speed cap built on it is a cap on total speed, not on the outward
+       * component. A collector who arrives level with a sideline disc is
+       * therefore frozen in every direction, including the one he needs, and
+       * the match never restarts: measured over twelve 400 s seeds, one wedged
+       * for 103 s with the collector 6.35 m away and stationary.
+       *
+       * Send him to the nearest spot he can legally stand on instead. That is
+       * inside `PICKUP_RADIUS` of anything resting on the chalk, so the pickup
+       * still fires from there.
+       */
+      const cp = clampToField({ x: disc.pos.x, z: disc.pos.z }, 0.75);
       for (const p of this.mates) {
         if (p === best) {
-          out.push(this.intent(p, disc.pos.x, disc.pos.z, 0, dir, 'sprint', 1.0,
+          out.push(this.intent(p, cp.x, cp.z, 0, dir, 'sprint', 1.0,
             bd < 1.1 ? { kind: 'pickup' } : null, { role: p.role, state: 'pickup', lane: null }, dt));
         } else {
           const st = this.stationFor(p, world, disc.pos.x, disc.pos.z);
@@ -1588,17 +1768,35 @@ export class TeamAI {
     }
     if (!best) { this.choice = null; return; }
 
-    // The bar for pulling the trigger. High (selective) under a low stall,
-    // collapsing as the count climbs; at 8.5 the best available goes up.
-    // The bar for pulling the trigger. Raised at the low end from -0.085: with
-    // the stack actually holding its shape and the mark actually on the break
-    // side, the option in front of a thrower early in the count is more often a
-    // covered body than it used to be, and the old bar took those throws. It is
-    // calibrated — his own estimate tracked the outcome to within a point — so
-    // this is not a confidence problem, it is a patience one.
+    /**
+     * The bar for pulling the trigger. High (selective) under a low stall,
+     * collapsing as the count climbs; at 8.5 the best available goes up.
+     *
+     * This was raised to -0.040 on the argument that "it is not a confidence
+     * problem, it is a patience one." That over-corrected into a different
+     * failure. Measured over a match at -0.040: MEAN RELEASE AT STALL 7.56, and
+     * the modal throw — 35 of 73 — gained 0.35 m. The offence was fourteen
+     * people holding a shape for seven seconds, then dumping, then repeating.
+     * Swept across six seeds, THREE OF THEM SCORED NOTHING IN FIVE MINUTES
+     * despite thirty throws each: the disc moved, but only sideways.
+     *
+     * The arithmetic says why. A routine 10 m open-side under from midfield
+     * scores ev = -0.123, against a bar of -0.042 at stall 0 — so the
+     * break-even completion for a plain 10 m gain sat near 91.5%, roughly
+     * elite-league average. A thrower who only takes better-than-average
+     * throws waits, and the count runs to 8. The code's own reset trigger is
+     * stall 4.0, so the offence was spending most of every possession past the
+     * point its own playbook says to bail out.
+     *
+     * Lower and flatter: the 85%/10 m under now clears at stall 0, a 75%/8 m
+     * under still waits to about stall 6.3, and a 55%/20 m huck still never
+     * clears before 8.5. Completion percentage is expected to FALL a few points
+     * — real offences complete about 90%, not 100% — while yards per throw
+     * roughly doubles. That trade is the whole point.
+     */
     const hold = stall >= 8.5
       ? -1e9
-      : (-0.040 - 0.36 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
+      : (-0.135 - 0.26 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
     this.noGoodLook = best.ev < hold - 0.03;
     this.choice = best.ev > hold ? best : null;
     if (this.choice && this.windup === 0) this.windup = 1e-6;
@@ -1795,6 +1993,29 @@ export class TeamAI {
     return clamp(lead + 0.30 * slack, -6, 8);
   }
 
+  /**
+   * The closest this player can be to the disc at ANY moment it is still
+   * catchable on his feet — the number that decides whether a layout was
+   * necessary at all.
+   *
+   * A flight offers a whole window, not an instant: the disc drops into the
+   * standing band at the rendezvous and stays in it until `CATCH_DEAD`, and a
+   * receiver only has to be on it once. Judging him at one end of that window
+   * is what left three quarters of the surviving bids diving for discs they
+   * went on to catch upright a tenth of a second later. The window is short
+   * enough that the best moment is always at one of its two ends, so two
+   * `timeToReach` solves settle it — the earliest chance (nearest, least time)
+   * and the last one (furthest, most time).
+   */
+  private bidShortfall(p: AIPlayer, land: CatchPoint): number {
+    const early = arrivalShortfall(
+      dist2(p.pos.x, p.pos.z, land.x, land.z), this.timeToReach(p, land.x, land.z), land.t);
+    const late = arrivalShortfall(
+      dist2(p.pos.x, p.pos.z, land.lastX, land.lastZ),
+      this.timeToReach(p, land.lastX, land.lastZ), land.lastT);
+    return Math.min(early, late);
+  }
+
   private timeToReach(p: AIPlayer, x: number, z: number): number {
     const peer = locoPeer(this.sysRef);
     if (peer?.timeToReach) {
@@ -1879,6 +2100,7 @@ export class TeamAI {
     const out: PlayerIntent[] = [];
     const land = this.predictCatchPoint(world);
     const target = world.disc.intendedReceiver;
+    const stakes = discStakes(land.z, this.dir);
 
     // Whoever is nearest the disc backs up the intended receiver.
     let backupId = -1; let bd = 1e9;
@@ -1913,9 +2135,10 @@ export class TeamAI {
         if (gap <= 0.15 && land.y > 1.9 && land.y < reachHeight(p) + 0.5) {
           mode = 'jump';
           action = { kind: 'jump', height: land.y };
-        } else if (isTarget && gap > 0.7 && gap < extend) {
-          // You lay out for a low disc you cannot otherwise reach — not for a
-          // chest-high one you can simply run down.
+        } else if (isTarget && shouldBid(p, this.bidShortfall(p, land), land.lastT, stakes)) {
+          // You lay out for a disc you cannot otherwise reach — not for one you
+          // can simply run down. `shouldBid` is the whole test; see the block
+          // above `STANDING_REACH` for why each of its three clauses is there.
           mode = 'layout';
           action = { kind: 'bid', x: land.x, z: land.z, extend };
         } else if (gap <= 0.05) {
@@ -1926,7 +2149,8 @@ export class TeamAI {
         }
         const c = clampToField({ x: land.x, z: land.z }, 0.45);
         out.push(this.intent(p, c.x, c.z, land.x - p.pos.x, land.z - p.pos.z,
-          mode, pace, action, { role: p.role, state: 'attack-disc', lane: null }, dt, true));
+          mode, pace, action, { role: p.role, state: 'attack-disc', lane: null },
+          dt, true));
         continue;
       }
       // Everyone else clears out and re-forms around the likely new disc spot.
@@ -2361,17 +2585,31 @@ export class TeamAI {
     const land = this.predictCatchPoint(world);
     const odir = -this.dir as AttackDir;
     const brk = breakSideSign(this.force, odir);
+    // A disc dropping in the endzone they are defending is a goal, so it is
+    // worth the ground; one at midfield is a possession, and is not.
+    const stakes = discStakes(land.z, odir);
+
+    // Whoever gets there first is the man on the play. A second defender diving
+    // in behind him blocks nothing and takes himself out of the point for two
+    // seconds — that is a trailing defender, and trailing defenders stay up.
+    const tOf = new Map<number, number>();
+    let onPlay = -1; let bestT = 1e9;
+    for (const p of this.mates) {
+      const t = this.timeToReach(p, land.x, land.z);
+      tOf.set(p.id, t);
+      if (t < bestT) { bestT = t; onPlay = p.id; }
+    }
+
     for (const p of this.mates) {
       const m = this.m(p.id);
       if (m.flightCommit !== this.flightEpoch) {
         m.flightCommit = this.flightEpoch;
-        // One committed read per flight; awareness decides whether they see it.
-        const t = this.timeToReach(p, land.x, land.z);
-        const gap = (t - land.t) * effectiveMaxSpeed(p);
-        const sees = this.rng.next() < 0.45 + 0.55 * (p.attr.defAwareness / 100);
-        m.bidCommit = sees && gap > 0.2 && gap < layoutExtend(p) && land.y < 1.85;
+        // One read per flight: awareness decides whether he ever sees a bid on
+        // this disc at all. Whether one is warranted is re-asked every step,
+        // because the geometry that decides it is still moving.
+        m.bidCommit = this.rng.next() < 0.45 + 0.55 * (p.attr.defAwareness / 100);
       }
-      const t = this.timeToReach(p, land.x, land.z);
+      const t = tOf.get(p.id) ?? this.timeToReach(p, land.x, land.z);
       const gap = (t - land.t) * effectiveMaxSpeed(p);
       const canPlay = gap < layoutExtend(p) + 0.5;
 
@@ -2380,13 +2618,15 @@ export class TeamAI {
         let action: PlayerAction | null = null;
         if (gap <= 0.1 && land.y > 1.85 && land.y < reachHeight(p) + 0.4) {
           mode = 'jump'; action = { kind: 'jump', height: land.y };
-        } else if (m.bidCommit && gap > 0) {
+        } else if (m.bidCommit && p.id === onPlay && land.y < 1.85
+          && shouldBid(p, this.bidShortfall(p, land), land.lastT, stakes)) {
           mode = 'layout';
           action = { kind: 'bid', x: land.x, z: land.z, extend: layoutExtend(p) };
         }
         const c = clampToField({ x: land.x, z: land.z }, 0.45);
         out.push(this.intent(p, c.x, c.z, land.x - p.pos.x, land.z - p.pos.z,
-          mode, 1.0, action, { role: 'defender', state: 'read-disc', lane: null }, dt, true));
+          mode, 1.0, action, { role: 'defender', state: 'read-disc', lane: null },
+          dt, true));
         continue;
       }
       // No play on the disc. If it is landing near you, break down and set the
@@ -2415,8 +2655,29 @@ export class TeamAI {
 
   private sysRef: Record<string, unknown> | undefined = undefined;
 
-  /** Where and when the disc becomes catchable. Uses the disc peer if present. */
-  private predictCatchPoint(world: AIWorld): { x: number; y: number; z: number; t: number } {
+  /**
+   * Where and when the disc becomes catchable. Uses the disc peer if present.
+   *
+   * The floor matters more than it looks. Most throws in this game never rise
+   * above `CATCH_CEILING` at all — the release is at ~1.35 m and a flat forehand
+   * stays under it for its whole flight — so the descending-through-the-ceiling
+   * branch never fires and the whole rendezvous falls through to the floor.
+   * With the floor at 0.12 m that made the target THE POINT WHERE THE DISC HITS
+   * THE TURF, which Game.ts will not award a standing catch at (`bot` there is
+   * ground + 0.20 m). Measured: 80% of all layouts were bids for a disc whose
+   * predicted catch point was below 0.2 m. The offence was not diving because
+   * it was beaten; it was diving because it had been sent to meet the disc on
+   * the floor, and only a body already prone can catch it there.
+   *
+   * `CATCH_FLOOR` is the lowest the rendezvous is allowed to be: shin height,
+   * comfortably inside the standing band, with room left for the last stride.
+   *
+   * `last*` is a second, later point on the same flight — where the disc drops
+   * out of the standing band entirely. Running to the rendezvous is what a
+   * receiver DOES; beating the last chance to it is the only thing that makes
+   * a layout necessary. See `shouldBid`.
+   */
+  private predictCatchPoint(world: AIWorld): CatchPoint {
     this.sysRef = world.sys;
     const peer = discPeer(world.sys);
     if (peer?.predictPath) {
@@ -2430,27 +2691,43 @@ export class TeamAI {
       }
       if (path) {
         DISC_PEER_OK.set(peer as object, true);
+        let met: FlightSample | null = null;
+        let dead: FlightSample = path[path.length - 1] ?? path[0];
         for (let i = 1; i < path.length; i++) {
           const s = path[i];
-          if (s.y <= 1.45 && path[i - 1].y > 1.45) return { x: s.x, y: s.y, z: s.z, t: s.t };
-          if (s.y <= 0.12) return { x: s.x, y: s.y, z: s.z, t: s.t };
+          if (!met && ((s.y <= CATCH_CEILING && path[i - 1].y > CATCH_CEILING)
+            || s.y <= CATCH_FLOOR)) met = s;
+          if (s.y <= CATCH_DEAD) { dead = path[i - 1]; break; }
         }
-        const last = path[path.length - 1];
-        return { x: last.x, y: last.y, z: last.z, t: last.t };
+        const m = met ?? dead;
+        if (m) {
+          return {
+            x: m.x, y: m.y, z: m.z, t: m.t,
+            lastX: dead.x, lastZ: dead.z, lastT: Math.max(dead.t, m.t),
+          };
+        }
       }
     }
     // Fallback glide integrator: gravity partly offset by lift, light drag.
     let x = world.disc.pos.x, y = world.disc.pos.y, z = world.disc.pos.z;
     let vx = world.disc.vel.x, vy = world.disc.vel.y, vz = world.disc.vel.z;
     const h = 1 / 60;
+    let met: { x: number; y: number; z: number; t: number } | null = null;
     for (let t = 0; t < 6; t += h) {
       vy -= 3.1 * h;
       const drag = 1 - 0.11 * h;
       vx *= drag; vz *= drag;
       x += vx * h; y += vy * h; z += vz * h;
-      if (y <= 1.4 && vy < 0) return { x, y: Math.max(y, 0.05), z, t: t + h };
+      if (!met && y <= CATCH_CEILING && vy < 0) {
+        met = { x, y: Math.max(y, CATCH_FLOOR), z, t: t + h };
+      }
+      if (y <= CATCH_DEAD) {
+        const m = met ?? { x, y: Math.max(y, CATCH_FLOOR), z, t: t + h };
+        return { ...m, lastX: x, lastZ: z, lastT: Math.max(t + h, m.t) };
+      }
     }
-    return { x, y: Math.max(y, 0.05), z, t: 6 };
+    const m = met ?? { x, y: Math.max(y, CATCH_FLOOR), z, t: 6 };
+    return { ...m, lastX: x, lastZ: z, lastT: Math.max(6, m.t) };
   }
 
   /** Pull a target back inside the lines. Speed is capped separately. */
