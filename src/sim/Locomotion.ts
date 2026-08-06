@@ -267,6 +267,7 @@ export class Locomotion implements System {
       stateT: 0,
       stateDur: 0,
       prone: false,
+      anchored: false,
       stamina: opts.stamina ?? 100,
       foot: {
         planted: 'R',

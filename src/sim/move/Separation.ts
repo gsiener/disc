@@ -155,6 +155,8 @@ export function compliance(p: LocoPlayer): number {
   if (p.air.airborne) return 0;
   if (COMMITTED_STATES.has(p.state)) return 0;
   if (p.prone) return 0;
+  // A thrower on his pivot holds his ground; the marker steps around him.
+  if (p.anchored) return 0;
   // Same weighting the hard tier uses: heavy, braced bodies move less.
   const braced = p.attr.mass * (1 + 0.35 * clamp01(p.attr.strength / 100));
   return 1 / Math.max(1, braced);

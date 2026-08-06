@@ -235,6 +235,13 @@ function locoPeer(sys: Record<string, unknown> | undefined): LocomotionPeer | nu
  */
 const DISC_PEER_OK = new WeakMap<object, boolean>();
 
+/**
+ * Shortest route a COMMANDED cut may resolve to, metres. Below this the cutter
+ * arrives on the frame he departs and the player who asked for a cut sees
+ * nothing move. Sized just over the 1.5 m the game suite asserts.
+ */
+const MIN_CUT_RUN = 1.8;
+
 function validFlightSamples(v: unknown): v is FlightSample[] {
   if (!Array.isArray(v) || v.length < 2) return false;
   const a = v[0] as Partial<FlightSample> | undefined;
@@ -681,6 +688,27 @@ export class TeamAI {
     }
 
     const cut = buildCut(kind, { x: p.pos.x, z: p.pos.z }, disc, dir, openSign, side, this.rng.next());
+
+    /**
+     * A commanded cut has to be somewhere to RUN to.
+     *
+     * `buildCut` places the target from the receiver's own position and the
+     * disc, and for some geometries — a handler already standing where his
+     * up-line would take him, most often — it resolves within a stride of his
+     * feet. That is not a route: the cutter arrives on the frame he departs,
+     * the lane is claimed and released immediately, and the player who asked
+     * for a cut sees nothing happen. Push a degenerate target out along the
+     * commanded direction so the request always produces a real movement.
+     */
+    const rx = cut.target.x - p.pos.x;
+    const rz = cut.target.z - p.pos.z;
+    const rl = Math.hypot(rx, rz);
+    if (rl < MIN_CUT_RUN) {
+      const ex = rl > 1e-3 ? rx / rl : ux;
+      const ez = rl > 1e-3 ? rz / rl : uz;
+      cut.target.x = p.pos.x + ex * MIN_CUT_RUN;
+      cut.target.z = p.pos.z + ez * MIN_CUT_RUN;
+    }
 
     const m = this.m(receiverId);
     if (m.cut && this.liveLanes.get(m.cut.lane) === receiverId) this.liveLanes.delete(m.cut.lane);

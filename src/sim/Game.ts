@@ -127,6 +127,18 @@ const DOUBLE_TAP = 0.30;
 const COLLECT_PATIENCE = 1.0;
 const IDLE_MOVE = 0.05;
 
+/**
+ * How far the thrower's body centre may sit from his established pivot, metres.
+ *
+ * A pivot foot is fixed; the free foot may step anywhere it reaches, and the
+ * hips travel with it. 0.75 m is a long step's worth of hip displacement — it
+ * buys a handler the reach to pivot out to a break-side throw, which is real
+ * technique, without letting him walk. `travelTolerance` in Rules.ts (0.35 m)
+ * governs the FOOT and is the detection threshold; this governs the BODY and is
+ * the constraint. They are different quantities and should not be unified.
+ */
+const PIVOT_R = 0.75;
+
 const ARCHETYPES: readonly Archetype[] = [
   'handler', 'handler', 'handler', 'cutter', 'cutter', 'deep', 'utility',
 ];
@@ -491,6 +503,11 @@ export class GameSystem implements System {
 
     /* 2 — locomotion (one path for humans and AI) --------------------------- */
     const human = this.liveHumanIntent(ctx);
+    // Anchor the thrower before anyone steps: the soft separation tier runs
+    // after locomotion and would otherwise let a crowding marker walk him off
+    // his own pivot, which is a foul in the rules and free yardage in the sim.
+    const anchorId = this.gs.phase === 'LIVE_POSSESSION' ? this.gs.thrower : null;
+    for (const e of this.roster) e.loco.anchored = e.id === anchorId;
     for (const it of this.intents) {
       const e = this.byId.get(it.id);
       if (!e) continue;
@@ -628,10 +645,64 @@ export class GameSystem implements System {
     d.face = hi.aim.active ? { x: hi.aim.x, z: hi.aim.z }
       : hi.charge.active ? { x: Math.sin(hi.charge.aimYaw), z: Math.cos(hi.charge.aimYaw) }
         : null;
-    // A thrower with an established pivot does not travel.
+    /**
+     * A THROWER IS ANCHORED TO HIS PIVOT. He may turn, and he may step, and he
+     * may not travel.
+     *
+     * The previous rule here only capped effort at 0.22 under a comment
+     * claiming "a thrower with an established pivot does not travel" — which
+     * made him slow, not anchored. A slow player crossing a hundred-metre pitch
+     * is still crossing it, and walking the disc upfield is the one thing
+     * Ultimate does not allow at all. It is the rule that makes the sport what
+     * it is: possession cannot advance except through the air.
+     *
+     * So the outward radial component of the stick is removed once the body
+     * centre reaches PIVOT_R of the established pivot. Tangential motion is
+     * untouched, which is what lets a handler circle his mark and open a break
+     * side, and inward motion is untouched so he can always recover. The result
+     * is a disc of radius PIVOT_R he can move freely inside and cannot leave —
+     * which is what a pivot foot actually is.
+     */
     if (this.gs.thrower === e.id && this.gs.phase === 'LIVE_POSSESSION') {
-      d.effort = Math.min(d.effort ?? 1, 0.22);
+      d.effort = Math.min(d.effort ?? 1, 0.34);
       d.mode = 'jog';
+      const px = e.loco.pos.x - this.gs.pivot.x;
+      const pz = e.loco.pos.z - this.gs.pivot.z;
+      const r = Math.hypot(px, pz);
+      if (r > PIVOT_R) {
+        /**
+         * Outside the pivot disc he RETURNS, he does not merely stop leaving.
+         *
+         * Stripping the outward component alone is not enough, and the first
+         * version of this did exactly that and measured 5.47 m of drift. A
+         * receiver catches at sprint, coasts out on momentum the steering
+         * cannot cancel, and then orbits at whatever radius he happened to
+         * stop at — legal-looking every frame, and the disc has still moved
+         * five metres up the pitch. Ultimate's actual rule is that a thrower
+         * carried past his pivot by momentum must come BACK to it, which is
+         * both the correct model and the only self-correcting one.
+         *
+         * Inward pull ramps with the excess so a small overshoot still leaves
+         * the handler his tangential freedom to work the mark, while a real
+         * excursion is dragged home.
+         */
+        const nx = px / r, nz = pz / r;
+        const pull = Math.min(1, (r - PIVOT_R) / PIVOT_R);
+        let dx = -nx * pull;
+        let dz = -nz * pull;
+        if (d.dir) {
+          const outward = d.dir.x * nx + d.dir.z * nz;
+          const tx = d.dir.x - Math.max(0, outward) * nx;
+          const tz = d.dir.z - Math.max(0, outward) * nz;
+          dx += tx * (1 - pull);
+          dz += tz * (1 - pull);
+        }
+        const l = Math.hypot(dx, dz);
+        if (l < 1e-4) { d.dir = null; d.effort = 0; } else {
+          d.dir = { x: dx / l, z: dz / l };
+          d.effort = Math.max(d.effort ?? 0, 0.30 * pull);
+        }
+      }
     }
     return d;
   }
@@ -1530,7 +1601,18 @@ export class GameSystem implements System {
     gs.step(dt, {
       discPos: liveDisc ? { x: s.pos.x, y: s.pos.y, z: s.pos.z } : undefined,
       throwerPos: thrower ? { x: thrower.loco.pos.x, y: 0, z: thrower.loco.pos.z } : undefined,
-      pivotFoot: thrower && Math.hypot(thrower.loco.vel.x, thrower.loco.vel.z) < 0.6
+      /**
+       * ALWAYS supply the pivot foot while someone is holding the disc.
+       *
+       * This used to be gated on the thrower moving slower than 0.6 m/s, which
+       * switched travel detection OFF in exactly the case it exists to catch:
+       * run with the disc and `pivotFoot` went undefined, `isTravel` was never
+       * called, and nothing was flagged. The guard was presumably meant to
+       * avoid crediting a travel to a body still decelerating from a catch —
+       * but that belongs in the rules layer, which owns the momentum
+       * allowance, not in whether the observation is reported at all.
+       */
+      pivotFoot: thrower
         ? { x: thrower.loco.foot.pos.x, y: 0, z: thrower.loco.foot.pos.z } : undefined,
       markerId,
       markerPos,

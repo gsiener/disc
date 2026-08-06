@@ -153,6 +153,13 @@ export interface LocoPlayer {
   stateDur: number;
   /** True while the body is on the ground rather than upright. */
   prone: boolean;
+  /**
+   * True while this body is a thrower standing on an established pivot. Such a
+   * body does not yield ground to the soft tier: a marker who displaces the
+   * thrower is committing a foul, not doing physics, and letting separation
+   * walk him off his pivot moves the disc up the pitch for free.
+   */
+  anchored: boolean;
 
   /** 0..100. */
   stamina: number;
