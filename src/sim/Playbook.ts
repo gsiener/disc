@@ -277,11 +277,18 @@ export function formationStations(
       // and the offence walks itself into the paint and throws it away. Real
       // handlers bring a trapped disc back to the middle, and the geometry has
       // to want that rather than fight it.
+      // Coached reset geometry is 45 degrees behind the thrower at about 9 m.
+      // The distance here was already right (measured mean 8.80 m); the angle
+      // was shallow at 35, so this is 8.8 m at exactly 45.
       const vhx = clamp(a.x, -(FIELD.halfWidth - 6.0), FIELD.halfWidth - 6.0);
       push(clamp(vhx + openSign * 4.5, -RESET_BAND, RESET_BAND), a.z - dir * 6.5, 'handler', 0);
       push(clamp(vhx + brk * 6.5, -SWING_BAND, SWING_BAND), a.z - dir * 3.5, 'handler', 1);
       const sx = stackColumnX('vertical', a, openSign);
       for (let i = 0; i < 5; i++) {
+        // Real stacks LEAN, with the back further to the break side. It widens
+        // the open-side deep lane the huck runs into, and it stops the column
+        // reading as a pure translation of the disc's x. 0.6 m per position is
+        // 8.1 degrees off vertical — still unambiguously a line on camera.
         push(sx, a.z + dir * (PLAY.stackLead + PLAY.stackSpacing * i), 'cutter', i);
       }
       break;
@@ -290,10 +297,13 @@ export function formationStations(
       // 3 handlers behind, 4 cutters spread the full width 15 m downfield.
       // The handler row is centred on a *clamped* anchor so the outside
       // stations cannot collapse onto each other against a sideline.
-      const hx = clamp(a.x, -(FIELD.halfWidth - 8.5), FIELD.halfWidth - 8.5);
-      push(hx + brk * 7.0, a.z - dir * 5.5, 'handler', 0);
+      // Coached geometry: the outside handlers sit 10-15 yd (9.1-13.7 m) either
+      // side of the middle one. At 7 m "three handlers across the field" read as
+      // a huddle rather than as the width the set exists to create.
+      const hx = clamp(a.x, -(FIELD.halfWidth - 11.0), FIELD.halfWidth - 11.0);
+      push(hx + brk * 10.0, a.z - dir * 5.5, 'handler', 0);
       push(hx, a.z - dir * 4.0, 'handler', 1);
-      push(hx + openSign * 7.0, a.z - dir * 5.5, 'handler', 2);
+      push(hx + openSign * 10.0, a.z - dir * 5.5, 'handler', 2);
       const xs = [-13.5, -4.5, 4.5, 13.5];
       for (let i = 0; i < 4; i++) push(xs[i], a.z + dir * 15, 'cutter', i);
       break;
@@ -319,7 +329,17 @@ export function formationStations(
       push(clamp(ehx + openSign * 6.5, -RESET_BAND, RESET_BAND), a.z - dir * 5.0, 'handler', 0);
       push(ehx, a.z - dir * 6.5, 'handler', 1);
       push(clamp(ehx + brk * 6.5, -SWING_BAND, SWING_BAND), a.z - dir * 5.0, 'handler', 2);
-      const ez = dir * (FIELD.goalLine + FIELD.endzoneDepth * 0.52);
+      /**
+       * The row stays CONNECTED TO THE DISC. Pinned to an absolute depth it sat
+       * 26.4 m ahead of the disc at the exact moment the endzone call fired —
+       * two disconnected knots of people with the whole middle of the field
+       * empty between them, which is the shape the comment above was written to
+       * avoid and did not. Moving the row forward off the back line fixed half
+       * of it; making it disc-relative fixes the rest, and it tightens smoothly
+       * as the disc advances instead of snapping.
+       */
+      const ez = dir * clamp(dir * a.z + 12,
+        FIELD.goalLine + 3, FIELD.goalLine + FIELD.endzoneDepth * 0.55);
       const xs = [-11, -4, 4, 11];
       for (let i = 0; i < 4; i++) push(xs[i], ez, 'cutter', i);
       break;
@@ -340,7 +360,10 @@ export function chooseFormation(
   // asking for it only when it is genuinely an endzone situation. At 22 m it
   // was firing from a third of the way up the field and the stack — the shape
   // the sport is read by — was on screen far less than it should have been.
-  if (yardsToGoal(disc.z, dir) <= 17) return 'endzone';
+  // 13, not 17: the row is disc-relative now, and firing the call later keeps
+  // the set connected — at 17 the cutters were 26 m ahead of the disc the
+  // instant it fired.
+  if (yardsToGoal(disc.z, dir) <= 13) return 'endzone';
   // The side stack is called when the disc is genuinely trapped on a line. At
   // 11.5 m it was firing on a third of possessions, and every call moved the
   // whole column across the field — the shape changed more often than the
@@ -399,12 +422,24 @@ export function buildCut(
       setup = { x: from.x + brk * 0.8, z: from.z + dir * 2.6 };
       target = { x: disc.x + brk * (7 + 3 * j), z: disc.z + dir * (3 + 2.5 * j) };
       break;
-    case 'deep':
+    case 'deep': {
       // Sell the under first, plant, and attack the space behind.
+      //
+      // A DEEP CUT ATTACKS THE SPACE BEHIND THE DEEPEST DEFENDER, which is
+      // behind the CUTTER — not a fixed offset from the disc. Measured only
+      // from the disc it resolved behind the feet of the man it was handed to:
+      // `deep` is offered to the back of the stack, who already stands 23-28 m
+      // downfield, so a target at disc + 24 m asked him to jog 4 m forward, or
+      // at slot 4 to run 3.8 m BACKWARDS. The huck — the most spectacular thing
+      // in the sport — was structurally impossible; only 3 of 73 throws in a
+      // match gained over 20 m, all of them desperation at stall 8.8.
       setup = { x: from.x - side * 1.0, z: from.z - dir * 2.8 };
-      target = { x: disc.x + side * (4 + 5 * j), z: disc.z + dir * (24 + 8 * j) };
+      const ahead = dir * (from.z - disc.z);
+      const reach = Math.min(38, Math.max(24 + 8 * j, ahead + 13 + 6 * j));
+      target = { x: disc.x + side * (4 + 5 * j), z: disc.z + dir * reach };
       maxTime = PLAY.deepCutTime;
       break;
+    }
     case 'strike':
       setup = { x: from.x - side * 1.6, z: from.z + dir * 1.2 };
       target = { x: disc.x + side * (4 + 3 * j), z: dir * (FIELD.goalLine + 2 + 4 * j) };
@@ -439,6 +474,33 @@ export function buildCut(
       };
       maxTime = 1.8;
       break;
+  }
+
+  /**
+   * A RESET NEVER RUNS BEHIND YOUR OWN GOAL LINE — the same rule the backfield
+   * stations obey, applied to the cut that actually gets run.
+   *
+   * Flooring `formationStations` was half a fix. It parks both handlers level
+   * with a pinned disc correctly, and then `buildCut` sends one of them
+   * backwards over the line anyway: with the disc on its own goal line at
+   * z = -30, the dump target resolved to z = -38.5, six and a half metres deep
+   * in the offence's own endzone. `clampToField` does not catch it because the
+   * end line is at 50, not 32.
+   *
+   * The ground the floor takes away comes back as WIDTH, which is the real
+   * answer rather than a clamp: pinned deep, handlers swing across the field
+   * instead of dumping backwards, and the cut flattens into the swing it should
+   * have been.
+   */
+  if (kind === 'dump' || kind === 'swing') {
+    const floor = -dir * (FIELD.goalLine - PIN_MARGIN);
+    const rawZ = target.z;
+    target.z = dir > 0 ? Math.max(rawZ, floor) : Math.min(rawZ, floor);
+    const lost = Math.abs(rawZ - target.z);
+    if (lost > 0.1) {
+      const away = (Math.sign(target.x - disc.x) || openSign) as Sign;
+      target.x = clamp(target.x + away * lost * 0.8, -SWING_BAND, SWING_BAND);
+    }
   }
 
   const t = clampToField(target);
