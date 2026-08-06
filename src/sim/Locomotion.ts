@@ -1126,6 +1126,24 @@ export class Locomotion implements System {
   }
 
   private invMass(p: LocoPlayer): number {
+    /**
+     * A THROWER ON HIS PIVOT IS IMMOVABLE, because the alternative is not
+     * physics — it is a foul.
+     *
+     * `anchored` already makes the separation tier yield him no ground, but
+     * hard contact split its positional correction by inverse mass, so the
+     * marker standing on him pushed him off his pivot a few centimetres at a
+     * time. That is the limit cycle the travel work could not explain: the
+     * inward pull genuinely converged (traced at 2.17 -> 1.85 -> 1.54 -> 1.23 m)
+     * and then contact shoved the body back out and it started over. Ablating
+     * separation changed nothing because separation was never the tier doing
+     * the shoving.
+     *
+     * Infinite mass here means the marker takes the whole correction, which is
+     * both the correct resolution and the correct call: a defender who displaces
+     * the thrower has fouled him.
+     */
+    if (p.anchored) return 0;
     // Bracing and being on the ground both make you harder to move.
     const str = clamp01(p.attr.strength / 100);
     const eff = p.attr.mass * (1 + 0.35 * str) * (p.prone ? 2.5 : 1);

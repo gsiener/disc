@@ -121,9 +121,38 @@ let throwDist = 0;
 let lastRelease: { x: number; z: number } | null = null;
 let maxStall = 0;
 const throwLengths: number[] = [];
+/**
+ * Pull geometry. The pull opens every point, so a short one is the first thing
+ * anybody sees — and for a long time every pull in this game died at midfield
+ * (measured mean carry 42.9 m against a far goal line 64 m away) because it was
+ * thrown as an ordinary backhand. These record where each one actually goes.
+ */
+const pullCarry: number[] = [];
+const pullLandX: number[] = [];
+const pullHang: number[] = [];
+let pullLive: { z: number; dir: number; t: number } | null = null;
 ctx.events.on('pull', (p: any) => {
   say('PULL', `${who(p?.playerId ?? p?.puller)} sends it away`);
+  pullLive = {
+    z: p?.from?.z ?? 0,
+    dir: game.gs.attackDir[game.gs.pullingTeam],
+    t: clockNow,
+  };
 });
+const pullLanded = (x: number, z: number): void => {
+  if (!pullLive) return;
+  pullCarry.push(pullLive.dir * (z - pullLive.z));
+  pullLandX.push(x);
+  pullHang.push(clockNow - pullLive.t);
+  pullLive = null;
+};
+ctx.events.on('disc:caught', (p: any) => {
+  if (pullLive) pullLanded(p?.pos?.x ?? 0, p?.pos?.z ?? 0);
+});
+ctx.events.on('disc:grounded', (p: any) => {
+  if (pullLive) pullLanded(p?.pos?.x ?? 0, p?.pos?.z ?? 0);
+});
+ctx.events.on('turnover', () => { pullLive = null; });
 ctx.events.on('disc:released', (p: any) => {
   const id = game.gs.thrower;
   lastRelease = { x: p?.pos?.x ?? 0, z: p?.pos?.z ?? 0 };
@@ -229,6 +258,30 @@ ge(gs.score[0] + gs.score[1], 2, 'at least two points were scored');
 ok(scoreProgress[scoreProgress.length - 1] > scoreProgress[0], 'the score advanced over the run');
 ge(gs.point, 3, 'more than two points were played');
 ge(events.get('pull') ?? 0, 3, 'a pull opened every point');
+
+/**
+ * A pull has to travel. Own goal line to the far goal line is 64 m; a real pull
+ * lands near or inside the far endzone. The floor here is 55 m rather than 64
+ * because a weaker arm and the seeded jitter legitimately come up short of the
+ * line — but nothing should be dying at midfield, which is what 42.9 m was.
+ */
+{
+  const mean = pullCarry.reduce((a, b) => a + b, 0) / Math.max(1, pullCarry.length);
+  const shortest = Math.min(...pullCarry);
+  ok(pullCarry.length >= 3, 'pulls were measured', `n=${pullCarry.length}`);
+  ok(mean >= 58, 'the average pull reaches the far endzone', `mean=${mean.toFixed(1)} m`);
+  ok(shortest >= 55, 'even the shortest pull clears midfield by a distance',
+    `min=${shortest.toFixed(1)} m`);
+  // Hang is the other half of a pull: the cover has to be able to run under it.
+  const hang = pullHang.reduce((a, b) => a + b, 0) / Math.max(1, pullHang.length);
+  ok(hang >= 4.2 && hang <= 7.0, 'a pull hangs long enough to be covered',
+    `mean=${hang.toFixed(2)} s`);
+  // And it has to stay on the field. A hyzer pull fades hard; if the aim does
+  // not undo that fade it lands on a sideline, which is a turnover, not a pull.
+  const worst = Math.max(...pullLandX.map(Math.abs));
+  ok(worst <= FIELD.SIDELINE - 0.5, 'no pull lands on a sideline',
+    `worst |x|=${worst.toFixed(1)} of ${FIELD.SIDELINE}`);
+}
 ge(thrown, 25, 'plenty of throws left a hand');
 ge(events.get('disc:caught') ?? 0, 15, 'completions happened');
 ok((events.get('score') ?? 0) === gs.score[0] + gs.score[1], 'one score event per point on the board');

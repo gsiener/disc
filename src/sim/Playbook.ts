@@ -212,6 +212,12 @@ export interface Station {
  */
 const RESET_BAND = 10.5;
 const SWING_BAND = 13.0;
+/**
+ * How far in front of its own goal line the backfield is allowed to set up.
+ * See the floor in `formationStations` — this is what stops a pinned offence
+ * dumping itself backwards into its own endzone.
+ */
+const PIN_MARGIN = 2.0;
 
 /**
  * X of the column a stack set is built on. One source of truth: the formation
@@ -228,8 +234,29 @@ export function formationStations(
 ): Station[] {
   const brk = -openSign as Sign;
   const out: Station[] = [];
+  /**
+   * A RESET NEVER SETS UP BEHIND YOUR OWN GOAL LINE.
+   *
+   * Handler stations are placed relative to the disc — `a.z - dir * 6.5` and so
+   * on — which is right in the middle of the field and catastrophic when the
+   * disc is already on your own line: the dump goes backwards over it, the next
+   * one goes further, and the offence walks itself into its own endzone one
+   * legal-looking reset at a time. Traced in a real match: a team caught the
+   * pull on their own goal line at z=-30.2 and completed passes to -36.1, then
+   * -42.1, then -46.4, four metres from their own end line.
+   *
+   * Real handlers pinned deep go LATERAL, not backward — a swing, not a dump —
+   * because backing the disc over your own line is how you hand over a score.
+   * So the backfield stations get a floor a couple of metres in front of the
+   * line, and the reset flattens into a lateral option exactly when it should.
+   *
+   * Cutter stations are `a.z + dir * ...` and always downfield, so this floor
+   * never touches them.
+   */
+  const floorZ = -dir * (FIELD.goalLine - PIN_MARGIN);
   const push = (x: number, z: number, role: 'handler' | 'cutter', depth: number): void => {
-    const p = clampToField({ x, z });
+    const zz = dir > 0 ? Math.max(z, floorZ) : Math.min(z, floorZ);
+    const p = clampToField({ x, z: zz });
     out.push({ x: p.x, z: p.z, role, depth });
   };
 

@@ -63,6 +63,21 @@ import {
 
 /** Sim seconds the receiving line waits before the pull goes up. */
 const PRE_PULL_WAIT = 2.0;
+
+/**
+ * Pull release, fitted against the aero rather than guessed. See `doPull`.
+ * `PULL_NOSE` is an offset, not an absolute: the backhand spec sits at -0.02
+ * and the fit wants a flat nose, so this cancels it.
+ */
+const PULL_SPEED = 32;
+const PULL_BANK = -0.50;
+const PULL_NOSE = 0.02;
+const PULL_SPIN = 0.85;
+/** Metres of cross-field fade the aim has to undo, and the carry it fades over. */
+const PULL_DRIFT = 8.4;
+const PULL_CARRY = 66;
+/** Where a pull is aimed: the middle of the field, just inside the far endzone. */
+const PULL_TARGET_Z = FIELD.GOAL_LINE + 4;
 /** Sim seconds a check takes before the disc is live again. */
 const CHECK_WAIT = 0.65;
 /** How close a player must be to a dead disc to pick it up (m). */
@@ -1725,6 +1740,34 @@ export class GameSystem implements System {
     this.lastPossession = gs.possession;
   }
 
+  /**
+   * The pull.
+   *
+   * A PULL IS NOT A BACKHAND, and treating it as one is why every pull in this
+   * game used to die at midfield — measured mean carry 42.9 m, max 46.2 m,
+   * against a far goal line 64 m away.
+   *
+   * The backhand table tops out at 27 m/s, and 27 m/s is not enough: swept
+   * against the real aero, a maximum-power backhand carries 54.7 m at its best
+   * launch angle and nothing you do with `power` reaches the endzone. That is
+   * correct, because a pull is the one throw in the sport taken with a run-up
+   * and a full body rotation rather than from a standing pivot with a mark in
+   * your face. So it gets a release speed of its own rather than a wider
+   * backhand range, which would hand the same speed to every throw in a
+   * possession.
+   *
+   * Two things the sweep found that are worth keeping written down:
+   *
+   *   - Throwing harder made it WORSE before it made it better. At 29 m/s the
+   *     carry FELL to 50.1 m and the sideways drift blew out to 33 m, because
+   *     the disc turns over at speed and dives. Brute force is not the lever.
+   *   - HYZER is the lever. Half a radian of it holds the line against that
+   *     turnover, which is exactly how real pullers throw a big one.
+   *
+   * Fitted: 32 m/s, launch 0.10 rad, bank -0.50, flat nose, spin 0.85 carries
+   * 66 m in 5.7 s peaking 7.7 m up — into the far endzone, with enough hang for
+   * the cover to run under it.
+   */
   private doPull(): void {
     const gs = this.gs;
     const team = gs.pullingTeam;
@@ -1735,14 +1778,45 @@ export class GameSystem implements System {
     this.pullerId = puller.id;
 
     const dir = gs.attackDir[team];
-    const lp = puller.loco;
     this.releaseOrigin(puller, _from);
-    // Aim across to the far side so the pull is a real cross-field bomb.
-    const bias = lp.pos.x > 0 ? -1 : 1;
-    _aim.set(bias * 0.22, 0, dir);
+
+    /**
+     * AIM AT A SPOT, NOT DOWN THE FIELD. The puller lines up wherever the line
+     * puts him — measured, that is about 15 m off centre, hard against a
+     * sideline — so a heading of "straight downfield plus a correction" starts
+     * from the wrong place and finishes out of bounds. Aiming at the middle of
+     * the far endzone is self-correcting for wherever he happens to stand.
+     *
+     * Then offset that spot by the fade. A hyzer pull drifts `PULL_DRIFT`
+     * metres sideways over its flight — along the thrower's right in this
+     * coordinate convention, mirrored by hand — so aiming that far the other
+     * way lands it on the spot rather than beside it. This is what a player
+     * does: pick a target, account for the curve.
+     */
+    const handSign = puller.ai.handed === 'left' ? -1 : 1;
+    let hx = -_from.x;
+    let hz = dir * PULL_TARGET_Z - _from.z;
+    const len = Math.hypot(hx, hz) || 1;
+    hx /= len; hz /= len;
+    const fx = -hz * handSign, fz = hx * handSign;      // unit fade direction
+    _aim.set(hx * PULL_CARRY - fx * PULL_DRIFT, 0, hz * PULL_CARRY - fz * PULL_DRIFT);
+
+    /**
+     * Arm and a seeded nudge, so fourteen pulls are not one pull — but kept
+     * tight on purpose. The carry is very sensitive above the fitted speed:
+     * measured, 32.6 m/s hangs 4.6 s and 34.6 m/s hangs 3.2 s, because past the
+     * fit the disc turns over and dives. `doPull` above has the numbers. The
+     * puller is always the strongest arm on the line, so `arm` is centred to
+     * land on PULL_SPEED for a top arm rather than to exceed it.
+     */
+    const arm = 0.94 + 0.06 * (puller.ai.attr.throwPower / 100);
+    const jitter = 0.985 + 0.03 * this.rng.next();
     const vel = this.discRuntime.release({
       type: 'backhand', from: _from, aim: _aim,
-      power: 0.96, angle: 0.30, spin: 0.92,
+      power: 1, angle: 0, spin: PULL_SPIN,
+      speed: PULL_SPEED * arm * jitter,
+      bank: PULL_BANK,
+      nose: PULL_NOSE,
       hand: puller.ai.handed === 'left' ? 'L' : 'R',
     });
     this.hadInBounds = true;

@@ -468,6 +468,19 @@ export interface ThrowOptions {
   nose?: number;
   /** Ground height under the throw. */
   groundY?: number;
+  /**
+   * Absolute release speed in m/s, overriding the `power` lerp across the
+   * throw's own speed range.
+   *
+   * This exists for the pull and should stay that way. A pull is the one throw
+   * in the sport taken with a run-up and a full body rotation instead of from
+   * a standing pivot with a mark in your face, and it is genuinely faster than
+   * anything in the throw table: the backhand spec tops out at 27 m/s, and a
+   * pull that actually reaches the far endzone needs about 32. Widening the
+   * backhand's range instead would hand that speed to every throw in a
+   * possession, which is not the same claim.
+   */
+  speed?: number;
   /** Reuse an existing state object instead of allocating. */
   out?: DiscState;
 }
@@ -554,7 +567,7 @@ export function throwDisc(
   s.orient.setFromRotationMatrix(_mat).normalize();
 
   s.pos.copy(from);
-  s.vel.copy(_vdir).multiplyScalar(throwSpeed(type, power));
+  s.vel.copy(_vdir).multiplyScalar(opts.speed ?? throwSpeed(type, power));
   s.omega.set(0, 0, spec.spinSign * hand * throwSpinRate(type, spin));
 
   refreshDerived(s, ZERO_WIND);

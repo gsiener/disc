@@ -525,6 +525,8 @@ export interface ThrowRequest {
   hand?: 'R' | 'L';
   bank?: number;
   nose?: number;
+  /** Absolute release speed in m/s, overriding `power`. See ThrowOptions. */
+  speed?: number;
 }
 
 const _wind0 = new THREE.Vector3();
@@ -591,6 +593,7 @@ export class DiscRuntime {
       hand: req.hand ?? 'R',
       bank: req.bank,
       nose: req.nose,
+      speed: req.speed,
       groundY: this.groundAt(req.from.x, req.from.z),
       out: this.state,
     };
