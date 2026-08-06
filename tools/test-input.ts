@@ -595,7 +595,9 @@ section('human controller (keyboard + pad) -> intent');
     r.src.setKey('KeyD', true);
     i = r.step(20);
     near(Math.hypot(i.move.x, i.move.z), 1, 1e-9, 'W+D is normalised, not 1.414 — no diagonal speed bug');
-    near(i.move.x, Math.SQRT1_2, 1e-9, 'diagonal splits evenly on X');
+    // At yaw 0 the lens looks down +Z, so screen-right is -X. This expectation
+    // used to be +X, which is what shipped the mirrored strafe.
+    near(i.move.x, -Math.SQRT1_2, 1e-9, 'diagonal splits evenly on X');
     near(i.move.z, Math.SQRT1_2, 1e-9, 'diagonal splits evenly on Z');
 
     r.src.setKey('KeyW', false);
@@ -612,6 +614,48 @@ section('human controller (keyboard + pad) -> intent');
     const i = r.step(20);
     near(i.move.x, 1, 1e-9, 'with the camera looking down +X, forward is +X');
     near(i.move.z, 0, 1e-9, 'and has no +Z component');
+  }
+
+  /**
+   * --- the lateral axis is not mirrored ---------------------------------
+   *
+   * This is the assertion the file was missing, and its absence let the
+   * controls ship inverted: the block above only ever pressed W, so a sign
+   * error on the strafe term was invisible.
+   *
+   * Ground truth is three.js, not algebra. For a camera with yaw y the lens
+   * looks along (sin y, cos y) and column 0 of its `matrixWorld` — screen
+   * right — is (-cos y, sin y). These are right-handed axes, so a camera
+   * looking down +Z has +X on its LEFT. Verified directly against
+   * `THREE.PerspectiveCamera.lookAt` for the real tele rig geometry
+   * (x = -42, y = 22, dollying along z); every configuration agreed.
+   */
+  {
+    for (const yaw of [0, Math.PI / 2, Math.PI, -Math.PI / 2, 1.034, 2.108]) {
+      const r = rig();
+      r.h.cameraYaw = yaw;
+      r.src.setKey('KeyD', true);
+      const i = r.step(20);
+      const rx = -Math.cos(yaw), rz = Math.sin(yaw);
+      near(i.move.x, rx, 1e-6, `strafing right at yaw ${yaw.toFixed(3)} goes screen-right in x`);
+      near(i.move.z, rz, 1e-6, `strafing right at yaw ${yaw.toFixed(3)} goes screen-right in z`);
+    }
+  }
+
+  // Forward and strafe must stay perpendicular and correctly handed. With
+  // f = (sin y, cos y) and r = (-cos y, sin y) the planar cross product
+  // f.x*r.z - f.z*r.x is sin^2 + cos^2 = +1 for every yaw; it is -1 exactly
+  // when the lateral axis is mirrored, which is the bug this guards.
+  {
+    const yaw = 0.7;
+    const f = rig(); f.h.cameraYaw = yaw; f.src.setKey('KeyW', true);
+    const fi = f.step(20);
+    const s = rig(); s.h.cameraYaw = yaw; s.src.setKey('KeyD', true);
+    const si = s.step(20);
+    near(fi.move.x * si.move.x + fi.move.z * si.move.z, 0, 1e-6,
+      'forward and strafe are perpendicular');
+    near(fi.move.x * si.move.z - fi.move.z * si.move.x, 1, 1e-6,
+      'strafe-right sits clockwise of forward, not anticlockwise');
   }
 
   // --- pad beats keyboard, analogue sprint ------------------------------
@@ -698,7 +742,7 @@ section('human controller (keyboard + pad) -> intent');
     r.src.setAxis(0, 2, 1);                  // right stick hard right
     let i = r.step(1);
     ok(i.receiver.selectFresh, 'pushing the aim stick commits a directional receiver select');
-    near(i.receiver.selectX, 1, 1e-9, 'the select direction is +X');
+    near(i.receiver.selectX, -1, 1e-9, 'the select direction is screen-right, which is -X at camera yaw 0');
     ok(!i.receiver.callCut, 'one step of hold is not a cut call');
     i = r.step(20);                          // 0.175 s total
     ok(!i.receiver.callCut, 'still under the 0.18 s cut threshold', `held=${fmt(i.receiver.holdTime)}`);

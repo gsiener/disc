@@ -181,11 +181,26 @@ export class HumanController implements IntentSource {
       this.moveVec.x = this.kbMove.x * this.kbMoveMag;
       this.moveVec.y = this.kbMove.y * this.kbMoveMag;
     }
+    /**
+     * Camera basis. `cameraYaw` is atan2(fx, fz), so the direction the lens
+     * looks along is (sin y, cos y) and SCREEN-RIGHT IS (-cos y, sin y).
+     *
+     * That second vector is the one to be careful with, and it is worth
+     * spelling out because the sign is counter-intuitive and was wrong here:
+     * these are right-handed coordinates, so a camera looking down +Z has +X
+     * on its *left*, not its right. Cross-check it against three.js rather
+     * than against intuition — column 0 of the camera's `matrixWorld` is the
+     * ground truth, and `tools/test-input.ts` now asserts agreement with it.
+     *
+     * The lateral term used to be `+moveVec.x * cy` / `-moveVec.x * sy`, the
+     * exact negation of screen-right. Forward and back were correct, so the
+     * bug read as the controls being backwards only some of the time.
+     */
     const cy = Math.cos(this.cameraYaw);
     const sy = Math.sin(this.cameraYaw);
     const mv = intent.move;
-    mv.x = this.moveVec.x * cy + this.moveVec.y * sy;
-    mv.z = -this.moveVec.x * sy + this.moveVec.y * cy;
+    mv.x = -this.moveVec.x * cy + this.moveVec.y * sy;
+    mv.z = this.moveVec.x * sy + this.moveVec.y * cy;
     mv.mag = Math.min(1, Math.sqrt(mv.x * mv.x + mv.z * mv.z));
 
     /* ---- sprint / brake ------------------------------------------------ */
@@ -222,8 +237,10 @@ export class HumanController implements IntentSource {
     const aimMag = mag2(this.aimVec);
     const aim = intent.aim;
     if (aimMag > 1e-4) {
-      const wx = this.aimVec.x * cy + this.aimVec.y * sy;
-      const wz = -this.aimVec.x * sy + this.aimVec.y * cy;
+      // Same basis as movement above — aim was mirrored by the same sign, so
+      // pushing the aim stick right sent the disc screen-left.
+      const wx = -this.aimVec.x * cy + this.aimVec.y * sy;
+      const wz = this.aimVec.x * sy + this.aimVec.y * cy;
       const inv = 1 / Math.max(1e-6, Math.sqrt(wx * wx + wz * wz));
       aim.x = wx * inv; aim.z = wz * inv;
       aim.mag = Math.min(1, aimMag);

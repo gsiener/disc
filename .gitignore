@@ -4,8 +4,9 @@ shots/
 .DS_Store
 *.log
 
-# agent scratch probes
-tools/_*.mjs
+# agent scratch probes. Node runs TypeScript natively now, so probes are as
+# often _foo.ts as _foo.mjs — match the prefix, not the extension.
+tools/_*
 
 # local source snapshots
 .snapshots/
