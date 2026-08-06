@@ -367,9 +367,26 @@ export function formationStations(
       // side of the middle one. At 7 m "three handlers across the field" read as
       // a huddle rather than as the width the set exists to create.
       const hx = clamp(a.x, -(FIELD.halfWidth - 11.0), FIELD.halfWidth - 11.0);
-      push(hx + brk * 10.0, a.z - dir * 5.5, 'handler', 0);
+      /**
+       * STATION 0 IS THE RESET, and it must be on the OPEN side.
+       *
+       * `assignHandlerStations` fills these in order and treats station 0 as
+       * the dump — the vertical set is built that way, with station 0 at
+       * `openSign * 6.2`. The horizontal set had station 0 on the BREAK side,
+       * so the moment ho was enabled the offence nominated a reset standing
+       * behind the mark: the one place in the sport a reset may never be.
+       *
+       * That is what the measured failure was. With ho on, a reset handler was
+       * stationed behind the disc in 84.6% of held frames against 90.0% for
+       * vert, and was in position at high stall 88.0% against 92.8% — not
+       * because three handlers are harder to place, but because the first one
+       * placed was on the wrong side of the field.
+       *
+       * Open side, centre, break side. The break-side handler is the swing.
+       */
+      push(hx + openSign * 10.0, a.z - dir * 5.5, 'handler', 0);
       push(hx, a.z - dir * 4.0, 'handler', 1);
-      push(hx + openSign * 10.0, a.z - dir * 5.5, 'handler', 2);
+      push(hx + brk * 10.0, a.z - dir * 5.5, 'handler', 2);
       const xs = [-13.5, -4.5, 4.5, 13.5];
       for (let i = 0; i < 4; i++) push(xs[i], a.z + dir * 15, 'cutter', i);
       break;
