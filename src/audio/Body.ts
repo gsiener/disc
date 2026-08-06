@@ -33,6 +33,30 @@ import { clamp, percussive, setAt, sweep } from './Env.ts';
 const OFFENCE_CALLS = ['up', 'here', 'hey', 'open', 'go'];
 const DEFENCE_CALLS = ['mark', 'go', 'hey'];
 
+/**
+ * How much of the broadcast each kind of body sound is entitled to, once the
+ * touchline law has stopped burying all of them equally.
+ *
+ * The ordering is the whole point and it is not the ordering physics would give.
+ * A cleat plant is the loudest thing a body actually does at one metre and the
+ * least interesting thing it does on television, because there are twenty-eight
+ * of them a second and they are texture. A layout is quieter at the source and
+ * is an event. So the constants run the other way round from the physics, which
+ * is what a fader is for.
+ */
+const PRESENCE = {
+  footstep: 0.40,
+  /** A cut is the signature sound of field sport; it is worth more than a step. */
+  scuff: 0.62,
+  land: 0.72,
+  layout: 1.00,
+  bump: 0.60,
+  /** A shout carries — that is what shouting is for. */
+  call: 0.85,
+  /** Breath is intimacy and only ever belongs to the nearest body. */
+  breath: 0.55,
+} as const;
+
 /** The subset of `LocoPlayer` this layer reads. Structural: no import needed. */
 export interface BodyState {
   id: number;
@@ -82,10 +106,30 @@ export class BodyLayer {
     return this.dist2(x, y, z) < c * c;
   }
 
-  private point(x: number, y: number, z: number, verb: number, ref = 2.6): PannerNode {
-    const p = this.g.panner(x, y, z, { ref, rolloff: 1.3 });
+  /**
+   * A point on the pitch, on the touchline law (see `Graph.TOUCHLINE`). Level is
+   * NOT set here: distance is depth, and how much a given event matters is a mix
+   * decision that belongs at the call site, which is why every voice below
+   * multiplies its own peak by a `PRESENCE` constant instead.
+   */
+  private point(x: number, y: number, z: number, verb: number): PannerNode {
+    const p = this.g.panner(x, y, z);
     this.g.toField(p, verb);
     return p;
+  }
+
+  /**
+   * A smooth taper across the last quarter of the cull radius. Under a physical
+   * distance law the cull boundary was inaudible because everything out there
+   * was already 30 dB down; under the touchline law a body at 63 m is only 10 dB
+   * down, so a hard cut at 64 m is a footstep that pops in and out as the camera
+   * drifts. This is the fade that stops that being a bug report.
+   */
+  private presence(x: number, y: number, z: number, k: number): number {
+    const c = this.g.budget.cull;
+    const d = Math.sqrt(this.dist2(x, y, z));
+    const fade = clamp((c - d) / (c * 0.25), 0, 1);
+    return k * fade * fade;
   }
 
   private noise(): AudioBufferSourceNode {
@@ -115,7 +159,9 @@ export class BodyLayer {
     // is worse than no footsteps at all.
     const jitter = foot === 'L' ? 0.94 : 1.06;
 
-    const p = this.point(x, Math.max(0.02, y), z, 0.10, 3.0);
+    const pr = this.presence(x, y, z, PRESENCE.footstep);
+    if (pr < 0.01) return;
+    const p = this.point(x, Math.max(0.02, y), z, 0.10);
     const mix = g.gain(1);
     mix.connect(p);
 
@@ -124,7 +170,7 @@ export class BodyLayer {
     const lp = g.filter('lowpass', (210 + 130 * v) * jitter, 0.9);
     const g1 = g.gain(0.0001);
     n1.connect(lp); lp.connect(g1); g1.connect(mix);
-    const e1 = percussive(g1.gain, t, (0.16 + 0.30 * v) * (1.15 - 0.35 * h), 0.006, 0.045 + 0.02 * v);
+    const e1 = percussive(g1.gain, t, (0.16 + 0.30 * v) * (1.15 - 0.35 * h) * pr, 0.006, 0.045 + 0.02 * v);
     n1.start(t, this.noiseOffset());
     n1.stop(e1 + 0.02);
 
@@ -134,7 +180,7 @@ export class BodyLayer {
     const g2 = g.gain(0.0001);
     n2.connect(bp); bp.connect(g2); g2.connect(mix);
     sweep(bp.frequency, (2400 + 2600 * h) * jitter, (900 + 700 * h) * jitter, t, 0.03);
-    const e2 = percussive(g2.gain, t, (0.06 + 0.30 * v) * h, 0.0012, 0.016 + 0.020 * h);
+    const e2 = percussive(g2.gain, t, (0.06 + 0.30 * v) * h * pr, 0.0012, 0.016 + 0.020 * h);
     n2.start(t, this.noiseOffset());
     n2.stop(e2 + 0.02);
 
@@ -153,7 +199,9 @@ export class BodyLayer {
     const v = clamp(speed, 1, 12) / 8;
     const dur = 0.10 + 0.10 * v;
 
-    const p = this.point(x, Math.max(0.02, y), z, 0.14, 2.8);
+    const pr = this.presence(x, y, z, PRESENCE.scuff);
+    if (pr < 0.01) return;
+    const p = this.point(x, Math.max(0.02, y), z, 0.14);
     const mix = g.gain(1);
     mix.connect(p);
 
@@ -163,7 +211,7 @@ export class BodyLayer {
     n.connect(bp); bp.connect(vg); vg.connect(mix);
     sweep(bp.frequency, 2200 + 1600 * v, 620, t, dur);
     // Slow attack: a scrape starts as the foot loads, it does not begin at peak.
-    const end = percussive(vg.gain, t, 0.13 + 0.26 * v, 0.018, dur);
+    const end = percussive(vg.gain, t, (0.13 + 0.26 * v) * pr, 0.018, dur);
     n.start(t, this.noiseOffset());
     n.stop(end + 0.02);
 
@@ -172,7 +220,7 @@ export class BodyLayer {
     const lp = g.filter('lowpass', 380, 0.8);
     const g2 = g.gain(0.0001);
     n2.connect(lp); lp.connect(g2); g2.connect(mix);
-    const e2 = percussive(g2.gain, t, 0.10 + 0.18 * v, 0.01, dur * 0.7);
+    const e2 = percussive(g2.gain, t, (0.10 + 0.18 * v) * pr, 0.01, dur * 0.7);
     n2.start(t, this.noiseOffset());
     n2.stop(e2 + 0.02);
 
@@ -197,7 +245,9 @@ export class BodyLayer {
     const t = g.now + 0.004;
     const k = clamp(impact / 6, 0.15, 1.4);
 
-    const p = this.point(x, Math.max(0.02, y), z, layout ? 0.22 : 0.12, 3.2);
+    const pr = this.presence(x, y, z, layout ? PRESENCE.layout : PRESENCE.land);
+    if (pr < 0.01) return;
+    const p = this.point(x, Math.max(0.02, y), z, layout ? 0.22 : 0.12);
     const mix = g.gain(1);
     mix.connect(p);
     const srcs: AudioScheduledSourceNode[] = [];
@@ -213,7 +263,7 @@ export class BodyLayer {
     sweep(osc.frequency, f0 * 1.8, f0, t, layout ? 0.12 : 0.06);
     const og = g.gain(0.0001);
     osc.connect(og); og.connect(mix);
-    const e0 = percussive(og.gain, t, (layout ? 0.55 : 0.26) * k, 0.003, layout ? 0.16 : 0.075);
+    const e0 = percussive(og.gain, t, (layout ? 0.55 : 0.26) * k * pr, 0.003, layout ? 0.16 : 0.075);
     osc.start(t); osc.stop(e0 + 0.02);
     srcs.push(osc); nodes.push(og);
     end = Math.max(end, e0);
@@ -223,7 +273,7 @@ export class BodyLayer {
     const lp = g.filter('lowpass', layout ? 520 : 700, 0.8);
     const g1 = g.gain(0.0001);
     n1.connect(lp); lp.connect(g1); g1.connect(mix);
-    const e1 = percussive(g1.gain, t, (layout ? 0.44 : 0.22) * k, 0.004, layout ? 0.13 : 0.06);
+    const e1 = percussive(g1.gain, t, (layout ? 0.44 : 0.22) * k * pr, 0.004, layout ? 0.13 : 0.06);
     n1.start(t, this.noiseOffset());
     n1.stop(e1 + 0.02);
     srcs.push(n1); nodes.push(lp, g1);
@@ -240,7 +290,7 @@ export class BodyLayer {
       sweep(bp.frequency, 1800, 340, t + 0.03, slide);
       g2.gain.cancelScheduledValues(t);
       g2.gain.setValueAtTime(0.0001, t);
-      g2.gain.exponentialRampToValueAtTime(clamp(0.30 * k, 1e-4, 1), t + 0.06);
+      g2.gain.exponentialRampToValueAtTime(clamp(0.30 * k * pr, 1e-4, 1), t + 0.06);
       g2.gain.exponentialRampToValueAtTime(1e-4, t + 0.06 + slide);
       g2.gain.linearRampToValueAtTime(0, t + 0.08 + slide);
       n2.start(t, this.noiseOffset());
@@ -253,7 +303,7 @@ export class BodyLayer {
         utter(g, t + 0.01, {
           f0: this.rng.range(112, 158),
           syllables: [{ vowel: 'a', dur: 0.16 + 0.1 * k, pitch: 1, onset: 0.25, level: 1 }],
-          level: 0.30 * k,
+          level: 0.30 * k * pr,
           dest: mix,
           strain: 1,
         }, this.rng);
@@ -270,13 +320,15 @@ export class BodyLayer {
     if (!g.claim(3)) return;
     const t = g.now + 0.004;
     const k = clamp(impact / 4, 0.1, 1.2);
-    const p = this.point(x, y, z, 0.16, 3.0);
+    const pr = this.presence(x, y, z, PRESENCE.bump);
+    if (pr < 0.01) return;
+    const p = this.point(x, y, z, 0.16);
     const n = this.noise();
     const lp = g.filter('lowpass', 900, 0.7);
     const hp = g.filter('highpass', 120, 0.7);
     const vg = g.gain(0.0001);
     n.connect(hp); hp.connect(lp); lp.connect(vg); vg.connect(p);
-    const end = percussive(vg.gain, t, 0.26 * k, 0.005, 0.09);
+    const end = percussive(vg.gain, t, 0.26 * k * pr, 0.005, 0.09);
     n.start(t, this.noiseOffset());
     n.stop(end + 0.02);
     g.add({ end: end + 0.02, prio: 3, srcs: [n], nodes: [hp, lp, vg, p], vca: vg });
@@ -289,11 +341,13 @@ export class BodyLayer {
     if (!this.audible(x, y, z)) return;
     const g = this.g;
     const sy = CALLS[name] ?? CALLS.hey;
-    const p = this.point(x, y + 0.55, z, 0.26, 3.6);
+    const pr = this.presence(x, y, z, PRESENCE.call);
+    if (pr < 0.01) return;
+    const p = this.point(x, y + 0.55, z, 0.26);
     const end = utter(g, g.now + 0.01, {
       f0: clamp(pitch, 80, 320),
       syllables: sy,
-      level: 0.55 * clamp(level, 0, 2),
+      level: 0.55 * clamp(level, 0, 2) * pr,
       dest: p,
       strain: 0.9,
     }, this.rng);
@@ -310,7 +364,8 @@ export class BodyLayer {
     if (!g.claim(2)) return;
     const t = g.now + 0.004;
     const e = clamp(effort, 0, 1);
-    const p = this.point(x, y + 0.55, z, 0.10, 2.0);
+    const pr = this.presence(x, y, z, PRESENCE.breath);
+    const p = this.point(x, y + 0.55, z, 0.10);
     const mix = g.gain(1);
     mix.connect(p);
 
@@ -323,7 +378,7 @@ export class BodyLayer {
     n1.connect(b1); b1.connect(g1); g1.connect(mix);
     sweep(b1.frequency, 480, 900 + 400 * e, t, inDur);
     g1.gain.setValueAtTime(0.0001, t);
-    g1.gain.exponentialRampToValueAtTime(clamp(0.05 + 0.13 * e, 1e-4, 0.5), t + inDur * 0.7);
+    g1.gain.exponentialRampToValueAtTime(clamp((0.05 + 0.13 * e) * pr, 1e-4, 0.5), t + inDur * 0.7);
     g1.gain.exponentialRampToValueAtTime(1e-4, t + inDur);
     n1.start(t, this.noiseOffset());
     n1.stop(t + inDur + 0.02);
@@ -335,7 +390,7 @@ export class BodyLayer {
     n2.connect(b2); b2.connect(g2); g2.connect(mix);
     sweep(b2.frequency, 900 + 300 * e, 380, t2, outDur);
     g2.gain.setValueAtTime(0.0001, t2);
-    g2.gain.exponentialRampToValueAtTime(clamp(0.07 + 0.19 * e, 1e-4, 0.6), t2 + 0.03);
+    g2.gain.exponentialRampToValueAtTime(clamp((0.07 + 0.19 * e) * pr, 1e-4, 0.6), t2 + 0.03);
     g2.gain.exponentialRampToValueAtTime(1e-4, t2 + outDur);
     g2.gain.linearRampToValueAtTime(0, t2 + outDur + 0.01);
     n2.start(t2, this.noiseOffset());

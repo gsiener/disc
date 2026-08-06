@@ -23,21 +23,48 @@
  * stack into one bigger swell, and a score decays over five seconds because its
  * decay constant is long — not because a five-second envelope was scheduled.
  * That difference is the whole reason a real broadcast crowd sounds alive.
+ *
+ * ------------------------------------------------------------------- drama
+ *
+ * Reactions alone make a crowd that only ever responds to things that have
+ * already happened, which is not what a stadium does. Three continuous inputs
+ * arrive from `Drama.ts` and sit alongside the reaction model:
+ *
+ *  ANTICIPATION rises while a throw is in the air and closing on a receiver. It
+ *  feeds the roar and the section gains but deliberately *not* the applause —
+ *  nobody claps a disc that has not been caught yet — so the swell reads as a
+ *  held breath rather than as an early cheer. The catch reaction is scaled by
+ *  whatever anticipation had reached, which is what puts the peak on the catch
+ *  instead of after it.
+ *
+ *  HUSH is a multiplier, not a lower level. Tension in a stadium is the absence
+ *  of noise: a stall at 8 has to sound like eight thousand people not talking,
+ *  and that means pulling the roar and the applause down *below* the phase bed
+ *  and closing the bed's filter, so what is left is dark and small.
+ *
+ *  CHATTER is the between-points wash — the murmur bed played slower, so the
+ *  syllable rate reads as conversation rather than as shouting. It is the sound
+ *  of a crowd that is not watching anything.
+ *
+ * Two more gated beds hang off the same murmur PCM at different rates: a groan
+ * (slow, dark, gated by inverted valence) and the gasp one-shot. Playback rate
+ * is doing the work in all three cases, which is why one bake serves five
+ * distinct crowd behaviours without a second buffer.
  */
 
 import type { Rng } from '../core/Ctx.ts';
 import type { AudioGraph } from './Graph.ts';
-import { clamp, glideTo, num, setAt } from './Env.ts';
+import { clamp, glideTo, num, setAt, swell } from './Env.ts';
 
 /** Baseline murmur per rules phase. */
 const PHASE_BED: Record<string, number> = {
-  PRE_PULL: 0.30,
+  PRE_PULL: 0.34,
   PULL_IN_FLIGHT: 0.44,
   LIVE_POSSESSION: 0.34,
   DISC_IN_FLIGHT: 0.48,
-  TURNOVER_DEAD: 0.38,
+  TURNOVER_DEAD: 0.40,
   CHECK: 0.29,
-  POINT_SCORED: 0.66,
+  POINT_SCORED: 0.72,
   TIMEOUT: 0.40,
   HALFTIME: 0.46,
   GAME_OVER: 0.72,
@@ -61,17 +88,39 @@ export interface Reaction {
   valence: number;
 }
 
+/**
+ * The order here is the sport's own order of merit and it is load-bearing.
+ * A block is the loudest single thing that happens inside a point — louder than
+ * any catch, louder than a layout, second only to the goal that ends the point —
+ * because it is the only moment where a team that was losing the possession
+ * takes it back in one gesture. `tools/test-audio.ts` asserts that ranking.
+ */
 export const REACTIONS = {
   catch: { amount: 0.20, tau: 1.1, valence: 0.85 },
   bigCatch: { amount: 0.44, tau: 1.9, valence: 0.92 },
   layout: { amount: 0.62, tau: 2.6, valence: 0.95 },
-  block: { amount: 0.58, tau: 2.4, valence: 0.90 },
-  interception: { amount: 0.66, tau: 2.8, valence: 0.90 },
-  drop: { amount: 0.34, tau: 2.0, valence: 0.12 },
-  turnover: { amount: 0.30, tau: 1.8, valence: 0.20 },
+  block: { amount: 0.98, tau: 3.3, valence: 0.94 },
+  interception: { amount: 0.80, tau: 3.0, valence: 0.92 },
+  /**
+   * A groan is LOUD. Eight thousand people going "ohhh" together is one of the
+   * bigger noises a stadium makes, and modelling disappointment as a small
+   * number is the mistake that makes a drop read as the crowd losing interest.
+   * These sit deliberately close to `bigCatch`: what separates them is valence,
+   * which routes the energy into a dark bed instead of a bright one, and that
+   * is a difference of timbre, not of level.
+   */
+  drop: { amount: 0.66, tau: 2.4, valence: 0.10 },
+  /** The groan that starts *before* the disc lands, once the drop is obvious. */
+  preDrop: { amount: 0.60, tau: 2.6, valence: 0.04 },
+  turnover: { amount: 0.50, tau: 2.0, valence: 0.18 },
   huck: { amount: 0.30, tau: 1.4, valence: 0.70 },
-  stall: { amount: 0.16, tau: 0.9, valence: 0.55 },
-  goal: { amount: 1.20, tau: 4.6, valence: 1.0 },
+  /**
+   * The goal has to clear everything, including a layout block, which now
+   * legitimately chains a gasp, a block and a paid landing into 1.4 of surge.
+   * Measured before this was raised, the goal topped that chain by 0.9 dB — a
+   * point ending is not a 0.9 dB event.
+   */
+  goal: { amount: 1.50, tau: 5.0, valence: 1.0 },
 } as const satisfies Record<string, Reaction>;
 
 export type ReactionName = keyof typeof REACTIONS;
@@ -89,14 +138,23 @@ export class CrowdLayer {
   private val = 0.8;
   private prox = 1;
 
+  /** Continuous drama inputs, written by `Drama.ts`, slewed here. */
+  private antic = 0;
+  private hush = 0;
+  private chat = 0.2;
+
   private sections: Section[] = [];
   private applause: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
   private roarNodes: { src: AudioBufferSourceNode; bp: BiquadFilterNode; gain: GainNode } | null = null;
+  private groanNodes: { src: AudioBufferSourceNode; lp: BiquadFilterNode; gain: GainNode } | null = null;
+  private chatNodes: { src: AudioBufferSourceNode; lp: BiquadFilterNode; gain: GainNode } | null = null;
 
   private readonly g: AudioGraph;
+  private readonly rng: Rng;
 
   constructor(g: AudioGraph, rng: Rng) {
     this.g = g;
+    this.rng = rng;
     const ac = g.ac;
     const t = g.now;
     const n = Math.max(1, g.budget.sections);
@@ -145,6 +203,30 @@ export class CrowdLayer {
       this.applause = { src, gain };
     }
 
+    // Groan: the same murmur at 0.7x. Slowing the syllable rate drops the whole
+    // thing an octave and a half and turns the vowel wall into the long "ohhh"
+    // eight thousand people make when a disc hits the ground. It is gated by
+    // *inverted* valence, so it is only ever audible on a bad outcome.
+    {
+      const src = g.loop(g.beds.murmur, 0.70, rng.range(0, g.beds.murmur.duration));
+      const lp = g.filter('lowpass', 620, 0.9);
+      const peak = g.filter('peaking', 240, 1.2, 7);
+      const gain = g.gain(0.0001);
+      src.connect(peak); peak.connect(lp); lp.connect(gain); gain.connect(g.crowd);
+      this.groanNodes = { src, lp, gain };
+    }
+
+    // Chatter: 0.86x, dark. Between points a crowd is not quiet and it is not
+    // cheering — it is eight thousand separate conversations, and the only thing
+    // that separates that from "more crowd" is that it never gets bright.
+    {
+      const src = g.loop(g.beds.murmur, 0.86, rng.range(0, g.beds.murmur.duration));
+      const lp = g.filter('lowpass', 1150, 0.7);
+      const gain = g.gain(0.0001);
+      src.connect(lp); lp.connect(gain); gain.connect(g.crowd);
+      this.chatNodes = { src, lp, gain };
+    }
+
     // The stands are inside the bowl; they get a healthy, permanent send.
     const send = g.gain(0.30);
     g.crowd.connect(send);
@@ -160,6 +242,58 @@ export class CrowdLayer {
   /** 0..1 — how close the camera is to the bowl. Set by the system. */
   setProximity(k: number): void { this.prox = clamp(k, 0, 1); }
 
+  /**
+   * The continuous half of the model, written once a frame by `Drama.ts`.
+   * `antic` 0..1.3 rising swell, `hush` 0..1 suppression, `chat` 0..1 wash.
+   */
+  setDrama(antic: number, hush: number, chat: number): void {
+    this.antic = clamp(antic, 0, 1.4);
+    this.hush = clamp(hush, 0, 1);
+    this.chat = clamp(chat, 0, 1);
+  }
+
+  /**
+   * A gasp. Not a cheer and not a groan — a short collective intake on a bid,
+   * before anyone knows whether it came off. The murmur at 1.3x through a band
+   * sweeping *up* is the sound of a whole stand drawing breath at once; the
+   * envelope is a swell rather than a percussive hit because a crowd cannot
+   * start instantly, and the valence it adds is deliberately mid-scale so it
+   * neither triggers applause nor darkens into a groan.
+   */
+  gasp(strength = 1): void {
+    const g = this.g;
+    if (!g.claim(4)) return;
+    const s = clamp(strength, 0.15, 1.4);
+    const t = g.now + 0.01;
+    const buf = g.beds.murmur;
+    const dur = num(buf.duration, 2);
+
+    const src = g.ac.createBufferSource();
+    src.buffer = buf;
+    setAt(src.playbackRate, 1.28 + this.rng.range(-0.05, 0.05), t);
+    const bp = g.filter('bandpass', 480, 1.0);
+    const gain = g.gain(0.0001);
+    src.connect(bp); bp.connect(gain); gain.connect(g.crowd);
+    const send = g.gain(0.35);
+    gain.connect(send); send.connect(g.verbIn);
+
+    // Rising band: the intake is the sweep, not the level.
+    bp.frequency.cancelScheduledValues(t);
+    bp.frequency.setValueAtTime(420, t);
+    bp.frequency.exponentialRampToValueAtTime(1250, t + 0.22);
+    bp.frequency.exponentialRampToValueAtTime(620, t + 0.75);
+
+    const end = swell(gain.gain, t, 0.24 * s * this.prox, 0.11, 0.16, 0.52);
+    src.start(t, clamp(this.rng.range(0, Math.max(0.01, dur - 1.4)), 0, Math.max(0, dur - 0.05)));
+    src.stop(end + 0.02);
+    g.add({ end: end + 0.04, prio: 4, srcs: [src], nodes: [bp, gain, send], vca: gain });
+
+    // A gasp is an event in the excitement model too, but a short and neutral
+    // one: it must not decay into applause, and it must not add up to a block.
+    // An intake of breath is the quietest loud noise a stadium makes.
+    this.addSurge(0.16 * s, 1.0, 0.45);
+  }
+
   react(name: ReactionName, scale = 1): void {
     const r = REACTIONS[name];
     if (!r) return;
@@ -174,7 +308,9 @@ export class CrowdLayer {
     const a = clamp(amount, 0, 2);
     if (a <= 0) return;
     const before = this.surge;
-    this.surge = Math.min(1.6, before + a);
+    // The ceiling has to sit above the biggest single reaction or the loudest
+    // moments of the match all arrive at the same number.
+    this.surge = Math.min(1.85, before + a);
     const w = before + a;
     this.surgeTau = w > 1e-6 ? (this.surgeTau * before + Math.max(0.2, tau) * a) / w : tau;
     this.val = w > 1e-6 ? (this.val * before + clamp(valence, 0, 1) * a) / w : valence;
@@ -196,30 +332,56 @@ export class CrowdLayer {
     this.val += (0.8 - this.val) * (1 - Math.exp(-d / 6));
 
     const t = this.g.now;
-    const heat = clamp(this.bed * 0.45 + this.roar * 0.7, 0, 1.4);
+    const a = this.antic;
+    const h = this.hush;
+    // A hush is not a fader move: it darkens as well as ducks, because what it
+    // is modelling is people stopping shouting, not a mixer pulling a channel.
+    const heat = clamp((this.bed * 0.45 + this.roar * 0.7 + a * 0.45) * (1 - 0.55 * h), 0, 1.6);
     const p = this.prox;
 
     for (const s of this.sections) {
-      glideTo(s.gain.gain, (0.055 + 0.115 * this.bed + 0.075 * this.roar) * s.bias * p, t, 0.25);
+      const lvl = (0.055 + 0.115 * this.bed + 0.075 * this.roar + 0.075 * a) * (1 - 0.72 * h);
+      glideTo(s.gain.gain, lvl * s.bias * p, t, 0.25);
       glideTo(s.lp.frequency, 780 + 3100 * heat, t, 0.4);
     }
     if (this.roarNodes) {
-      const lvl = Math.max(0, this.roar - 0.06);
-      glideTo(this.roarNodes.gain.gain, 0.40 * Math.pow(lvl, 1.15) * p, t, 0.18);
+      // Anticipation feeds the roar and nothing else: a stand rising to its feet
+      // is a vowel wall building, not a cheer that has already decided.
+      const lvl = Math.max(0, this.roar + 0.62 * a - 0.06);
+      glideTo(this.roarNodes.gain.gain, 0.40 * Math.pow(lvl, 1.15) * p * (1 - 0.88 * h), t, 0.18);
       // Bright when they are cheering, dark and chesty when they are groaning.
       glideTo(this.roarNodes.bp.frequency, 430 + 780 * this.val, t, 0.5);
     }
     if (this.applause) {
       // Applause only really starts once the roar is up, and it is a cheer-only
-      // behaviour — nobody claps a drop.
+      // behaviour — nobody claps a drop, and nobody claps a disc still in the
+      // air, which is why `antic` is absent from this line on purpose.
       const lvl = Math.max(0, this.roar - 0.12) * this.val;
-      glideTo(this.applause.gain.gain, (0.012 + 0.42 * Math.pow(lvl, 1.3)) * p, t, 0.22);
+      glideTo(this.applause.gain.gain, (0.012 + 0.42 * Math.pow(lvl, 1.3)) * p * (1 - 0.9 * h), t, 0.22);
+    }
+    if (this.groanNodes) {
+      const lvl = Math.max(0, this.roar - 0.04) * Math.max(0, 1 - this.val * 1.15);
+      glideTo(this.groanNodes.gain.gain, 1.15 * Math.pow(lvl, 0.85) * p, t, 0.20);
+      // A groan is dark but it is not muffled — "ohhh" has a formant up around
+      // 700 Hz and the vowel disappears without it, which is what a 620 Hz
+      // ceiling was doing. It sags as the breath runs out, and the sag is the
+      // sound of the noise ending rather than of somebody closing a filter.
+      glideTo(this.groanNodes.lp.frequency, 520 + 780 * lvl, t, 0.5);
+    }
+    if (this.chatNodes) {
+      glideTo(this.chatNodes.gain.gain, (0.008 + 0.125 * this.chat) * p * (1 - 0.6 * h), t, 0.9);
     }
   }
 
   /** Diagnostics for the structural test. */
-  debug(): { bed: number; surge: number; roar: number; val: number } {
-    return { bed: num(this.bed), surge: num(this.surge), roar: num(this.roar), val: num(this.val) };
+  debug(): {
+    bed: number; surge: number; roar: number; val: number;
+    antic: number; hush: number; chat: number;
+  } {
+    return {
+      bed: num(this.bed), surge: num(this.surge), roar: num(this.roar), val: num(this.val),
+      antic: num(this.antic), hush: num(this.hush), chat: num(this.chat),
+    };
   }
 
   dispose(): void {
@@ -227,6 +389,8 @@ export class CrowdLayer {
     for (const s of this.sections) { stop(s.src); stop(s.lfo); s.gain.disconnect(); s.lp.disconnect(); s.lfoAmt.disconnect(); }
     if (this.roarNodes) { stop(this.roarNodes.src); this.roarNodes.gain.disconnect(); }
     if (this.applause) { stop(this.applause.src); this.applause.gain.disconnect(); }
+    if (this.groanNodes) { stop(this.groanNodes.src); this.groanNodes.gain.disconnect(); this.groanNodes.lp.disconnect(); }
+    if (this.chatNodes) { stop(this.chatNodes.src); this.chatNodes.gain.disconnect(); this.chatNodes.lp.disconnect(); }
     this.sections.length = 0;
   }
 }

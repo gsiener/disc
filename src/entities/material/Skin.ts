@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import {
   hook, at, prelude, vertexPatch, FRAG_PARS, PART_DEFS, NOISE, HEAD_DIR, PI_DEFS,
 } from './Glsl.ts';
+import { bakeFaceMap, FACE_V_TOP } from './FaceMap.ts';
 import type { DetailTextures } from './Detail.ts';
 import type { SkinTones, HairColour } from './Tone.ts';
 import type { SharedUniforms, MatDetail } from './Shared.ts';
@@ -30,6 +31,31 @@ import type { SharedUniforms, MatDetail } from './Shared.ts';
  * All four are here. Placement is done in the head's own sculpt coordinates,
  * reconstructed from `uv` (see `headDir`), so a brow sits on the brow ridge the
  * geometry actually has rather than on a guess, for every face in the roster.
+ *
+ * ----------------------------------------------------------------------------
+ * WHERE THE FACE'S REGIONAL COLOUR LIVES, AS OF THIS ROUND: NOT HERE.
+ *
+ * Everything fine and clustered on the front of the face — the cavity lobes,
+ * the brow, the lid margin and lashes, the vermilion, the perfusion — is baked
+ * into a UV-space raster by `FaceMap.ts` and sampled with one texture fetch.
+ * Twenty-odd analytic lobes came out of this file to put it there, and the two
+ * reasons are both sampling, not shading:
+ *
+ *   • An analytic Gaussian has no mip chain. At the `endzone` framing a head is
+ *     25-50 px and a 2 mm lash line is a third of a pixel, so the shader
+ *     point-samples it and the dark parts fall between samples. That is the
+ *     mechanism behind "at 20 m the only facial feature that survives is a
+ *     glowing white eye-dot": nothing in the orbital region could hold its
+ *     value relationship under minification. A raster returns the area mean.
+ *
+ *   • Every soft edge had to be hand-built, thirty times, and every mistake was
+ *     a visible patch boundary. A raster gets blurred once and C1 continuity
+ *     stops being an engineering exercise and becomes a property of the buffer.
+ *
+ * What stays analytic here is what was never the problem: the broad monotone
+ * terms (submandibular shadow, temple, ear gutter, scalp, beard zone, sweat
+ * zone), everything off the head, and the roughness and normal fields, which
+ * are single smoothsteps over half a body and are C1 by construction.
  */
 
 export interface SkinInputs {
@@ -54,14 +80,28 @@ export interface SkinInputs {
   /** Freckle threshold: 1 = none, 0.55 = heavy. */
   freckle: number;
   bodyHair: number;
+  /** Sampler anisotropy for the face map. Defaults to 8. */
+  anisotropy?: number;
 }
 
 export interface SkinMaterial {
   material: THREE.MeshPhysicalMaterial;
   setSweat(v: number): void;
+  /**
+   * Bytes of this athlete's face map, mip chain included. It is the ONE
+   * per-player texture in the library — everything else a player differs by is
+   * still a uniform — so it is reported separately rather than folded into the
+   * shared total. See the memory note at the top of `FaceMap.ts`.
+   */
+  readonly faceBytes: number;
 }
 
 export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
+  const face = bakeFaceMap({
+    eyeN: i.eye.n, apW: i.eye.apW, apU: i.eye.apU, apD: i.eye.apD,
+    mouthW: i.face.mouthW, noseTip: i.face.noseTip, brow: i.face.brow,
+  }, i.seed, i.quality, i.anisotropy ?? 8);
+
   const m = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
     roughness: 0.55,
@@ -88,20 +128,43 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
   const u = {
     uPore: { value: i.detail.pore },
     uAux: { value: i.detail.aux },
+    uFace: { value: face.texture },
     uTone: { value: i.tones.albedo },
     uToneTan: { value: i.tones.tanned },
     uToneFlush: { value: i.tones.flush },
     uToneLip: { value: i.tones.lip },
     uSss: { value: i.tones.subsurface },
     uHairCol: { value: i.hair.root },
-    uEyeGeo: { value: new THREE.Vector4(i.eye.n, i.eye.apW, i.eye.apU, i.eye.apD) },
     uFaceGeo: {
       value: new THREE.Vector4(i.face.mouthW, i.face.noseTip, i.face.brow, i.face.hood),
     },
     uSkinCtl: { value: new THREE.Vector4(i.stubble, i.freckle, i.bodyHair, i.seed) },
     uSweat: { value: 0 },
     uBodyScale: { value: 1.8 / Math.max(1.2, i.height) },
+    /**
+     * SHIPS AT 0, ALWAYS. A probe hook, exposed on `material.userData.dbg` so a
+     * capture script can flip it without a rebuild:
+     *
+     *   1  flat grey albedo — every regional term in this file removed. What
+     *      survives a luminance RATIO in this pass is carried by light and
+     *      geometry, and no amount of paint can move it. Six rounds of face
+     *      work went into albedo without ever asking that question; the hair
+     *      round finally did (friction 20260805230939) and found the albedo
+     *      path was 5 % of the cap's value.
+     *   2  the face map's own masks, unlit-ish, so an acceptance box can be
+     *      READ off the render instead of guessed. The section-4 vermilion
+     *      number was measured against a "philtrum" box that was sitting in
+     *      the nostril shadow, which is most of why the mouth kept scoring
+     *      ~0.95x whatever was done to it.
+     *   3  part id and the cavity accumulator, for the question "which part
+     *      actually drew this pixel". Read it as a COMPARISON between channels
+     *      of the same pixel (is R above G?) and the tone curve cancels; read
+     *      any of these passes as an absolute value and it does not, which is
+     *      a trap that cost an hour here.
+     */
+    uDbg: { value: 0 },
   };
+  m.userData.dbg = u.uDbg;
 
   hook(m, (sh) => {
     Object.assign(sh.uniforms, u, i.shared.uniforms);
@@ -111,11 +174,12 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
     sh.fragmentShader = prelude(sh.fragmentShader, PI_DEFS + FRAG_PARS + PART_DEFS + NOISE + HEAD_DIR + /* glsl */`
       uniform sampler2D uPore;
       uniform sampler2D uAux;
+      uniform sampler2D uFace;  // this athlete's baked face map — see FaceMap.ts
+      #define FACE_V_TOP ${FACE_V_TOP.toFixed(4)}
       uniform vec3 uTone, uToneTan, uToneFlush, uToneLip, uSss, uHairCol;
-      uniform vec4 uEyeGeo;     // eyeN, apW, apU, apD
       uniform vec4 uFaceGeo;    // mouthHalfWidth, noseTipNy, browAmount, hooding
       uniform vec4 uSkinCtl;    // stubble, freckleThreshold, bodyHair, seed
-      uniform float uSweat, uBodyScale;
+      uniform float uSweat, uBodyScale, uDbg;
       uniform vec3 uSunView, uSunColor;
       uniform float uSunGlow, uTime;
 
@@ -170,6 +234,32 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float hy = hd.y, hx = hd.x, hz = hd.z;
         float axf = abs(hx);
         float fr = clamp(hz, 0.0, 1.0);
+        // Front-facing, for any part. The neck and the chest need it and they
+        // have no head coordinates; the bind normal's own z is the whole answer.
+        float front = clamp(bn.z * 1.6, 0.0, 1.0);
+
+        /* ---- THE FACE MAP: one fetch, in place of twenty analytic lobes -- */
+        // The lookup FOLDS about the facial midline. sphereish puts the head's
+        // uv seam down the nose (uv.x is the azimuth in turns, and u = 0 faces
+        // +Z), so uv.x and 1 - uv.x are the two halves of a field that was
+        // always written on |nx| anyway — storing one of them halves the bytes
+        // and costs a min. Past a quarter turn the fetch clamps to the patch's
+        // own faded edge column, which the bake drives to zero, so the back of
+        // the head and the whole of uv.y above the patch need no gate.
+        //
+        // Mip selection stays correct across the fold: the seam column is
+        // duplicated in the mesh so no triangle spans uv.x = 0, and the one
+        // triangle that does span uv.x = 0.5 is on the occiput where every
+        // channel is zero.
+        vec4 fm = texture2D(uFace, vec2(min(vSurfUv.x, 1.0 - vSurfUv.x) * 4.0,
+                                        vSurfUv.y * (1.0 / FACE_V_TOP)));
+        float faceCav = fm.r * 0.55 * pHead;   // R, rescaled from its 0.55 clamp
+        float orb = fm.g * pHead;              // G: brow + lid margin + lashes
+        // B is SIGNED about 0.5: above it the vermilion, below it the pale roll
+        // of the vermilion border. One channel, because they can never coexist.
+        float lips = max(0.0, fm.b * 2.0 - 1.0) * pHead;
+        float lipBorder = max(0.0, 1.0 - fm.b * 2.0) * pHead;
+        float faceFlush = fm.a * pHead;        // A: nasal, malar, chin perfusion
         // Same mandibular border rig/Head.ts sculpts — see jawLine() there.
         // If these two drift apart the submandibular shadow lands on the jaw
         // instead of under it, so move one and move the other.
@@ -204,48 +294,35 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // A tan line exists where the KIT ends, and there is no kit at the
         // jugular notch or at the wrist. Ramps below are the hems the cloth
         // actually has; everywhere else the field is continuous.
+        //
+        // The chest ramp is the last of the three, and it was still a step:
+        // 0.06 -> 0.36 over 0.14 of vLen is a 2 cm transition on a 60 cm torso,
+        // i.e. a ruled line across the pectorals. Measured off the closeup, the
+        // bare triangle inside the collar came back 2.33x the neck above it
+        // against a 1.25x acceptance. It now starts at the sternum and arrives
+        // at 0.56 under the collar — the brief's "~0.5" — over a ramp two and a
+        // half times as long, which is what an actual tan gradient looks like.
         float expo = clamp(
             pHead + pEar + pHand + pFore
           + pNeck * (0.34 + 0.54 * smoothstep(0.12, 0.78, vLen))
           + pArm * smoothstep(0.28, 0.40, vLen)
           + pLeg * smoothstep(0.28, 0.37, vLen) * (1.0 - smoothstep(0.68, 0.74, vLen))
-            // The chest climbs to meet the neck under the collar rather than
-            // stopping dead at it.
-          + pTorso * (0.06 + 0.30 * smoothstep(0.86, 1.0, vLen)), 0.0, 1.0);
+          + pTorso * (0.12 + 0.44 * smoothstep(0.62, 1.0, vLen)), 0.0, 1.0);
         // The boundary itself is never a ruled line — it follows the hem, and the
         // hem moves. A little noise across it is the whole tell.
         expo = clamp(expo + (aux.r - 0.5) * 0.35, 0.0, 1.0);
 
         /* ---- perfusion: where blood sits close to the surface --------- */
+        // The face's three lobes are faceFlush, off the map's alpha, where
+        // they have been decoupled from the cavity lobes they used to share a
+        // centre with. Everything left here is a whole limb or a whole organ
+        // and has no boundary to get wrong.
         float flush = clamp(
             pEar * 0.80
           + pHand * 0.26
-          + pHead * fr * (0.60 * g1(hy, uFaceGeo.y, 0.11) * g1(axf, 0.0, 0.16)
-                        + 0.42 * g1(hy, -0.30, 0.19) * g1(axf, 0.54, 0.22)
-                        + 0.26 * g1(hy, -0.90, 0.15) * g1(axf, 0.0, 0.28))
+          + faceFlush * fr
           + pLeg * 0.30 * g1(vLen, 0.545, 0.045)
           + pArm * 0.26 * g1(vLen, 0.569, 0.045), 0.0, 1.0);
-
-        /* ---- vermilion ------------------------------------------------ */
-        // Same half-width, same two vermilion centres and the same 1 mm lip
-        // line rig/Head.ts sculpts. If these drift apart the lip colour lands
-        // on the chin, which is exactly what a "painted on" mouth looks like.
-        float mw = uFaceGeo.x;
-        // The COLOUR of the lip has to reach as far as the SCULPT of the lip.
-        // Ramping out at 0.62 of the half-width painted a vermilion two thirds
-        // the width of the mouth the geometry has, so a 45 mm mouth rendered as
-        // a 28 mm pucker — and a small central mouth is one of the two or three
-        // cues that reads a face as juvenile, which is exactly the note this
-        // roster keeps getting. The sculpt fades over 1.10 → 0.55; match it.
-        float lipX = smoothstep(mw * 1.12, mw * 0.86, axf);
-        float lips = clamp(pHead * lipX * clamp(hz * 1.6 - 0.38, 0.0, 1.0)
-          * (g1(hy, -0.598, 0.039) + g1(hy, -0.716, 0.047)), 0.0, 1.0);
-        // The vermilion BORDER is a pale ridge one millimetre wide, and it is
-        // the single feature that makes a mouth read as a mouth rather than as
-        // a smear of darker skin.
-        float lipBorder = pHead * lipX * fr
-          * (g1(hy, -0.563, 0.008) + g1(hy, -0.752, 0.009));
-        lips *= 1.0 - 0.80 * g1(hy, -0.655, 0.013);   // the lip line itself is skin
 
         /* ---- scalp ----------------------------------------------------- */
         // THE SKULL ABOVE THE HAIRLINE IS NOT BARE SKIN and must never render as
@@ -262,117 +339,36 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
             smoothstep(0.36, 0.58, hy),
             smoothstep(0.10, -0.28, hz) * smoothstep(-0.12, 0.24, hy));
 
-        /* ---- brows, lashes, lid margin -------------------------------- */
-        // A brow has a head, a peak and a tail: the medial end sits lower and
-        // heavier, the arch crests just outboard of the pupil, the tail drops
-        // and thins past the orbital rim. A level band of constant thickness is
-        // a stuck-on eyebrow, and the eye names it instantly.
-        float bt = clamp((axf - 0.13) / 0.46, 0.0, 1.0);
-        float browY = 0.086 + 0.090 * sin(bt * PI) - 0.052 * bt * bt;
-        float browTh = 0.048 * (1.0 - 0.38 * bt) * (0.80 + 0.45 * uFaceGeo.z);
-        float browMask = pHead * fr
-          * smoothstep(0.66, 0.56, axf) * smoothstep(0.095, 0.155, axf)
-          * exp(-pow((hy - browY) / browTh, 2.0));
-        // Individual hairs, combed outward along the arch rather than sampled
-        // from an isotropic follicle field — the isotropic version rendered as
-        // dirt thrown at the forehead, which is a fair description of it.
-        //
-        // The cross-arch rate came down from 260 to 88. At 260 one noise cell
-        // spanned 0.004 of a head unit — a third of a millimetre, well under a
-        // pixel at every framing in the shot list — so the brow could only ever
-        // resolve as a spray of speckles over the whole orbital region rather
-        // than as a mass with an edge. A brow is ~35 hairs deep, not 900.
-        vec2 bco = vec2(axf * 34.0 + hy * 5.0, (hy - browY) * 88.0);
-        float browN = vnoise(bco) * 0.66 + vnoise(bco * 2.4 + 11.0) * 0.34;
-        // The mass has to stay solid through its middle and only break up at its
-        // edges, or it is not a brow, it is stubble on a forehead.
-        float browCore = exp(-pow((hy - browY) / (browTh * 0.62), 2.0));
-        float brow = browMask * mix(mix(0.42, 1.15, smoothstep(0.26, 0.72, browN)),
-                                    1.10, browCore * 0.72);
-
-        float ddx = axf - uEyeGeo.x;
-        float apV = hy > 0.0 ? uEyeGeo.z : uEyeGeo.w;
-        float qq = sqrt(max(0.0, ddx * ddx / (uEyeGeo.y * uEyeGeo.y) + hy * hy / (apV * apV)));
-        // Lid margin: a continuous dark line hugging the aperture, heavier
-        // above. Broken lashes only read past about 1.5 m; the LINE reads at
-        // any distance and it is what stops an eye looking pasted on.
-        // NOT named 'margin': three's CSM_FADE block declares a float of that
-        // name in the same scope, and the collision only shows up in the game
-        // (the preview has no cascades) as a silent shader compile failure.
-        float lidLine = pHead * step(0.14, hz) * exp(-pow((qq - 1.02) / 0.10, 2.0));
-        float lashDir = vnoise(vec2(atan(hy, ddx) * 44.0, qq * 9.0));
-        float lash = lidLine * (hy > 0.0 ? 1.0 : 0.46)
-          * mix(0.55, 1.25, smoothstep(0.22, 0.72, lashDir));
-        // Upper lashes stand out past the margin, and they splay.
-        lash += pHead * step(0.14, hz) * clamp(hy, 0.0, 1.0) * 3.0
-          * exp(-pow((qq - 1.18) / 0.10, 2.0)) * smoothstep(0.52, 0.86, lashDir) * 0.55;
-
         /* ---- facial cavity ---------------------------------------------- */
-        // This is an AMBIENT OCCLUSION MAP written analytically, and it is worth
-        // more than every other term in this file at the framing the shot list
-        // actually delivers: a head is ninety pixels tall in the closeup, so what
-        // survives to the viewer is the VALUE STRUCTURE — the dark mass of the
-        // orbits, the shelf under the nose, the trough under the lower lip and
-        // the submandibular shadow — and not one pore.
+        // The VALUE STRUCTURE is worth more than every other term in this file
+        // at the framing the shot list delivers: a head is a few hundred pixels
+        // in the closeup and twenty-five in the endzone, so what survives to the
+        // viewer is the dark mass of the orbits, the shelf under the nose, the
+        // oral line and the submandibular shadow — and not one pore.
         //
-        // The previous version was the right idea at the wrong SIZE. Its orbital
-        // lobe alone ran 0.85 deep across ±0.25 in ny and 0.15–0.65 in |nx|,
-        // which is not an eye socket, it is the entire mid-face including both
-        // cheekbones and the bridge of the nose. Summed with five more lobes of
-        // the same generosity the mask saturated over most of the front of every
-        // head, so the face came back a flat dark card that read *less* like a
-        // face than no occlusion at all — the neck and the ears, which are not
-        // in the mask, ended up brighter than the features.
+        // NINE OF THE ELEVEN HEAD LOBES ARE NOW faceCav, off the map's red
+        // channel. What is left here is the three that are BROAD AND MONOTONE:
+        // a temple that is half a head wide, an ear gutter and the shadow a jaw
+        // casts. Those were never the problem — they are single smoothsteps
+        // over a large area, they are C1 by construction, and rasterising them
+        // would cost bytes to buy nothing. The clustered, millimetre-scale,
+        // mutually-overlapping ones — the orbit, the tear trough, three nasal
+        // lobes, the nasolabial fold, the oral line and the mentolabial sulcus,
+        // every one of which was its own chance to leave a ramp shoulder
+        // somewhere on a contour — are in the buffer, where they are blurred
+        // once and are C1 whatever they do.
         //
-        // An occlusion term has to be NARROW to be information. Every lobe below
-        // is sized to the concavity it stands for, and the convexities the light
-        // should find — brow ridge, cheek, nose dorsum, chin ball — are left at
-        // zero on purpose.
-        float orbQ = qq;   // the aperture ellipse, shared with the lid margin
-        // ONE GATE FOR EVERY FRONT-OF-FACE LOBE, AND IT HAS NO EDGE.
+        // The submalar hollow is DELETED outright rather than moved. It was the
+        // third copy of the same concavity (rig/Head.ts sculpts it, the
+        // hemisphere tint paints it again) and the brief is explicit that it is
+        // most of why the roster reads gaunt.
         //
-        // smoothstep(0.10, 0.30, hz) is a 0.2-wide ramp on the surface normal's
-        // own z, which means it completes at a FIXED SURFACE ANGLE and draws a
-        // contour line there — a soft-edged ring around the head at 72° off
-        // front, in the same place on all fourteen faces, that the eye traces
-        // instantly because nothing on a head has a boundary there. hz^1.5 has
-        // the same job (kill the term before it wraps onto the temple) with no
-        // level set to find: it is monotone from 0 to 1 with no ramp shoulder.
-        float faceFront = pow(clamp(hz, 0.0, 1.0), 1.5);
-        // Head lobes are clamped at 0.55, not 1.0. An occlusion term that
+        // Head lobes are still clamped at 0.55, not 1.0. An occlusion term that
         // reaches 1.0 says NO SKY REACHES THIS POINT, which is true at the back
-        // of a nostril and nowhere else on a face; at 1.0 the accumulator stops
-        // describing concavities and starts painting the front of the head.
-        float cavity = pHead * clamp(
-            // Orbit. Keyed to the palpebral ellipse the sculpt actually has, so
-            // it lands in the socket on every face in the roster rather than on
-            // whichever one the constants were fitted against. Deepest just
-            // above the globe, where the supraorbital ridge overhangs it.
-            // Sigma 0.85 in qq units reached ±0.16 in |nx| BEYOND the aperture,
-            // which is the whole nasal bridge and both malar flats — a pair of
-            // painted goggles rather than two sockets. The aperture's own edge
-            // is qq = 1, so a socket is about half that wide again.
-            0.52 * exp(-pow((orbQ - 0.55) / 0.45, 2.0)) * faceFront
-                 * (0.62 + 0.38 * smoothstep(-0.10, 0.16, hy))
-            // Tear trough, running infero-medially from the inner canthus.
-          + 0.30 * g1(hy, -0.150, 0.055) * g1(axf, uEyeGeo.x * 0.80, 0.130) * fr
-            // Nasal side wall and the alar crease at the foot of it — the groove
-            // that stops a nose being part of the cheek.
-          + 0.34 * g1(axf, 0.115, 0.055) * g1(hy, uFaceGeo.y + 0.055, 0.130) * fr
-          + 0.42 * g1(hy, uFaceGeo.y - 0.035, 0.045) * g1(axf, 0.190, 0.048) * fr
-            // Nostril sill: the face steps back hard under the lobule and this
-            // is the darkest square centimetre on a lit face.
-          + 0.52 * g1(hy, uFaceGeo.y - 0.075, 0.032) * g1(axf, 0.0, 0.115) * fr
-            // Nasolabial fold, commissure pit, and the trough under the lower
-            // lip. Three narrow lines that between them ARE a mouth at distance.
-          + 0.40 * g1(hy, -0.590, 0.090) * g1(axf, 0.260, 0.045) * fr
-          + 0.34 * g1(hy, -0.655, 0.030) * g1(axf, 0.0, 0.230) * fr
-          + 0.36 * g1(hy, -0.795, 0.038) * g1(axf, 0.0, 0.210) * fr
-            // Submalar hollow. Broad, but shallow — it is a plane turning away,
-            // not a hole.
-          + 0.20 * g1(hy, -0.430, 0.130) * g1(axf, 0.545, 0.170) * fr
+        // of a nostril and nowhere else on a face.
+        float cavity = faceCav + pHead * clamp(
             // Temple, and the gutter where the ear meets the skull.
-          + 0.16 * g1(hy, 0.360, 0.190) * smoothstep(0.62, 0.88, axf)
+            0.16 * g1(hy, 0.360, 0.190) * smoothstep(0.62, 0.88, axf)
           + 0.34 * g1(axf, 0.900, 0.075) * g1(hy, -0.230, 0.220) * smoothstep(0.30, -0.10, hz)
             // Submandibular. The one that separates a jaw from a neck, and the
             // only lobe here that is allowed to be big.
@@ -389,9 +385,42 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // seen from slightly below has no dark band under it at all and reads as
         // a smooth continuation into the neck. A jaw is legible because of the
         // shadow it CASTS, and that shadow belongs to the neck.
-        cavity += pNeck * smoothstep(0.30, 0.96, vLen) * 0.55;
-        // …and so does the hollow above the clavicles.
-        cavity += pTorso * smoothstep(0.94, 1.0, vLen) * 0.32;
+        //
+        // But it is a shadow from a jaw, so it belongs to the SUBMANDIBULAR
+        // TRIANGLE and not to the whole cylinder. At 0.55 applied blanket the
+        // nape and both sternomastoids got the same occlusion as the hollow
+        // under the chin, which is what left the neck darker than the chin
+        // lighting it from above and put a 2.3x step at the collar. Capped at
+        // 0.30 and weighted to the front.
+        cavity += pNeck * smoothstep(0.30, 0.98, vLen) * 0.30 * (0.40 + 0.60 * front);
+        // …and so does the bare triangle inside the collar, which is the single
+        // worst boundary in the closeup: 2.15x the neck immediately above it,
+        // against a 1.25x acceptance.
+        //
+        // MEASURED (uDbg = 1, flat grey albedo, same two boxes): with all paint
+        // removed the same boundary still reads 1.37x. So two thirds of the step
+        // is albedo and one third is light — and the light third is not ours.
+        // That skin sits in a scoop neck under a jaw and receives no contact
+        // shadow from either, because nothing in the render casts one; the ONE
+        // occlusion term it has started at vLen 0.80 and was measured at ~0 in
+        // the box that fails. Started at 0.58, twice as deep, and weighted to
+        // the front where the collar actually overhangs it.
+        //
+        // This is the term the brief means by "lift chest expo under the collar
+        // to ~0.5". Doing it through expo would have made it WORSE: uToneTan is
+        // reddened melanin, so more expo is a hue move worth about 1 % of value
+        // on a fair athlete, and this boundary needs value.
+        //
+        // AND THE MEASURED CEILING, so the next round does not spend itself
+        // here: at 0.62 this term saturates the 0.55 clamp under the neckline
+        // and the boundary still reads ~1.9x. The floor with EVERY skin term
+        // replaced by one constant grey is 1.36x. Neither number is within
+        // reach of 1.25x, because the step is not paint — that skin is in
+        // direct sun with nothing casting a contact shadow onto it. The
+        // collar's own occlusion is geometry that does not exist yet; it
+        // belongs to whoever owns the neckline and the shadow cascade, not to
+        // this file, and no further albedo work here can substitute for it.
+        cavity += pTorso * smoothstep(0.66, 0.99, vLen) * 0.62 * (0.40 + 0.60 * front);
         cavity = clamp(cavity, 0.0, 0.55);
 
         /* ---- fine wrinkles --------------------------------------------- */
@@ -451,7 +480,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         float wet = sweat * mix(0.35, 1.0, wetIslands);
       `,
       after: /* glsl */`
-        vec3 skin = mix(uTone, uToneTan, expo * 0.85);
+        vec3 skin = mix(uTone, uToneTan, expo * 0.62);
         // Perfusion at 0.85 put a sunburn on both cheeks of every athlete. Blood
         // shifts hue; it does not repaint the face.
         skin = mix(skin, uToneFlush, flush * 0.45);
@@ -490,9 +519,23 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // THE SKIN rather than a mix toward a fixed colour, so it lands the same
         // 18 % redder on every athlete in the roster instead of turning the deep
         // end of it pink.
-        skin = mix(skin, uToneFlush, lips * 0.28);
-        skin *= mix(vec3(1.0), vec3(1.17, 0.89, 0.87), lips);
-        skin *= 1.0 - 0.085 * lips;
+        //
+        // MEASURED, ROUND 7, TWICE. The gap was never the rotation, it was the
+        // MASK — and the second measurement is the one that mattered, because
+        // it was taken through the shader's own uDbg = 2 pass instead of off a
+        // guessed box. 'lips' peaked at 0.72 and averaged 0.54 over the mouth
+        // the frame resolves, so a 31 % red rotation arrived as 6 %, and three
+        // rounds of deepening the rotation moved the number by nothing.
+        //
+        // The mask is now one solid mass (FaceMap.ts) and averages ~0.85 over
+        // the same box, so the SAME numbers would land 60 % harder. They come
+        // down accordingly: a vermilion is a mucosa, not a bruise, and a lip
+        // 40 % redder than the face reads as make-up. What goes UP is the pure
+        // value drop, because that is the half of the target that was missing —
+        // a lip is darker than the skin round it before it is redder.
+        skin = mix(skin, uToneFlush, lips * 0.22);
+        skin *= mix(vec3(1.0), vec3(1.17, 0.895, 0.875), lips);
+        skin *= 1.0 - 0.35 * lips;
         // The white roll of the vermilion border, and the fine vertical creases
         // across the lip itself.
         skin *= 1.0 + 0.16 * lipBorder;
@@ -504,15 +547,44 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
         // Scalp first: it is under the hair, not on it, so it keeps most of the
         // skin's own hue and only takes the pigment's value.
         skin = mix(skin, mix(skin * 0.62, hairAlbedo, 0.55), scalp * 0.80);
-        skin = mix(skin, hairAlbedo * 0.82, clamp(brow * 1.25 + lash * 1.45, 0.0, 1.0));
+        // THE ORBITAL FRAME IS A VALUE RELATIONSHIP, NOT A COLOUR — and mixing
+        // it toward hairAlbedo got that exactly backwards on half the roster.
+        // Brow hair is a couple of shades under scalp hair and it sits in its
+        // own shadow, so a blond brow is still darker than the forehead it is
+        // on; mixing toward a blond pigment made it LIGHTER. Measured on the
+        // athlete in frame — who is the blond-on-fair worst case the brief
+        // names — both brows came back under 40 % filled because most of the
+        // brow was brighter than the skin around it.
+        //
+        // Written as a bounded darkening of the skin with the hair's hue mixed
+        // in, it lands at 0.58x whatever that face's forehead is, on every
+        // pigment in the roster. This one term is the endzone read: brow, lid
+        // margin and lashes are one connected mass in the map's green channel,
+        // so under minification it filters to a 2-3 px bar at ~0.6-0.8x face
+        // mean instead of point-sampling to nothing and leaving a white dot.
+        skin = mix(skin, mix(skin, hairAlbedo, 0.45) * 0.58, orb);
         skin = mix(skin, mix(skin, hairAlbedo, 0.62), beard);
         skin = mix(skin, mix(skin, hairAlbedo, 0.45), bhair);
         // Baked cavity. The rig writes it at every fold the sculpt has.
         skin *= 1.0 - 0.38 * vCrease;
-        skin *= 1.0 - 0.15 * cavity;
+        // 0.15 -> 0.26. The cavity accumulator is clamped at 0.55, so this is
+        // at most a 14 % albedo darkening at the very floor of a nostril — but
+        // it is the only channel that survives a shadow. The orbital band and
+        // the oral line both have to hold their value RATIO against the cheek
+        // whether that side of the face is lit or not, and a term that lives
+        // only in indirectDiffuse cannot do that: on the sunlit side the
+        // indirect share is a third of the pixel, so the whole structure went
+        // 3x weaker exactly where the light was strongest.
+        skin *= 1.0 - 0.26 * cavity;
         // Wet skin is darker: the water film removes the air/keratin interface.
         skin *= 1.0 - 0.16 * wet;
 
+        // Probe hook. uDbg is 0 in every shipped frame; see the uniform's note.
+        if (uDbg > 0.5) {
+          skin = uDbg < 1.5 ? vec3(0.72)
+               : uDbg < 2.5 ? vec3(lips, orb, faceCav * 1.8)
+               : vec3(pNeck, pTorso, cavity * 1.8);
+        }
         diffuseColor.rgb *= skin;
 
         gSss = uSss;
@@ -548,9 +620,14 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
                              +0.085 * g1(hy, -0.26, 0.20) * g1(axf, 0.56, 0.24)
                              -0.070 * g1(hy, -0.06, 0.14) * g1(axf, 0.42, 0.20)
                              +0.060 * g1(hy, -0.90, 0.14) * g1(axf, 0.0, 0.24));
-        rgh -= lips * 0.24 + lipBorder * 0.05;
+        // 0.24 -> 0.10. At 0.24 the lips ran a quarter of a stop glossier than
+        // an eyeball and mirrored the sky: a blue highlight across a vermilion
+        // is worth more luminance than the whole pigment rotation is worth in
+        // the other direction, which is a large part of why the mouth measured
+        // 0.95x the philtrum instead of 0.75x.
+        rgh -= lips * 0.10 + lipBorder * 0.05;
         rgh += wrinkle * 0.08;
-        rgh += beard * 0.16 + bhair * 0.10 + brow * 0.12 + lash * 0.10;
+        rgh += beard * 0.16 + bhair * 0.10 + orb * 0.11;
         rgh += pTorso * 0.03 + pLeg * 0.02;
         // Micro-relief: plateaux polish, furrow floors stay matte.
         rgh *= mix(0.84, 1.16, micro);
@@ -575,7 +652,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           fine += sub * 0.55 * (1.0 - smoothstep(0.25, 0.75, px));` : ''}
           // Hair sits proud of the skin; brows and stubble have to disturb the
           // surface or they read as a decal printed on a smooth face.
-          float hairBump = brow * 0.9 + beard * 0.7 + bhair * 0.5 + lash * 0.8;
+          float hairBump = orb * 0.85 + beard * 0.7 + bhair * 0.5;
           fine += (mhash22(vSurfUv * vec2(700.0, 260.0)) - 0.5) * hairBump * 1.6;
           // Wrinkles are a gradient, not a hash: a crease has a direction and
           // the light has to run across it, not sparkle in it.
@@ -669,7 +746,7 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
           vec3 wUp = normalize(mat3(viewMatrix) * vec3(0.0, 1.0, 0.0));
           float hemi = dot(geometryNormal, wUp) * 0.5 + 0.5;
           reflectedLight.indirectDiffuse *=
-            mix(vec3(1.12, 1.05, 0.84), vec3(0.90, 0.97, 1.14), hemi);
+            mix(vec3(1.06, 1.02, 0.92), vec3(0.95, 0.99, 1.07), hemi);
 
           // Sky occlusion. It is the indirect term this has to cut: the key is
           // already directional, so darkening the direct light as well would
@@ -688,8 +765,18 @@ export function makeSkinMaterial(i: SkinInputs): SkinMaterial {
   m.customProgramCacheKey = () => `ult.skin.${i.quality}`;
   m.needsUpdate = true;
 
+  // The face map is the only texture this material OWNS — every other sampler
+  // on it is borrowed from the shared `DetailTextures`. `dispose()` on a
+  // three material never touches its textures, and the library's `dispose`
+  // path calls exactly that, so without this the map leaks one buffer per
+  // re-dress. Wrapping the instance keeps the ownership question answered
+  // here, in the file that allocated it, instead of in a caller.
+  const disposeMaterial = m.dispose.bind(m);
+  m.dispose = () => { face.texture.dispose(); disposeMaterial(); };
+
   return {
     material: m,
+    faceBytes: face.bytes,
     setSweat(v: number) { u.uSweat.value = v; },
   };
 }

@@ -182,9 +182,56 @@ export function headFrame(a: Anthro): HeadFrame {
     // A palpebral fissure is 30 mm wide and 10 mm tall on an adult; the first
     // pass had it 26 × 14, which is a cartoon eye, and it was the loudest single
     // reason the roster read as dolls.
+    //
+    // THE UPPER LID MUST CROSS THE IRIS. This is the one number on the head that
+    // decides whether a face reads as focused or as terrified, and it is pure
+    // arithmetic — nothing downstream can undo it, because a lid that does not
+    // reach the iris leaves sclera above the iris and sclera above the iris is
+    // the hardwired human startle display.
+    //
+    // The old mapping was `er * (0.34 + 0.34 * eyeOpen)`, which put the aperture
+    // top 5.3–7.8 mm above the pupil axis across the roster's eyeOpen range
+    // [0.30, 0.92]. The iris top sits at er·irisR ≈ 5.7–6.3 mm (`irisR` is
+    // 0.478–0.528 in PlayerMaterial.ts, compared in Eyes.ts against the globe's
+    // PROJECTED radius). So the most relaxed athlete the parameter space could
+    // produce had the lid tangent to the iris and every other athlete showed
+    // white over it: measured over the fourteen-player roster the sculpted
+    // fissure top cleared the iris top by 0.05–3.8 mm, on all fourteen.
+    //
+    // The art direction's prescription was 0.26 + 0.10·eyeOpen, which puts the
+    // sculpted margin 1.5–2.2 mm inside the iris. On the ANALYTIC surface that is
+    // exactly right and it measures exactly that. It is not what ships.
+    //
+    // WHAT SHIPS IS SAMPLED, AND THE SAMPLER QUANTISES THIS NUMBER. `buildHead`
+    // evaluates this surface on a lat-long grid, and the delivered lid margin is
+    // not where the sculpt puts it — it is where the straight chord between two
+    // adjacent ROWS crosses the eyeball. At the old row budget the pitch at the
+    // eye line was 3.6 mm at `ultra` and 4.9 mm at `low`, so a 10 mm fissure was
+    // two rows tall and the delivered aperture top could only take two or three
+    // values. Sweeping this constant from 0.06 to 0.26 moved it in 4–5 mm jumps
+    // with the sign of the error flipping between neighbouring steps: every
+    // value in the sweep left sclera above the iris on some athlete at some
+    // shipped tier. The table is in `buildHead`, where the fix lives — the row
+    // budget, not this constant. Do not re-tune this number against a single
+    // tier; measure all four with `tools/_lidgeo.mjs --tess`.
+    //
+    // With the hero head at 94 rows (2.7 mm at the eye line, aperture 3.5–4 rows
+    // tall) the whole 0.10–0.20 band delivers positive coverage on all fourteen
+    // athletes at all four tiers, and 0.18 is the value inside it that also
+    // keeps the most hooded athlete's fissure open: 1.04–3.50 mm of iris covered
+    // above, 9.0–11.9 mm of fissure, against the brief's 1.5–2.5 and a 21–24 mm
+    // width. It errs a shade heavy at the relaxed end, which is the right side
+    // to err on — a heavy lid reads as calm, and the failure this whole round
+    // exists to kill is the other one.
+    //
+    // The lower lid goes to the lower limbus and stays there — a relaxed eye
+    // shows no sclera under the iris either — with a slop allowance one notch
+    // smaller, because sclera below the iris does not trip the startle response
+    // the way sclera above it does. The pupil correctly sits above the
+    // aperture's vertical midpoint.
     apW: (er * 1.22) / rx,
-    apU: (er * (0.34 + 0.34 * a.p.face.eyeOpen)) / ry,
-    apD: (er * (0.26 + 0.22 * a.p.face.eyeOpen)) / ry,
+    apU: (er * (0.18 + 0.10 * a.p.face.eyeOpen)) / ry,
+    apD: (er * (0.40 + 0.05 * a.p.face.eyeOpen)) / ry,
     eye: { pos: [V(0, 0, 0), V(0, 0, 0)], r: er },
   };
 
@@ -214,6 +261,17 @@ export function headFrame(a: Anthro): HeadFrame {
   // The lower lid margin, one aperture radius below the axis. On an open eye the
   // corneal apex sits essentially level with the margins — a hair behind, never
   // in front, or the globe bulges out of its own lids.
+  //
+  // This survives the aperture re-map above for a reason worth stating: the
+  // sample is quoted as a MULTIPLE of `apD`, so `orbitDz`'s aperture coordinate
+  // `qq` at this point is identically 1.15 whatever `apD` is, and the aperture
+  // cut, the lid-margin roll, the tear trough and the canthus terms are all
+  // functions of `qq` alone here. Only the orbital-cavity Gaussian — which is
+  // quoted in absolute ny, being anchored to the brow and not to the lid — sees
+  // the move, and it shifts the apex forward by 0.26 mm on the reference
+  // athlete. Re-measured after the change: the skin still stands 2.7 mm proud of
+  // the globe at the lower margin and 6.5 mm at the upper, i.e. both lids still
+  // occlude, and the cornea does not burst through either of them.
   const my = -1.15 * hf.apD;
   const nzM = Math.sqrt(Math.max(0.01, 1 - eyeN * eyeN - my * my));
   const apexZ = zPlane + orbitDz(hf, hf.vr, eyeN, my, nzM) - 0.02 * er;
@@ -254,6 +312,55 @@ function orbitDz(hf: HeadFrame, W: FaceVar, nx: number, ny: number, nz: number):
   const qq = Math.sqrt(q);
   const fz = clamp01(nz * 1.7 - 0.10);
   let dz = 0;
+
+  /**
+   * `qq` MEASURES THE APERTURE. `gg` MEASURES THE GLOBE. THEY ARE NOT THE SAME
+   * RULER AND EVERY TERM HERE HAS TO SAY WHICH ONE IT MEANS.
+   *
+   * This is the whole cost of halving the aperture, and it is worth writing down
+   * because it cost this round two full measurement passes to find. `qq` is
+   * distance in units of the palpebral half-axes, so a feature quoted at `qq
+   * 1.62` sat 10.5 mm above the pupil axis under the OLD `apU` of 6.5 mm and
+   * sits 5.7 mm above it under the new 3.5 mm. Three features moved that way
+   * without anyone asking them to — the orbital cavity's mask, the supratarsal
+   * crease, and the lid-margin roll's width — and all three landed on the
+   * eyeball, which is 11.6 mm of radius and did not move at all.
+   *
+   * Measured on athlete 13 of the fourteen before this change: at 9 mm above the
+   * pupil axis, 3 mm out, the cavity ran at full 4.8 mm depth and put the skin
+   * **0.34 mm behind the globe**. That is a hole in the upper eyelid, and on the
+   * shipped tessellation it opened into a crescent of bare sclera 4 mm tall
+   * spanning the outer half of the lid — 8.5 % of the aperture, all of it above
+   * the iris, i.e. precisely the startle display the aperture re-map exists to
+   * abolish. It was invisible in the arithmetic because the arithmetic was all
+   * in `qq`.
+   *
+   * So: anything whose subject is the EYEBALL — the lid shell that has to cover
+   * it, the crease that has to clear it — is quoted in `gg`, the distance from
+   * the eye's own centre in globe radii. `gg 1` is the limb of the globe by
+   * construction, and it stays there whatever `eyeOpen` does. Anything whose
+   * subject is the FISSURE — the aperture cut, the margin's peak, the canthus —
+   * stays in `qq`, which is what those things actually track.
+   */
+  const gg = Math.hypot(ddx * hf.rx, nyT * hf.ry) / hf.eye.r;
+  /**
+   * THE UPPER LID IS A SHELL LYING ON THE GLOBE, AND THE ORBIT IS BEHIND IT.
+   *
+   * There is no eyelid in this sculpt — only a lid MARGIN — so the socket has to
+   * be stopped from showing through where the tarsal plate belongs. The mask is
+   * one everywhere over the globe, dies at `nyT = 0` so the globe-placement solve
+   * (which samples the axis and the lower margin) cannot see it at all, and
+   * releases at the globe's own silhouette, where by definition there is no
+   * longer anything behind it to expose.
+   *
+   * The release used to be `smooth(2.50, 1.80, qq)`. In globe terms that is only
+   * 0.76 of the way up the eyeball on the reference athlete and 0.72 on the
+   * worst of the roster, so it uncovered the top quarter of the globe and let the
+   * cavity straight through. Quoted against the globe it cannot do that again on
+   * any athlete, at any `eyeOpen`, because it is the same statement as the thing
+   * it is protecting.
+   */
+  const lidShell = clamp01(nyT / (hf.apU * 0.60)) * smooth(1.00, 0.88, gg);
   // Orbital cavity: a broad recess the brow overhangs. Centred ON the eye it
   // buried the upper lid and every athlete squinted; the cavity's deepest point
   // is above the globe, not on it — so it is centred on the SUB-BROW hollow.
@@ -261,25 +368,95 @@ function orbitDz(hf: HeadFrame, W: FaceVar, nx: number, ny: number, nz: number):
   // margins that far behind the cheek, and a globe whose apex is level with the
   // cheek then stands 3 mm proud of its own lower lid. Which is what a bulging,
   // lidless, staring eye is.
-  dz -= R * 0.070 * g1(nyT, 0.115, 0.185) * g1(ax, 0.400, 0.280) * fz;
-  // Tear trough / infraorbital groove under the lower lid.
+  dz -= R * 0.070 * g1(nyT, 0.115, 0.185) * g1(ax, 0.400, 0.280) * fz * (1 - 0.90 * lidShell);
+  // Tear trough / infraorbital groove under the lower lid. This one STAYS in
+  // aperture units: `apD * 2.6` is 14 mm, which is below the globe's 11.6 mm
+  // limb rather than on it, so it is the one aperture-quoted feature the re-map
+  // moved in a safe direction. Measured contribution at the lower margin is
+  // 0.6 mm and the skin there is 0.7–2.5 mm proud of the globe with it applied.
   dz -= R * 0.030 * g1(nyT, -hf.apD * 2.6, hf.apD * 1.5) * g1(ax, hf.eyeN * 0.78, 0.150) * fz;
+  /**
+   * Supratarsal crease, and the tarsal platform under it — both anchored to the
+   * globe.
+   *
+   * On a live face the crease is where the levator aponeurosis inserts, 7–9 mm
+   * above the lash line, which puts it within a millimetre of the top of the
+   * globe: `gg` ≈ 1. Quoted at `qq 1.62` it tracked the fissure instead, so
+   * halving the aperture walked it down from 10.5 mm to 5.7 mm above the pupil
+   * axis — onto the superior limbus, 2.5–3.7 mm deep, directly cancelling the
+   * lid-margin roll that is the only thing holding the lid in front of the eye.
+   * On the two worst athletes it cut through: measured 0.03 mm and −0.31 mm of
+   * clearance at the crease, i.e. tangent and through.
+   *
+   * It also has to sit outside the `qq < 3.2` block now, because at the new
+   * anchor `qq` there runs to about 3.9 and the guard would simply delete it.
+   */
+  const cg = (gg - (1.02 + 0.26 * W.hood)) / (0.13 + 0.08 * W.hood);
+  dz -= R * (0.046 - 0.022 * W.hood) * Math.exp(-cg * cg) * clamp01(nyT * 6.0) * fz
+    * (1 - 0.90 * lidShell);
   if (qq < 3.2) {
-    // The aperture: cut the skin back behind the corneal plane so the globe is
-    // exposed over a real chord. A soft ramp here is what gave the first pass a
-    // 12 mm slit in a 24 mm eye.
-    dz -= R * 0.155 * smooth(1.14, 0.80, qq) * fz;
-    // Lid margins — a rolled edge just outboard of the aperture, thicker above,
-    // and both of them proud of the skin around them.
+    /**
+     * The aperture: cut the skin back behind the corneal plane so the globe is
+     * exposed over a real chord. A soft ramp here is what gave the first pass a
+     * 12 mm slit in a 24 mm eye.
+     *
+     * DEPTH IS 0.090 R, DOWN FROM 0.155. The old 12 mm was chosen to guarantee
+     * exposure and it guaranteed rather more than that: there is no 12 mm void
+     * behind a human eyelid, the conjunctival fornix is a couple of millimetres
+     * behind the globe, and the extra ten were pure margin. They were not free.
+     * The mesh carries this on a 4 mm row pitch, so between the row that lands
+     * inside the cut and the row that lands on the lid the surface is a straight
+     * chord — and the deeper the cut, the further that chord has to climb and the
+     * further past the true edge it crosses the globe. Measured over the roster,
+     * on the shipped tessellation:
+     *
+     *     cut     upper lid over iris     iris+pupil / aperture
+     *     0.155     0.78 – 1.17 mm             39.4 – 41.9 %
+     *     0.110     0.87 – 1.44 mm             41.7 – 44.8 %
+     *     0.090     0.95 – 1.53 mm             43.2 – 46.8 %
+     *     0.070     1.04 – 1.72 mm             45.1 – 49.3 %
+     *
+     * Monotone, and it is the single largest lever on the section-4 iris
+     * fraction that does not involve touching `irisR` or the row budget. It runs
+     * out below 0.090 for a reason that is not sampling: near the canthi the
+     * globe is nearly tangent to the view, so a shallow cut stops exposing it at
+     * all and the fissure narrows — 20.7 mm delivered at 0.070 against 23.8 mm
+     * at 0.090, on a 28 mm design. 0.090 is where the two curves cross.
+     */
+    dz -= R * 0.090 * smooth(1.14, 0.80, qq) * fz;
+    /**
+     * Lid margins — a rolled edge just outboard of the aperture, thicker above,
+     * and both of them proud of the skin around them.
+     *
+     * THE OUTBOARD SIDE IS A PLATE, NOT A BEAD, AND THE REASON IS SAMPLING.
+     * `buildHead` evaluates this surface on an 87 × 71 lat-long grid; at the eye
+     * line — the densest latitude on the head, because `warpV` clusters there —
+     * that is a 4.0 mm row pitch at `ultra` and 6.3 mm at `low`. At the old
+     * width the roll was a Gaussian of 0.68 mm sigma: five times finer than the
+     * grid that has to carry it, so no vertex ever landed on it and the mesh
+     * interpolated a straight chord from a row deep inside the aperture cut to a
+     * row up on the brow. Measured on the shipped tessellation, that chord put
+     * the delivered aperture top 1.3 mm higher and the bottom 2.9 mm lower than
+     * the sculpt asks for — 3.5 mm of extra fissure, which is the entire lid
+     * coverage this round is fighting for, handed back by the sampler.
+     *
+     * Widening it is not a cheat for the mesh's benefit either: the tarsal plate
+     * IS 8–10 mm of firm tissue standing proud of the globe, and a 0.7 mm bead
+     * was the wrong model of an eyelid before it was too small to render. The
+     * peak stays exactly at `qq 1.15` — the globe-placement solve samples that
+     * point, so moving it would move the cornea — and the inboard flank keeps
+     * its 0.17, which is what holds the aperture edge crisp.
+     *
+     * The outboard sigma is quoted in globe radii so it is the same 2 mm of real
+     * tissue above and below, rather than 2 mm above and 3 mm below, which is
+     * what quoting it in `qq` would give (`apU` and `apD` differ by 1.6x).
+     */
+    const perGlobe = hf.eye.r / (nyT > 0 ? hf.apU * hf.ry : hf.apD * hf.ry);
     const mUp = nyT > 0 ? 1.0 : 0.62;
-    const mk = (qq - 1.15) / 0.17;
+    const mk = (qq - 1.15) / (qq > 1.15 ? Math.max(0.17, 0.175 * perGlobe) : 0.17);
     dz += R * 0.052 * mUp * Math.exp(-mk * mk) * fz;
-    // Supratarsal crease. A hooded lid buries it; an open one shows 8 mm of
-    // tarsal platform under it.
-    const ck = (qq - (1.62 + 0.34 * W.hood)) / (0.24 + 0.14 * W.hood);
-    dz -= R * (0.046 - 0.022 * W.hood) * Math.exp(-ck * ck) * clamp01(nyT * 6.0) * fz;
     // Epicanthic / medial canthus — the inner corner sits deeper than the outer
-    // one on every face.
+    // one on every face. Stays in `qq`: its subject is the corner of the fissure.
     const kk = (qq - 1.0) / 0.55;
     dz -= R * 0.030 * Math.exp(-kk * kk) * smooth(hf.eyeN * 0.55, hf.eyeN * 0.05, ax) * fz;
   }
@@ -338,7 +515,14 @@ export function faceSurface(a: Anthro, hf: HeadFrame, F: FaceParams, dir: Vec3, 
   // hollow under it. The hollow is what gives an endurance athlete a face.
   d += R * (0.062 + 0.105 * F.cheek) * g1(ny, -0.165, 0.140) * g1(ax, 0.585, 0.215) * clamp01(nz + 0.28);
   d += R * (0.022 + 0.040 * F.cheek) * g1(ny, -0.040, 0.130) * g1(ax, 0.855, 0.165) * clamp01(nz + 0.55);
-  d -= R * (0.058 + 0.048 * (1 - F.cheek)) * g1(ny, -0.480, 0.135) * g1(ax, 0.520, 0.190) * f1;
+  // Halved, from 0.058 + 0.048·(1 − cheek). At the old depth this was 6.3 mm of
+  // sculpted hollow under the cheekbone, and the paint layer then carries the
+  // same concavity twice more (a cavity lobe and a flush lobe painting the same
+  // patch red-brown). Three punishments of one hollow is the whole of the
+  // "gaunt / injured" read; the bone is not the problem and the proportion
+  // ladder above is anthropometric, so the subtraction happens here rather than
+  // in the skull.
+  d -= R * (0.030 + 0.024 * (1 - F.cheek)) * g1(ny, -0.480, 0.135) * g1(ax, 0.520, 0.190) * f1;
   // Masseter belly and the gonial angle — where a jaw stops being a chin and
   // starts being a jaw.
   d += R * (0.020 + 0.048 * F.jaw) * g1(ny, -0.510, 0.150) * g1(ax, 0.600, 0.185) * clamp01(nz + 0.10);
@@ -509,8 +693,111 @@ export function buildHead(m: RigMesh, a: Anthro, d: DetailSpec): void {
   // of those survive a 50 × 45 grid. Half again on both axes costs ~4.6 k
   // triangles on the LOD that is only ever drawn inside eight metres, and it is
   // the difference between a mouth and a smudge.
-  const hu = d.level === 0 ? Math.round(d.headU * 1.55) : d.headU;
-  const hv = d.level === 0 ? Math.round(d.headV * 1.40) : d.headV;
+  //
+  // THE ROW BUDGET IS THE LID CONTROL, NOT `apU`. This is the finding of the
+  // round and it took a parameter sweep to see, because it is invisible in the
+  // sculpt: `faceSurface` puts the lid margin wherever `apU` says, but what
+  // SHIPS is that surface sampled on `hv` rows, and the delivered margin is
+  // where a straight chord between two of those rows crosses the globe. At
+  // `1.40` the row pitch at the eye line is 3.6 mm at `ultra` and 4.9 mm at
+  // `low`, against a 10 mm fissure — the palpebral aperture is **two rows tall**
+  // — so the delivered aperture top is quantised to the row grid and moves in
+  // 4–5 mm steps while `apU` moves in tenths. Measured over the fourteen-player
+  // roster at the four shipped `charDetail` tiers, sweeping the `apU` constant
+  // from 0.06 to 0.26 in steps of 0.01 (`tools/_lidgeo.mjs`, `APU_C=`), worst
+  // upper-lid coverage over iris:
+  //
+  //     apU const   0.06   0.10   0.14   0.18   0.22   0.26
+  //     hv × 1.40  -0.63  +0.02  -0.32  -0.43  -0.46  -0.30   mm
+  //     hv × 1.85  +2.13  +1.16  +1.32  +1.04  +0.35  -0.32   mm
+  //
+  // The 1.40 row is not a curve, it is noise: every value in it leaves sclera
+  // above the iris on some athlete at some tier, including the two that happen
+  // to read zero at the sample points, and the sign flips between neighbouring
+  // steps. That is aliasing, and no choice of `apU` fixes it — which is exactly
+  // how six rounds of "correct" lid arithmetic shipped as a startled stare.
+  //
+  // 1.85 puts 94 rows on the hero head, a 2.7 mm pitch at the eye line, and the
+  // aperture becomes 3.5–4 rows tall. Coverage is then positive on all fourteen
+  // athletes at all four tiers with 1.0 mm to spare at the worst, and the whole
+  // 0.10–0.20 band of `apU` passes rather than none of it. It costs about 4 k
+  // triangles on a LOD drawn inside eight metres, against 15.8 M in the frame.
+  // The mouth gets the same dividend for free: its row pitch goes 4.9 → 3.7 mm.
+  //
+  // AND LOD 1 NEEDS THE SAME MEDICINE, BECAUSE LOD 1 IS WHERE THE GAME IS.
+  // `LOD_DISTANCE` in `PlayerRig.ts` is `[0, 7.5, 24]`, so LOD 0 is the portrait
+  // and the pause menu and LOD 1 is *every gameplay camera*: the 12 m
+  // celebration, the whole tele broadcast, all fourteen athletes for ~100 % of
+  // play. It carries `face: true` and `eyes: true`, and at its stock 23 × 19 the
+  // row pitch at the eye line is ~12 mm against a 10 mm fissure — the aperture
+  // is UNDER ONE ROW. Measured on the delivered mesh over the fourteen-player
+  // roster (`tools/_lidgeo.mjs --tess` with the LOD-1 grid), at `low`:
+  //
+  //                        aperture height   upper lid over iris   sclera above iris
+  //     23 × 19 (stock)     18.6 – 20.5 mm    −5.01 … −3.60 mm      13.6 – 18.1 %
+  //     40 × 72 (this)       9.4 – 11.2 mm    −0.60 … +3.25 mm       0.0 –  3.0 %
+  //
+  // Read the middle column: at the shipped LOD 1 the upper lid margin lands four
+  // to five millimetres ABOVE the iris on every athlete on the roster, which is
+  // the startle display this entire round exists to abolish, delivered at every
+  // distance anyone actually plays at. The closeup was fixed; the game was not.
+  //
+  // BOTH AXES MOVE, and that was not obvious. Rows alone stall at ~5 % sclera
+  // above the iris no matter how many you add (V × 1.40 / 1.50 / 1.60 all sit at
+  // 5.2 – 5.8 % at `charDetail 1`) because the residue is at the CANTHI, where
+  // the globe is nearly tangent to the view and the quantiser is the column grid
+  // — 21 columns to carry a 22 mm fissure. Taking U from 21 to 35 drops the same
+  // number to zero with the rows unchanged. Whichever axis is coarser is the one
+  // that owns the error.
+  //
+  // The cost is the honest objection and it is small: the LOD-1 head goes 874 →
+  // 5 760 triangles, so fourteen athletes cost ~68 k against 15.8 M in the frame
+  // (0.4 %), on a mesh that starts at 7.5 m where the head is still ~110 px. The
+  // grid is deliberately NOT LOD 0's — 40 × 72 against 87 × 94 — because it only
+  // has to resolve the fissure, not the nostril sill.
+  //
+  // AND THE ROW COUNT MUST BE EVEN. This is the last five per cent of the round
+  // and it is the difference between "measured clean at the four tiers I tried"
+  // and a guarantee.
+  //
+  // `sphereish` lays rows at `mapV(iy / sv)` and `mapV` — `t + wv·sin(2πt)/2π`
+  // — is symmetric about `t = 0.5`. The eye line is `ny = 0`, i.e. `phi = π/2`,
+  // i.e. exactly `v = 0.5`. So an EVEN `sv` puts a vertex row precisely on the
+  // pupil axis and steps outward from it symmetrically; an ODD one straddles it,
+  // with the nearest rows half a pitch either side. At LOD 0 the pitch is 2.7 mm
+  // and the half-step does not matter. At LOD 1 the pitch is 4–5 mm, the whole
+  // upper-lid coverage budget is 1.5–2.5 mm, and the half-step is the budget.
+  //
+  // Swept over a 28-athlete roster at the LOD-1 grid, `hu` 40, worst upper-lid
+  // coverage over the iris and worst sclera-above-iris, by row count:
+  //
+  //     hv    55     56     57     58     59     60     61     62     63
+  //     mm  -0.37  +1.65  -0.43  +1.82  -0.26  +1.99  -0.17  +2.17  +0.00
+  //      %   0.51   0.00   0.43   0.00   0.42   0.00   0.24   0.00   0.00
+  //     hv    65     66     67     68     70     71     72     80
+  //     mm  +0.09  +2.43  +0.26  +2.47  +2.60  +0.61  +2.68  +1.73
+  //      %   0.00   0.00   0.00   0.00   0.00   0.00   0.00   0.00
+  //
+  // Every odd row count either fails outright or passes with a tenth of the
+  // coverage; every even one lands in the brief's 1.5–2.5 mm band. It is a
+  // perfect two-cycle, not a trend, which is exactly what a phase artefact looks
+  // like — and it is why sweeping `apU` against a fixed grid produced a table of
+  // noise. Round it to even and the aliasing is not tuned around, it is gone.
+  //
+  // Unrounded, the multipliers give LOD-1 rows of 53 / 57 / 65 / 72 at the four
+  // `charDetail` tiers — two of the four odd, and `charDetail 0.75` (the shipped
+  // `medium` tier) measured 3.0 % of its aperture as sclera above the iris,
+  // which is the startle display this round exists to abolish, shipping at the
+  // LOD that carries every gameplay camera. Evened, they are 54 / 58 / 66 / 72
+  // and all four read 0.000 %.
+  //
+  // LOD 2 is left alone: it carries `face: false, eyes: false`, so it has no
+  // aperture and no globe to leave sclera above.
+  const even = (n: number) => n + (n & 1);
+  const hu = d.level === 0 ? Math.round(d.headU * 1.55)
+    : d.level === 1 ? Math.round(d.headU * 1.75) : d.headU;
+  const hv = d.level === 0 ? even(Math.round(d.headV * 1.85))
+    : d.level === 1 ? even(Math.round(d.headV * 3.80)) : d.headV;
   m.group(GROUP.skin).sphereish(
     hu, hv,
     (dir, _u, _v, out) => {
@@ -605,7 +892,26 @@ function buildEars(m: RigMesh, a: Anthro, hf: HeadFrame): void {
    */
   const PUSH = [0.00, 0.55, 1.00, 1.05, 0.86, 0.46, 0.16];
   const SCALE = [0.86, 1.00, 0.97, 0.80, 0.60, 0.42, 0.22];
-  const DEPTH = [0.00, 0.10, 0.02, -0.16, -0.34, -0.46, -0.44];
+  // DEPTH[0] IS THE ATTACHMENT, AND IT HAS TO BE BURIED IN THE SKULL.
+  //
+  // The loft is built `capStart: false`, so ring 0 is an open boundary — a hole
+  // straight into the ear's interior, whose far side is backfacing and therefore
+  // culled. At 0.00 that hole sat on the plane x = 0.965·rx, and the skull is
+  // nowhere near that wide below the ear: measured against the finished surface,
+  // ring 0 stood OUTSIDE the head over 47–70 % of its circumference on every one
+  // of the fourteen athletes, by up to 6.2 mm under the lobe. That is the
+  // background visible through the head silhouette behind the ear, and it is
+  // most of the "detached flap" read — an ear you can see daylight around is not
+  // attached to anything.
+  //
+  // −0.55 sinks the ring 10.3 mm medially, which clears the skull by 2.1 mm on
+  // the worst athlete of the roster and 5.3 mm on the hero. A ring strictly
+  // inside a closed opaque surface cannot be seen through from ANY yaw, which is
+  // why this is a burial and not a fitted offset. It also costs nothing in
+  // silhouette: the ear's outline is rings 1–3 and they have not moved. What it
+  // buys besides the hole is a 10–15 mm root ramp from the skull out to the
+  // helix and the lobe, which is what an auricle actually attaches with.
+  const DEPTH = [-0.55, 0.10, 0.02, -0.16, -0.34, -0.46, -0.44];
 
   for (const s of SIDES) {
     const cx = s * hf.rx * 0.965;

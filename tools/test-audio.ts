@@ -28,7 +28,7 @@
  */
 
 import { EventBus, QUALITY_PRESETS, Rng, type QualityTier } from '../src/core/Ctx.ts';
-import { AudioGraph, TIERS } from '../src/audio/Graph.ts';
+import { AudioGraph, TIERS, TOUCHLINE, touchlineGain } from '../src/audio/Graph.ts';
 import { AudioSystem } from '../src/audio/Audio.ts';
 import { CrowdLayer } from '../src/audio/Crowd.ts';
 
@@ -923,6 +923,657 @@ section('crowd');
   p.sys.dispose();
 
   sys.dispose();
+}
+
+/* ============================================================= 4b. the drama
+ *
+ * Everything above proves the graph exists and is legal. This section proves it
+ * is *about the match* — that the crowd is louder after a catch than before it,
+ * quieter at stall 8 than at stall 2, and loudest of all on a block.
+ *
+ * The measurement is not `crowd.debug()`. Reading the model's own variables and
+ * asserting they moved is circular: it would pass just as happily if nothing
+ * downstream were connected to them. What is measured instead is the automation
+ * the crowd's gain nodes actually received — every `setTargetAtTime`,
+ * `linearRamp` and `setValueAtTime` recorded by the fake — evaluated back into a
+ * level envelope with the same first-order and ramp semantics the spec defines.
+ * That is one step short of PCM, and it is a step the browser probe
+ * (`tools/_audioprobe.mjs`) covers with a real OfflineAudioContext render.
+ */
+
+section('drama');
+
+/**
+ * Evaluate a recorded AudioParam onto a uniform grid, honouring the four
+ * automation kinds the audio code emits. One pass over the events.
+ */
+function sampleParam(p: FakeParam, t0: number, t1: number, step: number): Float64Array {
+  const n = Math.max(1, Math.ceil((t1 - t0) / step));
+  const out = new Float64Array(n);
+  const evs = p.events.slice().sort((a, b) => a.time - b.time);
+  let ei = 0;
+  /** The event governing the segment we are in, and the value it started from. */
+  let seg: ParamEvent | null = null;
+  let segStart = p.defaultValue;
+
+  const at = (t: number): number => {
+    if (!seg) return segStart;
+    const next = ei < evs.length ? evs[ei] : null;
+    if (seg.kind === 'target') {
+      const tau = Math.max(1e-4, seg.tau ?? 0.05);
+      return seg.value + (segStart - seg.value) * Math.exp(-Math.max(0, t - seg.time) / tau);
+    }
+    // A `set` holds, and a ramp holds its endpoint — unless the next event is
+    // itself a ramp, which begins interpolating from here immediately.
+    if (next && (next.kind === 'lin' || next.kind === 'exp')) {
+      return rampAt(seg.value, seg.time, next, t);
+    }
+    return seg.value;
+  };
+
+  for (let i = 0; i < n; i++) {
+    const t = t0 + i * step;
+    while (ei < evs.length && evs[ei].time <= t) {
+      const e = evs[ei];
+      // The value handed to the new segment is whatever the old one had reached.
+      const carried = at(e.time);
+      ei++;
+      seg = e;
+      segStart = carried;
+    }
+    out[i] = at(t);
+  }
+  return out;
+}
+
+function rampAt(fromV: number, fromT: number, to: ParamEvent, t: number): number {
+  const span = Math.max(1e-6, to.time - fromT);
+  const k = Math.min(1, Math.max(0, (t - fromT) / span));
+  if (to.kind === 'exp') {
+    const a = Math.max(1e-9, fromV);
+    const b = Math.max(1e-9, to.value);
+    return a * Math.pow(b / a, k);
+  }
+  return fromV + (to.value - fromV) * k;
+}
+
+/**
+ * Every Gain that feeds the crowd stem, taken off the permanent edge log rather
+ * than off live `out` arrays — a reaped one-shot has been disconnected by the
+ * time the envelope is evaluated, and it still made noise.
+ */
+function crowdFeeders(ac: FakeContext, crowd: FakeNode): FakeNode[] {
+  const pans = new Set<FakeNode>();
+  for (const e of ac.edges) {
+    if (e.to === crowd && e.from.kind === 'StereoPanner') pans.add(e.from);
+  }
+  const seen = new Set<FakeNode>();
+  for (const e of ac.edges) {
+    const to = e.to;
+    if (to instanceof FakeParam) continue;
+    if ((to === crowd || pans.has(to)) && e.from.kind === 'Gain') seen.add(e.from);
+  }
+  return [...seen];
+}
+
+/**
+ * Sum the crowd stem's sources in power, which is the right way to add
+ * uncorrelated noise beds and is proportional to what a meter would read.
+ */
+function crowdEnvelope(
+  ac: FakeContext, crowd: FakeNode, t0: number, dur: number, step: number,
+): Float64Array {
+  const feeders = crowdFeeders(ac, crowd);
+  const n = Math.max(1, Math.ceil(dur / step));
+  const out = new Float64Array(n);
+  for (const f of feeders) {
+    const p = f.params.get('gain');
+    if (!p) continue;
+    const s = sampleParam(p, t0, t0 + dur, step);
+    // A transient voice built at t = 13.5 s contributed nothing at t = 2 s, and
+    // its param's *default* value would otherwise read as full scale for the
+    // whole window before it existed.
+    const born = p.events.length ? p.events[0].time : 0;
+    for (let i = 0; i < n; i++) {
+      if (t0 + i * step < born) continue;
+      const v = Math.max(0, s[i]);
+      out[i] += v * v;
+    }
+  }
+  for (let i = 0; i < n; i++) out[i] = Math.sqrt(out[i]);
+  return out;
+}
+
+/**
+ * The envelope of one named bed, so a groan can be told apart from a cheer by
+ * something other than its level. Every crowd bed is the same murmur PCM at a
+ * different playback rate — 0.70 groan, 0.86 chatter, 1.52 roar — plus the
+ * separately baked applause, so the rate (or the buffer) identifies the layer.
+ */
+function bedEnvelope(
+  ac: FakeContext, crowd: FakeNode, pick: (s: FakeBufferSource) => boolean,
+  t0: number, dur: number, step: number,
+): Float64Array {
+  const n = Math.max(1, Math.ceil(dur / step));
+  const out = new Float64Array(n);
+  const src = ac.nodes.find((x) => x instanceof FakeBufferSource && pick(x)) as FakeBufferSource | undefined;
+  if (!src) return out;
+  // Walk downstream until a Gain that reaches the crowd stem.
+  const pans = new Set<FakeNode>();
+  for (const e of ac.edges) if (e.to === crowd && e.from.kind === 'StereoPanner') pans.add(e.from);
+  const from = new Map<FakeNode, Array<FakeNode | FakeParam>>();
+  for (const e of ac.edges) {
+    const arr = from.get(e.from) ?? [];
+    arr.push(e.to);
+    from.set(e.from, arr);
+  }
+  let found: FakeNode | null = null;
+  const stack: FakeNode[] = [src];
+  const seen = new Set<FakeNode>();
+  while (stack.length && !found) {
+    const cur = stack.pop()!;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const to of from.get(cur) ?? []) {
+      if (to instanceof FakeParam) continue;
+      if (cur.kind === 'Gain' && (to === crowd || pans.has(to))) { found = cur; break; }
+      stack.push(to);
+    }
+  }
+  if (!found) return out;
+  const p = found.params.get('gain');
+  if (!p) return out;
+  const s = sampleParam(p, t0, t0 + dur, step);
+  for (let i = 0; i < n; i++) out[i] = Math.max(0, s[i]);
+  return out;
+}
+
+const winMean = (e: Float64Array, step: number, a: number, b: number): number => {
+  const i0 = Math.max(0, Math.floor(a / step));
+  const i1 = Math.min(e.length, Math.ceil(b / step));
+  let s = 0;
+  for (let i = i0; i < i1; i++) s += e[i];
+  return i1 > i0 ? s / (i1 - i0) : 0;
+};
+const winPeak = (e: Float64Array, step: number, a: number, b: number): number => {
+  const i0 = Math.max(0, Math.floor(a / step));
+  const i1 = Math.min(e.length, Math.ceil(b / step));
+  let m = 0;
+  for (let i = i0; i < i1; i++) if (e[i] > m) m = e[i];
+  return m;
+};
+
+/**
+ * One scripted point, driven frame by frame with the disc actually moving, so
+ * the anticipation model has a real closing distance to work with.
+ *
+ * Timeline (seconds):
+ *   0.00  live possession, disc held
+ *   0.25→2.25  the stall count climbs 1→9
+ *   3.00  a 26 m/s huck                 4.50  taken on the run
+ *   6.00  a throwaway                   7.60  it lands, nobody near it
+ *   9.00  a swing                       9.90  blocked
+ *  13.50  a layout bid                 13.90  the landing
+ *  16.00  the goal
+ */
+function scriptedPoint(tier: QualityTier = 'high'): {
+  sys: AudioSystem; ac: FakeContext; env: Float64Array; step: number; log: string[];
+  groan: Float64Array; applause: Float64Array; chatter: Float64Array;
+} {
+  const { sys, ctx, ac } = liveSystem(tier);
+  const E = ctx.events;
+  const disc = ctx.sys.disc.rt;
+  const players: any[] = ctx.sys.locomotion.players;
+  const log: string[] = [];
+
+  // Park everyone off the map so `nearestBody` is a controlled quantity, then
+  // nominate one receiver whose position the script drives.
+  for (const p of players) { p.pos = { x: 300, y: 0.95, z: 300 }; p.state = 'run'; p.stamina = 100; }
+  const rx = players[1];
+  rx.pos = { x: 5, y: 0.95, z: -20 };
+
+  const setDisc = (x: number, y: number, z: number, vx: number, vy: number, vz: number, flight: boolean): void => {
+    disc.state.pos = { x, y, z };
+    disc.state.vel = { x: vx, y: vy, z: vz };
+    disc.state.groundY = 0;
+    disc.state.atRest = !flight;
+    disc.state.airspeed = flight ? Math.hypot(vx, vy, vz) : 0;
+    disc.state.spin = flight ? -46 : 0;
+    disc.mode = flight ? 'flight' : 'held';
+  };
+
+  const dt = 1 / 60;
+  const DUR = 20;
+  const N = Math.round(DUR / dt);
+  setDisc(0, 1.3, 10, 0, 0, 0, false);
+  E.emit('state:changed', { to: 'LIVE_POSSESSION' });
+
+  // Let the beds reach their resting level before the clock starts. Without
+  // this the first second of the point is the graph fading up from silence, and
+  // every comparison against "the start of the possession" is measuring a
+  // startup ramp rather than a crowd.
+  for (let i = 0; i < 150; i++) { ac.advance(dt); sys.lateUpdate(dt, ctx); }
+  const t0 = ac.currentTime;
+
+  // A flight leg: from → to over `secs`, straight line, constant velocity.
+  let leg: { x0: number; y0: number; z0: number; x1: number; y1: number; z1: number; t0: number; secs: number } | null = null;
+
+  for (let i = 0; i < N; i++) {
+    const t = i * dt;
+    const at = (s: number): boolean => Math.abs(t - s) < dt * 0.5;
+
+    /* the stall */
+    for (let c = 1; c <= 9; c++) {
+      if (at(0.25 * c)) {
+        ctx.sys.game.gs.stallCount = c;
+        E.emit('stall:tick', { count: c, max: 10, playerId: 3, team: 0, markerId: 2 });
+      }
+    }
+
+    /* throw one — the huck */
+    if (at(3.0)) {
+      ctx.sys.game.gs.stallCount = 0;
+      E.emit('disc:released', {
+        pos: { x: 0, y: 1.3, z: 10 }, vel: { x: 3.3, y: 1.2, z: -20 },
+        spin: 52, throwType: 'backhand', playerId: 3, team: 0, stall: 9,
+      });
+      E.emit('state:changed', { to: 'DISC_IN_FLIGHT' });
+      leg = { x0: 0, y0: 1.3, z0: 10, x1: 5, y1: 1.8, z1: -20, t0: 3.0, secs: 1.5 };
+      log.push('3.00 huck');
+    }
+    if (at(4.5)) {
+      leg = null;
+      setDisc(5, 1.8, -20, 0, 0, 0, false);
+      E.emit('disc:caught', { playerId: rx.id, pos: { x: 5, y: 1.8, z: -20 }, team: 0, outcome: 'completion' });
+      E.emit('state:changed', { to: 'LIVE_POSSESSION' });
+      log.push('4.50 catch');
+    }
+
+    /* throw two — the throwaway */
+    if (at(6.0)) {
+      E.emit('disc:released', {
+        pos: { x: 5, y: 1.5, z: -20 }, vel: { x: -10, y: 1.0, z: 12 },
+        spin: 40, throwType: 'forehand', playerId: rx.id, team: 0, stall: 2,
+      });
+      E.emit('state:changed', { to: 'DISC_IN_FLIGHT' });
+      leg = { x0: 5, y0: 1.5, z0: -20, x1: -18, y1: 0.05, z1: 8, t0: 6.0, secs: 1.6 };
+      log.push('6.00 throwaway');
+    }
+    if (at(7.6)) {
+      leg = null;
+      setDisc(-18, 0.05, 8, 0, 0, 0, false);
+      E.emit('disc:grounded', { pos: { x: -18, y: 0.05, z: 8 }, reason: 'throwaway' });
+      E.emit('turnover', { reason: 'throwaway', from: 0, to: 1, playerId: rx.id });
+      E.emit('state:changed', { to: 'TURNOVER_DEAD' });
+      log.push('7.60 ground');
+    }
+
+    /* throw three — the block */
+    if (at(9.0)) {
+      E.emit('state:changed', { to: 'LIVE_POSSESSION' });
+      E.emit('disc:released', {
+        pos: { x: -18, y: 1.4, z: 8 }, vel: { x: 9, y: 0.6, z: 8 },
+        spin: 38, throwType: 'backhand', playerId: 9, team: 1, stall: 1,
+      });
+      E.emit('state:changed', { to: 'DISC_IN_FLIGHT' });
+      leg = { x0: -18, y0: 1.4, z0: 8, x1: -10, y1: 1.2, z1: 15, t0: 9.0, secs: 0.9 };
+      // A defender is right there, which is why this one is not a groan.
+      players[2].pos = { x: -10, y: 0.95, z: 15 };
+      log.push('9.00 swing');
+    }
+    if (at(9.9)) {
+      leg = null;
+      setDisc(-10, 0.05, 15, 0, 0, 0, false);
+      E.emit('disc:grounded', { pos: { x: -10, y: 0.05, z: 15 }, reason: 'block' });
+      E.emit('turnover', { reason: 'block', from: 1, to: 0, playerId: 2 });
+      E.emit('state:changed', { to: 'TURNOVER_DEAD' });
+      log.push('9.90 BLOCK');
+    }
+
+    /* the bid */
+    if (at(13.5)) { players[2].state = 'layout'; log.push('13.50 layout'); }
+    if (at(13.9)) {
+      players[2].state = 'landing';
+      E.emit('player:land', { id: 2, pos: { x: -10, y: 0.1, z: 15 }, impact: 8.2, layout: true });
+    }
+    if (at(14.6)) players[2].state = 'run';
+
+    /* the goal */
+    if (at(16.0)) {
+      E.emit('score', { team: 0, playerId: 4, assistId: 3, score: [1, 0], point: 1 });
+      E.emit('state:changed', { to: 'POINT_SCORED' });
+      log.push('16.00 GOAL');
+    }
+
+    /* fly the disc */
+    if (leg) {
+      const k = Math.min(1, (t - leg.t0) / leg.secs);
+      const x = leg.x0 + (leg.x1 - leg.x0) * k;
+      const y = leg.y0 + (leg.y1 - leg.y0) * k;
+      const z = leg.z0 + (leg.z1 - leg.z0) * k;
+      setDisc(x, y, z,
+        (leg.x1 - leg.x0) / leg.secs, (leg.y1 - leg.y0) / leg.secs, (leg.z1 - leg.z0) / leg.secs, true);
+    }
+
+    ctx.frame++;
+    ctx.time += dt;
+    ac.advance(dt);
+    sys.lateUpdate(dt, ctx);
+  }
+
+  const step = 0.02;
+  const crowdNode = sys.graph!.crowd as unknown as FakeNode;
+  const env = crowdEnvelope(ac, crowdNode, t0, DUR, step);
+  const rate = (s: FakeBufferSource, r: number): boolean =>
+    Math.abs(s.playbackRate.events[0]?.value - r) < 0.02;
+  const beds = sys.graph!.beds as unknown as { applause: FakeBuffer };
+  return {
+    sys, ac, env, step, log,
+    groan: bedEnvelope(ac, crowdNode, (s) => rate(s, 0.70), t0, DUR, step),
+    chatter: bedEnvelope(ac, crowdNode, (s) => rate(s, 0.86), t0, DUR, step),
+    applause: bedEnvelope(ac, crowdNode, (s) => s.buffer === beds.applause, t0, DUR, step),
+  };
+}
+
+{
+  const { sys, env, step, log } = scriptedPoint();
+  const mean = (a: number, b: number): number => winMean(env, step, a, b);
+  const peak = (a: number, b: number): number => winPeak(env, step, a, b);
+
+  if (VERBOSE) {
+    const db = (v: number): string => (20 * Math.log10(Math.max(1e-6, v))).toFixed(1).padStart(6);
+    console.log(`  script: ${log.join('  ')}`);
+    let line = '  crowd stem, dB rel. full scale, 0.5 s means:';
+    for (let s = 0; s < 20; s += 0.5) {
+      if ((s * 2) % 8 === 0) line += `\n  ${s.toFixed(0).padStart(2)}s |`;
+      line += ` ${db(winMean(env, step, s, s + 0.5))}`;
+    }
+    console.log(line);
+  }
+
+  // The envelope has to be a real signal before any comparison on it means
+  // anything: flat or zero would pass half the tests below by accident.
+  let lo = Infinity; let hi = 0;
+  for (const v of env) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  ok(hi > lo * 3 && lo > 0, 'the crowd envelope is a live signal, not a constant',
+    `min ${lo.toFixed(4)} max ${hi.toFixed(4)}`);
+
+  /* 1. the catch is the peak, not the aftermath */
+  const before = mean(2.5, 4.5);
+  const after = mean(4.5, 5.0);
+  ok(after > before, 'crowd energy 0.5 s after a catch exceeds the 2 s before it',
+    `${before.toFixed(4)} -> ${after.toFixed(4)}  (+${(20 * Math.log10(after / before)).toFixed(1)} dB)`);
+
+  /* 2. the swell happens during the flight, not after the catch */
+  const atRelease = mean(3.0, 3.2);
+  const midFlight = mean(4.1, 4.5);
+  ok(midFlight > atRelease * 1.15, 'the crowd swells while the disc is still in the air',
+    `${atRelease.toFixed(4)} -> ${midFlight.toFixed(4)}`);
+
+  /* 3. tension is the absence of noise */
+  const possession = mean(0.05, 2.95);
+  const stalled = mean(1.85, 2.95);          // stall 7, 8, 9
+  const early = mean(0.05, 1.0);             // stall 0-3
+  ok(stalled < possession, 'crowd energy at stall 7+ is below the possession mean',
+    `${stalled.toFixed(4)} < ${possession.toFixed(4)}`);
+  ok(stalled < early * 0.8, 'a high stall is quieter than the start of the same possession',
+    `${stalled.toFixed(4)} vs ${early.toFixed(4)}  (${(20 * Math.log10(stalled / early)).toFixed(1)} dB)`);
+
+  /* 4. and it breaks on the throw */
+  const broke = mean(3.0, 3.6);
+  ok(broke > stalled * 1.4, 'the hush breaks when the throw finally goes',
+    `${stalled.toFixed(4)} -> ${broke.toFixed(4)}`);
+
+  /* 5. a block is the loudest thing in the point bar the goal */
+  const pBlock = peak(9.9, 12.9);
+  const pCatch = peak(4.5, 5.9);
+  const pDrop = peak(7.6, 9.0);
+  const pLayout = peak(13.5, 15.9);
+  const pGoal = peak(16.0, 19.9);
+  ok(pBlock > pCatch && pBlock > pDrop && pBlock > pLayout,
+    'a block is the loudest single reaction of the point',
+    `block ${pBlock.toFixed(4)} catch ${pCatch.toFixed(4)} drop ${pDrop.toFixed(4)} layout ${pLayout.toFixed(4)}`);
+  ok(pGoal > pBlock, 'the goal still tops the block', `${pGoal.toFixed(4)} vs ${pBlock.toFixed(4)}`);
+
+  /* 6. between points is a wash, not silence */
+  const betweenPoints = mean(17.5, 19.9);
+  ok(betweenPoints > possession * 0.9, 'the stands are not silent between points',
+    `${betweenPoints.toFixed(4)} vs possession ${possession.toFixed(4)}`);
+
+  sys.dispose();
+}
+
+{
+  // The groan has to start before the disc lands. The throwaway leaves the hand
+  // at 6.00 and reaches the turf at 7.60; the crowd must have turned by then.
+  const { sys, ctx, ac } = liveSystem();
+  const disc = ctx.sys.disc.rt;
+  const players: any[] = ctx.sys.locomotion.players;
+  for (const p of players) { p.pos = { x: 300, y: 0.95, z: 300 }; p.state = 'run'; }
+  ctx.events.emit('state:changed', { to: 'LIVE_POSSESSION' });
+
+  const dt = 1 / 60;
+  ctx.events.emit('disc:released', {
+    pos: { x: 5, y: 1.5, z: -20 }, vel: { x: -14, y: 1, z: 17 },
+    spin: 40, throwType: 'forehand', playerId: 1, team: 0, stall: 2,
+  });
+  ctx.events.emit('state:changed', { to: 'DISC_IN_FLIGHT' });
+
+  const valAt: number[] = [];
+  let preAt = -1;
+  const SECS = 1.6;
+  for (let i = 0; i < Math.round(SECS / dt); i++) {
+    const k = i * dt / SECS;
+    disc.mode = 'flight';
+    disc.state.atRest = false;
+    disc.state.pos = { x: 5 - 23 * k, y: 1.5 + 1.6 * k - 3.1 * k * k, z: -20 + 28 * k };
+    disc.state.vel = { x: -14, y: 1.6 - 6.2 * k, z: 17 };
+    disc.state.groundY = 0;
+    disc.state.airspeed = 22;
+    disc.state.spin = -40;
+    ctx.time += dt; ac.advance(dt);
+    sys.lateUpdate(dt, ctx);
+    valAt.push(sys.crowd!.debug().val);
+    if (preAt < 0 && (sys.debug().drama as any)?.pre) preAt = i * dt;
+  }
+  ok(preAt >= 0, 'the groan starts before the disc lands', preAt >= 0 ? `at +${preAt.toFixed(2)}s of a 1.60s flight` : 'never fired');
+  ok(preAt > 0 && preAt < SECS - 0.12, 'and it starts early enough to be an anticipation, not a report',
+    `+${preAt.toFixed(2)}s`);
+  ok(valAt[valAt.length - 1] < 0.55, 'valence is a groan by the time it lands',
+    `val ${valAt[valAt.length - 1].toFixed(3)}`);
+  // The swell must collapse rather than keep climbing into a cheer.
+  const anticAtGroan = (sys.debug().drama as any).antic;
+  ok(anticAtGroan < 0.25, 'anticipation collapses when the drop becomes obvious', `antic ${anticAtGroan.toFixed(3)}`);
+  sys.dispose();
+}
+
+{
+  // A bid gasps on the takeoff frame, not on the landing.
+  const { sys, ctx, ac } = liveSystem();
+  const players: any[] = ctx.sys.locomotion.players;
+  const crowdNode = sys.graph!.crowd as unknown as FakeNode;
+  // Count sources arriving at the crowd stem, not nodes in general: a gassed
+  // player breathing next to the camera allocates too, and it is not the crowd.
+  const intoCrowd = (): number => ac.edges.filter((e) => e.to === crowdNode).length;
+  stepSystem(sys, ctx, ac, 8);
+  const n0 = intoCrowd();
+  players[3].state = 'layout';
+  stepSystem(sys, ctx, ac, 2);
+  ok(intoCrowd() === n0 + 1, 'a layout takeoff allocates a gasp voice into the crowd stem',
+    `+${intoCrowd() - n0}`);
+  const n1 = intoCrowd();
+  stepSystem(sys, ctx, ac, 30);
+  ok(intoCrowd() === n1, 'and it fires exactly once while the body is down', `+${intoCrowd() - n1}`);
+  players[3].state = 'run';
+  stepSystem(sys, ctx, ac, 2);
+  players[3].state = 'layout';
+  stepSystem(sys, ctx, ac, 2);
+  ok(intoCrowd() === n1 + 1, 'a second bid gasps again', `+${intoCrowd() - n1}`);
+  sys.dispose();
+}
+
+{
+  // Doppler: the same disc, same speed, closing and receding past the camera.
+  const { sys, ctx, ac } = liveSystem();
+  const disc = ctx.sys.disc.rt;
+  const cam = ctx.camera.matrixWorld.elements;   // (-26, 6, 22)
+  const set = (x: number, z: number, vx: number, vz: number): void => {
+    disc.mode = 'flight';
+    disc.state.atRest = false;
+    disc.state.pos = { x, y: 2, z };
+    disc.state.vel = { x: vx, y: 0, z: vz };
+    disc.state.airspeed = Math.hypot(vx, vz);
+    disc.state.spin = -46;
+  };
+  set(cam[12] + 24, cam[14], -24, 0);            // 24 m/s straight at the camera
+  stepSystem(sys, ctx, ac, 3);
+  const closing = sys.flight!.lastDoppler;
+  set(cam[12] - 24, cam[14], -24, 0);            // same velocity, now going away
+  stepSystem(sys, ctx, ac, 3);
+  const receding = sys.flight!.lastDoppler;
+  ok(closing > 1.05, 'a disc closing on the camera is pitched up', `x${closing.toFixed(3)}`);
+  ok(receding < 0.95, 'and pitched down once it is past', `x${receding.toFixed(3)}`);
+  ok(closing / receding > 1.15, 'the flypast is a real shift, not a rounding error',
+    `${(1200 * Math.log2(closing / receding)).toFixed(0)} cents across the pass`);
+
+  disc.mode = 'held';
+  disc.state.atRest = true;
+  disc.state.airspeed = 0;
+  stepSystem(sys, ctx, ac, 3);
+  ok(sys.flight!.lastDoppler === 1, 'a held disc has no doppler at all');
+  sys.dispose();
+}
+
+/* ========================================================= 4c. the broadcast
+ *
+ * These four claims are proved on real PCM by `tools/test-audio-render.mjs`,
+ * which needs a browser. They are restated here against the fake because that
+ * file takes two minutes and this one takes two seconds, and a regression that
+ * is only caught by the slow test is a regression that ships.
+ */
+
+section('broadcast');
+{
+  // 1. THE PITCH IS NOT MIC'D FROM THE LENS.
+  //
+  // Measured on PCM before the touchline law: with a physical distance model the
+  // whole field stem sat 45 dB under the crowd from the tele camera, a footstep
+  // 50 m out rendered at -53 dBFS against a -30 dBFS bed, and the disc's own
+  // release snap was 12 dB *below* the murmur. Every one of those sounds was
+  // correct, and none of them could be heard. This asserts the law, not the
+  // level, because the law is the thing a future edit would quietly undo.
+  const { sys, ctx, ac } = liveSystem();
+  ctx.events.emit('player:footstep', {
+    id: 0, pos: { x: 2, y: 0.02, z: 4 }, foot: 'R', speed: 7, hard: true,
+  });
+  ctx.events.emit('disc:released', {
+    pos: { x: 0, y: 1.4, z: 6 }, vel: { x: 0, y: 1, z: -20 },
+    spin: 46, throwType: 'backhand', playerId: 1, team: 0,
+  });
+  const panners = ac.nodes.filter((n) => n instanceof FakePanner) as FakePanner[];
+  ok(panners.length >= 3, 'the field layers built spatial voices', `${panners.length}`);
+  const physical = panners.filter((p) => p.refDistance < 6 || p.rolloffFactor > 0.9);
+  ok(physical.length === 0, 'every field voice is on the touchline law, not a physical one',
+    physical.length ? `${physical.length} of ${panners.length} still physical` : `ref ${TOUCHLINE.ref} rolloff ${TOUCHLINE.rolloff}`);
+  // 50 m is the tele camera. A broadcast is about 10 dB down out there; a
+  // physical model is about 27, and 27 is inaudible under a stadium.
+  const far = touchlineGain(50);
+  ok(far > 0.24 && far < 0.55, 'and that law leaves the far side of the pitch present',
+    `${(20 * Math.log10(far)).toFixed(1)} dB at 50 m`);
+  sys.dispose();
+}
+
+{
+  // 2. THE HUSH HAS A CEILING THE MATCH CAN REACH.
+  //
+  // The stall ramp used to hit 1.0 only at `stallMax`, which is the count that
+  // turns the disc over — so the deepest tension in the model belonged to a
+  // state the match left on the same frame it entered, and the quietest the
+  // stands ever actually got was two thirds of the way there.
+  const { sys, ctx, ac } = liveSystem();
+  ctx.events.emit('state:changed', { to: 'LIVE_POSSESSION' });
+  for (let c = 1; c <= 9; c++) {
+    ctx.sys.game.gs.stallCount = c;
+    ctx.events.emit('stall:tick', { count: c, max: 10, playerId: 3, team: 0 });
+    stepSystem(sys, ctx, ac, 60);          // one second a count, as the rules tick
+  }
+  const deep = (sys.debug().drama as any).hush;
+  ok(deep > 0.9, 'the hush reaches full depth at the count before the stall-out',
+    `hush ${deep.toFixed(3)} at stall 9 of 10`);
+  ctx.events.emit('disc:released', {
+    pos: { x: 0, y: 1.4, z: 6 }, vel: { x: 0, y: 1, z: -18 },
+    spin: 44, throwType: 'forehand', playerId: 3, team: 0, stall: 9,
+  });
+  ok((sys.debug().drama as any).hush === 0, 'and it lets go on the frame the throw goes');
+  sys.dispose();
+}
+
+{
+  // 3. A BID THAT CAME OFF IS NOT A BID THAT CAME UP EMPTY.
+  //
+  // Both are a body leaving the ground and arriving on the turf, and the mix
+  // used to fire the same reaction for each — which told the audience a dive at
+  // nothing was the play of the point.
+  const surgeAfterBid = (paid: boolean): number => {
+    const { sys, ctx, ac } = liveSystem();
+    const players: any[] = ctx.sys.locomotion.players;
+    for (const p of players) { p.pos = { x: 300, y: 0.95, z: 300 }; p.state = 'run'; }
+    ctx.events.emit('state:changed', { to: 'DISC_IN_FLIGHT' });
+    stepSystem(sys, ctx, ac, 6);
+    players[2].pos = { x: 4, y: 0.95, z: 4 };
+    players[2].state = 'layout';
+    stepSystem(sys, ctx, ac, 6);
+    const base = sys.crowd!.debug().surge;
+    if (paid) {
+      ctx.events.emit('disc:grounded', { pos: { x: 4, y: 0.05, z: 4 }, reason: 'block' });
+      ctx.events.emit('turnover', { reason: 'block', from: 1, to: 0, playerId: 2 });
+    }
+    stepSystem(sys, ctx, ac, 6);
+    players[2].state = 'landing';
+    ctx.events.emit('player:land', { id: 2, pos: { x: 4, y: 0.1, z: 4 }, impact: 8.4, layout: true });
+    stepSystem(sys, ctx, ac, 2);
+    // What the whole sequence was worth, gasp included, less nothing: `base` is
+    // reported only so a failure says which half moved.
+    const out = sys.crowd!.debug().surge;
+    if (VERBOSE) console.log(`    ${paid ? 'paid' : 'empty'} bid: gasp ${base.toFixed(3)} -> total ${out.toFixed(3)}`);
+    sys.dispose();
+    return out;
+  };
+  const paid = surgeAfterBid(true);
+  const empty = surgeAfterBid(false);
+  ok(paid > empty * 1.8, 'a bid that produced a block is far bigger than one that produced nothing',
+    `surge ${paid.toFixed(3)} vs ${empty.toFixed(3)}`);
+  ok(empty > 0.2, 'and the empty one is still a noise, because a dive is worth something',
+    `surge ${empty.toFixed(3)}`);
+}
+
+{
+  // 4. A FOREHAND DOES NOT SOUND LIKE A BACKHAND.
+  //
+  // `throwType` has been on `disc:released` since the rules machine was written
+  // and the audio ignored it. A flick leaves two fingers over two centimetres
+  // and a backhand peels off a whole hand; they are not the same contact.
+  const centre = (kind: string): number => {
+    const { sys, ctx, ac } = liveSystem();
+    const before = ac.nodes.length;
+    ctx.events.emit('disc:released', {
+      pos: { x: 0, y: 1.4, z: 6 }, vel: { x: 0, y: 1, z: -22 },
+      spin: 46, throwType: kind, playerId: 1, team: 0,
+    });
+    // The snap's bandpass is the first biquad built by the handler.
+    const bp = ac.nodes.slice(before).find((n) => n.kind === 'Biquad');
+    const f = bp?.params.get('frequency');
+    const v = f?.events.length ? f.events[0].value : 0;
+    sys.dispose();
+    return v;
+  };
+  const fh = centre('forehand');
+  const bh = centre('backhand');
+  const ham = centre('hammer');
+  ok(fh > bh * 1.15, 'a forehand release is a higher, harder snap than a backhand',
+    `${fh.toFixed(0)} Hz vs ${bh.toFixed(0)} Hz`);
+  ok(ham < bh * 0.9, 'and an overhead is a whoosh, not a snap',
+    `${ham.toFixed(0)} Hz vs ${bh.toFixed(0)} Hz`);
 }
 
 /* ----------------------------------------------------------- disc behaviour */

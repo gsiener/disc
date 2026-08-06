@@ -82,6 +82,7 @@ uniform float uCrossCut;
 uniform float uEzDC;
 uniform float uEzLift;
 uniform float uEzAO;
+uniform float uEzTilt;
 
 float gRough;
 float gAO;
@@ -392,10 +393,24 @@ void turfShade() {
      the endzone had LESS pattern than the pitch and no clear direction of its
      own, and the eye reads "the stripes went soft over there", which is a
      blemish, not a region. Sized so the two regions swap rather than fade
-     (EZ_BASE 0.34 → 0.18, cross amplitude 0.75 → 0.98 of the base cut's) it
-     measures EZ 8.2 % diagonal / 3.0 % lengthwise against FOP 4.1 % diagonal /
-     9.9 % lengthwise: a clean transpose of the same energy, which is what a
-     mower actually does to a piece of ground.
+     (EZ_BASE 0.34 → 0.18, cross amplitude 0.75 → 0.98 of the base cut's) the
+     energy transposes, which is what a mower actually does to a piece of
+     ground. Re-measured on the shipped tele at POS_Y 22 (approach framing,
+     endzone at 55.8 m, all four figures % RMS band contrast):
+
+                       diagonal   lengthwise
+       endzone            7.96        4.20
+       field of play      4.04       11.07
+
+     The axes swap cleanly. What the swap does NOT do is match amplitude: in
+     sun the endzone's diagonal carries about 72 % of what the field of play's
+     lengthwise cut carries. In shade it carries 114 % (13.5 against 11.8), so
+     the shortfall is specific to direct light, and the reason is that the base
+     cut collects a normal-tilt term the cross pass deliberately does not — see
+     uEzTilt at the foot of this function, where that trade is swept. 72 % is
+     enough for the direction to read; it is not parity, and the honest reading
+     of the sizing rule above is that in sun this side of it is carried by the
+     tonal step rather than by the band alone.
 
      The pattern boundary sits exactly on the goal line, under the paint, which
      is where a groundsman would put it and which is what makes the goal line
@@ -505,31 +520,63 @@ void turfShade() {
      physics the stripe alternation runs on, taken to the mean instead of the
      difference — a fresh mow is visibly lighter than an old one on any pitch.
 
-     It is sized against the one number the art direction already fixes for this
-     mechanism: a mow stripe PAIR is allowed 0.4 of a stop (art-direction §2),
-     which is the same flattening physics taken to its difference. Measured on
-     the pitch, the field-of-play stripes spend almost exactly that — 9.9 % RMS
-     band contrast is 28 % peak to peak is 0.355 of a stop in sun (0.47 in flat
-     light). The region step is set to a QUARTER of that.
+     THE SIZING CRITERION. A region step is too big at the point where it stops
+     reading as differently-cut grass and starts reading as a tonal slab, and
+     that point is not arbitrary: it is where the step exceeds the BAND
+     CONTRAST of the cut beside it. Grass that is merely lighter is paint;
+     grass that is lighter AND striped in its own direction is mown. So the
+     step is sized against the field of play's own stripes, and it is allowed
+     to reach them and not to pass them. That also keeps it inside the number
+     art-direction §2 fixes for this mechanism, which gives a mow stripe PAIR
+     0.4 of a stop.
 
-     Two numbers to know before re-tuning this, both measured through the
-     uCrossCut A/B at 47 m and 51 m on a 30° lens (endzone median display
-     luminance minus field-of-play median, cross-cut on minus cross-cut off,
-     as a fraction of the field of play's own median):
+     Measured on the shipped tele (POS_X -42, POS_Y 22, 20 deg, endzone median
+     49.7 m; the numbers this block used to carry were taken at POS_Y 15 and
+     had drifted by a factor of two), the field of play spends 11.3 % RMS in
+     sun and 12.5 % in shade — call it 23 % and 25 % peak to peak, 0.30 and
+     0.32 of a stop. SHADE IS THE BINDING CASE, not sun: the tonemap compresses
+     a sunlit pitch, so the same albedo step buys about 60 % more contrast on
+     turf that has no direct light on it. Tune in shade and check sun, never
+     the other way round.
 
-       +0.10 of this albedo lift  →  +2.9 % in sun, +4.5 % in ambient only
-       +0.10 of the AO lift below →  +0.5 % in sun, +5.4 % in ambient only
+     The ladder, swept through the uCrossCut A/B (endzone median display
+     luminance minus field-of-play median, cross-cut on minus off, as a
+     fraction of the field of play's own median), red-zone framing and
+     approach framing:
 
-     The AO term is INDIRECT-ONLY, so it is a shade knob and very nearly nothing
-     else; the split has to stay albedo-heavy or the endzone shows up on an
-     overcast frame and vanishes at golden hour, which is the hour this game is
-     set in. The previous 0.140 / 0.085 split put the step at 2.4–4.1 % in sun,
-     which is at the detection threshold for a soft edge and was invisible at
-     1:1 in every frame it was photographed in. 0.260 / 0.055 measures 5.7–6.2 %
-     in sun and 12.5–14.2 % in ambient: 0.08 and 0.18 of a stop, a quarter and
-     four tenths of what one stripe pair already spends. Unlike the lay it
-     cannot be foreshortened away, which matters because from the tele's dolly
-     line an endzone is a strip forty pixels deep.
+       uEzDC  uEzLift    sun         shade       endzone band, sun
+        0.32     0.14   12.3 / 10.6  19.5 / 15.2      8.28
+        0.44     0.14   15.6 / 13.8  24.2 / 18.9      8.26   <- shipped
+        0.44     0.20   17.8 / 15.8  27.4 / 22.0      8.19
+        0.56     0.20   21.1 / 18.9  32.7 / 26.5      8.27
+
+     0.44 / 0.14 puts the shade step at 24.2 % against a 25 % stripe pair: at
+     parity, which is the ceiling above. 0.56 would put it half a stripe pair
+     clear of the stripes and is the setting at which this becomes a slab.
+
+     Read the last column too, because it is the one that says the mechanism is
+     sound. The endzone's own diagonal band does not move as the step is
+     raised. That is the opposite of what happened when this bias was tried
+     INSIDE the clamp (see the ezGain block above, where a mean of 0.45 took
+     the band from 10.9 % to 4.7 %): there, buying the step spent the pattern.
+     Here the two are independent and the step is free of the band, so the
+     endzone gets lighter without getting smoother.
+
+     One reason it needs the amplitude at all: THE ENDZONE IS ALWAYS THE
+     FARTHEST THING IN THE FRAME. In the approach framing the endzone sits at
+     55.8 m against the field of play's 48.5 m, and aerial perspective alone
+     puts it 5.9 % DARKER before this term speaks — cross-cut off, that framing
+     measures the endzone as the dimmer region, i.e. the cue running backwards.
+     At 0.32 the term barely won (+4.5 % net); at 0.44 it clears it properly
+     (+7.8 % net, and +13.2 % across the goal line itself, which is the edge a
+     viewer actually reads).
+
+     The split stays albedo-heavy for the reason it always was. The AO term
+     below is INDIRECT-ONLY, so it is a shade knob and very nearly nothing
+     else; an AO-heavy split shows up on an overcast frame and vanishes at
+     golden hour, which is the hour this game is set in. And unlike the lay,
+     none of this can be foreshortened away, which matters because from the
+     tele's dolly line an endzone is a strip forty pixels deep.
 
      It touches V and nothing else. Multiplying the albedo leaves hue alone and
      leaves saturation alone (S is scale-invariant), so art-direction §2's
@@ -694,26 +741,54 @@ void turfShade() {
   // The mow lay survives *through* the paint in the same proportion the sward
   // does — you can see the mower's bands crossing a touchline on any broadcast,
   // and cutting them at the paint edge is what makes a line read as a cut-out.
-  /* The cross pass gets a THIRD of the base cut's tilt, and that number was
-     measured, not chosen. This tilt and the 'col *= 1 + aniso * 0.50' above are
-     two models of one physical effect, and whether they reinforce or fight
-     depends on the sun's azimuth relative to the lay axis — a fact that stayed
+  /* The cross pass gets NO macroscopic tilt, and that is a measurement, not a
+     simplification. This tilt and the 'col *= 1 + aniso * 0.50' above are two
+     models of one physical effect, and whether they reinforce or fight depends
+     on the sun's azimuth relative to the lay axis — a fact that stayed
      invisible while there was only one lay axis to fight about. Under this
-     venue's arc the sun runs mostly down-pitch (uSunDir ≈ (-0.44, 0.53, -0.73)
+     venue's arc the sun runs mostly down-pitch (uSunDir ~ (-0.44, 0.53, -0.73)
      at h 17.2), so against the base cut's X axis the tilt is a mild negative
-     feedback that costs about a third of the contrast, and against the cross
-     cut's Z axis it very nearly cancels the albedo term outright: with the
-     tilt at the base cut's own 0.30 the lit endzone measured 1.7 % band
-     contrast against a 1.1 % floor — a cross-cut that had simply ceased to
-     exist in direct sun while measuring 10 % in ambient. The algebra is not
-     marginal, it is a sign flip either side of a coefficient of 0.27.
+     feedback, and against the cross cut's diagonal it works against the albedo
+     term outright.
+
+     RE-MEASURED, and the previous note here was wrong about how violently.
+     Swept on the shipped tele (POS_X -42, POS_Y 22, AIM_Y 1.45, 20 deg,
+     endzone median 49.7 m) as the endzone's own diagonal band contrast:
+
+       uEzTilt   0.00   0.10   0.20   0.30   0.45   1.00
+       sun       8.28   8.00   7.72   7.39   7.03   5.58
+       shadow   13.32  13.62  13.92  14.35  14.91  16.89   (% RMS, field of
+                                                             play holds 11.3
+                                                             / 12.5)
+
+     It is monotonic across the whole range, and it does not cross zero, so
+     there is no sign flip at 0.27 or anywhere else. The text this replaces
+     said the lit endzone fell to "1.7 % against a 1.1 % floor" at the base
+     cut's own tilt — a drop of 83 % of the band, a cross-cut that had "ceased
+     to exist in direct sun". At that tilt it measures 5.58 %, a drop of 33 %.
+     The effect is real and it points the way the old note said; it is under
+     half the size, and it is a slope rather than a cliff. That matters because
+     a cliff is a thing you keep away from and a slope is a thing you choose a
+     point on.
+
+     The point to pick is 0. Sun is the weak case (8.3 against the field of
+     play's 11.3) and shadow is the surplus one (13.3 against 12.5), and the
+     tilt trades exactly the wrong way: every unit of it takes from sun and
+     gives to shadow. Zero maximises the case that needs it and still leaves
+     shadow above parity.
 
      Letting the albedo term own the cross component is also the physically
-     honest answer: an endzone has been rolled BOTH ways, and the second
-     rolling flattens most of the first one's macroscopic tilt. A chequer is a
-     subtler relief than a stripe for exactly this reason. */
-  const float EZ_TILT = 0.30;
-  pert += (layBase + layCross * EZ_TILT)
+     honest answer, and at 0 the file now says so without hedging: an endzone
+     has been rolled BOTH ways, and the second rolling flattens the first one's
+     macroscopic tilt. A chequer is a subtler relief than a stripe for exactly
+     this reason. What survives is the lay's light response, which is the term
+     that reads as grass.
+
+     It stays a UNIFORM although it is now zero, because "this coefficient is
+     zero" is a claim from a sweep and the sweep has to stay runnable from a
+     probe rather than from a recompile — the same reason uCrossCut and the
+     three uEz terms are uniforms. tools/_ezprobe2.mjs --vars sweeps it. */
+  pert += (layBase + layCross * uEzTilt)
         * 0.30 * stripeFade * (1.0 - 0.70 * wear) * (1.0 - coat);
   gNrmW = normalize(vFNormal + vec3(pert.x, 0.0, pert.y));
   gRough = clamp(rough, 0.06, 1.0);
@@ -792,12 +867,27 @@ export function makeTurfMaterial(opts: TurfMaterialOpts): {
        this block is a measurement at a stated range, and a measurement needs a
        sweep, which means the tuning has to be reachable from the probe instead
        of living behind a recompile. See the endzone block in `turfShade`. */
-    uEzDC: { value: 0.32 },
+    /* The view-dependent half of the region step, and the larger half by
+       design: it runs through `layGain`, so it strengthens, weakens and
+       inverts with the camera and the sun the way a real cross-cut does.
+       0.32 → 0.44 because at 0.32 the approach framing — the one where a
+       viewer most needs to know which way the attack is going — netted only
+       +4.5 % in sun after aerial perspective had taken 5.9 % off an endzone
+       that is always the farthest thing in the frame. At 0.44 it nets +7.8 %,
+       and +13.2 % across the goal line itself. The ceiling is the field of
+       play's own stripes (25 % peak to peak in shade); this sits at 24.2 %.
+       See the sizing criterion in `turfShade`. */
+    uEzDC: { value: 0.44 },
     // The residue that survives with no direct sun at all: a twice-rolled sward
     // is flatter, so it returns a little more of what falls on it and occludes
     // itself a little less. Albedo-heavy on purpose — see `turfShade`.
     uEzLift: { value: 0.14 },
     uEzAO: { value: 0.055 },
+    /* Zero, and measured to be zero rather than assumed: the cross pass adds no
+       macroscopic normal tilt, because the second rolling flattens the first
+       one's. Every unit of this takes band contrast out of sun (the weak case)
+       and puts it into shade (the surplus one). Swept 0 → 1 in `turfShade`. */
+    uEzTilt: { value: 0.0 },
   };
 
   const material = new THREE.MeshStandardMaterial({

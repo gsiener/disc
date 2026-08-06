@@ -88,6 +88,46 @@ export interface PannerOpts {
   verb?: number;
 }
 
+/**
+ * THE PITCH IS NOT MIC'D FROM THE LENS.
+ *
+ * The tele camera sits 45-55 m off the middle of the field. A `PannerNode` with
+ * a physical distance law puts a cleat plant out there 27 dB down, which is
+ * exactly what a microphone bolted to the camera would hear and is not what any
+ * broadcast has ever sounded like. Measured against this build's own crowd bed,
+ * a physical law leaves the entire field stem 45 dB under the stands: the disc,
+ * the studs, the landings and the calls are all present, all correct, and all
+ * inaudible. That is the single largest thing that was wrong with this mix.
+ *
+ * A real outside broadcast solves it with effects mics on the touchline and a
+ * pitch fader that does not move when the camera does. These numbers are that
+ * fader. Inside `ref` a source is at full level; beyond it the curve is shallow
+ * enough that the far side of the pitch is about 10 dB down rather than 27, so
+ * distance still reads as depth but never as absence.
+ *
+ * Level per event is then a *mix* decision made at the call site, which is where
+ * it belongs — a cleat is texture and a layout is an event, and that is not
+ * something a distance law should be asked to express.
+ */
+export const TOUCHLINE = {
+  /** Full level inside this radius, metres. Roughly the width of the pitch. */
+  ref: 10,
+  /** Physical is ~1. A broadcast is not physical. */
+  rolloff: 0.55,
+  /** Beyond this nothing gets quieter; the cull has already dealt with it. */
+  max: 320,
+} as const;
+
+/**
+ * Broadcast distance attenuation, matching what `TOUCHLINE` asks the panner for.
+ * Layers use it to pre-compute whether an event is worth a voice at all, and to
+ * taper one that is about to cross the cull radius so it fades rather than pops.
+ */
+export function touchlineGain(dist: number): number {
+  const d = Math.max(TOUCHLINE.ref, num(dist, TOUCHLINE.ref));
+  return TOUCHLINE.ref / (TOUCHLINE.ref + TOUCHLINE.rolloff * (d - TOUCHLINE.ref));
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 /**
@@ -285,14 +325,18 @@ export class AudioGraph {
     return p;
   }
 
-  /** A world-space point source feeding the field stem plus a reverb send. */
+  /**
+   * A world-space point source feeding the field stem plus a reverb send.
+   * Defaults to the touchline law — see `TOUCHLINE`. A caller that overrides it
+   * is asking for a physical microphone, and on this pitch that means silence.
+   */
   panner(x: number, y: number, z: number, o: PannerOpts = {}): PannerNode {
     const p = this.ac.createPanner();
     p.panningModel = this.budget.hrtf ? 'HRTF' : 'equalpower';
     p.distanceModel = 'inverse';
-    p.refDistance = o.ref ?? 3.5;
-    p.rolloffFactor = o.rolloff ?? 1.15;
-    p.maxDistance = o.max ?? 260;
+    p.refDistance = o.ref ?? TOUCHLINE.ref;
+    p.rolloffFactor = o.rolloff ?? TOUCHLINE.rolloff;
+    p.maxDistance = o.max ?? TOUCHLINE.max;
     placePanner(p, x, y, z, this.now);
     return p;
   }
