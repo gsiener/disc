@@ -16,7 +16,9 @@ import {
   FIELD, brickMark, clampToField, isInBounds, type Dir, type TeamId, type Vec3,
 } from './Rules.ts';
 import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
-import { powerForSpeed, type ThrowType as PhysThrowType } from './DiscPhysics.ts';
+import {
+  powerForSpeed, throwSpeed, THROW_SPECS, type ThrowType as PhysThrowType,
+} from './DiscPhysics.ts';
 import { SHOTS, type Shot } from '../capture/Shots.ts';
 import type { PlayerIntent as HumanIntent } from '../input/Intent.ts';
 import type { IntentGates } from '../input/Human.ts';
@@ -78,6 +80,56 @@ const PULL_DRIFT = 8.4;
 const PULL_CARRY = 66;
 /** Where a pull is aimed: the middle of the field, just inside the far endzone. */
 const PULL_TARGET_Z = FIELD.GOAL_LINE + 4;
+
+/**
+ * Human throw feel. See `humanThrow` for the measurements behind both.
+ * `MIN_THROW_SPEED` is the release speed at zero charge — below every throw
+ * spec's own floor on purpose, because that floor is a 20 m throw and a dump is
+ * not. `HUCK_HYZER` is the power-squared bank that stops the disc turning over
+ * and inverting its own curve at full charge.
+ */
+const MIN_THROW_SPEED = 9;
+const HUCK_HYZER = 0.20;
+
+/** Release parameters for a human throw. See `humanReleaseParams`. */
+export interface HumanRelease {
+  speed: number; angle: number; spin: number; bank: number; nose: number;
+}
+
+/**
+ * Charge, tilt and release quality -> disc release parameters.
+ *
+ * Exported and pure so the FEEL is testable. This mapping is the whole of what
+ * a throw feels like in the hand, and it used to live inside a private method
+ * where the only way to check it was to play the game and squint. The
+ * properties that matter — a tap is short, full charge is long, more charge is
+ * always more distance, and the curve never inverts on you — are asserted in
+ * `tools/test-disc.ts` by flying the actual aero with these numbers.
+ */
+export function humanReleaseParams(
+  type: PhysThrowType, power: number, quality: number, tilt: number,
+): HumanRelease {
+  const p = clampNum(power, 0, 1);
+  const spec = THROW_SPECS[type];
+  const top = throwSpeed(type, 1);
+  /**
+   * Hyzer has to oppose the throw's OWN turnover, and the turnover follows the
+   * spin. A backhand and a forehand spin opposite ways, so a single signed bank
+   * cannot serve both: applied uniformly it straightened the backhand and made
+   * the forehand worse — 20.5 m of drift, a sign flip, and a dip in the
+   * distance curve. `spinSign` is the axis that decides which way a fast disc
+   * rolls, so it is the axis the correction is taken along. (Handedness needs
+   * no special case: `throwDisc` mirrors spin and bank together, so a left
+   * hand flips both and the correction still opposes the turn.)
+   */
+  return {
+    speed: MIN_THROW_SPEED + Math.max(0, top - MIN_THROW_SPEED) * p,
+    angle: 0.02 + 0.10 * p,
+    spin: clampNum(0.35 + 0.55 * quality, 0.1, 1),
+    bank: tilt * 0.85 + HUCK_HYZER * p * p * spec.spinSign,
+    nose: (1 - quality) * 0.08,
+  };
+}
 /** Sim seconds a check takes before the disc is live again. */
 const CHECK_WAIT = 0.65;
 /** How close a player must be to a dead disc to pick it up (m). */
@@ -777,8 +829,7 @@ export class GameSystem implements System {
       const spread = (1 - q) * 0.16 + (1 - hi.release.steadiness) * 0.05;
       const jitter = this.rng.gauss() * spread;
       const dir = yaw + jitter;
-      const dist = 6 + 46 * hi.release.power;
-      this.humanThrow(e, type, dir, hi.release.power, hi.release.tilt, dist, q);
+      this.humanThrow(e, type, dir, hi.release.power, hi.release.tilt, q);
       return null;
     }
     if (hi.defence.bid) return { kind: 'bid', x: this.discRuntime.state.pos.x, z: this.discRuntime.state.pos.z, extend: 1.2 };
@@ -1266,21 +1317,42 @@ export class GameSystem implements System {
 
   private humanThrow(
     e: RosterEntry, type: PhysThrowType, yaw: number, power: number,
-    tilt: number, _dist: number, quality: number,
+    tilt: number, quality: number,
   ): void {
     this.releaseOrigin(e, _from);
     _aim.set(Math.sin(yaw), 0, Math.cos(yaw));
     const hand: 'R' | 'L' = e.ai.handed === 'left' ? 'L' : 'R';
-    // Power buys distance; the stick's tilt buys curve; quality buys a clean
-    // nose. An overcharged release comes out nose-up and dies.
+    /**
+     * Power buys distance; the stick's tilt buys curve; quality buys a clean
+     * nose. An overcharged release comes out nose-up and dies.
+     *
+     * TWO THINGS HERE ARE NOT THE OBVIOUS THING, and both were measured.
+     *
+     * THE PLAYER MUST BE ABLE TO THROW SHORT. Mapping the charge across the
+     * throw's own `power` range cannot do it: the backhand spec floors at
+     * 12 m/s, and a 12 m/s backhand carries about 20 m no matter what the
+     * trigger says. Measured on the old mapping, a release at ZERO charge still
+     * flew 23.6 m — there was no dump, no reset, no five-metre swing, only
+     * bombs. So the charge drives an absolute release speed from
+     * `MIN_THROW_SPEED` up to the throw's own maximum, which puts a tap at
+     * about 10 m and full charge at about 47 m.
+     *
+     * A HUCK NEEDS HYZER OR THE CURVE INVERTS UNDER THE PLAYER. The disc turns
+     * over at speed, so with a flat release the drift on a backhand ran
+     * +3.1, +4.6, +4.3, +0.1, -3.3, -8.4, -16.7 m as the charge went up: aim at
+     * a receiver, pull the trigger harder, and the disc finishes seventeen
+     * metres the OTHER side of him. That is not difficulty, it is a control
+     * that lies. Real throwers put hyzer on a huck for exactly this reason, and
+     * a power-squared term does the same job here — it collapses the drift
+     * range from +/-19.7 m to 6.4 m and leaves it same-signed all the way up,
+     * so the curve is something you can lead. It costs about 6 m of maximum
+     * distance, which is the right trade for a throw that goes where it is
+     * pointed.
+     */
+    const r = humanReleaseParams(type, power, quality, tilt);
     const vel = this.discRuntime.release({
-      type, from: _from, aim: _aim,
-      power: clampNum(0.18 + 0.82 * power, 0.12, 1),
-      angle: 0.02 + 0.16 * power,
-      spin: clampNum(0.35 + 0.55 * quality, 0.1, 1),
-      hand,
-      bank: tilt * 0.85,
-      nose: (1 - quality) * 0.08,
+      type, from: _from, aim: _aim, hand, power: 1,
+      speed: r.speed, angle: r.angle, spin: r.spin, bank: r.bank, nose: r.nose,
     });
     this.commitRelease(e, type, this.selectedReceiver, vel);
   }

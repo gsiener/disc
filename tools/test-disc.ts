@@ -16,6 +16,7 @@ import {
   THROW_TYPES, THROW_SPECS, totalEnergy,
   type DiscState, type ThrowType,
 } from '../src/sim/DiscPhysics.ts';
+import { humanReleaseParams } from '../src/sim/Game.ts';
 
 /* ------------------------------------------------------------------ harness */
 
@@ -569,6 +570,74 @@ section('11. ground contact');
   ok(Math.abs(discNormal(s).y) > 0.999, 'settles flat', `n.y = ${fmt(discNormal(s).y, 4)}`);
   ok(s.t - landT > 0.05 && s.t - landT < 4, 'skids briefly rather than sticking or sliding forever',
     `${fmt(s.t - landT, 2)} s of skid`);
+}
+
+
+/* ------------------------------------------------- human throw feel (charge) */
+
+section('the charge control is something you can aim with');
+{
+  /**
+   * "Throwing is a little weird" was a feel report, and feel on a
+   * charge-and-release throw comes down to four properties. All four were
+   * broken, and all four are measured here against the real aero.
+   *
+   *   1. A TAP IS SHORT. Mapping the charge across a throw's own `power` range
+   *      cannot do this — the backhand spec floors at 12 m/s and a 12 m/s
+   *      backhand carries about 20 m. Measured on the old mapping, a release at
+   *      ZERO charge flew 23.6 m. There was no dump and no reset, only bombs.
+   *   2. FULL CHARGE IS A HUCK.
+   *   3. MORE CHARGE IS ALWAYS MORE DISTANCE. A dip means a charge level the
+   *      player cannot use.
+   *   4. THE CURVE DOES NOT INVERT. With a flat release the drift on a backhand
+   *      ran +3.1, +4.6, +4.3, +0.1, -3.3, -8.4, -16.7 m as charge went up: aim
+   *      at a receiver, pull harder, and it finishes 17 m the other side of him.
+   */
+  const carry = (type: ThrowType, power: number, quality = 1, tilt = 0): { z: number; x: number } => {
+    const r = humanReleaseParams(type, power, quality, tilt);
+    const s = throwDisc(type, new THREE.Vector3(0, 1.55, 0), new THREE.Vector3(0, 0, 1),
+      1, r.angle, r.spin, { hand: 'R', bank: r.bank, nose: r.nose, speed: r.speed });
+    let t = 0;
+    while (s.pos.y > 0.05 && t < 20) { simulate(s, FIXED_DT); t += FIXED_DT; }
+    return { z: s.pos.z, x: s.pos.x };
+  };
+
+  for (const type of ['backhand', 'forehand'] as ThrowType[]) {
+    const zero = carry(type, 0);
+    const full = carry(type, 1);
+    inRange(zero.z, 5, 14, `${type}: a tap is a dump, not a bomb`, ' m');
+    inRange(full.z, 38, 60, `${type}: full charge is a huck`, ' m');
+
+    // Monotonic: every step of the trigger buys distance.
+    let dips = 0, worstDip = 0, prev = -Infinity, maxAbsDrift = 0, signFlips = 0, prevSign = 0;
+    for (let p = 0; p <= 1.0001; p += 0.1) {
+      const c = carry(type, p);
+      if (c.z < prev) { dips++; worstDip = Math.min(worstDip, c.z - prev); }
+      prev = c.z;
+      maxAbsDrift = Math.max(maxAbsDrift, Math.abs(c.x));
+      const sign = c.x > 1.0 ? 1 : c.x < -1.0 ? -1 : 0;
+      if (sign !== 0 && prevSign !== 0 && sign !== prevSign) signFlips++;
+      if (sign !== 0) prevSign = sign;
+    }
+    ok(dips === 0, `${type}: more charge is always more distance`,
+      dips ? `${dips} dip(s), worst ${fmt(worstDip)} m` : 'monotonic');
+    ok(signFlips === 0, `${type}: the curve does not invert as you charge`,
+      signFlips ? `${signFlips} sign flip(s)` : 'same-signed throughout');
+    inRange(maxAbsDrift, 0, 12, `${type}: drift stays leadable across the charge`, ' m');
+  }
+
+  // Tilt is the curve control, and it has to actually move the disc sideways
+  // in the direction asked for — in opposite directions for opposite tilt.
+  const left = carry('backhand', 0.8, 1, -1);
+  const right = carry('backhand', 0.8, 1, 1);
+  ok(left.x > right.x + 8, 'tilt buys curve, and the two ends go opposite ways',
+    `tilt -1 -> ${fmt(left.x)} m, tilt +1 -> ${fmt(right.x)} m`);
+
+  // A bad release is punished with distance, not rewarded.
+  const clean = carry('backhand', 0.8, 1);
+  const sloppy = carry('backhand', 0.8, 0);
+  ok(sloppy.z < clean.z, 'a poor release costs distance',
+    `${fmt(sloppy.z)} m vs ${fmt(clean.z)} m clean`);
 }
 
 /* ------------------------------------------------------------------ summary */
