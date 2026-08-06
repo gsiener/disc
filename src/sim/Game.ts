@@ -524,13 +524,28 @@ export class GameSystem implements System {
     const d1 = this.gs.attackDir[1];
     this.aiDir = [d0, d1];
     const r = new Rng((this.seed ^ (this.gs.point * 0x9e3779b9)) >>> 0);
-    // Both sides run a vertical stack and both defend person, on purpose.
-    // Ultimate is only legible to someone who knows it if the shapes on the
-    // field are the shapes they know: a stack, a force, a matchup. A zone
-    // renders as fourteen bodies with no relationship to each other, which is
-    // exactly what "players scattered with no visible structure" looks like —
-    // so the zone bias is pushed well negative rather than left at the AI's
-    // default. The two teams differ by force and by aggression instead.
+    // Both sides defend person, on purpose. Ultimate is only legible to someone
+    // who knows it if the shapes on the field are the shapes they know: a
+    // stack, a force, a matchup. A zone renders as fourteen bodies with no
+    // relationship to each other, which is exactly what "players scattered with
+    // no visible structure" looks like — so the zone bias is pushed well
+    // negative rather than left at the AI's default.
+    //
+    // BOTH SIDES STILL RUN VERT, and the horizontal stack is still dead code:
+    // `chooseFormation` can only return `endzone`, `side`, `vertical` or the
+    // team's own `prefer`, so with both preferring vertical, `horizontal` has
+    // never once appeared on screen (measured over 1308 s: vertical 79.9%,
+    // endzone 14.1%, side 6.0%, horizontal 0%).
+    //
+    // Switching team 1 to `horizontal` was tried and REVERTED. The formation
+    // geometry is fine — the handler row is widened to the coached 10 m either
+    // side — but everything downstream of it is shaped for a two-handler vert.
+    // Measured with ho enabled: a reset handler was stationed behind the disc
+    // in 84.6% of held frames against 90.0% for vert, the reset was in position
+    // at high stall 88.0% against 92.8%, the marker breached disc space, and
+    // the endzone set produced a 1.60 m handler pair. Shipping ho needs the
+    // reset and marking logic taught about a three-handler backfield first;
+    // shipping it without that is a worse shape on screen, not a second one.
     this.ai = [
       createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
       createTeamAI(1, d1, r, { formation: 'vertical', force: 'backhand', aggression: 0.95, zoneBias: -0.45, seed: 29 }),

@@ -1344,6 +1344,23 @@ export class TeamAI {
     for (const id of holders) if (!this.slotOf.has(id)) { orphan = true; break; }
     if (!orphan && this.slotPendingT < 0.35) return;
     this.slotSig = sig;
+    /**
+     * Slots are dealt by depth, which is right for a column. A ROW WANTS TO BE
+     * ORDERED ACROSS THE FIELD instead — in a horizontal set all four cutters
+     * stand at the same z, so sorting by depth sorts them by noise and a body
+     * can be handed the lane on the far side of the field.
+     *
+     * Ordering by `pos.x` for spread sets was tried and REVERTED: it costs a
+     * `test-ai` horizontal-shape assertion (49/3 -> 48/4), and applied to the
+     * endzone set as well it dropped the human's directional receiver select
+     * from agreeing with the stick 75%+ of the time to 67-69% across seeds,
+     * because two cutters end up near-equal on angle and the openness term
+     * decides instead. Re-ordering who stands where is not worth "the game
+     * selected someone other than the man I pointed at" one time in three.
+     *
+     * The collapse fix in the `clear` branch below is the half that mattered
+     * and it does ship: it stops a 22 m-wide set being funnelled to x = 0.
+     */
     const key = (q: number): number => {
       const p = this.byId.get(q);
       if (!p) return 1e9;
@@ -1708,6 +1725,16 @@ export class TeamAI {
         // to be vacating, which is the difference between a cut resolving and
         // a cutter loitering in the way of the next one.
         const st = this.stationFor(p, world);
+        if (this.formation === 'horizontal' || this.formation === 'endzone') {
+          // A ROW CLEARS BACK ALONG ITS OWN LANE. There is no column to run to,
+          // and `stackAxisX` is about x = 0 for every set that is not a side
+          // stack — so steering everybody at it collapsed a 22 m-wide endzone
+          // set into a knot in the middle of the field on every dead cut, in
+          // the one situation the broadcast camera is closest to.
+          tx = st.x; tz = st.z;
+          effort = 0.85; mode = 'sprint';
+          break;
+        }
         const axis = this.stackAxisX;
         const lat = p.pos.x - axis;
         if (Math.abs(lat) > 3.2) {
