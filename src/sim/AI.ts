@@ -1676,6 +1676,25 @@ export class TeamAI {
       // back of the offence readable while the count climbs.
       if (behind && (stall >= 4.0 || this.noGoodLook)) {
         kind = 'dump'; side = -openSign as Sign;
+      /**
+       * `behindCount >= 2` is close to unsatisfiable in a two-handler vertical
+       * stack — with one handler on the disc there is exactly ONE body behind
+       * it, measured average 1.02 — so the up-line, which coaching material
+       * calls the handler's PRIMARY move with the dump as the fallback, almost
+       * never fires. That looks like a bug and it is not.
+       *
+       * Relaxing it to `(behindCount >= 2 || stall < 5)` was tried and REVERTED.
+       * It does exactly what the guard exists to prevent: the only body behind
+       * the disc leaves, and there is no reset. Measured — a reset handler
+       * stationed behind the disc 90.0% -> 84.8% of held frames, in position at
+       * high stall 92.8% -> 89.8%, completion 77.0% -> 74.4% (out of its band),
+       * and the endzone set produced a 1.11 m handler pair.
+       *
+       * The up-line is not reachable by loosening a count. It needs either a
+       * third handler (see the ho-stack note in `Game.rebuildAI`) or an up-line
+       * that ABORTS back to the reset when the throw does not come — which is
+       * what a real handler does and what this cut has no notion of.
+       */
       } else if (markBeaten && stall >= 1.2 && stall < 7 && behind && behindCount >= 2) {
         kind = 'up-line'; side = openSign;
       } else if (stall >= 3.5 && stall < 6 && behind && behindCount >= 2
