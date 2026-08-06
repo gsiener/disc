@@ -26,8 +26,44 @@ export type Sign = -1 | 1;
 export type AttackDir = -1 | 1;
 export type Handedness = 'right' | 'left';
 
-/** The call the defence makes. `straight` = straight-up mark (no side taken). */
-export type Force = 'forehand' | 'backhand' | 'straight';
+/**
+ * The call the defence makes.
+ *
+ * The first three are FIXED to a side of the field for the whole point, which
+ * is how a team calls "force home" or "force flick": the open side does not
+ * move when the disc does. `straight` is a straight-up mark that takes neither
+ * side (and mostly takes away the huck).
+ *
+ * The last two are POSITION-DEPENDENT and cannot be expressed by
+ * `openSideSign`, which is why they need `openSideFor`:
+ *
+ *   `middle`   — force the disc back toward the middle of the field. The mark
+ *                takes away the sideline the disc is nearest, so the open side
+ *                always points at x = 0. This is the standard answer to a team
+ *                that attacks the lines, and it keeps the disc where the whole
+ *                defence can see it.
+ *   `sideline` — the trap. The mirror of `middle`: take away the middle and
+ *                invite the throw down the near line, where the sideline itself
+ *                does half the defending. Called to pin a team after a turnover
+ *                or on a windward line.
+ */
+export type Force = 'forehand' | 'backhand' | 'straight' | 'middle' | 'sideline';
+
+/** Forces whose open side depends on where the disc is, not on the call alone. */
+export const POSITIONAL_FORCES: readonly Force[] = ['middle', 'sideline'];
+
+/**
+ * How far off centre the disc must be before a positional force commits to a
+ * side. Inside this band the previous call is held.
+ *
+ * Without it, force middle flips every time the disc crosses x = 0 — and the
+ * open side is what the whole offence is built on, so a force that chatters
+ * makes the stack, the reset and the mark all rebuild several times a second.
+ * Real teams have the same problem and solve it the same way: with the disc in
+ * the middle of the field a middle force is barely a force at all, and the mark
+ * simply holds whichever side it already had.
+ */
+export const FORCE_DEADBAND = 3.0;
 
 export type FormationName = 'vertical' | 'horizontal' | 'side' | 'endzone';
 
@@ -172,9 +208,39 @@ export function handSideSign(handed: Handedness, dir: AttackDir): Sign {
  */
 export function openSideSign(force: Force, dir: AttackDir): Sign {
   if (force === 'straight') return (-dir) as Sign;
+  // A positional force has no fixed side; this is only its neutral prior, and
+  // callers that can see the disc must use `openSideFor` instead.
+  if (force === 'middle' || force === 'sideline') return (-dir) as Sign;
   const forehandX = handSideSign('right', dir);
   return force === 'forehand' ? forehandX : (-forehandX as Sign);
 }
+
+/**
+ * The open side, for a force that may depend on where the disc is.
+ *
+ * `discX` is the thrower's x. `prev` is the side this defence last committed
+ * to; pass it and the deadband is honoured, pass null and the call is taken
+ * fresh. For the three fixed forces this is exactly `openSideSign`.
+ *
+ * Note which way round these are. FORCE MIDDLE means the throw is invited
+ * toward the middle, so the mark stands between the thrower and the near
+ * sideline and the open side points at x = 0 — a disc on the +X line has its
+ * open side at -X. The trap is the mirror: the mark takes the middle away and
+ * the offence is invited down the line it is already stuck on.
+ */
+export function openSideFor(
+  force: Force, dir: AttackDir, discX: number, prev: Sign | null = null,
+): Sign {
+  if (force !== 'middle' && force !== 'sideline') return openSideSign(force, dir);
+  if (prev !== null && Math.abs(discX) < FORCE_DEADBAND) return prev;
+  const towardMiddle = (discX > 0 ? -1 : 1) as Sign;
+  return force === 'middle' ? towardMiddle : (-towardMiddle as Sign);
+}
+
+/** Break side for a force that may depend on where the disc is. */
+export const breakSideFor = (
+  force: Force, dir: AttackDir, discX: number, prev: Sign | null = null,
+): Sign => -openSideFor(force, dir, discX, prev) as Sign;
 
 /** X sign of the BREAK side — the side the mark is taking away. */
 export const breakSideSign = (force: Force, dir: AttackDir): Sign =>

@@ -54,6 +54,7 @@ import {
 import {
   FIELD, SeededRng, clamp, dist2, openSideSign, markPoint, formationStations,
   type AttackDir,
+  openSideFor, breakSideFor, FORCE_DEADBAND,
 } from '../src/sim/Playbook.ts';
 
 /* ------------------------------------------------------------ assertions */
@@ -1703,6 +1704,56 @@ async function main(): Promise<void> {
     .map((p) => `${p.pos.x.toFixed(6)},${p.pos.z.toFixed(6)},${p.energy.toFixed(6)}`).join('|');
   ok('same seed -> identical simulation', hash(a) === hash(b),
     `14-player position+stamina hash matched (${hash(a).length} chars)`);
+
+  /* ------------------------------------------------- force middle / trap */
+  {
+    /**
+     * A POSITIONAL FORCE IS NOT A FIXED SIDE, which is the whole reason it
+     * needed its own function. `openSideSign` takes only the call and the
+     * attack direction, so it can express "force forehand" but not "force
+     * middle" — the latter depends on which sideline the disc is nearest.
+     *
+     * Force middle invites the throw TOWARD x = 0: the mark stands between the
+     * thrower and the near sideline, so a disc on +X has its open side at -X.
+     * The trap is the mirror — take the middle away and invite the throw down
+     * the line the offence is already stuck on.
+     */
+    const dir = 1 as const;
+    ok('force middle opens toward the middle from the +X sideline',
+      openSideFor('middle', dir, 14, null) === -1, 'disc at x=+14 -> open -X');
+    ok('force middle opens toward the middle from the -X sideline',
+      openSideFor('middle', dir, -14, null) === 1, 'disc at x=-14 -> open +X');
+    ok('the trap opens down the near line, the mirror of middle',
+      openSideFor('sideline', dir, 14, null) === 1
+      && openSideFor('sideline', dir, -14, null) === -1, 'disc at +/-14');
+    ok('break side is the opposite of open for a positional force',
+      breakSideFor('middle', dir, 14, null) === -openSideFor('middle', dir, 14, null),
+      'mirrored');
+
+    // Hysteresis: the open side is what the whole offence is built on, so a
+    // force that flips every time the disc crosses x = 0 rebuilds the stack,
+    // the reset and the mark several times a second.
+    ok('a positional force holds its call through the deadband',
+      openSideFor('middle', dir, 1.0, 1) === 1 && openSideFor('middle', dir, -1.0, -1) === -1,
+      `held inside +/-${FORCE_DEADBAND} m`);
+    ok('and commits once the disc is clearly to one side',
+      openSideFor('middle', dir, FORCE_DEADBAND + 1, 1) === -1,
+      'flips outside the band even against a held call');
+    ok('with no previous call it commits immediately',
+      openSideFor('middle', dir, 0.5, null) === -1, 'no prev -> take the call fresh');
+
+    // The three fixed forces must be completely unaffected.
+    let fixedOk = true;
+    for (const f of ['forehand', 'backhand', 'straight'] as const) {
+      for (const d of [1, -1] as const) {
+        for (const x of [-14, 0, 14]) {
+          if (openSideFor(f, d, x, 1) !== openSideSign(f, d)) fixedOk = false;
+        }
+      }
+    }
+    ok('a fixed force ignores the disc position entirely', fixedOk,
+      'forehand / backhand / straight unchanged at x = -14, 0, +14');
+  }
 
   /* ------------------------------------------------------------- summary */
   console.log('\n' + '='.repeat(112));

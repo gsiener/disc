@@ -64,7 +64,7 @@ import {
   type Force, type FormationName, type CutKind, type LaneKey, type Station,
   type ZoneRole, type CutRoute, type RandomSource,
   clamp, lerp, smoothstep, dist2, sigmoid, clampToField, yardsToGoal,
-  inAttackEndzone, openSideSign, breakSideSign, releaseSideType,
+  inAttackEndzone, openSideSign, breakSideSign, openSideFor, breakSideFor, releaseSideType,
   formationStations, chooseFormation, buildCut, handlerCount, stackColumnX,
   markPoint, zoneStations, shouldPlayZone,
 } from './Playbook.ts';
@@ -705,6 +705,12 @@ export class TeamAI {
    * seen, then needs sustained contrary evidence to flip.
    */
   private openCommit: Sign = 1;
+  /**
+   * The side a POSITIONAL force (middle / sideline) has committed to. Held
+   * through `FORCE_DEADBAND` so the call does not chatter as the disc crosses
+   * the middle of the field — see `openSideFor`. Null until the first call.
+   */
+  private forceSide: Sign | null = null;
   private forceSeen = false;
 
   /* defence */
@@ -2273,10 +2279,14 @@ export class TeamAI {
   private personDefence(world: AIWorld, dt: number): PlayerIntent[] {
     const out: PlayerIntent[] = [];
     const odir = -this.dir as AttackDir;
-    const openSign = openSideSign(this.force, odir);
-    const brk = breakSideSign(this.force, odir);
     const disc = world.disc;
     const thrower = disc.carrier != null ? this.byId.get(disc.carrier) ?? null : null;
+    // A positional force is re-read from the disc every step and latched, so
+    // "force middle" actually swaps sides when the disc crosses the field.
+    const fx = thrower ? thrower.pos.x : disc.pos.x;
+    const openSign = openSideFor(this.force, odir, fx, this.forceSide);
+    const brk = breakSideFor(this.force, odir, fx, this.forceSide);
+    this.forceSide = openSign;
 
     // ---- the mark: whoever is matched on the thrower, unless badly beaten.
     this.markerId = -1;
@@ -2531,9 +2541,11 @@ export class TeamAI {
   private zoneDefence(world: AIWorld, dt: number): PlayerIntent[] {
     const out: PlayerIntent[] = [];
     const odir = -this.dir as AttackDir;
-    const openSign = openSideSign(this.force, odir);
     const disc = world.disc;
     const thrower = disc.carrier != null ? this.byId.get(disc.carrier) ?? null : null;
+    const openSign = openSideFor(
+      this.force, odir, thrower ? thrower.pos.x : disc.pos.x, this.forceSide);
+    this.forceSide = openSign;
 
     let deepThreat: Vec2 | null = null; let dbest = -1e9;
     for (const o of this.foes) {
