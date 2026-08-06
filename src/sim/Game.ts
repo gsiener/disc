@@ -1499,7 +1499,6 @@ export class GameSystem implements System {
     for (const e of this.roster) {
       const lp = e.loco;
       if (lp.state === 'fall' || lp.state === 'recovery') continue;
-      if (phase === 'PULL_IN_FLIGHT' && e.team !== offense) continue;
       const laidOut = lp.state === 'layout' || (lp.prone && lp.air.airborne);
       const reachXZ = laidOut ? LAYOUT_REACH : CATCH_REACH;
       const gap = Math.hypot(s.pos.x - lp.pos.x, s.pos.z - lp.pos.z);
@@ -1534,6 +1533,34 @@ export class GameSystem implements System {
     const roll = this.rng.next();
 
     if (best.team !== offense) {
+      /**
+       * A PULL CANNOT BE STOLEN, BUT IT CAN BE TOUCHED.
+       *
+       * The pulling team used to be skipped by this scan outright, so a pull
+       * was the one disc in the game nobody could contest: it sailed sixty
+       * metres through a defence that was not allowed to exist. Now they can
+       * play it — and the moment they do, the disc goes to the receivers.
+       *
+       * That is the actual rule, not a compromise. A member of the pulling
+       * team who touches the pull before the receiving team has touched it has
+       * committed a violation (WFDF 12.5), and the receivers get the disc at
+       * that spot. So a defender bidding on a pull is a real, legible event
+       * with a real cost, which is what it is on a field.
+       *
+       * Both kinds of touch route the same way. `gs.block()` rejects outside
+       * DISC_IN_FLIGHT, so a deflection during a pull would have been silently
+       * dropped on the floor — and there is no distinction worth drawing here
+       * anyway, because the rule does not care whether you caught it or got a
+       * fingertip to it. Any touch is the same violation.
+       *
+       * Stealing a MUFFED pull is a different matter and already works: once
+       * the receiving team puts a hand on it and puts it down, `pullDropped`
+       * turns it over and the pulling team may collect it.
+       */
+      if (phase === 'PULL_IN_FLIGHT') {
+        if (roll < p) { this.gs.catchDisc(best.id, at); this.afterTurnoverInAir(); return true; }
+        return false;
+      }
       if (roll < p * 0.55) { this.gs.catchDisc(best.id, at); this.onCaught(best); return true; }
       if (roll < p) { this.gs.block(best.id, at); this.afterTurnoverInAir(); return true; }
       return false;

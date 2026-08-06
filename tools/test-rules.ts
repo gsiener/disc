@@ -874,6 +874,37 @@ group('13. Determinism');
   eq(a, h(digest(gs11)), 'and match the instrumented run (emitting events changes nothing)');
   ok(h(digest(scriptGame(0xBADCAFE))) !== a, 'a different seed produces a different game');
 }
+group('14. A pull can be touched by the pulling team — and that is a violation');
+{
+  /**
+   * The pulling team may not touch its own pull before the receiving team does
+   * (WFDF 12.5); if they do, the receivers get the disc at that spot.
+   *
+   * `GameState` always implemented this correctly, but for a long time it was
+   * unreachable: `Game.tryCatch` skipped every non-receiving player during
+   * PULL_IN_FLIGHT, so no member of the pulling team could touch a pull under
+   * any circumstances. That mattered most when pulls were short — they averaged
+   * 42.9 m, landing near midfield with the cover arriving right on top of them,
+   * and the cover still could not lay a finger on it.
+   *
+   * These assertions pin the rule so the exclusion cannot quietly come back.
+   */
+  const gs = new GameState({ startingPullTeam: 1, startingDirTeam0: 1 });
+  gs.startGame();
+  eq(gs.pullingTeam, 1, 'BLU pull');
+  eq(gs.receivingTeam, 0, 'RED receive');
+
+  // BLU (the pulling team) is players 7..13; RED is 0..6.
+  gs.pull(7, v(0, 1.5, 32), v(0, 4, -30));
+  eq(gs.phase, 'PULL_IN_FLIGHT' as Phase, 'the pull is live');
+
+  const r = gs.catchDisc(8, v(2, 1.4, 4));   // a BLU player gets a hand to it
+  ok(r.ok, 'a member of the pulling team CAN touch the pull');
+  eq(gs.possession, 0, 'and the disc goes to the receiving team, not to them');
+  ok(gs.phase !== 'PULL_IN_FLIGHT', 'the pull is over');
+  ok(gs.thrower === null, 'nobody is holding it yet — it is a dead disc to collect');
+}
+
 /* -------------------------------------------------------------- summary */
 
 console.log(`\n\x1b[1m${'='.repeat(64)}\x1b[0m`);
