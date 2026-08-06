@@ -1,0 +1,50 @@
+{
+  "quality": "high",
+  "report": [
+    {
+      "shot": "night",
+      "slots": 15,
+      "distinct": 8,
+      "longestRun": 8,
+      "dupes": [
+        "FLATLINE×2",
+        "AEROGRIP×2",
+        "NIMBUS×2",
+        "HELIODYNE×2",
+        "PORTSIDE×2",
+        "VANTA×2",
+        "KESTREL×2"
+      ],
+      "order": [
+        "FLATLINE@-10",
+        "AEROGRIP@11",
+        "NIMBUS@164",
+        "HELIODYNE@263",
+        "PORTSIDE@324",
+        "VANTA@391",
+        "KESTREL@465",
+        "FLATLINE@536",
+        "AEROGRIP@613",
+        "NIMBUS@696",
+        "HELIODYNE@791",
+        "PORTSIDE@893",
+        "VANTA@1005",
+        "KESTREL@1130",
+        "OBSIDIAN@1271"
+      ]
+    },
+    {
+      "shot": "stadium",
+      "slots": 3,
+      "distinct": 3,
+      "longestRun": 1,
+      "dupes": [],
+      "order": [
+        "VANTA@470",
+        "PORTSIDE@632",
+        "KESTREL@828"
+      ]
+    }
+  ],
+  "problems": []
+}

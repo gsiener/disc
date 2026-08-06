@@ -25,7 +25,11 @@ import type { WearMap } from './WearMap';
  *    far half of the field still has structure instead of being flat card;
  *  - mow stripes are a *lay direction*, not a painted band: the contrast term
  *    is `layDir · viewDir`, so stripes invert as the camera crosses the field
- *    and vanish when you look straight down, exactly like real bent grass;
+ *    and vanish when you look straight down, exactly like real bent grass. The
+ *    lay is a vector field, not one axis: the field of play is cut lengthwise
+ *    and **the two endzones are cross-cut**, which is how a real pitch declares
+ *    a region without spending a single extra line of paint. See the endzone
+ *    block in `turfShade`;
  *  - chalk is an analytic signed-distance mask over the regulation line
  *    segments — and *only* the regulation set: two sidelines, two end lines,
  *    two goal lines, two brick crosses. Nothing else is painted on an Ultimate
@@ -74,6 +78,10 @@ uniform float uTile;
 uniform float uNormalScale;
 uniform float uStripeWidth;
 uniform float uStripeStrength;
+uniform float uCrossCut;
+uniform float uEzDC;
+uniform float uEzLift;
+uniform float uEzAO;
 
 float gRough;
 float gAO;
@@ -332,20 +340,203 @@ void turfShade() {
      invert as the camera crosses the field and flatten out from directly
      overhead. The mower wanders, and the pass width breathes, so the edges are
      never perfectly parallel. */
-  // Passes run the length of the pitch (banded in X), which is the arrangement
-  // a sideline camera sees best — and every shot in the rig is a sideline
-  // camera, so 'Vw.x' is large in all of them and the stripes actually read.
-  float wobble = 0.14 * fFbm(P * vec2(0.0038, 0.011) + 41.0, 2);
-  float sCoord = P.x / uStripeWidth + wobble;
-  float lay = clamp(cos(3.14159265 * sCoord) * 2.2, -1.0, 1.0);
-  lay *= 0.80 + 0.32 * fFbm(P * vec2(0.05, 0.006) + 71.0, 2);
-  float lookX = -Vw.x;
-  float sunX = -uSunDir.x;
-  float aniso = clamp(lay * (0.95 * lookX + 0.30 * sunX), -1.0, 1.0);
+  // The base cut runs the length of the pitch (banded in X), which is the
+  // arrangement a sideline camera sees best — and every shot in the rig is a
+  // sideline camera, so 'Vw.x' is large in all of them and the stripes read.
+  float wobbleX = 0.14 * fFbm(P * vec2(0.0038, 0.011) + 41.0, 2);
+  float layX = clamp(cos(3.14159265 * (P.x / uStripeWidth + wobbleX)) * 2.2, -1.0, 1.0);
+  layX *= 0.80 + 0.32 * fFbm(P * vec2(0.05, 0.006) + 71.0, 2);
+
+  /* ---- the endzone is a REGION, and a region is a mow pattern -------------
+     A blind broadcast critic could not tell who was attacking or toward where
+     from the opening frames of live play: "no endzone shading, no differing
+     turf tone … just a mid-field slab of green". The instinct is to fatten the
+     goal line, and that is the wrong answer twice over — in the rulebook a goal
+     line IS a boundary line, painted at the same width as a sideline, and paint
+     is not how a real pitch says "region" anyway. Groundstaff say it with the
+     mower: the endzone gets a second pass across the width, and the change of
+     lay is visible from the top tier of a stand with no extra chalk at all.
+
+     So the endzone is cross-cut, and the cross pass runs at 45°, mirrored about
+     the halfway line — the two ends angle away from each other. Three reasons,
+     and the last two are why it is not the obvious 90°:
+
+       - it is not albedo. The contrast is 'lay · (view, sun)' plus a tilt of
+         the effective normal, so it changes with the camera and with the sun
+         and keeps reading as grass rather than as a decal on grass. Under
+         art-direction §2 that also means the endzone never becomes a coloured
+         slab: hue and saturation are untouched. Only the light coming off it
+         changes.
+       - a 45° pass keeps its contrast at a sideline camera; a 90° one does not.
+         Contrast is 'dot(lay, 0.95*look + 0.30*sun)'. The tele lives on a dolly
+         line 23.5 m outside the −X touchline (Tele.ts) and runs z = ±36, so
+         'look' always has a big +X component and a Z component whose sign is
+         the sign of the endzone it is pointing at. A lay of (0.71, 0.71·sgn z)
+         collects BOTH; a lay of (0, 1) collects only the smaller one. Measured
+         on a lit endzone at 47 m: 90° gave 5.2 % band contrast where the field
+         of play had 9.9 %, and 45° gets that back. This is the same reasoning
+         that put the base cut along the pitch rather than across it, one line
+         up — a groundsman cuts for the stand and the camera, and this venue's
+         camera is on one side.
+       - a 90° pass is also the one that foreshortens away. Its bands repeat
+         along Z, which at a 15° depression is the compressed axis; a diagonal
+         band repeats half along X, where the pixels are.
+
+     THE SIZING RULE, which the first cut of this block got wrong: an endzone
+     has to carry as much band energy as the field of play, in its own
+     direction. Not less. The first version left a third of the lengthwise base
+     cut standing under a cross pass that was itself weaker than the base cut,
+     on the theory that a real cross-cut box reads as a faint four-tone chequer.
+     Measured at the tele, that came out as EZ 6.7 % diagonal against 4.0 %
+     residual lengthwise, where the field of play beside it ran 9.9 % — i.e.
+     the endzone had LESS pattern than the pitch and no clear direction of its
+     own, and the eye reads "the stripes went soft over there", which is a
+     blemish, not a region. Sized so the two regions swap rather than fade
+     (EZ_BASE 0.34 → 0.18, cross amplitude 0.75 → 0.98 of the base cut's) it
+     measures EZ 8.2 % diagonal / 3.0 % lengthwise against FOP 4.1 % diagonal /
+     9.9 % lengthwise: a clean transpose of the same energy, which is what a
+     mower actually does to a piece of ground.
+
+     The pattern boundary sits exactly on the goal line, under the paint, which
+     is where a groundsman would put it and which is what makes the goal line
+     read as the edge of something instead of as one more white line. It stops a
+     mower's width outside the sideline rather than on it, so the touchline is
+     not doubled by a second edge running alongside it, and it runs on past the
+     end line to the mown edge — behind the end line there is nothing for a
+     pattern change to mean. */
+  const float EZ_Z = ${FIELD.goalLine.toFixed(2)};
+  const float EZ_X = ${(FIELD.halfWidth + 1.2).toFixed(2)};
+  /* The cross pass keeps this much of the lengthwise base cut under it. Enough
+     that the ground still remembers being cut twice; not enough to compete with
+     the pass on top of it. */
+  const float EZ_BASE = 0.18;
+  // Edges are antialiased against the pixel footprint for the same reason the
+  // chalk is: a hard step in a metre-scale shading term crawls at broadcast
+  // range. 0.26 m is the mower's own edge — a roller does not lay a perfectly
+  // sharp line either.
+  float ezAA = max(0.26, 1.4 * px);
+  float ez = smoothstep(-ezAA, ezAA, abs(P.y) - EZ_Z)
+           * (1.0 - smoothstep(-ezAA, ezAA, abs(P.x) - EZ_X))
+           * uCrossCut;
+
+  float ezC = clamp(ez, 0.0, 1.0);
+
+  /* The diagonal, mirrored so each end angles off its own goal line. Amplitude
+     matches the base cut's (0.81 + 0.34·fbm against 0.80 + 0.32·fbm) rather
+     than sitting under it: see the sizing rule above. It was held below the
+     base cut on the argument that 'layGain' along the diagonal can exceed 1 and
+     a clamped lay is a flat-topped band, i.e. a painted one. The clamp does
+     engage here — but 'layD' is a clamped cosine to begin with (that ×2.2 is
+     what makes a mow band broad and flat-topped in the first place, because a
+     mower lays broad flat bands), and photographed at 47 m and in a 3 m macro
+     crop the result reads as sward, not as paint. The failure that argument was
+     guarding against is real; it is just not reached at this amplitude. */
+  const float R2H = 0.70710678;
+  vec2 dEZ = vec2(R2H, P.y < 0.0 ? -R2H : R2H);
+  /* Same mower, same deck, so the cross pass is the same width as the base cut.
+     A wider one was tried and measured: at 1.45x the band amplitude is
+     unchanged (10.5 % against 10.9 % at 47 m) and the screen period grows from
+     100 to 134 px, but it costs on both sides — the endzone's median tone
+     becomes phase-sensitive, because a region 18 m deep holding two and a half
+     broad bars swings with where the bars happen to fall in a way that one
+     holding three and a half narrow ones does not, and at 62 m the wider band
+     starts collecting the field of play's lengthwise cut into its own axis. */
+  float wobbleD = 0.14 * fFbm(P * vec2(0.008, 0.008) + 83.0, 2);
+  float layD = clamp(cos(3.14159265 * (dot(P, dEZ) / uStripeWidth + wobbleD)) * 2.2, -1.0, 1.0);
+  layD *= 0.81 + 0.34 * fFbm(P * vec2(0.03, 0.03) + 113.0, 2);
+
+  /* The lay is a *vector* in world XZ, not a scalar on one axis. Note this is
+     one lay direction per pixel, not two textures superimposed — the crosshatch
+     the two-scale detail block warns about is a different failure. */
+  vec2 layBase  = vec2(layX * mix(1.0, EZ_BASE, ezC), 0.0);
+  vec2 layCross = dEZ * (layD * ez);
+  vec2 layV = layBase + layCross;
+  vec2 lookXZ = -Vw.xz;
+  vec2 sunXZ  = -uSunDir.xz;
+  vec2 layGain = 0.95 * lookXZ + 0.30 * sunXZ;
+  float aniso = clamp(dot(layV, layGain), -1.0, 1.0);
   float stripeFade = 1.0 - smoothstep(uStripeWidth * 0.30, uStripeWidth * 1.10, px);
   aniso *= uStripeStrength * stripeFade * (1.0 - 0.70 * wear);
   col *= 1.0 + aniso * 0.50;
   nrm *= 1.0 + 0.26 * aniso;
+
+  /* ---- the cross pass's MEAN lay: the region step, in the view-dependent
+     channel where the brief says it has to live.
+
+     A single-cut region alternates about zero — half its blades lean toward
+     you, half away — so its mean is neutral and only the bands are visible. A
+     cross-cut region has been under a roller a second time, and the second pass
+     does not undo the first so much as lay everything down along its own axis,
+     so what the region returns ON AVERAGE is biased along dEZ instead of
+     cancelling. That is a different fact from the alternation and it is the one
+     that makes an endzone read as an endzone from the top of a stand.
+
+     It is deliberately OUTSIDE the clamp above, and that is the whole point of
+     writing it here rather than as a DC bias on layD, which is where it was
+     first put. 'aniso' is a clamped dot product and the cross pass already
+     drives it into the rail (dot(dEZ, layGain) reaches 1.11 at the tele, and
+     that flat top is what makes a mow band look mown). Adding the mean inside
+     the clamp therefore does not add a step, it CROPS THE BAND: measured at
+     47 m, a mean of 0.45 folded into layD took the endzone's own band from
+     10.9 % amplitude down to 4.7 % while the field of play beside it held
+     12.6 %, i.e. it bought the tonal step by spending the pattern, which
+     produces exactly the lighter-slab-with-no-grain that a decal looks like.
+     Outside the clamp the two are independent and the band is untouched.
+
+     It still runs through 'layGain', so it is shading and not albedo in the
+     sense that matters: it strengthens, weakens and would invert with the
+     camera and the sun. It is reliable rather than lucky at this venue because
+     of the 45-degree mirroring — the tele's dolly line is outside the -X
+     touchline so look.x is always positive, and the tele frames the endzone it
+     is pointing at so look.z carries that endzone's sign, which is the sign
+     dEZ.z is mirrored to. Both terms of the dot land positive from the
+     broadcast side. From the far touchline the same endzone reads DARKER than
+     the field of play, which is what a cross-cut genuinely does and what a
+     painted one never would. */
+  float ezGain = clamp(dot(dEZ, layGain), -1.0, 1.0) * stripeFade;
+  col *= 1.0 + uEzDC * ezGain * ezC * (1.0 - 0.70 * wear);
+
+  /* ---- and the part of the cross-cut that does NOT depend on where you stand
+     The alternation above is the whole of a mow stripe and it is not the whole
+     of a cross-cut, because a cross-cut region has been under a roller twice.
+     Twice-rolled sward stands less upright: it presents more flat leaf and
+     traps less light between the blades, so it returns a little more of what
+     falls on it and its blade relief is a little shallower. That is the same
+     physics the stripe alternation runs on, taken to the mean instead of the
+     difference — a fresh mow is visibly lighter than an old one on any pitch.
+
+     It is sized against the one number the art direction already fixes for this
+     mechanism: a mow stripe PAIR is allowed 0.4 of a stop (art-direction §2),
+     which is the same flattening physics taken to its difference. Measured on
+     the pitch, the field-of-play stripes spend almost exactly that — 9.9 % RMS
+     band contrast is 28 % peak to peak is 0.355 of a stop in sun (0.47 in flat
+     light). The region step is set to a QUARTER of that.
+
+     Two numbers to know before re-tuning this, both measured through the
+     uCrossCut A/B at 47 m and 51 m on a 30° lens (endzone median display
+     luminance minus field-of-play median, cross-cut on minus cross-cut off,
+     as a fraction of the field of play's own median):
+
+       +0.10 of this albedo lift  →  +2.9 % in sun, +4.5 % in ambient only
+       +0.10 of the AO lift below →  +0.5 % in sun, +5.4 % in ambient only
+
+     The AO term is INDIRECT-ONLY, so it is a shade knob and very nearly nothing
+     else; the split has to stay albedo-heavy or the endzone shows up on an
+     overcast frame and vanishes at golden hour, which is the hour this game is
+     set in. The previous 0.140 / 0.085 split put the step at 2.4–4.1 % in sun,
+     which is at the detection threshold for a soft edge and was invisible at
+     1:1 in every frame it was photographed in. 0.260 / 0.055 measures 5.7–6.2 %
+     in sun and 12.5–14.2 % in ambient: 0.08 and 0.18 of a stop, a quarter and
+     four tenths of what one stripe pair already spends. Unlike the lay it
+     cannot be foreshortened away, which matters because from the tele's dolly
+     line an endzone is a strip forty pixels deep.
+
+     It touches V and nothing else. Multiplying the albedo leaves hue alone and
+     leaves saturation alone (S is scale-invariant), so art-direction §2's
+     "everything but the two kits and the disc under 50 % HSV" is untouched by
+     construction rather than by measurement. */
+  col *= 1.0 + uEzLift * ezC;
+  nrm *= 1.0 - 0.16 * ezC;
 
   /* ---- surface response ---- */
   float rough = mix(0.72, 0.96, dd.g);
@@ -357,7 +548,15 @@ void turfShade() {
   rough += 0.10 * (1.0 - detail);
   rough = mix(rough, 0.95, dirt);
   rough = mix(rough, 0.33, mud);
-  gAO = mix(dd.r, 0.85, dirt) * (0.86 + 0.16 * (mott * 0.5 + 0.5)) * (1.0 + 0.10 * aniso);
+  // …and the same flattening that lifts the cross-cut's albedo also opens the
+  // sward up, so the blades occlude each other a little less. This is the half
+  // of the cross-cut that survives with no direct sun on the turf at all,
+  // because ambient occlusion is all that indirect light has to work with —
+  // which is exactly why it is small. See the albedo block above for the two
+  // measured transfer rates: this term buys ten times more in shade than in
+  // sun, so it is a garnish on the albedo step and never the step itself.
+  gAO = mix(dd.r, 0.85, dirt) * (0.86 + 0.16 * (mott * 0.5 + 0.5))
+      * (1.0 + 0.10 * aniso) * (1.0 + uEzAO * ezC);
 
   /* ---- chalk -------------------------------------------------------------
      Coverage-preserving: the difference of two antialiased edges is the exact
@@ -495,7 +694,27 @@ void turfShade() {
   // The mow lay survives *through* the paint in the same proportion the sward
   // does — you can see the mower's bands crossing a touchline on any broadcast,
   // and cutting them at the paint edge is what makes a line read as a cut-out.
-  pert.x += lay * 0.30 * stripeFade * (1.0 - 0.70 * wear) * (1.0 - coat);
+  /* The cross pass gets a THIRD of the base cut's tilt, and that number was
+     measured, not chosen. This tilt and the 'col *= 1 + aniso * 0.50' above are
+     two models of one physical effect, and whether they reinforce or fight
+     depends on the sun's azimuth relative to the lay axis — a fact that stayed
+     invisible while there was only one lay axis to fight about. Under this
+     venue's arc the sun runs mostly down-pitch (uSunDir ≈ (-0.44, 0.53, -0.73)
+     at h 17.2), so against the base cut's X axis the tilt is a mild negative
+     feedback that costs about a third of the contrast, and against the cross
+     cut's Z axis it very nearly cancels the albedo term outright: with the
+     tilt at the base cut's own 0.30 the lit endzone measured 1.7 % band
+     contrast against a 1.1 % floor — a cross-cut that had simply ceased to
+     exist in direct sun while measuring 10 % in ambient. The algebra is not
+     marginal, it is a sign flip either side of a coefficient of 0.27.
+
+     Letting the albedo term own the cross component is also the physically
+     honest answer: an endzone has been rolled BOTH ways, and the second
+     rolling flattens most of the first one's macroscopic tilt. A chequer is a
+     subtler relief than a stripe for exactly this reason. */
+  const float EZ_TILT = 0.30;
+  pert += (layBase + layCross * EZ_TILT)
+        * 0.30 * stripeFade * (1.0 - 0.70 * wear) * (1.0 - coat);
   gNrmW = normalize(vFNormal + vec3(pert.x, 0.0, pert.y));
   gRough = clamp(rough, 0.06, 1.0);
 
@@ -557,6 +776,28 @@ export function makeTurfMaterial(opts: TurfMaterialOpts): {
     uNormalScale: { value: 0.62 },
     uStripeWidth: { value: STRIPE_WIDTH },
     uStripeStrength: { value: 1.0 },
+    /* The endzone cross-cut, 0..1. It is a uniform and not a constant for the
+       same reason `uStripeStrength` is: the claim "the endzone reads at 40–60 m
+       in sun and in shadow" is a measurement, and a measurement needs an A and
+       a B. Setting this to 0 at runtime restores the single-direction cut
+       exactly, so the two can be photographed and sampled in one session
+       instead of by editing the shader between runs. */
+    uCrossCut: { value: 1.0 },
+    /* The four numbers that size the endzone. They were `const`s in the shader
+       (and `uEzDC`/`uEzLift`/`uEzAO` were worse than that: DECLARED in the
+       prelude and never put in this object, so three.js's `seqWithValue` quietly
+       dropped them and GL held them at the default 0 — `uEzDC` had been dead
+       since it was written, and its intended effect had never once rendered).
+       They are uniforms now for the reason `uCrossCut` is: every claim about
+       this block is a measurement at a stated range, and a measurement needs a
+       sweep, which means the tuning has to be reachable from the probe instead
+       of living behind a recompile. See the endzone block in `turfShade`. */
+    uEzDC: { value: 0.32 },
+    // The residue that survives with no direct sun at all: a twice-rolled sward
+    // is flatter, so it returns a little more of what falls on it and occludes
+    // itself a little less. Albedo-heavy on purpose — see `turfShade`.
+    uEzLift: { value: 0.14 },
+    uEzAO: { value: 0.055 },
   };
 
   const material = new THREE.MeshStandardMaterial({

@@ -413,22 +413,83 @@ class Steadiness {
  * so the budget below is that rate times the window, plus a little, and it is
  * therefore a direct test of the governor in `Tele.governDolly` rather than a
  * number tuned onto a match.
+ *
+ * ---------------------------------------------------------------------------
+ * THREE THINGS THE FIRST VERSION OF THIS METER COULD NOT SEE, all of them at a
+ * turnover, which is the one beat two independent reviewers picked out.
+ * ---------------------------------------------------------------------------
+ *
+ * 1. THE ANCHOR JUMPS WHEN POSSESSION DOES, and the meter paid the camera for
+ *    it. `playAnchorZ()` is `0.65·disc + 0.35·centroid-of-the-offence`, and on
+ *    a turnover the offence is a DIFFERENT SET OF MEN — so the anchor steps in
+ *    a single frame without anybody having run anywhere. The first version
+ *    accumulated that step into `playPath` and then handed the rig an equal
+ *    allowance of "paid" travel. The rig's own governor does not make this
+ *    mistake (`Tele.trackPlay` re-seeds rather than differences across a
+ *    possession change) and neither may the assertion that grades it: a change
+ *    of subject is not a movement of one.
+ *
+ *    IT IS A SMALL CORRECTION, and that is worth writing down so nobody
+ *    re-derives it hoping for more. Measured over three seeds, correcting the
+ *    seam moves the 2.5 s unpaid-travel p99 by +0.02, +0.04 and +0.01 m and the
+ *    worst window by +0.17, 0.00 and 0.00 m. The reason it is small is that the
+ *    disc does not teleport at a turnover — only the 0.35-weighted centroid
+ *    term changes hands, and the incoming offence is standing among the outgoing
+ *    one. It is kept because it is correct, not because it moved a number.
+ *
+ * 2. PATH LENGTH HAS NO SIGN. `camPath − playPath` scores zero when the camera
+ *    travels five metres BACKWARD while the play travels five metres forward,
+ *    because both contributed five metres of path. That is not a hypothetical:
+ *    the reported defect was "the disc jumps 2.43 → 8.23 and the camera responds
+ *    by moving z BACKWARD from 8.6 to 6.6". A rig that counter-tracks is making
+ *    the worst move available to it — the subject and the frame going opposite
+ *    ways doubles the on-screen rate — and a path-length meter is blind to it by
+ *    construction. `counter()` measures the signed version.
+ *
+ * 3. IT IS A DIFFERENCE, AND THE COMPLAINT WAS A RATIO. "A 20-unit whip, nearly
+ *    3× the subject's travel" is how a reviewer states this, and it is the more
+ *    legible form: the rig's tracking term is `gain·anchor` with `gain ≤ 0.90`,
+ *    so a camera that is genuinely following play travels LESS than the play
+ *    does, and any window ratio above one is composition rather than tracking.
+ *    `ratio()` reports it, over windows where the play actually moved far enough
+ *    for the quotient to mean anything.
  */
 class Travel {
   private readonly camPath: number[] = [0];
   private readonly playPath: number[] = [0];
+  /** Seam-corrected positions: the same series, minus the possession steps. */
+  private readonly camAt: number[] = [];
+  private readonly playAt: number[] = [];
   private readonly ok: boolean[] = [];
+  private readonly note: string[] = [];
   private camZ = 0;
   private playZ = 0;
+  private playAdj = 0;
+  private poss = -2;
   private have = false;
 
-  sample(camZ: number, playZ: number, eligible: boolean): void {
+  sample(camZ: number, playZ: number, eligible: boolean, poss: number, note = ''): void {
+    // A possession change swaps the set of men the anchor averages, so the step
+    // in it is a change of subject. Carry the adjusted position across without
+    // crediting the jump — see (1) above, and `Tele.trackPlay`.
+    const seam = poss !== this.poss;
     if (this.have) {
       this.camPath.push(this.camPath[this.camPath.length - 1] + Math.abs(camZ - this.camZ));
-      this.playPath.push(this.playPath[this.playPath.length - 1] + Math.abs(playZ - this.playZ));
+      const d = seam ? 0 : playZ - this.playZ;
+      this.playPath.push(this.playPath[this.playPath.length - 1] + Math.abs(d));
+      this.playAdj += d;
     }
+    this.camAt.push(camZ);
+    this.playAt.push(this.playAdj);
     this.ok.push(eligible);
-    this.camZ = camZ; this.playZ = playZ; this.have = true;
+    this.note.push(note);
+    this.camZ = camZ; this.playZ = playZ; this.poss = poss; this.have = true;
+  }
+
+  /** True when every frame of `[i−frames, i]` was continuous tele coverage. */
+  private live(i: number, frames: number): boolean {
+    for (let k = i - frames; k <= i; k++) if (!this.ok[k]) return false;
+    return true;
   }
 
   /** Every fully eligible window's excess travel, and the worst one's index. */
@@ -436,15 +497,63 @@ class Travel {
     const all: number[] = [];
     let worst = -Infinity, at = -1;
     for (let i = frames; i < this.camPath.length; i++) {
-      let good = true;
-      for (let k = i - frames; k <= i; k++) if (!this.ok[k]) { good = false; break; }
-      if (!good) continue;
+      if (!this.live(i, frames)) continue;
       const e = (this.camPath[i] - this.camPath[i - frames])
         - TELE.DOLLY_TRACK * (this.playPath[i] - this.playPath[i - frames]);
       all.push(e);
       if (e > worst) { worst = e; at = i; }
     }
     return { all, worst: Number.isFinite(worst) ? worst : 0, at };
+  }
+
+  /**
+   * CAMERA TRAVEL AS A MULTIPLE OF THE PLAY'S — the reviewer's own units.
+   *
+   * Only over windows in which the play moved at least `floor` metres, because
+   * below that the quotient is a division by noise: a rig creeping its designed
+   * metre a second past a stationary play scores an unbounded ratio and says
+   * nothing, which is what the difference meter above is for.
+   */
+  ratio(frames: number, floor: number): { all: number[]; worst: number; at: number } {
+    const all: number[] = [];
+    let worst = -Infinity, at = -1;
+    for (let i = frames; i < this.camPath.length; i++) {
+      if (!this.live(i, frames)) continue;
+      const p = this.playPath[i] - this.playPath[i - frames];
+      if (p < floor) continue;
+      const r = (this.camPath[i] - this.camPath[i - frames]) / p;
+      all.push(r);
+      if (r > worst) { worst = r; at = i; }
+    }
+    return { all, worst: Number.isFinite(worst) ? worst : 0, at };
+  }
+
+  /**
+   * COUNTER-TRACKING — metres the rig went the WRONG WAY while the play was
+   * making a definite move in the other direction. Zero on a camera that
+   * tracks, zero on a camera that holds still, and zero on a camera that lags:
+   * arriving late is not the same as setting off backwards. The only way to
+   * score is to displace against the subject over the whole window.
+   */
+  counter(frames: number, floor: number): { all: number[]; worst: number; at: number } {
+    const all: number[] = [];
+    let worst = -Infinity, at = -1;
+    for (let i = frames; i < this.camAt.length; i++) {
+      if (!this.live(i, frames)) continue;
+      const p = this.playAt[i] - this.playAt[i - frames];
+      if (Math.abs(p) < floor) continue;
+      const c = this.camAt[i] - this.camAt[i - frames];
+      const against = Math.max(0, -c * Math.sign(p));
+      all.push(against);
+      if (against > worst) { worst = against; at = i; }
+    }
+    return { all, worst: Number.isFinite(worst) ? worst : 0, at };
+  }
+
+  /** Human-readable context for the two ends of the window ending at `i`. */
+  at(i: number, frames: number): string {
+    if (i < frames) return '';
+    return `${this.note[i - frames]}  →  ${this.note[i]}`;
   }
 }
 
@@ -920,7 +1029,12 @@ for (let f = 0; f < steps; f++) {
     + `${td.urgent ? ' URGENT' : ''}`);
   if (td.collapsed) collapseFrames++;
   if (td.clamped) clampFrames++;
-  travel.sample(cam.position.z, playAnchorZ(), t.shot === 'tele' && !t.cutThisFrame);
+  travel.sample(
+    cam.position.z, playAnchorZ(), t.shot === 'tele' && !t.cutThisFrame,
+    gs.possession ?? -1,
+    `${(f * FRAME).toFixed(1)}s ${gs.phase} camZ ${cam.position.z.toFixed(1)}`
+    + ` disc(${gs.discPos.x.toFixed(1)},${gs.discPos.z.toFixed(1)})`
+    + ` anchor ${playAnchorZ().toFixed(1)} poss ${gs.possession ?? -1}`);
   if (gs.phase === 'LIVE_POSSESSION' && t.shot === 'tele' && gs.thrower !== null) {
     lead.sample(cam, gs.discPos.x, gs.discPos.z, gs.attackDir[gs.possession ?? 0],
       gs.possession ?? -1, FRAME);
@@ -1102,6 +1216,21 @@ if (meter.accelWhere) info('  worst accel at', meter.accelWhere);
  *     assertion that moves by 60% when the offensive AI is edited cannot
  *     attribute a regression to the camera.
  *
+ *     IT IS NOT STABLE ACROSS SEEDS EITHER, and that is easier to check, so
+ *     check it before believing any single number here. Raising `TELE.POS_Y`
+ *     from 15 to 22 was graded over six seeds, p99 of the 1 s windows:
+ *
+ *              seed  20260729   991  44221     7    555   8888
+ *          y = 15        3.92  3.85   1.13  3.16   1.70   6.59
+ *          y = 22        1.43  2.04   1.12  6.04   1.26   5.02
+ *
+ *     Five of the six improved, one (seed 7) more than doubled, and seed 7 is
+ *     not even monotone in the height — it reads 3.16 / 3.36 / 4.19 / 6.04 /
+ *     3.31 at y = 15 / 18 / 20 / 22 / 24, which is a match roll and not a
+ *     camera. Note also that the assertion ALREADY FAILED on two of these six
+ *     seeds at the original 15 m seat. If you are about to attribute this metric
+ *     to whatever you just changed, run three seeds first.
+ *
  *  2. IT IS BELOW THE COST OF ONE HONEST RE-FRAME. The correction re-frames at
  *     `TELE.SKEW_RATE` = 9°/s, so a single legitimate lean-out-and-ease-back
  *     inside a one-second window spends up to 9° of travel for no net
@@ -1166,6 +1295,16 @@ const trav1 = travel.window(FPS);
 const trav25 = travel.window(Math.round(2.5 * FPS));
 const SETTLE = 2.5;
 const budget = (secs: number): number => TELE.DOLLY_CREEP * secs + SETTLE;
+/**
+ * Metres the play must have travelled before a ratio window counts, and before
+ * a counter-travel window counts. Both are floors on the DENOMINATOR of a
+ * comparison, not tuning knobs: below them the quotient (respectively the sign)
+ * is being read off noise. Six metres over 2.5 s is a play jogging at walking
+ * pace; three metres of net displacement is a play that has definitely gone
+ * somewhere.
+ */
+const RATIO_FLOOR = 6;
+const COUNTER_FLOOR = 3;
 le(stat(trav1.all, 0.99), budget(1), 'unpaid dolly travel, p99 of 1 s windows', ' m');
 le(trav1.worst, budget(1) + 4.5, 'worst unpaid dolly travel, 1 s (blow-up guard)', ' m');
 le(stat(trav25.all, 0.99), budget(2.5), 'unpaid dolly travel, p99 of 2.5 s windows', ' m');
@@ -1175,6 +1314,83 @@ info('unpaid dolly travel 1 s, p50 / p90 / p99', `${stat(trav1.all, 0.5).toFixed
 info('unpaid dolly travel 2.5 s, p50 / p90 / p99', `${stat(trav25.all, 0.5).toFixed(2)} / `
   + `${stat(trav25.all, 0.9).toFixed(2)} / ${stat(trav25.all, 0.99).toFixed(2)} m`);
 if (trav25.at >= 0) info('  worst 2.5 s window ends at', `${(trav25.at / FPS).toFixed(1)} s`);
+
+/**
+ * ...AND THE SAME TRAVEL IN THE REVIEWER'S OWN TWO UNITS.
+ *
+ * The meter above is a DIFFERENCE in metres, and it passes comfortably. Two
+ * blind reviewers of the capture series nevertheless wrote the same frame up
+ * twice, in two forms the difference cannot express:
+ *
+ *   "Disc x goes 10.28 to 17.14 (a ~7-unit move) while camera z slams 7.9 to
+ *    28.2 — a 20-unit whip, nearly 3× the subject's travel."
+ *   "The disc jumps 2.43 to 8.23 and the camera responds by moving z BACKWARD
+ *    from 8.6 to 6.6."
+ *
+ * A RATIO and a SIGN. Both are asserted here, and both are stated over 2.5 s
+ * windows because that is not an arbitrary choice: 2.5 s is the default `--gap`
+ * of `tools/capture-live.mjs`, so it is exactly the interval those reviewers
+ * were differencing consecutive frames across. An assertion that grades the rig
+ * over the window a human actually looks at is the one that can be argued with.
+ *
+ * THE RATIO BUDGET IS DERIVED, NOT FITTED. The rig's dolly target is
+ * `gain·focus.z` with `gain ≤ DOLLY_GAIN_HUCK`, and the governor lets that
+ * target drift a further `DOLLY_CREEP` m/s over and above the play's own speed,
+ * on top of which the rate-limited dolly's lag opens and closes inside the
+ * window (`SETTLE`). So over a window in which the play travelled `F` metres,
+ *
+ *     camPath / playPath  ≤  DOLLY_GAIN_HUCK + (DOLLY_CREEP·T + SETTLE) / F
+ *
+ * which is 1.73 at the floor below, against a measured p99 of 1.39–1.42 over
+ * three seeds. The floor exists because the quotient is meaningless when the
+ * denominator is small — a rig spending its designed creep against a stationary
+ * play scores an unbounded ratio and says nothing, and that case is the
+ * difference meter's job, not this one.
+ *
+ * THE COUNTER-TRAVEL GUARD IS A BLOW-UP GUARD AND NOTHING MORE, deliberately.
+ *
+ * This meter found a real defect when it was first run, and it is worth knowing
+ * what it was because the guard's looseness is the consequence. The governor's
+ * allowance used to be `DOLLY_CREEP + DOLLY_TRACK·|v|` — UNSIGNED — which says
+ * the faster the play runs, the more travel the rig is licensed for in *either*
+ * direction, including straight back against it. Measured over three seeds, the
+ * worst 2.5 s window put the rig 6.1 m, 4.1 m and 7.3 m the wrong way while the
+ * play made a definite move the other way, and every other assertion in this
+ * file passed on all three frames. `Tele.governDolly` now gates the play-speed
+ * term on agreeing in sign with the move, and the same three seeds read 3.7 m,
+ * 3.0 m and 3.3 m with the ≥5 guarantee and the settled lead room unchanged to
+ * the digit.
+ *
+ * What is left is not a bug, it is the composition doing its job: the lead room
+ * legitimately puts the camera downfield of a play that is drifting backwards,
+ * so a rig with the disc deep in its own end and the attack pointing the other
+ * way SHOULD travel against the centroid. That is why there is no percentile
+ * budget here — the distribution is dominated by legitimate lead-room work and
+ * is wildly seed-dependent (p99 at floor 6 read 1.08, 2.72 and 5.47 on the three
+ * seeds, a factor of five, before the fix). The max is the stable statistic
+ * because it is the one the geometry bounds, so the max is what is asserted, and
+ * it is sized to catch the class of defect that was reported — a camera that
+ * travelled ~20 m against a play that had moved ~7 m — and deliberately not
+ * sized to grade a match.
+ */
+const RATIO_T = 2.5;
+const rat = travel.ratio(Math.round(RATIO_T * FPS), RATIO_FLOOR);
+const ctr = travel.counter(Math.round(RATIO_T * FPS), COUNTER_FLOOR);
+const ratioBudget = Math.round(1e3 * (TELE.DOLLY_GAIN_HUCK
+  + (TELE.DOLLY_CREEP * RATIO_T + SETTLE) / RATIO_FLOOR)) / 1e3;
+console.log('');
+le(stat(rat.all, 0.99), ratioBudget,
+  'camera travel ÷ play travel, p99 of 2.5 s', '×');
+le(rat.worst, 2.5, 'worst camera travel ÷ play travel (blow-up guard)', '×');
+le(ctr.worst, 12, 'worst counter-travel, 2.5 s (blow-up guard)', ' m');
+info('travel ratio p50 / p90 / p99', `${stat(rat.all, 0.5).toFixed(2)} / `
+  + `${stat(rat.all, 0.9).toFixed(2)} / ${stat(rat.all, 0.99).toFixed(2)}×`
+  + `  over ${rat.all.length} windows`);
+if (rat.at >= 0) info('  worst ratio window', travel.at(rat.at, Math.round(RATIO_T * FPS)));
+info('counter-travel p50 / p90 / p99', `${stat(ctr.all, 0.5).toFixed(2)} / `
+  + `${stat(ctr.all, 0.9).toFixed(2)} / ${stat(ctr.all, 0.99).toFixed(2)} m`
+  + `  over ${ctr.all.length} windows`);
+if (ctr.at >= 0) info('  worst counter window', travel.at(ctr.at, Math.round(RATIO_T * FPS)));
 
 /**
  * ...and the LEAD ROOM, which is the one framing rule in the brief that a shot

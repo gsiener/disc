@@ -1,0 +1,183 @@
+{
+  "quality": "high",
+  "worst": {
+    "d": 51.315554668120086,
+    "face": 3
+  },
+  "report": [
+    {
+      "frame": 0,
+      "cam": [
+        -42,
+        22,
+        2.2
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@463-560",
+        "RIVERSIDE CURRENT@560-658",
+        "RIVERSIDE PARK@658-755",
+        "SPIRIT OF THE GAME@755-852"
+      ]
+    },
+    {
+      "frame": 1,
+      "cam": [
+        -42,
+        22,
+        6
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@340-448",
+        "RIVERSIDE CURRENT@448-555",
+        "RIVERSIDE PARK@555-662",
+        "SPIRIT OF THE GAME@662-768"
+      ]
+    },
+    {
+      "frame": 2,
+      "cam": [
+        -42,
+        22,
+        7.4
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@313-412",
+        "RIVERSIDE CURRENT@412-511",
+        "RIVERSIDE PARK@511-609",
+        "SPIRIT OF THE GAME@609-707"
+      ]
+    },
+    {
+      "frame": 3,
+      "cam": [
+        -42,
+        22,
+        8.7
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@274-373",
+        "RIVERSIDE CURRENT@373-471",
+        "RIVERSIDE PARK@471-568",
+        "SPIRIT OF THE GAME@568-664"
+      ]
+    },
+    {
+      "frame": 4,
+      "cam": [
+        -42,
+        22,
+        6.9
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@282-381",
+        "RIVERSIDE CURRENT@381-479",
+        "RIVERSIDE PARK@479-576",
+        "SPIRIT OF THE GAME@576-673"
+      ]
+    },
+    {
+      "frame": 5,
+      "cam": [
+        -42,
+        22,
+        5.5
+      ],
+      "slots": 5,
+      "distinct": 5,
+      "dupes": [],
+      "order": [
+        "MATCH 4@196-298",
+        "RIVERSIDE CURRENT@298-398",
+        "RIVERSIDE PARK@398-497",
+        "SPIRIT OF THE GAME@497-593",
+        "RVR / RIVER ROAD@1207-1280"
+      ]
+    },
+    {
+      "frame": 6,
+      "cam": [
+        -42,
+        22,
+        4.9
+      ],
+      "slots": 5,
+      "distinct": 5,
+      "dupes": [],
+      "order": [
+        "MATCH 4@196-299",
+        "RIVERSIDE CURRENT@299-399",
+        "RIVERSIDE PARK@399-497",
+        "SPIRIT OF THE GAME@497-594",
+        "RVR / RIVER ROAD@1204-1303"
+      ]
+    },
+    {
+      "frame": 7,
+      "cam": [
+        -42,
+        22,
+        4.6
+      ],
+      "slots": 5,
+      "distinct": 5,
+      "dupes": [],
+      "order": [
+        "MATCH 4@197-299",
+        "RIVERSIDE CURRENT@299-400",
+        "RIVERSIDE PARK@400-498",
+        "SPIRIT OF THE GAME@498-594",
+        "RVR / RIVER ROAD@1204-1302"
+      ]
+    },
+    {
+      "frame": 8,
+      "cam": [
+        -42,
+        22,
+        0.7
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@324-424",
+        "RIVERSIDE CURRENT@424-521",
+        "RIVERSIDE PARK@521-617",
+        "SPIRIT OF THE GAME@617-712"
+      ]
+    },
+    {
+      "frame": 9,
+      "cam": [
+        -42,
+        22,
+        0
+      ],
+      "slots": 4,
+      "distinct": 4,
+      "dupes": [],
+      "order": [
+        "MATCH 4@354-453",
+        "RIVERSIDE CURRENT@453-550",
+        "RIVERSIDE PARK@550-646",
+        "SPIRIT OF THE GAME@646-740"
+      ]
+    }
+  ],
+  "problems": []
+}

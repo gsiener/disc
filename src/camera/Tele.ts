@@ -51,37 +51,74 @@ export const TELE = {
    * subject does, and the lens — already against its 30° stop for a quarter of
    * the match — has nothing left to give.
    *
-   * MOVING UP (`POS_Y`) HELPS THE COMPOSITION AND HURTS THE SUBJECT, which is
-   * the opposite of what it is always proposed for. The gantry bay in
-   * `src/world/Stadium.ts` has since cleared the corridor, so y = 20–25 is now
-   * physically available and was photographed; at y = 20, over three seeds:
+   * MOVING UP (`POS_Y`) IS THE ONE LEVER THAT WORKS, and it has been taken: the
+   * seat is at 22 m, not the design doc's 15. The gantry bay in
+   * `src/world/Stadium.ts` cut the west canopy back for exactly this, and the
+   * whole range is open sky (the bay clears y 12.8–40 over the straight run).
+   * Photographed with `capture-live` at 15, 20, 22 and 26, at dolly positions
+   * from z = −9 to z = +22: nothing occludes the lens at any of them.
    *
-   *     dead foreground   31.6% → 29.9%          better
-   *     pitch fills       57.3% → 64.0%          better
-   *     ≥5 guarantee      99.78% → 99.87%        better, and consistently so
-   *     bottom edge at    −16.4 m → −14.9 m      better (inside the touchline)
-   *     crowd in frame    41.8% → 35.2%          WORSE, and visibly
-   *     thrower height     7.76% → 7.49%         WORSE — the range grows
-   *     wasted yaw p99    3.90 → 2.07 on one seed, 2.96 → 4.19 on another:
-   *                       a match roll, not a camera improvement
+   * WHY IT WORKS, which is worth stating because "move the camera up" and "zoom
+   * in" sound like the same wish and are not. Height does not make the play
+   * bigger — it makes the play TALLER. The near body sits ~30 m from the lens
+   * and the far one ~55 m, so raising the seat adds depression to the near body
+   * faster than to the far one, and the band the play occupies grows in frame
+   * height while the 8:1 angular aspect above relaxes. That is why the surplus
+   * shrinks at BOTH ends, and why the ≥5 guarantee gets easier rather than
+   * harder: the same bodies need less of the frame's width.
    *
-   * So the seat stays at the brief's 20° elevation (atan(15/42) = 19.7° to
-   * mid-field play, which is where that number in the design doc comes from).
-   * Raising it trades the crowd — which is most of what says "televised match"
-   * — for a percentage point of turf, and makes the players SMALLER, because
-   * the range from (−42, 25) to the far side of the play is 8% longer than from
-   * (−42, 15).
+   * THE SWEEP, mean of three seeds (20260729 / 991 / 44221), 420 s each:
    *
-   * WHAT WOULD ACTUALLY MOVE SUBJECT SCALE is `FIT_WIDTH`, `GUARD_MIN` or the
-   * 30° stop — how much of the field the shot is required to hold. It is a
+   *      y      dead fg   pitch    crowd   subject   ≥5 held   depression
+   *     15        31.4%    57.0%    42.2%    7.66%   99.847%      19.0°
+   *     18        30.5%    61.0%    38.2%    7.50%   99.910%      22.5°
+   *     20        29.6%    63.3%    36.0%    7.39%   99.917%      24.7°
+   *     21        29.2%    64.3%    35.0%    7.34%   99.940%      25.8°
+   *     22        28.8%    65.2%    34.1%    7.29%   99.937%      26.8°
+   *     24        27.9%    66.7%    32.6%    7.19%   99.947%      28.9°
+   *     26        27.2%    68.3%    31.1%    7.08%   99.940%      30.9°
+   *
+   * EVERY COLUMN IS MONOTONE AND NONE OF THEM HAS A KNEE. There is no height at
+   * which the trade turns: dead foreground and pitch-fill improve at a steady
+   * ~0.38 and ~1.0 points per metre, crowd and subject scale degrade at ~1.0 and
+   * ~0.05 points per metre, all the way up. So this is not an optimum the data
+   * picks out, and anybody re-deriving it by hunting for the elbow will not find
+   * one. It is a judgement, pinned to three things:
+   *
+   *   1. THE GUARANTEE SATURATES AT 21. It is the only column the brief actually
+   *      promises, and above 21 it is flat inside seed noise (99.940 / 99.937 /
+   *      99.947 / 99.940 at 21 / 22 / 24 / 26). Every metre past that spends
+   *      crowd and subject scale to buy nothing the brief asked for.
+   *   2. SUBJECT SCALE IS ALREADY UNDER ITS NORM AND ONLY FALLS. Broadcast
+   *      game-follow holds the primary attacker at 8–15% of frame height and
+   *      this rig is at 7.66% from the 15 m seat, so every metre of rise is
+   *      spent out of a deficit. 22 m costs 4.8% of it relative; 26 m costs 7.6%.
+   *   3. DEPRESSION. The 15 m seat is 19° to mid-field play, and the design doc
+   *      names that number. 22 m is 26.8° — steeper than a football tele, and
+   *      defensible here for a reason specific to this sport: an Ultimate stack
+   *      is a line along Z, and depression is precisely what separates a Z-line
+   *      into frame height. 26 m is 30.9°, and photographed side by side against
+   *      22 that is where the far stand stops reading as a bowl and starts
+   *      reading as foreshortened seating — a tactical camera, not a tele.
+   *
+   * WHAT IT COSTS, stated plainly so the next reviewer need not rediscover it:
+   * the crowd falls from 42.2% of frame height to 34.1%, and the crowd is much
+   * of what says "televised match". And the bottom edge of the frame now lands
+   * at x ≈ −14.0 m rather than −16.1 m, so the near touchline — which
+   * `groundFloor` below calls the front row of the picture — is off the bottom
+   * of the shot more of the time than it was. `groundFloor` still binds when the
+   * play comes to the near sideline; what changed is that it binds less often,
+   * because a higher seat points the frame further into the field before the
+   * rule is reached.
+   *
+   * WHAT WOULD ACTUALLY MOVE SUBJECT SCALE is still `FIT_WIDTH`, `GUARD_MIN` or
+   * the 30° stop — how much of the field the shot is required to hold. It is a
    * choice about coverage, not about where the camera stands, and it is the
    * brief's to make. `tools/test-camera.ts` reports the thrower's on-screen
-   * height every run so the cost of that choice is always on the table:
-   * currently 7.8% of frame height at the mean, against a broadcast
-   * game-follow norm of 8–15%.
+   * height every run so the cost of that choice is always on the table.
    */
   POS_X: -42,
-  POS_Y: 15,
+  POS_Y: 22,
 
   /* dolly */
   DOLLY_GAIN: 0.80,
@@ -120,6 +157,40 @@ export const TELE = {
    * `DOLLY_CREEP`. Loosening it to 1.15 was tried and bought 0.04 points of the
    * ≥5 guarantee for 0.4 m of p99 travel and 0.9 m of worst-case, which is the
    * wrong side of that trade.
+   *
+   * ...AND IT IS SPENDABLE ONLY IN THE DIRECTION THE PLAY IS GOING, which is a
+   * property of `governDolly` rather than of this number, and is the fix for the
+   * second defect two blind reviewers found in the capture series.
+   *
+   * The first version of the governor took `|v|`, so the allowance was UNSIGNED:
+   * `DOLLY_CREEP + DOLLY_TRACK·|v|`. Read that back and it says the faster the
+   * play runs, the more travel the rig is licensed for IN EITHER DIRECTION —
+   * including straight back against it. That is the wrong way round. A camera
+   * that counter-tracks is making the worst move available to it, because the
+   * subject and the frame going opposite ways adds their rates on screen, and it
+   * is exactly what was reported: "the disc jumps 2.43 to 8.23 and the camera
+   * responds by moving z BACKWARD from 8.6 to 6.6."
+   *
+   * The play's speed now buys allowance only for target motion that agrees with
+   * it in sign; motion against the play is spent out of `DOLLY_CREEP` alone,
+   * which is the same metre a second the composition's own moves have always had
+   * to come out of. Nothing about honest tracking changes — during a huck the
+   * target and the play move the same way by construction, so the gate is open
+   * the whole flight.
+   *
+   * Measured over three seeds by the counter-travel meter in
+   * `tools/test-camera.ts`, worst 2.5 s window in which the rig went the wrong
+   * way while the play made a definite move the other way:
+   *
+   *     counter-travel, worst   6.08 / 4.14 / 7.27 m  →  3.72 / 2.96 / 3.31 m
+   *     unpaid travel, p99      3.64 / 3.80 / 3.62 m  →  3.15 / 3.01 / 3.15 m
+   *     cam ÷ play travel, p99  1.42 / 1.39 / 1.40 ×  →  1.36 / 1.30 / 1.36 ×
+   *     ≥5 guarantee            99.78 / 99.77 / 99.99 %      unchanged, exactly
+   *     settled lead room       99.15 / 98.17 / 99.45 %  →  99.16 / 98.17 / 99.45
+   *
+   * The guarantee and the lead room do not move at all, which is the point: this
+   * takes away an allowance the rig was never entitled to and nothing that was
+   * doing any work depended on it.
    *
    * `DOLLY_CREEP` was swept at 0.8 / 1.0 / 1.5 / 2.0 m/s. Every framing
    * outcome in the suite is flat across the whole range — the guarantee, the
@@ -695,16 +766,17 @@ export class TeleRig {
   }
 
   /**
-   * The play anchor and its speed. Re-seeded, rather than differenced, when
-   * possession changes: the centroid term is the mean of a DIFFERENT SET OF MEN
-   * either side of a turnover, so the jump in it is a change of subject and not
-   * a movement of one, and licensing camera travel with it would hand the
-   * governor its allowance back at exactly the moment it is meant to bind.
+   * The play anchor and its VELOCITY — signed, and the sign is load-bearing;
+   * see `governDolly`. Re-seeded, rather than differenced, when possession
+   * changes: the centroid term is the mean of a DIFFERENT SET OF MEN either side
+   * of a turnover, so the jump in it is a change of subject and not a movement
+   * of one, and licensing camera travel with it would hand the governor its
+   * allowance back at exactly the moment it is meant to bind.
    */
   private trackPlay(w: WorldView, step: number): void {
     const z = this.anchorZ;
     if (this.playOff !== w.offence) { this.playV = 0; this.playOff = w.offence; }
-    else this.playV = Math.abs(z - this.playZ) / step;
+    else this.playV = (z - this.playZ) / step;
     this.playZ = z;
   }
 
@@ -726,16 +798,29 @@ export class TeleRig {
    * stated here directly, in the play's own units.
    *
    * Honest tracking passes through untouched — the tracking term of the target
-   * is `gain·anchor` and `gain ≤ 0.90` against an allowance of 1.15 — so a huck,
-   * where the disc is doing 20 m/s down the field, is governed by nothing and
-   * looks exactly as it did. What it costs is the composition's own moves: the
-   * lead reversal, the red-zone overshoot flipping ends, the gain stepping from
-   * 0.80 to 0.90 and back. Those now arrive at a metre and a half a second,
+   * is `gain·anchor` and `gain ≤ 0.90` against an allowance of `DOLLY_TRACK` = 1
+   * — so a huck, where the disc is doing 20 m/s down the field, is governed by
+   * nothing and looks exactly as it did. What it costs is the composition's own
+   * moves: the lead reversal, the red-zone overshoot flipping ends, the gain
+   * stepping from 0.80 to 0.90 and back. Those now arrive at a metre a second,
    * which is a drift a viewer reads as the operator settling rather than as the
    * operator being yanked.
+   *
+   * THE ALLOWANCE IS DIRECTIONAL, and that is the half of this that took a
+   * second review to find. `playV` is signed, and the play's own speed is added
+   * to the cap only when the target wants to move THE WAY THE PLAY IS GOING.
+   * Motion against the play is worth `DOLLY_CREEP` and no more, however fast the
+   * play is running — because "the camera may travel because the play did" is a
+   * statement about a direction, and the unsigned version of it licensed the rig
+   * to sprint backwards away from a sprinting play. Full derivation, the
+   * before/after over three seeds, and the meter that grades it: see
+   * `TELE.DOLLY_CREEP` above and `Travel.counter` in `tools/test-camera.ts`.
    */
   private governDolly(raw: number, step: number): number {
-    const cap = TELE.DOLLY_CREEP + TELE.DOLLY_TRACK * this.playV;
+    const want = raw - this.dollyTarget;
+    const withPlay = want * this.playV > 0;
+    const cap = TELE.DOLLY_CREEP
+      + (withPlay ? TELE.DOLLY_TRACK * Math.abs(this.playV) : 0);
     return approach(this.dollyTarget, raw, cap * step);
   }
 

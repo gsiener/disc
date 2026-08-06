@@ -1,0 +1,42 @@
+{
+  "quality": "high",
+  "report": [
+    {
+      "shot": "night",
+      "slots": 10,
+      "distinct": 8,
+      "longestRun": 3,
+      "dupes": [
+        "HELIODYNE×2",
+        "PORTSIDE×2"
+      ],
+      "order": [
+        "HELIODYNE@-10",
+        "PORTSIDE@71",
+        "AEROGRIP@263",
+        "NIMBUS@388",
+        "VANTA@433",
+        "KESTREL@558",
+        "OBSIDIAN@703",
+        "HELIODYNE@800",
+        "PORTSIDE@1031",
+        "FLATLINE@1268"
+      ]
+    },
+    {
+      "shot": "stadium",
+      "slots": 3,
+      "distinct": 3,
+      "longestRun": 1,
+      "dupes": [],
+      "order": [
+        "KESTREL@415",
+        "FLATLINE@481",
+        "PORTSIDE@570"
+      ]
+    }
+  ],
+  "problems": [
+    "[error] THREE.WebGLProgram: Shader Error 0 - VALIDATE_STATUS false\n\nMaterial Name: turf\nMaterial Type: MeshStandardMaterial\n\nProgram Info Log: Fragment shader is not compiled.\n\u0000\n\nFRAGMENT\n\nERROR: 0:510: 'ezW' : undeclared identifier\nERROR: 0:510: 'ezW' : undeclared identifier\n\u0000\n\n  505:      the same size as the base cut, so it cannot borrow the base cut's fade: a\n  506:      wider pass is still resolved at a range where a narrower one has gone. With\n  507:      uEzWidth at 1.0 the two fades are identical and this is exactly the single\n  508:      'stripeFade' it replaces. */\n  509:   float fadeBase  = 1.0 - smoothstep(uStripeWidth * 0.30, uStripeWidth * 1.10, px);\n> 510:   float fadeCross = 1.0 - smoothstep(ezW * 0.30, ezW * 1.10, px);\n  511:   vec2 layBase  = vec2(layX * mix(1.0, EZ_BASE, ezC), 0.0) * fadeBase;\n  512:   vec2 layCross = dEZ * (layD * ez) * fadeCross;\n  513:   vec2 layV = layBase + layCross;\n  514:   vec2 lookXZ = -Vw.xz;\n  515:   vec2 sunXZ  = -uSunDir.xz;\n  516:   vec2 layGain = 0.95 * lookXZ + 0.30 * sunXZ;"
+  ]
+}

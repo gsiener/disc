@@ -57,6 +57,17 @@ export interface EyeMaterial {
   setDilation(v: number): void;
 }
 
+/**
+ * MEASUREMENT HATCH. Flip to 1 and re-capture to paint the three regions flat —
+ * pupil red, iris green, sclera blue — so the aperture can be counted in pixels
+ * off the delivered frame instead of estimated by eye. The whole reason six
+ * rounds of face work landed invisible on this project is that nobody measured
+ * what fraction of the frame their change actually covered; this is four lines
+ * and it turns "the iris looks small" into "the iris is 19 % of the aperture".
+ * MUST ship as 0.
+ */
+const DEBUG_MASK: number = 0;
+
 export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
   const m = new THREE.MeshPhysicalMaterial({
     color: 0xffffff,
@@ -297,6 +308,19 @@ export function makeEyeMaterial(i: EyeInputs): EyeMaterial {
         }
       `,
     });
+
+    if (DEBUG_MASK) {
+      sh.fragmentShader = at(sh.fragmentShader, 'dithering_fragment', {
+        after: /* glsl */`
+          float mIr = limbus;
+          float mPu = pupil * limbus;
+          gl_FragColor = vec4(
+            mPu > 0.5 ? 0.8 : 0.0,
+            (mIr > 0.5 && mPu <= 0.5) ? 0.8 : 0.0,
+            mIr <= 0.5 ? 0.8 : 0.0, 1.0);
+        `,
+      });
+    }
   });
 
   m.customProgramCacheKey = () => `ult.eyes.${i.quality}`;
