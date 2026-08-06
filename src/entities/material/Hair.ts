@@ -380,7 +380,17 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // Darkening it is what put the hair/skin boundary at 0.49x the forehead
         // under it — a 2.2x step, further outside section 4.6's 1.25x than the
         // 1.37x the bright cap started at, just in the other direction.
-        float depthAo = mix(1.30, 1.0, smoothstep(0.0, 0.14, above));
+        // 1.30 -> 1.14. This band is now the SECOND thing lifting the hairline,
+        // not the first: the face-on transmission in lights_fragment_end carries
+        // the front of the boundary, and this multiplier's remaining job is the
+        // shadow-side temple, where it does not have one. gHalo is gOcc SQUARED,
+        // so a 1.30 here is a 1.69 on the backlit rim, and the rim is 81 % of the
+        // linear radiance in that band — measured, the near-side temple boundary
+        // sat at 1.25x its forehead, on the ceiling of section 4.6, entirely
+        // because of that squaring. 1.14 takes the rim boost to 1.30 and the
+        // temple to ~1.13 while costing the front, which is fill-carried, about
+        // four per cent.
+        float depthAo = mix(1.14, 1.0, smoothstep(0.0, 0.14, above));
         gOcc = clamp(lockAo * depthAo, 0.0, 1.5);
 
         // ------------------------------------------------ HALO TRANSMISSION
@@ -524,9 +534,20 @@ export function makeHairMaterial(i: HairInputs): HairMaterial {
         // 90 % hair). Interior structure has to arrive as VALUE, which is what
         // gOcc's lock field and the gHalo-modulated transmission below do.
         //
-        // BOUNDARY GUARD. Inside the hairline band, the per-column fringe stays
-        // the only term allowed to cut. Above 25 px the grazing break-up comes
-        // back in full.
+        // BOUNDARY GUARD. Inside the hairline band the per-column fringe is the
+        // only term allowed to cut; above 25 px the grazing break-up comes back.
+        //
+        // Left at 0.10-0.18. Extending it to 0.26-0.48 was tried and reverted:
+        // it moved the eroded set by three pixels and no acceptance number at
+        // all, because THE MANGY PATCH IS NOT AN EROSION DEFECT. Painting
+        // shell-minus-hair red over hair green (tools/_hairmeas.mjs plus twenty
+        // lines of PIL) settles it in one look: the eroded set is a clean 4-10
+        // px comb the whole way along the hairline with no second region
+        // anywhere, and the speckle that reads as mange in the shipped frame is
+        // the SKIN material's brow-and-temple noise showing through beside it,
+        // not hair. The 62 px "connected eroded region" _hairscalp.py reports is
+        // simply the run of ordinary comb whose exposed skin happens to be lit.
+        // Look at the masks before hardening an erosion gate.
         float guard = 1.0 - smoothstep(0.10, 0.18, vLen);
         float interior = graze * (1.0 - fibre) * 1.25 * (1.0 - guard);
         float cut = max(interior * erode, fringe);
