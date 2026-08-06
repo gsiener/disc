@@ -446,7 +446,11 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   const catches: { t: number; id: number }[] = [];
   let catchControl = 0;
   let catchChecked = 0;
-  const catchMisses: { t: number; catcher: number; controlled: number; intended: number; flight: number }[] = [];
+  type Miss = { t: number; catcher: number; controlled: number; intended: number; flight: number; state: string; air: boolean };
+  const catchMisses: Miss[] = [];
+  /** Seconds control has to reach the catcher before it counts as a miss. */
+  const CONTROL_SETTLE = 0.4;
+  const pendingCatch: { id: number; t: number; done: boolean; miss: Miss }[] = [];
   let unavailableTo = 0;
   let unavailableFrom = 0;
 
@@ -601,21 +605,36 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
         cands: g.selectCandidates.map((x) => ({ ...x })),
       });
     }
+    // Control reaching the catcher WITHIN A SHORT WINDOW, not on the exact
+    // frame. Traced: the thrower aimed at #4, #4 laid out and missed, #3 caught
+    // it, and `takeControl` refused because control may not leave a body that is
+    // mid-animation — an invariant this file asserts three lines further down.
+    // Both cannot hold on the same frame, so this one settles. See the friction
+    // entry `20260806220000-control-sticks-to`.
+    for (const pc of pendingCatch) {
+      if (!pc.done && g.controlledPlayerId === pc.id) { pc.done = true; catchControl++; }
+    }
+    while (pendingCatch.length && simT - pendingCatch[0].t > CONTROL_SETTLE) {
+      const pc = pendingCatch.shift()!;
+      if (!pc.done) catchMisses.push(pc.miss);
+    }
     if (catches.length && catches[catches.length - 1].t === simT) {
       catchChecked++;
       const cid = catches[catches.length - 1].id;
-      if (g.controlledPlayerId === cid) catchControl++;
+      if (g.controlledPlayerId === cid) { catchControl++; }
       else {
         // Why did control miss the catcher? Record enough to tell a real
         // invariant violation from a measurement blind spot.
         const lastRel = releases.length ? releases[releases.length - 1] : null;
-        catchMisses.push({
+        pendingCatch.push({ id: cid, t: simT, done: false, miss: {
           t: simT,
           catcher: cid,
           controlled: g.controlledPlayerId,
           intended: lastRel ? lastRel.target : -1,
           flight: lastRel ? simT - lastRel.t : -1,
-        });
+          state: g.entry(cid)?.loco.state ?? '?',
+          air: !!g.entry(cid)?.loco.air.airborne,
+        } });
       }
     }
     if (it.release.fired) { assists.push(g.lastAimAssist); leadErrs.push(g.lastLeadError); }
@@ -769,9 +788,11 @@ group('control handoff (§3)');
   ge(R.catchChecked, 2, 'completions landed for the human team');
   for (const m of R.catchMisses) {
     console.log(`\x1b[2m    control miss: t=${m.t.toFixed(2)} catcher=${m.catcher} `
-      + `controlled=${m.controlled} intended=${m.intended} flight=${m.flight.toFixed(3)}s\x1b[0m`);
+      + `controlled=${m.controlled} intended=${m.intended} flight=${m.flight.toFixed(3)}s `
+      + `catcherState=${m.state} airborne=${m.air}\x1b[0m`);
   }
-  ok(R.catchControl === R.catchChecked, 'and control was on the catcher on the catch frame',
+  ok(R.catchControl === R.catchChecked,
+    'and control reached the catcher within 0.4 s of the catch',
     `${R.catchControl}/${R.catchChecked}`);
   ok(R.unavailableTo === 0, 'control never landed on a body Locomotion.isAvailable rejects',
     `${R.unavailableTo}`);

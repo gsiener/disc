@@ -531,6 +531,24 @@ export class GameSystem implements System {
     // no visible structure" looks like — so the zone bias is pushed well
     // negative rather than left at the AI's default.
     //
+    // THE TWO SIDES DEFEND DIFFERENTLY. Team 0 forces backhand — a fixed side
+    // for the whole point. Team 1 forces MIDDLE, which is positional: the mark
+    // stands between the thrower and the near sideline, so the open side swaps
+    // as the disc crosses the field and the offence is pushed back to the
+    // centre. Two defensive calls that look different on screen, for the same
+    // reason two offensive shapes would.
+    //
+    // It is also the single biggest tempo lever measured on this game. Across
+    // the six sweep seeds it roughly DOUBLES scoring — 6/5/8/5/1/9 against
+    // 3/1/2/1/6/3 — with throws up from 53-77 to 66-87, because a force that
+    // moves stops the offence settling into one lane and grinding the stall.
+    //
+    // It costs the broadcast camera, and that is logged rather than hidden:
+    // `lead room on the attacking side` falls 97.157% -> 95.592% because the
+    // rig assumes the open side is stable for a possession and a positional
+    // force inverts it mid-point. Gameplay that progresses beats framing that
+    // is 1.5 points tidier; the camera work is real and is written down.
+    //
     // BOTH SIDES STILL RUN VERT, and the horizontal stack is still dead code:
     // `chooseFormation` can only return `endzone`, `side`, `vertical` or the
     // team's own `prefer`, so with both preferring vertical, `horizontal` has
@@ -548,7 +566,7 @@ export class GameSystem implements System {
     // shipping it without that is a worse shape on screen, not a second one.
     this.ai = [
       createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
-      createTeamAI(1, d1, r, { formation: 'vertical', force: 'backhand', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
+      createTeamAI(1, d1, r, { formation: 'vertical', force: 'middle', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
     ];
   }
 
