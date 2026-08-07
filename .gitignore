@@ -14,3 +14,8 @@ restored/
 
 # agent scratch
 tools/.scratch/
+
+# SwiftPM build products. Goldens under swift/Goldens are generated but ARE
+# committed — the diff on a fixture is the record of a deliberate behaviour change.
+swift/.build/
+*.xcuserdatad
