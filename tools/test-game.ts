@@ -439,6 +439,7 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   const assists: number[] = [];
   const leadErrs: number[] = [];
   const releases: { t: number; target: number }[] = [];
+  const teamReleases: number[] = [];
   let dumpSelects = 0;
   let dumpBehind = 0;
   let bufferLiveAtFlip = 0;
@@ -470,6 +471,24 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   c.events.on('disc:caught', (p: any) => {
     const e = g.entry(p.playerId);
     if (e && e.team === g.humanTeam && p.outcome === 'completion') catches.push({ t: simT, id: p.playerId });
+  });
+  /**
+   * EVERY release by the human's team, not just the script's own.
+   *
+   * The handoff assertion below pairs each control handoff to the release that
+   * caused it, and it used to look only in `releases` — the throws this script
+   * fires while it is holding the disc. But the human's team throws when the
+   * script is NOT the thrower too: the AI runs the other six players, and a
+   * completion off one of their throws hands control to the receiver exactly
+   * the same way. Traced: a handoff at t=180.59 whose nearest scripted release
+   * was 19.3 s earlier, because an AI teammate had thrown it.
+   *
+   * That is the game working. Matching against the real population of releases
+   * tests the invariant that was meant — a handoff lands one step after the
+   * throw that caused it — instead of testing which player happened to throw.
+   */
+  c.events.on('disc:released', (p: any) => {
+    if (p?.team === g.humanTeam) teamReleases.push(simT);
   });
   c.events.on('input:cut', (p: any) => {
     const e = g.entry(p.playerId);
@@ -643,7 +662,7 @@ function scriptedRun(seed: number, seconds: number, opts: { touchDuringGrace: bo
   return {
     game: g, ctx: c, stub, control, flips, selects, cuts, assists, leadErrs, releases,
     dumpSelects, dumpBehind, bufferLiveAfterFlip, unavailableTo, unavailableFrom,
-    catchChecked, catchControl, catchMisses,
+    catchChecked, catchControl, catchMisses, teamReleases,
   };
 }
 
@@ -672,31 +691,32 @@ group('receiver selection — the 35-degree cone (§2)');
   }
   ok(argmax === R.selects.length, 'the selection is always the argmax of the score',
     `${argmax}/${R.selects.length}`);
-  const aimed = R.selects.filter((s) => s.want >= 0);
-  const intended = aimed.filter((s) => s.id === s.want).length;
   /**
-   * THIS FLOOR IS AN ACCEPTED TRADE, NOT A MEASUREMENT, and it is the one
-   * threshold in this repo that was lowered on purpose.
+   * THE STICK-AGREEMENT RATIO IS POOLED ACROSS SEEDS, and that is the whole
+   * point of this block rather than an optimisation.
    *
-   * It was 0.75. Enabling the horizontal stack for team 1 — the second base
-   * look of the sport, which had never once appeared on screen — costs 8 points
-   * of stick agreement: the man the stick pointed at is chosen 12 times in 18
-   * rather than 14. Everything else about ho measured neutral or better
-   * (scoring a dead heat at 34 points over six seeds, camera 70/3 -> 69/2, the
-   * `lead room` metric recovered), so the owner took the trade explicitly after
-   * being shown these numbers.
+   * One 420 s match yields about 18 aimed selects, and 18 samples cannot
+   * support a 0.75 bar. Measured per seed on the shipped build, the ratio runs
+   * 66.7 / 95.0 / 100 / 87.5 / 86.7 / 100 / 93.8 / 77.8 / 93.8 / 85.7 — a
+   * 33-point spread on the same code. This floor was once LOWERED to 0.62 to
+   * accommodate the bottom of that range, on the reading that enabling the
+   * horizontal stack had cost 8 points of agreement. It had not: pooled over
+   * ten seeds, ho scores 87.8% and vertical 84.0%, so ho is the BETTER of the
+   * two and the 66.7% was one seed's noise being read as a signal.
    *
-   * The sample size is reported because it matters: this bar was twice
-   * misjudged as a three-sample fluke before anyone printed the count.
-   *
-   * THE UNDERLYING QUESTION IS STILL OPEN and this floor is not the answer to
-   * it. The human's own team is still vertical, and the select's openness term
-   * reads DEFENDERS — team 1's offensive shape should not touch it at all.
-   * Either this is trajectory sampling (different select situations rather than
-   * worse selects) or the lane term is reading something it should not. When
-   * that is understood, this floor should go back to 0.75.
+   * That is also why the disagreements are worth nothing to chase. Every one of
+   * them is the lane term doing its documented job: in the pooled sample the
+   * man the stick pointed at had a mean lane openness of 0.137 against 0.926
+   * for the man chosen instead. There is a defender standing in the corridor.
+   * Refusing that throw is the feature.
    */
-  const SELECT_AGREEMENT_FLOOR = 0.62;
+  const SELECT_SEEDS = [7, 4242, 31337];
+  const pooled = [...R.selects];
+  for (const s of SELECT_SEEDS) pooled.push(...scriptedRun(s, 420, { touchDuringGrace: false }).selects);
+  const aimed = pooled.filter((s) => s.want >= 0);
+  const intended = aimed.filter((s) => s.id === s.want).length;
+  const SELECT_AGREEMENT_FLOOR = 0.75;
+  ge(aimed.length, 40, 'the pooled sample is big enough to bear a ratio at all');
   ge(intended / Math.max(1, aimed.length), SELECT_AGREEMENT_FLOOR,
     `and it is the man the stick pointed at (floor ${SELECT_AGREEMENT_FLOOR}, n=${aimed.length})`);
   const contested = R.selects.filter((s) => s.cands.length >= 2).length;
@@ -803,7 +823,7 @@ group('control handoff (§3)');
     if (e.reason !== 'handoff') continue;
     handoffs++;
     let best = Infinity;
-    for (const r of R.releases) if (r.target >= 0) best = Math.min(best, Math.abs(e.t - (r.t + 0.10)));
+    for (const t of R.teamReleases) best = Math.min(best, Math.abs(e.t - (t + 0.10)));
     if (best <= DT * 1.5) onTime++;
   }
   ok(onTime === handoffs, 'every handoff fired at release + 0.1 s, to the step',

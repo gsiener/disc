@@ -204,6 +204,15 @@ export interface PlayerIntent {
     role: string; state: string; lane: LaneKey | null;
     /** The point the committed cut is attacking, if any. */
     cutX: number; cutZ: number;
+    /**
+     * The kind of cut being run, if any, and the runner's depth in the column
+     * when it was offered. Which cut belongs to which position IS the vertical
+     * stack, so this is the only handle a test has on whether the shape on the
+     * field is the shape the sport plays — everything else about a cut looks
+     * identical from outside whether it came from the front or the back.
+     */
+    cutKind: CutKind | null;
+    cutDepth: number;
   };
 }
 
@@ -604,6 +613,8 @@ interface Mem {
   cutState: CutState;
   cutT: number;
   cutCooldown: number;
+  /** Depth in the column at the moment the live cut was offered; -1 if none. */
+  cutDepth: number;
   /* defence */
   poach: number;
   poachHold: number;
@@ -957,7 +968,7 @@ export class TeamAI {
     for (const p of this.mates) {
       if (!this.mem.has(p.id)) {
         this.mem.set(p.id, {
-          id: p.id, cut: null, cutState: 'stack', cutT: 0, cutCooldown: 0,
+          id: p.id, cut: null, cutState: 'stack', cutT: 0, cutCooldown: 0, cutDepth: -1,
           poach: 0, poachHold: 0, switchCd: 0, flightCommit: -1, bidCommit: false,
           seenX: p.pos.x, seenZ: p.pos.z, seenOf: -1,
           faceX: 0, faceZ: this.dir,
@@ -970,7 +981,7 @@ export class TeamAI {
     let v = this.mem.get(id);
     if (!v) {
       v = {
-        id, cut: null, cutState: 'stack', cutT: 0, cutCooldown: 0,
+        id, cut: null, cutState: 'stack', cutT: 0, cutCooldown: 0, cutDepth: -1,
         poach: 0, poachHold: 0, switchCd: 0, flightCommit: -1, bidCommit: false,
         seenX: 0, seenZ: 0, seenOf: -1,
         faceX: 0, faceZ: this.dir,
@@ -1157,7 +1168,7 @@ export class TeamAI {
     // triggers are thresholds on the disc position, and a disc sitting on one
     // of them made the whole stack slide 20 m across the field and back at
     // whatever rate the thrower pivoted. A shape that teleports is not a shape.
-    const want = chooseFormation(this.anchor, dir, this.cfg.formation, windSpeed);
+    const want = chooseFormation(this.anchor, dir, this.cfg.formation, windSpeed, this.openSign);
     if (want === this.formation) {
       this.formWant = want;
       this.formHold = 0;
@@ -1499,15 +1510,58 @@ export class TeamAI {
 
       const from: Vec2 = { x: p.pos.x, z: p.pos.z };
       const kinds: Array<{ kind: CutKind; side: Sign }> = [];
-      const nStack = this.stackOrder.length;
-      const isEndzone = this.formation === 'endzone';
-      if (isEndzone) {
+      /**
+       * WHICH CUT YOU MAKE IS DECIDED BY WHERE YOU STAND, not by your place in
+       * the rotation queue. `si` indexes `stackOrder`, which `endCut` rotates on
+       * every clear, so it says who cut least recently — a fairness counter, not
+       * a position on the field. `stackSlot` is the geometric one: it is what
+       * `stationFor` uses to place the body, so slot 0 is the man actually
+       * standing at the front of the column.
+       */
+      const depth = this.stackSlot(id);
+      const nCol = Math.max(1, this.slotOf.size);
+      if (this.formation === 'endzone') {
         kinds.push({ kind: 'strike', side: openSign }, { kind: 'strike', side: brk });
+      } else if (this.formation === 'horizontal') {
+        /**
+         * A ROW HAS NO FRONT AND NO BACK. In a horizontal set all four cutters
+         * stand at the same depth, so a depth rule sorts them by noise; the
+         * shape exists to give each of them the same two options in their own
+         * lane — four isolated one-on-ones across the width of the field. The
+         * lane system is what stops them clogging, and it already does.
+         */
+        kinds.push({ kind: 'deep', side: openSign });
+        kinds.push({ kind: 'under', side: openSign });
+        kinds.push({ kind: 'break-under', side: brk });
       } else {
-        if (si <= 1) kinds.push({ kind: 'under', side: openSign });
-        if (si <= 2) kinds.push({ kind: 'break-under', side: brk });
-        if (si >= nStack - 2) kinds.push({ kind: 'deep', side: openSign });
-        if (si >= nStack - 2) kinds.push({ kind: 'deep', side: brk });
+        /**
+         * THE FRONT OF THE STACK GOES DEEP AND THE BACK COMES UNDER. This was
+         * exactly backwards, and it is the rule the whole shape is built on.
+         *
+         * A vertical stack manufactures two spaces: the under, between the disc
+         * and the front of the column, and the deep, behind the back of it. Who
+         * attacks which is decided by where the defence has to stand. The man
+         * at the FRONT is marked from in front — his defender is between him
+         * and the disc, protecting the under — so his open cut is the one that
+         * runs away, deep, past the whole column into the space nobody is in.
+         * The man at the BACK is marked from behind, because his defender is
+         * the last line and is protecting the deep space he is nearest — so his
+         * open cut is the one coming back, and it is the longest gainer in the
+         * sport that is not a huck.
+         *
+         * Inverted, every cut in the game was contested by construction: the
+         * front cutter came under into his own defender's chest, and the back
+         * cutter went deep into the only man on the field already standing
+         * behind him.
+         */
+        if (depth <= 1) {
+          kinds.push({ kind: 'deep', side: openSign });
+          kinds.push({ kind: 'deep', side: brk });
+        }
+        if (depth >= nCol - 2) {
+          kinds.push({ kind: 'under', side: openSign });
+          kinds.push({ kind: 'break-under', side: brk });
+        }
         if (kinds.length === 0) kinds.push({ kind: 'under', side: openSign });
       }
 
@@ -1516,7 +1570,7 @@ export class TeamAI {
         const cut = buildCut(kc.kind, from, disc, dir, openSign, kc.side, j);
         if (this.liveLanes.has(cut.lane)) continue;
         if (!this.laneClearOfLiveTargets(cut)) continue;
-        const s = this.scoreCut(p, cut, world, si, stall);
+        const s = this.scoreCut(p, cut, world, depth, nCol, stall);
         if (!best || s > best.score) best = { id, cut, score: s };
       }
     }
@@ -1526,6 +1580,7 @@ export class TeamAI {
       m.cut = best.cut;
       m.cutState = 'setup';
       m.cutT = 0;
+      m.cutDepth = this.stackSlot(best.id);
       this.liveLanes.set(best.cut.lane, best.id);
       this.lastCutStart = world.time;
     }
@@ -1558,7 +1613,7 @@ export class TeamAI {
 
   /** How good this cut looks, 0..~1.6. Attributes drive most of it. */
   private scoreCut(
-    p: AIPlayer, cut: CutRoute, world: AIWorld, stackIndex: number, stall: number,
+    p: AIPlayer, cut: CutRoute, world: AIWorld, depth: number, nCol: number, stall: number,
   ): number {
     const def = this.nearestFoe(p.pos.x, p.pos.z);
     let s = 0.30;
@@ -1600,9 +1655,15 @@ export class TeamAI {
     if (cut.kind === 'break-under') s -= 0.10;
     if (cut.kind === 'strike') s += 0.22;
 
-    // Fatigue and stack discipline.
+    // Fatigue and stack discipline. The discipline term follows the same rule
+    // the offer does — deep belongs to the front of the column, under to the
+    // back — so a cutter out of position for the cut he is offering is priced
+    // down rather than silently allowed. It was the mirror of this, and so it
+    // actively rewarded the inversion it was supposed to police.
     s *= (0.72 + 0.28 * p.energy);
-    s -= 0.03 * Math.abs(stackIndex - (deep ? this.stackOrder.length - 1 : 0));
+    if (this.formation !== 'horizontal') {
+      s -= 0.03 * Math.abs(depth - (deep ? 0 : nCol - 1));
+    }
     return s;
   }
 
@@ -1649,7 +1710,44 @@ export class TeamAI {
           if (m.cutT >= PLAY.plantTime) { m.cutState = 'break'; m.cutT = 0; }
         } else if (m.cutState === 'break') {
           const d = dist2(p.pos.x, p.pos.z, cut.target.x, cut.target.z);
-          if (d < 1.2 || m.cutT >= cut.maxTime) { this.endHandlerCut(id); }
+          const done = d < 1.2 || m.cutT >= cut.maxTime;
+          const beingThrownTo = this.choice?.receiverId === id;
+          /**
+           * THE UP-LINE ABORTS BACK TO THE RESET. This is the whole of F8 and
+           * it is a behaviour, not a threshold.
+           *
+           * The up-line is what coaching material calls the handler's primary
+           * move, and it was all but unreachable: it required two bodies behind
+           * the disc, and a two-handler vertical stack has exactly one once the
+           * other is holding it (measured mean 1.02). Loosening that count was
+           * tried and reverted, correctly — it let the only reset leave and
+           * never come back, and reset-behind-disc fell 90.0% -> 84.8%.
+           *
+           * The count was never the problem. A real handler goes up the line
+           * knowing he is the reset, and the contract is that if the disc does
+           * not come he turns and is BACK in reset space a second later. He does
+           * not jog to a station and re-queue; he plants and breaks back. With
+           * that, the sole reset can go — his absence is bounded by the cut, and
+           * the cut only fires below stall 4 because the dump branch above takes
+           * everything from 4 up. So the exposure ends before the count that
+           * needs him.
+           *
+           * The abort re-enters at `plant`, not `setup`: he is at full speed
+           * already and what happens next is a change of direction, which is
+           * also what the animation layer wants to see.
+           */
+          if (done && !beingThrownTo && cut.kind === 'up-line') {
+            const back = buildCut('dump', { x: p.pos.x, z: p.pos.z }, disc, this.dir,
+              openSign, -openSign as Sign, this.rng.next());
+            // He KEEPS the reset lane he already holds. The abort is one player
+            // continuing to occupy the reset space he never really left, so
+            // there is no lane to acquire and none to contend for — an earlier
+            // version tried to move him to `reset-break` and simply never fired,
+            // because the other handler's dump is almost always holding it.
+            m.cut = { ...back, lane: cut.lane };
+            m.cutState = 'plant';
+            m.cutT = 0;
+          } else if (done) { this.endHandlerCut(id); }
         } else if (m.cutState === 'clear') {
           // Once the count is high the reset does not get to rest between
           // attempts — he keeps working until the disc moves. A handler who
@@ -1677,23 +1775,34 @@ export class TeamAI {
       if (behind && (stall >= 4.0 || this.noGoodLook)) {
         kind = 'dump'; side = -openSign as Sign;
       /**
-       * `behindCount >= 2` is close to unsatisfiable in a two-handler vertical
-       * stack — with one handler on the disc there is exactly ONE body behind
-       * it, measured average 1.02 — so the up-line, which coaching material
-       * calls the handler's PRIMARY move with the dump as the fallback, almost
-       * never fires. That looks like a bug and it is not.
+       * THE COUNT STAYS AT TWO, AND THIS IS THE SECOND TIME THAT HAS BEEN
+       * MEASURED RATHER THAN ASSUMED.
        *
-       * Relaxing it to `(behindCount >= 2 || stall < 5)` was tried and REVERTED.
-       * It does exactly what the guard exists to prevent: the only body behind
-       * the disc leaves, and there is no reset. Measured — a reset handler
-       * stationed behind the disc 90.0% -> 84.8% of held frames, in position at
-       * high stall 92.8% -> 89.8%, completion 77.0% -> 74.4% (out of its band),
-       * and the endzone set produced a 1.11 m handler pair.
+       * The up-line is the handler's primary move with the dump as the
+       * fallback, and `behindCount >= 2` is close to unsatisfiable in a
+       * two-handler vertical stack: with one handler on the disc there is
+       * exactly ONE body behind it (measured mean 1.02). So it almost never
+       * fires, which looks like a bug.
        *
-       * The up-line is not reachable by loosening a count. It needs either a
-       * third handler (see the ho-stack note in `Game.rebuildAI`) or an up-line
-       * that ABORTS back to the reset when the throw does not come — which is
-       * what a real handler does and what this cut has no notion of.
+       * Round one relaxed the count alone and was reverted: the only reset left
+       * and nothing brought him back. Reset-behind-disc fell 90.0% -> 84.8%,
+       * in-position-at-high-stall 92.8% -> 89.8%, completion 77.0% -> 74.4%.
+       * The conclusion recorded then was that the up-line needs an ABORT — a
+       * handler who turns back into the reset when the throw does not come —
+       * and not a looser number.
+       *
+       * Round two built the abort (see the `break` branch above) and relaxed
+       * the count to 1 on top of it. Measured over the 4-seed shape run,
+       * 126k held frames: with the abort AND the relaxation, reset-behind-disc
+       * 84.2% and high-stall 89.7% — both still failing. With the abort and the
+       * count left at 2, both assertions PASS, and the number of up-lines
+       * actually run is unchanged at 6. The relaxation buys no up-lines and
+       * costs the reset.
+       *
+       * So the abort ships and the count does not move. The abort is not
+       * wasted: it is what makes the up-line safe to run at all, and the
+       * horizontal stack — which is on the field now — carries the third
+       * handler that satisfies this count honestly.
        */
       } else if (markBeaten && stall >= 1.2 && stall < 7 && behind && behindCount >= 2) {
         kind = 'up-line'; side = openSign;
@@ -1750,7 +1859,19 @@ export class TeamAI {
         // to be vacating, which is the difference between a cut resolving and
         // a cutter loitering in the way of the next one.
         const st = this.stationFor(p, world);
-        if (this.formation === 'horizontal' || this.formation === 'endzone') {
+        /**
+         * A HANDLER CLEARS TO THE BACKFIELD, NEVER TO THE STACK COLUMN.
+         *
+         * The column rule below is a cutter's rule: get out of the throwing
+         * lane by rejoining the line. Applied to a handler it does the opposite
+         * of what the reset is for — `stackAxisX` is about x = 0 and the clear
+         * steers at `p.pos.z + dir * 1.2`, so a reset finishing a dump on the
+         * open side was sent INTO the middle of the field and FORWARD, past the
+         * disc, on every dead reset. He is the one player on the team whose job
+         * is defined by being behind it.
+         */
+        if (p.role === 'handler'
+          || this.formation === 'horizontal' || this.formation === 'endzone') {
           // A ROW CLEARS BACK ALONG ITS OWN LANE. There is no column to run to,
           // and `stackAxisX` is about x = 0 for every set that is not a side
           // stack — so steering everybody at it collapsed a 22 m-wide endzone
@@ -1800,6 +1921,7 @@ export class TeamAI {
     return this.intent(p, c.x, c.z, face.x, face.z, mode, effort, null, {
       role: p.role, state, lane: cut?.lane ?? null,
       cutX: cut?.target.x ?? NaN, cutZ: cut?.target.z ?? NaN,
+      cutKind: cut?.kind ?? null, cutDepth: cut ? m.cutDepth : -1,
     }, dt);
   }
 
@@ -2805,7 +2927,10 @@ export class TeamAI {
   private intent(
     p: AIPlayer, tx: number, tz: number, fx: number, fz: number,
     mode: MoveMode, effort: number, action: PlayerAction | null,
-    debug: { role: string; state: string; lane: LaneKey | null; cutX?: number; cutZ?: number },
+    debug: {
+      role: string; state: string; lane: LaneKey | null;
+      cutX?: number; cutZ?: number; cutKind?: CutKind | null; cutDepth?: number;
+    },
     _dt: number, settle = false,
   ): PlayerIntent {
     const m = this.m(p.id);
@@ -2845,6 +2970,7 @@ export class TeamAI {
       debug: {
         role: debug.role, state: debug.state, lane: debug.lane,
         cutX: debug.cutX ?? NaN, cutZ: debug.cutZ ?? NaN,
+        cutKind: debug.cutKind ?? null, cutDepth: debug.cutDepth ?? -1,
       },
     };
   }
