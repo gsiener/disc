@@ -675,13 +675,30 @@ group('receiver selection — the 35-degree cone (§2)');
   const aimed = R.selects.filter((s) => s.want >= 0);
   const intended = aimed.filter((s) => s.id === s.want).length;
   /**
-   * The sample size is reported because it matters: this bar has fired on
-   * changes that have nothing to do with receiver selection, and knowing
-   * whether it was decided by 18 selects or by 3 is the difference between a
-   * measurement and a coin toss.
+   * THIS FLOOR IS AN ACCEPTED TRADE, NOT A MEASUREMENT, and it is the one
+   * threshold in this repo that was lowered on purpose.
+   *
+   * It was 0.75. Enabling the horizontal stack for team 1 — the second base
+   * look of the sport, which had never once appeared on screen — costs 8 points
+   * of stick agreement: the man the stick pointed at is chosen 12 times in 18
+   * rather than 14. Everything else about ho measured neutral or better
+   * (scoring a dead heat at 34 points over six seeds, camera 70/3 -> 69/2, the
+   * `lead room` metric recovered), so the owner took the trade explicitly after
+   * being shown these numbers.
+   *
+   * The sample size is reported because it matters: this bar was twice
+   * misjudged as a three-sample fluke before anyone printed the count.
+   *
+   * THE UNDERLYING QUESTION IS STILL OPEN and this floor is not the answer to
+   * it. The human's own team is still vertical, and the select's openness term
+   * reads DEFENDERS — team 1's offensive shape should not touch it at all.
+   * Either this is trajectory sampling (different select situations rather than
+   * worse selects) or the lane term is reading something it should not. When
+   * that is understood, this floor should go back to 0.75.
    */
-  ge(intended / Math.max(1, aimed.length), 0.75,
-    `and it is the man the stick pointed at at least 75% of the time (n=${aimed.length})`);
+  const SELECT_AGREEMENT_FLOOR = 0.62;
+  ge(intended / Math.max(1, aimed.length), SELECT_AGREEMENT_FLOOR,
+    `and it is the man the stick pointed at (floor ${SELECT_AGREEMENT_FLOOR}, n=${aimed.length})`);
   const contested = R.selects.filter((s) => s.cands.length >= 2).length;
   ge(contested, 2, 'at least some selects had to choose between two teammates');
   console.log(`\x1b[2m  selects ${R.selects.length}`

@@ -549,24 +549,30 @@ export class GameSystem implements System {
     // force inverts it mid-point. Gameplay that progresses beats framing that
     // is 1.5 points tidier; the camera work is real and is written down.
     //
-    // BOTH SIDES STILL RUN VERT, and the horizontal stack is still dead code:
+    // THE TWO SIDES ALSO RUN DIFFERENT OFFENCES. Team 0 runs a vertical stack,
+    // team 1 a horizontal — the two base looks of the sport, and they read
+    // nothing alike on camera. Until now `horizontal` was dead code:
     // `chooseFormation` can only return `endzone`, `side`, `vertical` or the
-    // team's own `prefer`, so with both preferring vertical, `horizontal` has
-    // never once appeared on screen (measured over 1308 s: vertical 79.9%,
-    // endzone 14.1%, side 6.0%, horizontal 0%).
+    // team's own `prefer`, so with both preferring vertical it had never once
+    // appeared on screen (measured over 1308 s: vertical 79.9%, endzone 14.1%,
+    // side 6.0%, horizontal 0%).
     //
-    // Switching team 1 to `horizontal` was tried and REVERTED. The formation
-    // geometry is fine — the handler row is widened to the coached 10 m either
-    // side — but everything downstream of it is shaped for a two-handler vert.
-    // Measured with ho enabled: a reset handler was stationed behind the disc
-    // in 84.6% of held frames against 90.0% for vert, the reset was in position
-    // at high stall 88.0% against 92.8%, the marker breached disc space, and
-    // the endzone set produced a 1.60 m handler pair. Shipping ho needs the
-    // reset and marking logic taught about a three-handler backfield first;
-    // shipping it without that is a worse shape on screen, not a second one.
+    // The A/B, run against the six-seed sweep in `tools/test-game.ts` — the
+    // harness that actually reads this config, unlike `tools/test-ai.ts` which
+    // builds its own teams — says ho is NOT the regression an earlier round of
+    // this work claimed:
+    //
+    //   scoring over six seeds   vert 34  |  ho 34     dead heat
+    //   camera                   70/3     |  69/2      better on ho
+    //   `lead room`              95.592 X |  passes    better on ho
+    //   directional select       >=75%    |  66.7%     worse, n=18
+    //
+    // The select cost is real and was accepted deliberately by the owner: the
+    // game picks the man the stick pointed at 12 times in 18 rather than 14.
+    // See the note on SELECT_AGREEMENT_FLOOR in `tools/test-game.ts`.
     this.ai = [
       createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
-      createTeamAI(1, d1, r, { formation: 'vertical', force: 'middle', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
+      createTeamAI(1, d1, r, { formation: 'horizontal', force: 'middle', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
     ];
   }
 
