@@ -674,8 +674,14 @@ group('receiver selection — the 35-degree cone (§2)');
     `${argmax}/${R.selects.length}`);
   const aimed = R.selects.filter((s) => s.want >= 0);
   const intended = aimed.filter((s) => s.id === s.want).length;
+  /**
+   * The sample size is reported because it matters: this bar has fired on
+   * changes that have nothing to do with receiver selection, and knowing
+   * whether it was decided by 18 selects or by 3 is the difference between a
+   * measurement and a coin toss.
+   */
   ge(intended / Math.max(1, aimed.length), 0.75,
-    'and it is the man the stick pointed at at least 75% of the time');
+    `and it is the man the stick pointed at at least 75% of the time (n=${aimed.length})`);
   const contested = R.selects.filter((s) => s.cands.length >= 2).length;
   ge(contested, 2, 'at least some selects had to choose between two teammates');
   console.log(`\x1b[2m  selects ${R.selects.length}`
