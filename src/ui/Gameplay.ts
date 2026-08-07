@@ -966,15 +966,33 @@ export class GameplayLayer implements HudWidget {
     setStyle(this.selFill, 'opacity', dim.toFixed(2));
     setStyle(this.gSel, 'opacity', '1');
 
-    // Defence: a dashed outer ring at 0.98 m. Not a hue change.
+    /**
+     * Defence: an outer ring at 0.98 m. Not a hue change — and now not always a
+     * whole ring either.
+     *
+     * The two defensive jobs have different controls, and a control scheme
+     * whose mode is invisible is one the player has to discover by pressing
+     * things and watching what happens. So the ring says which one you hold,
+     * in the only vocabulary this layer has: shape.
+     *
+     * Guarding a cutter draws the full ring — you are responsible all the way
+     * round a man. ON THE DISC IT COLLAPSES TO A HALF-ARC ON THE BREAK SIDE:
+     * the half you are taking away, centred on the same bearing the force arc
+     * over the thrower is centred on. That is one glyph doing two jobs, because
+     * it names the context and the force together, and they are the same fact —
+     * holding the mark IS holding that side.
+     */
     const onDefence = f.possession !== null && me.team !== f.possession;
     this.defenceIn.target = onDefence ? 1 : 0;
     const dv = this.defenceIn.step(f.dt);
     if (dv > 0.02 && track) {
-      const outer = this.groundRing(
-        me.x, me.z, me.groundY + 0.01, DEFENCE_RING_R * grow, this.pb3, 0, 1, away,
-      );
-      this.selOuter.set(outer, 1.6 * this.scale);
+      const marking = f.defenceRole === 'mark' && f.forceKnown;
+      const outer = marking
+        ? this.groundRing(me.x, me.z, me.groundY + 0.01, DEFENCE_RING_R * grow,
+          this.pb3, 0, 0.5, f.forceAngle - Math.PI / 2)
+        : this.groundRing(me.x, me.z, me.groundY + 0.01, DEFENCE_RING_R * grow,
+          this.pb3, 0, 1, away);
+      this.selOuter.set(outer, (marking ? 2.3 : 1.6) * this.scale);
       this.selOuter.opacity(dv * dim);
     } else {
       this.selOuter.clear();

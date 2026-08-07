@@ -165,6 +165,18 @@ export interface HudFrame {
   switchPreviewId: number;
   /** Sim time possession last flipped, or -1 for never. Drives the ring pulse. */
   flipAt: number;
+
+  /**
+   * Which set of defensive verbs the player currently holds — 'mark' on the
+   * disc, 'matchup' off it, null when not defending.
+   *
+   * This earns pixels under the rule above because the geometry genuinely
+   * cannot say it. The bodies show you where everyone is standing; they do not
+   * show you that the same button is a force shade in one moment and a press in
+   * the next, and a control scheme whose mode is invisible is one the player
+   * has to discover by pressing things and watching.
+   */
+  defenceRole: 'mark' | 'matchup' | null;
 }
 
 export function emptyFrame(): HudFrame {
@@ -178,7 +190,7 @@ export function emptyFrame(): HudFrame {
     charging: false, chargePower: 0, chargeQuality: 0, chargeHold: 0, chargeType: 'backhand',
     perfectHold: 0.85, perfectHalf: 0.09, maxHold: 2,
     attackDir: 1,
-    forceKnown: false, forceAngle: 0,
+    forceKnown: false, forceAngle: 0, defenceRole: null,
     landing: { active: false, x: 0, y: 0, z: 0, t: 0 },
     cut: {
       playerId: -1, kind: 'under', held: false, at: -1,

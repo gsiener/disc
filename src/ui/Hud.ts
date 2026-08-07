@@ -115,6 +115,8 @@ interface GameLike {
   /** 'human' | 'dump' | 'none' — how that selection was arrived at. */
   selectionSource?: string;
   markerId?(): number;
+  /** Which defensive job the controlled player currently has. */
+  defenceContext?(id?: number): 'mark' | 'matchup' | null;
   /** `Locomotion` — asked only whether a body can act right now. */
   loco?: { isAvailable?(p: unknown): boolean };
   /** The switch policy's inputs, shared with `InputSystem.resolveSwitch`. */
@@ -479,6 +481,7 @@ export class HudSystem implements System, HudSource {
     const me = f.controlledId >= 0 ? this.player(f.controlledId) : null;
     const onDefence = !!me && poss !== null && me.team !== poss;
 
+    f.defenceRole = onDefence ? (this.game?.defenceContext?.() ?? null) : null;
     this.readForce(f, onDefence);
     this.readLanding(f);
     this.readCut(f, onDefence);
