@@ -33,7 +33,7 @@ export type Dir = 1 | -1;
 export type Edge = 'sideline+x' | 'sideline-x' | 'endline+z' | 'endline-z';
 
 /** Whether the marker may legally run a stall count this instant. */
-export type MarkerStatus = 'legal' | 'out-of-range' | 'disc-space' | 'none';
+export type MarkerStatus = 'legal' | 'out-of-range' | 'disc-space' | 'double-team' | 'none';
 
 /* ------------------------------------------------------------------- field */
 
@@ -91,6 +91,11 @@ export interface RuleSet {
   markerRange: number;
   /** Marker may not come closer than this — one disc diameter (m). */
   discSpace: number;
+  /**
+   * Radius of the double-team rule, metres. USAU 16.G is written in feet:
+   * "within ten feet of any pivot of the thrower". 10 ft = 3.048 m.
+   */
+  doubleTeamRange: number;
   /** How far the pivot foot may slip before it is a travel (m). */
   travelTolerance: number;
 
@@ -118,6 +123,18 @@ export interface RuleSet {
   swapEndsAtHalftime: boolean;
   /** Gaining possession in your attacking endzone => carry to the goal line. */
   walkToGoalLineFromAttackingEndzone: boolean;
+  /**
+   * Gaining possession in the endzone you are DEFENDING => walk it out to the
+   * goal line (USAU 12.A.2).
+   *
+   * Unlike 12.B this is a CHOICE the rules give the player: 12.A.1 lets him
+   * establish a pivot on the spot instead, and faking or pausing commits him to
+   * doing exactly that. The sim always takes the walk, because the alternative
+   * is throwing from inside your own endzone, where the mark has a sideline and
+   * an end line helping it and a turnover is very nearly a goal against. Real
+   * teams take the walk for the same reason.
+   */
+  walkOutOfDefendingEndzone: boolean;
   /** Emit disc:released / disc:caught / disc:grounded as well as rules events. */
   emitPhysicsEvents: boolean;
 }
@@ -128,6 +145,7 @@ export const DEFAULT_RULES: RuleSet = {
   stallResumeCap: 9,
   markerRange: 3,
   discSpace: 0.274, // one disc diameter (WFDF 18.1)
+  doubleTeamRange: 3.048, // ten feet (USAU 16.G)
   travelTolerance: 0.35,
 
   gameTo: 15,
@@ -144,6 +162,7 @@ export const DEFAULT_RULES: RuleSet = {
 
   swapEndsAtHalftime: true,
   walkToGoalLineFromAttackingEndzone: true,
+  walkOutOfDefendingEndzone: true,
   emitPhysicsEvents: true,
 };
 
@@ -240,15 +259,32 @@ export function boundaryCrossing(a: Vec3, b: Vec3): Crossing | null {
 
 /**
  * Where a team putting the disc into play establishes its pivot.
+ *
  *  - always on or inside the perimeter (out-of-bounds discs come in at the spot
  *    where they crossed — WFDF 13.2);
- *  - possession gained in the endzone you are ATTACKING is carried to the
- *    nearest point on that goal line (USAU 12.B) when the rule is enabled.
+ *  - possession gained in the endzone you are ATTACKING, other than by scoring,
+ *    is carried to the nearest point on that goal line (USAU 12.B). Mandatory:
+ *    "the player in possession must carry the disc directly to, and put it into
+ *    play at, the spot on the goal line closest to where the player stopped";
+ *  - possession gained in the endzone you are DEFENDING may be walked out to
+ *    the nearest point on that goal line (USAU 12.A.2).
+ *
+ * THE TWO ARE NOT THE SAME RULE and only the first was here. 12.B is
+ * compulsory; 12.A is a choice between putting it into play on the spot
+ * (12.A.1) and walking it to the line (12.A.2), and the sim always takes the
+ * walk — see `walkOutOfDefendingEndzone`.
+ *
+ * Both walk to the goal line of the endzone the disc is IN, which is why the
+ * two branches differ only in sign. `x` never moves: the closest point on a
+ * goal line is straight out of it.
  */
 export function putIntoPlaySpot(spot: Vec3, attackDir: Dir, rules: RuleSet): Vec3 {
   const p = clampToField(spot);
-  if (rules.walkToGoalLineFromAttackingEndzone && p.z * attackDir >= FIELD.GOAL_LINE - G_EPS) {
+  const zone = p.z * attackDir;
+  if (rules.walkToGoalLineFromAttackingEndzone && zone >= FIELD.GOAL_LINE - G_EPS) {
     p.z = goalLineZ(attackDir);
+  } else if (rules.walkOutOfDefendingEndzone && zone <= -(FIELD.GOAL_LINE - G_EPS)) {
+    p.z = goalLineZ(-attackDir as Dir);
   }
   return p;
 }
@@ -270,6 +306,43 @@ export function stallElapsedFor(count: number, rules: RuleSet): number {
 /** After a stoppage the count restarts at reached+1, capped (WFDF 18.4). */
 export function resumeStallCount(count: number, rules: RuleSet): number {
   return Math.min(rules.stallResumeCap, Math.max(0, count) + 1);
+}
+
+/**
+ * USAU 16.G — DOUBLE TEAM. Returns the offending defender, or null.
+ *
+ *   "a defensive player within ten feet of any pivot of the thrower without
+ *    also being within ten feet of, and guarding, another offensive player"
+ *
+ * Two halves, and the second is the one that is easy to miss: a second body
+ * near the disc is only a double team if he is not there for somebody else.
+ * A defender whose own matchup has cut through the area is legitimately close
+ * and is not double teaming, which is exactly why the rule is written as an
+ * exception rather than as a simple radius.
+ *
+ * The marker himself is never the offender — he is the one player entitled to
+ * be there — so he is excluded rather than counted.
+ */
+export function doubleTeamOffender(
+  pivot: Vec3,
+  markerId: PlayerId | null,
+  defenders: readonly { id: PlayerId; pos: Vec3 }[],
+  offence: readonly { id: PlayerId; pos: Vec3 }[],
+  throwerId: PlayerId | null,
+  rules: RuleSet,
+): PlayerId | null {
+  const r = rules.doubleTeamRange;
+  for (const d of defenders) {
+    if (d.id === markerId) continue;
+    if (distXZ(d.pos, pivot) > r + G_EPS) continue;
+    let excused = false;
+    for (const o of offence) {
+      if (o.id === throwerId) continue;
+      if (distXZ(d.pos, o.pos) <= r + G_EPS) { excused = true; break; }
+    }
+    if (!excused) return d.id;
+  }
+  return null;
 }
 
 /** Marker legality: must be inside markerRange and no closer than discSpace. */

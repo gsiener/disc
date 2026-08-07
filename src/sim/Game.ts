@@ -1964,7 +1964,26 @@ export class GameSystem implements System {
         ? { x: thrower.loco.foot.pos.x, y: 0, z: thrower.loco.foot.pos.z } : undefined,
       markerId,
       markerPos,
+      defenders: thrower ? this.bodiesOf(1 - thrower.team as TeamId) : undefined,
+      offence: thrower ? this.bodiesOf(thrower.team) : undefined,
     });
+  }
+
+  /**
+   * Every available body on a team, as the rules layer wants them. Rebuilt into
+   * two scratch arrays rather than allocated, because `stepRules` runs on every
+   * one of the 120 steps a second.
+   */
+  private bodyScratch: [{ id: number; pos: Vec3 }[], { id: number; pos: Vec3 }[]] = [[], []];
+  private bodiesOf(team: TeamId): readonly { id: number; pos: Vec3 }[] {
+    const out = this.bodyScratch[team];
+    out.length = 0;
+    for (const e of this.roster) {
+      if (e.team !== team) continue;
+      if (!this.loco.isAvailable(e.loco)) continue;
+      out.push({ id: e.id, pos: { x: e.loco.pos.x, y: 0, z: e.loco.pos.z } });
+    }
+    return out;
   }
 
   /* ----------------------------------------------------------- orchestration */

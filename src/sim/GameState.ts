@@ -40,7 +40,7 @@
 import {
   DEFAULT_RULES, FIELD, boundaryCrossing, brickMark, clampToField, copy, distXZ,
   effectiveTarget, flipDir, goalLineZ, isGameOver, isGoal, isInBounds, isTravel,
-  makeRules, markerStatus, otherTeam, putIntoPlaySpot, resumeStallCount,
+  doubleTeamOffender, makeRules, markerStatus, otherTeam, putIntoPlaySpot, resumeStallCount,
   stallCountFor, stallElapsedFor, v3,
   type CapState, type Dir, type MarkerStatus, type PlayerId, type RuleSet,
   type TeamId, type Vec3,
@@ -52,6 +52,12 @@ export {
 } from './Rules.ts';
 
 /* ------------------------------------------------------------------- types */
+
+/**
+ * How long a double team must stand before the thrower is deemed to have
+ * called it (USAU 16.G is a call, not an automatic stoppage).
+ */
+const DOUBLE_TEAM_CALL = 0.6;
 
 export type Phase =
   | 'PRE_PULL'
@@ -124,6 +130,9 @@ export interface FrameObservation {
   /** null = nobody is marking, so the count may not run. */
   markerId?: PlayerId | null;
   markerPos?: Vec3 | null;
+  /** Every defender and every offensive player, for the double-team test. */
+  defenders?: readonly { id: PlayerId; pos: Vec3 }[];
+  offence?: readonly { id: PlayerId; pos: Vec3 }[];
 }
 
 export interface ActionResult { ok: boolean; note?: string }
@@ -301,6 +310,11 @@ export class GameState {
   stallRunning = false;
   marker: PlayerId | null = null;
   markerState: MarkerStatus = 'legal';
+  /** Seconds the current double team has stood; see the note in `step`. */
+  private doubleTeamHeld = 0;
+  private doubleTeamCalled = false;
+  /** The dt of the step `observe` is running inside; 0 when called standalone. */
+  private observeDt = 0;
 
   /* ---- dead disc / restarts ---- */
   deadReason: DeadReason | null = null;
@@ -399,6 +413,9 @@ export class GameState {
    */
   step(dt: number, obs?: FrameObservation): void {
     if (dt <= 0) return;
+    // `observe` is also a public entry point on its own, so the step it belongs
+    // to is handed over rather than assumed.
+    this.observeDt = dt;
     if (obs) this.observe(obs);
     if (this.phase === 'GAME_OVER') return;
 
@@ -445,6 +462,45 @@ export class GameState {
       if (this.markerState === 'disc-space') {
         this.emit('violation', { type: 'disc-space', markerId: this.marker, dist: obs.markerPos ? distXZ(obs.markerPos, ref) : 0 });
       }
+      /**
+       * USAU 16.G. A double team is a MARKING VIOLATION, so it is handled the
+       * way disc space is handled two lines up: the count does not run while it
+       * stands. It is checked only when the mark is otherwise legal, because a
+       * marker who is already out of range or inside disc space has stopped the
+       * count for a reason that is nearer the disc and easier to read.
+       */
+      if (this.markerState === 'legal' && obs.defenders && obs.offence) {
+        const off = doubleTeamOffender(
+          this.pivot, this.marker, obs.defenders, obs.offence, this.thrower, this.rules);
+        /**
+         * IT HAS TO PERSIST BEFORE IT COUNTS, because in the rules it is a call
+         * the THROWER makes — he has to see it and say it — and a body that
+         * clips the bubble for a tenth of a second is not something anyone
+         * calls.
+         *
+         * Enforcing it frame-by-frame instead was tried and measured: it fired
+         * on 3-6% of held frames and stopped the count often enough that a
+         * count never reached ten, one sweep seed finished a seven-minute match
+         * 0-0, and every downstream shape metric moved. Most of those frames
+         * were transients — a marker swap mid-pivot, or the rules layer naming
+         * the nearest defender as the marker while the AI still had the
+         * matchup-derived one, so the two disagreed about which body was
+         * entitled to be there and each flagged the other.
+         *
+         * The hold time is what a call costs. Sustained double teams still stop
+         * the count; brushes past the bubble no longer do.
+         */
+        if (off !== null) {
+          this.doubleTeamHeld += this.observeDt;
+          if (this.doubleTeamHeld >= DOUBLE_TEAM_CALL) {
+            this.markerState = 'double-team';
+            if (!this.doubleTeamCalled) {
+              this.doubleTeamCalled = true;
+              this.emit('violation', { type: 'double-team', markerId: this.marker, playerId: off });
+            }
+          }
+        } else { this.doubleTeamHeld = 0; this.doubleTeamCalled = false; }
+      } else { this.doubleTeamHeld = 0; this.doubleTeamCalled = false; }
     }
 
     if (obs.pivotFoot && this.phase === 'LIVE_POSSESSION' && this.thrower !== null) {

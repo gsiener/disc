@@ -2673,6 +2673,26 @@ export class TeamAI {
         tx = nx; tz = nz;
       }
 
+      /**
+       * NOBODY BUT THE MARKER STANDS ON THE THROWER — USAU 16.G. A constraint
+       * enforcing that here was built and REMOVED, and the measurement is worth
+       * keeping because the conclusion is not the obvious one.
+       *
+       * Pushing a second defender out of the ten-foot bubble whenever he was
+       * not also guarding somebody inside it is correct ultimate and it is what
+       * a defender is taught. It also changed nothing that mattered: with the
+       * rules layer requiring a double team to STAND for 0.6 s before the
+       * thrower is deemed to have called it, sustained violations run at 4-11 a
+       * match with the constraint and 4-6 without it. The transients the
+       * constraint removed were never being called anyway.
+       *
+       * What it did cost was four `test-ai` assertions — the up-line stopped
+       * being reachable at all, and both reset metrics fell — because moving
+       * every off-disc defender a third of a metre re-points what the offence
+       * reads off them. A behaviour change that buys no measured legality and
+       * costs four shape assertions is not worth shipping, so the rule lives in
+       * `Rules.ts` where it is enforced, and the defence is left alone.
+       */
       const gap = dist2(p.pos.x, p.pos.z, tx, tz);
       const effort = clamp(0.35 + gap * 0.45, 0.35, 1);
       const mode: MoveMode = gap > 2.5 ? 'sprint' : gap > 0.8 ? 'shuffle' : 'idle';

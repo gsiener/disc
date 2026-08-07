@@ -11,7 +11,7 @@
 import {
   FIELD, DEFAULT_RULES, makeRules, brickMark, boundaryCrossing, isInBounds, isGoal,
   isInEndzone, endzoneOf, goalLineZ, stallCountFor, resumeStallCount, markerStatus,
-  putIntoPlaySpot, isTravel, effectiveTarget, isGameOver, distXZ,
+  putIntoPlaySpot, isTravel, effectiveTarget, isGameOver, distXZ, doubleTeamOffender,
   type Dir, type TeamId, type Vec3,
 } from '../src/sim/Rules.ts';
 import { GameState, computePlusMinus, type Phase, type PlayerStats } from '../src/sim/GameState.ts';
@@ -123,8 +123,30 @@ group('1. Field geometry & rules constants');
   const walked = putIntoPlaySpot(v(4, 0, 44), 1 as Dir, r);
   near(walked.z, 32, 1e-12, 'possession gained in your attacking endzone is carried to the goal line');
   near(walked.x, 4, 1e-12, '  x is preserved');
+  /**
+   * USAU 12.A — the endzone you are DEFENDING. This is a different rule from
+   * 12.B above and for a long time only 12.B was implemented, so an
+   * interception in your own endzone was put into play where it was caught and
+   * the offence started a possession pinned against its own end line.
+   *
+   * 12.A is a CHOICE: 12.A.1 establish a pivot on the spot, or 12.A.2 "carry
+   * the disc directly to the closest point on the goal line and put it into
+   * play at that spot". Both are legal, so this asserts the sim's choice rather
+   * than a rule — and it asserts that the other choice is still reachable,
+   * because a rule that offers two options and implements one is only half
+   * modelled.
+   */
   const own = putIntoPlaySpot(v(4, 0, -44), 1 as Dir, r);
-  near(own.z, -44, 1e-12, 'possession in your defending endzone stays put');
+  near(own.z, -32, 1e-12, 'possession in your defending endzone is walked out to the goal line (12.A.2)');
+  near(own.x, 4, 1e-12, '  and x is preserved — the closest point is straight out');
+  const stay = putIntoPlaySpot(v(4, 0, -44), 1 as Dir,
+    makeRules({ walkOutOfDefendingEndzone: false }));
+  near(stay.z, -44, 1e-12, 'and 12.A.1 — putting it into play on the spot — is still selectable');
+  // The two endzone rules must not both fire, whichever end the disc is at.
+  const far = putIntoPlaySpot(v(-9, 0, 47), -1 as Dir, r);
+  near(far.z, 32, 1e-12, 'the defending-endzone walk works at the other end too');
+  const mid = putIntoPlaySpot(v(0, 0, 10), 1 as Dir, r);
+  near(mid.z, 10, 1e-12, 'and neither rule touches a disc between the goal lines');
   const clamped = putIntoPlaySpot(v(30, 0, 0), 1 as Dir, r);
   near(clamped.x, 18.5, 1e-12, 'out-of-bounds spot is brought to the perimeter line');
 }
@@ -903,6 +925,45 @@ group('14. A pull can be touched by the pulling team — and that is a violation
   eq(gs.possession, 0, 'and the disc goes to the receiving team, not to them');
   ok(gs.phase !== 'PULL_IN_FLIGHT', 'the pull is over');
   ok(gs.thrower === null, 'nobody is holding it yet — it is a dead disc to collect');
+}
+
+group('15. The double team — USAU 16.G, and the exception that makes it a rule');
+{
+  /**
+   * "a defensive player within ten feet of any pivot of the thrower without
+   *  also being within ten feet of, and guarding, another offensive player"
+   *
+   * Two halves, and the second is the one worth testing: a body near the disc
+   * is only a double team if it is not there for somebody else. A defender
+   * whose own matchup has cut through is legitimately close, which is why the
+   * rule is written as an exception rather than as a radius.
+   */
+  const r = makeRules();
+  const pivot = v(0, 0, 0);
+  const D = (id: number, x: number, z: number) => ({ id, pos: v(x, 0, z) });
+
+  // The marker himself is never the offender — he is entitled to be there.
+  eq(doubleTeamOffender(pivot, 1, [D(1, 2, 0)], [D(9, 0, 0)], 9, r), null,
+    'the marker alone is not a double team');
+
+  // A second defender inside ten feet with nobody else to guard.
+  eq(doubleTeamOffender(pivot, 1, [D(1, 2, 0), D(2, 0, 2.5)], [D(9, 0, 0)], 9, r), 2,
+    'a second defender inside ten feet of the pivot is a double team');
+
+  // ... unless he is also within ten feet of another offensive player.
+  eq(doubleTeamOffender(pivot, 1, [D(1, 2, 0), D(2, 0, 2.5)],
+    [D(9, 0, 0), D(8, 0, 4.0)], 9, r), null,
+    'but not when he is also inside ten feet of another offensive player');
+
+  // The thrower does not count as the "other offensive player" — otherwise the
+  // exception would swallow the rule, since every double teamer is near him.
+  eq(doubleTeamOffender(pivot, 1, [D(1, 2, 0), D(2, 0, 2.5)], [D(9, 0, 0)], 9, r), 2,
+    'and the thrower himself cannot be the man that excuses it');
+
+  // Ten feet is 3.048 m; just outside is legal.
+  near(r.doubleTeamRange, 3.048, 1e-9, 'the radius is ten feet in metres');
+  eq(doubleTeamOffender(pivot, 1, [D(1, 2, 0), D(2, 0, 3.2)], [D(9, 0, 0)], 9, r), null,
+    'a defender just outside ten feet is not double teaming');
 }
 
 /* -------------------------------------------------------------- summary */
