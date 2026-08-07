@@ -8,5 +8,6 @@
 // machine. Add each new suite here as its module lands.
 
 runSuites([
-    Suite(name: "rng", run: RngTests.run)
+    Suite(name: "rng", run: RngTests.run),
+    Suite(name: "coeffs", run: CoeffsTests.run),
 ])
