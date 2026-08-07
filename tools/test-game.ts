@@ -710,9 +710,16 @@ group('receiver selection — the 35-degree cone (§2)');
    * for the man chosen instead. There is a defender standing in the corridor.
    * Refusing that throw is the feature.
    */
-  const SELECT_SEEDS = [7, 4242, 31337];
+  /**
+   * Six short matches rather than three long ones. Sample size tracks total
+   * simulated seconds, so 6 x 210 s and 3 x 420 s cost the same and pool the
+   * same n — but the variance being averaged out lives BETWEEN seeds, not
+   * within them, so the cheaper-per-seed shape is strictly the better buy.
+   * Measured: n=68 at 27.98 s this way against n=67 at 28.75 s the other.
+   */
+  const SELECT_SEEDS = [7, 4242, 31337, 900001, 88, 555];
   const pooled = [...R.selects];
-  for (const s of SELECT_SEEDS) pooled.push(...scriptedRun(s, 420, { touchDuringGrace: false }).selects);
+  for (const s of SELECT_SEEDS) pooled.push(...scriptedRun(s, 210, { touchDuringGrace: false }).selects);
   const aimed = pooled.filter((s) => s.want >= 0);
   const intended = aimed.filter((s) => s.id === s.want).length;
   const SELECT_AGREEMENT_FLOOR = 0.75;

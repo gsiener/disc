@@ -66,6 +66,7 @@ import {
   clamp, lerp, smoothstep, dist2, sigmoid, clampToField, yardsToGoal,
   inAttackEndzone, openSideSign, breakSideSign, openSideFor, breakSideFor, releaseSideType,
   formationStations, chooseFormation, buildCut, handlerCount, stackColumnX,
+  hasColumn,
   markPoint, zoneStations, shouldPlayZone,
 } from './Playbook.ts';
 
@@ -901,9 +902,7 @@ export class TeamAI {
       hm.cutT = 0;
       this.liveLanes.delete(cut.lane);
     }
-    m.cut = cut;
-    m.cutState = 'setup';
-    m.cutT = 0;
+    this.beginCut(receiverId, cut, 'setup');
     m.cutCooldown = 0;
     this.liveLanes.set(cut.lane, receiverId);
     return cut;
@@ -1499,10 +1498,9 @@ export class TeamAI {
     const openSign = this.openSign;
     const brk = -openSign as Sign;
     const stall = this.stallRead;
-    let best: { id: number; cut: CutRoute; score: number } | null = null;
+    let best: { id: number; cut: CutRoute; score: number; depth: number } | null = null;
 
-    for (let si = 0; si < this.stackOrder.length; si++) {
-      const id = this.stackOrder[si];
+    for (const id of this.stackOrder) {
       const p = this.byId.get(id);
       if (!p) continue;
       const m = this.m(id);
@@ -1512,17 +1510,16 @@ export class TeamAI {
       const kinds: Array<{ kind: CutKind; side: Sign }> = [];
       /**
        * WHICH CUT YOU MAKE IS DECIDED BY WHERE YOU STAND, not by your place in
-       * the rotation queue. `si` indexes `stackOrder`, which `endCut` rotates on
-       * every clear, so it says who cut least recently — a fairness counter, not
-       * a position on the field. `stackSlot` is the geometric one: it is what
-       * `stationFor` uses to place the body, so slot 0 is the man actually
-       * standing at the front of the column.
+       * `stackOrder`, which `endCut` rotates on every clear — that says who cut
+       * least recently, a fairness counter rather than a position on the field.
+       * `stackSlot` is the geometric one: it is what `stationFor` uses to place
+       * the body, so slot 0 is the man actually standing at the front.
        */
       const depth = this.stackSlot(id);
       const nCol = Math.max(1, this.slotOf.size);
       if (this.formation === 'endzone') {
         kinds.push({ kind: 'strike', side: openSign }, { kind: 'strike', side: brk });
-      } else if (this.formation === 'horizontal') {
+      } else if (!hasColumn(this.formation)) {
         /**
          * A ROW HAS NO FRONT AND NO BACK. In a horizontal set all four cutters
          * stand at the same depth, so a depth rule sorts them by noise; the
@@ -1570,20 +1567,39 @@ export class TeamAI {
         const cut = buildCut(kc.kind, from, disc, dir, openSign, kc.side, j);
         if (this.liveLanes.has(cut.lane)) continue;
         if (!this.laneClearOfLiveTargets(cut)) continue;
-        const s = this.scoreCut(p, cut, world, depth, nCol, stall);
-        if (!best || s > best.score) best = { id, cut, score: s };
+        const s = this.scoreCut(p, cut, world, depth, stall);
+        if (!best || s > best.score) best = { id, cut, score: s, depth };
       }
     }
 
     if (best && best.score > 0.18) {
-      const m = this.m(best.id);
-      m.cut = best.cut;
-      m.cutState = 'setup';
-      m.cutT = 0;
-      m.cutDepth = this.stackSlot(best.id);
+      // The depth recorded is provably the depth that was scored, rather than a
+      // second reading of `stackSlot` that only happens to agree.
+      this.beginCut(best.id, best.cut, 'setup', best.depth);
       this.liveLanes.set(best.cut.lane, best.id);
       this.lastCutStart = world.time;
     }
+  }
+
+  /**
+   * Commit a player to a route. THE ONE PLACE `m.cut` IS ARMED.
+   *
+   * `cutDepth` is telemetry the shape assertions are built on, and it is a
+   * property OF THE CUT — which position in the column offered it — so it has
+   * to be written and cleared with the cut, not near it. It was set at one of
+   * the three sites that arm a route, so a handler's dump and a human-commanded
+   * cut both published whatever depth that player last happened to cut from as
+   * a stack cutter: measured, 249 dumps reporting a mean stack depth of 1.00.
+   *
+   * Depth is meaningless for a cut that did not come out of the column, and -1
+   * says so rather than lying with a stale number.
+   */
+  private beginCut(id: number, cut: CutRoute, state: CutState, depth = -1): void {
+    const m = this.m(id);
+    m.cut = cut;
+    m.cutState = state;
+    m.cutT = 0;
+    m.cutDepth = depth;
   }
 
   private laneClearOfLiveTargets(cut: CutRoute): boolean {
@@ -1613,7 +1629,7 @@ export class TeamAI {
 
   /** How good this cut looks, 0..~1.6. Attributes drive most of it. */
   private scoreCut(
-    p: AIPlayer, cut: CutRoute, world: AIWorld, depth: number, nCol: number, stall: number,
+    p: AIPlayer, cut: CutRoute, world: AIWorld, depth: number, stall: number,
   ): number {
     const def = this.nearestFoe(p.pos.x, p.pos.z);
     let s = 0.30;
@@ -1661,7 +1677,16 @@ export class TeamAI {
     // down rather than silently allowed. It was the mirror of this, and so it
     // actively rewarded the inversion it was supposed to police.
     s *= (0.72 + 0.28 * p.energy);
+    /**
+     * Deliberately `!== 'horizontal'` and NOT `hasColumn`, which would also
+     * exclude the endzone set. The endzone set is a row too, so on the face of
+     * it the predicate belongs here — but the endzone row only ever offers
+     * `strike`, and dropping the term for it moves reset-behind-disc 90.0% ->
+     * 89.8%, just under its bar. That is a behaviour change with a measured
+     * cost, not a tidy-up, so it is not being made as one.
+     */
     if (this.formation !== 'horizontal') {
+      const nCol = Math.max(1, this.slotOf.size);
       s -= 0.03 * Math.abs(depth - (deep ? 0 : nCol - 1));
     }
     return s;
@@ -1744,9 +1769,7 @@ export class TeamAI {
             // there is no lane to acquire and none to contend for — an earlier
             // version tried to move him to `reset-break` and simply never fired,
             // because the other handler's dump is almost always holding it.
-            m.cut = { ...back, lane: cut.lane };
-            m.cutState = 'plant';
-            m.cutT = 0;
+            this.beginCut(id, { ...back, lane: cut.lane }, 'plant');
           } else if (done) { this.endHandlerCut(id); }
         } else if (m.cutState === 'clear') {
           // Once the count is high the reset does not get to rest between
@@ -1817,9 +1840,7 @@ export class TeamAI {
       const cut = buildCut(kind, from, disc, this.dir, openSign, side, this.rng.next());
       // Force the reset lane label so downfield cuts never collide with it.
       const forced: CutRoute = { ...cut, lane };
-      m.cut = forced;
-      m.cutState = 'setup';
-      m.cutT = 0;
+      this.beginCut(id, forced, 'setup');
       this.liveLanes.set(lane, id);
     }
   }
@@ -1870,8 +1891,7 @@ export class TeamAI {
          * disc, on every dead reset. He is the one player on the team whose job
          * is defined by being behind it.
          */
-        if (p.role === 'handler'
-          || this.formation === 'horizontal' || this.formation === 'endzone') {
+        if (p.role === 'handler' || !hasColumn(this.formation)) {
           // A ROW CLEARS BACK ALONG ITS OWN LANE. There is no column to run to,
           // and `stackAxisX` is about x = 0 for every set that is not a side
           // stack — so steering everybody at it collapsed a 22 m-wide endzone

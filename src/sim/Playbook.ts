@@ -296,6 +296,8 @@ const SWING_BAND = 13.0;
  * dumping itself backwards into its own endzone.
  */
 const PIN_MARGIN = 2.0;
+/** The widest a row may sit: exactly the x-limit `clampToField` enforces. */
+const FIELD_BAND = FIELD.halfWidth - FIELD.edgeMargin;
 
 /**
  * Lay a backfield row out around an anchor so that every station lands inside
@@ -313,13 +315,17 @@ const PIN_MARGIN = 2.0;
  * Sliding preserves the SHAPE and gives up only the tracking, which is the
  * right thing to give up — handlers bringing a wide disc back toward the middle
  * is the behaviour the band exists to produce in the first place.
+ *
+ * It returns the SHIFT rather than the placed row, and that is deliberate.
+ * `formationStations` is rebuilt for every player every tick — measured 4.42
+ * times per tick — so a version taking an offsets array and returning a mapped
+ * one cost three allocations a call (the literal, the closure, the result) and
+ * made the function 58-81% slower. A scalar costs none and the callers already
+ * hold their offsets as constants.
  */
-function backfieldRow(anchor: number, offsets: number[], band: number): number[] {
-  let lo = Infinity, hi = -Infinity;
-  for (const o of offsets) { if (o < lo) lo = o; if (o > hi) hi = o; }
+function rowShift(anchor: number, lo: number, hi: number, band: number): number {
   // If the row is wider than the band there is nothing to preserve; centre it.
-  const centre = hi - lo >= 2 * band ? 0 : clamp(anchor, -band - lo, band - hi);
-  return offsets.map((o) => centre + o);
+  return hi - lo >= 2 * band ? 0 : clamp(anchor, -band - lo, band - hi);
 }
 
 /**
@@ -383,9 +389,10 @@ export function formationStations(
       // Coached reset geometry is 45 degrees behind the thrower at about 9 m.
       // The distance here was already right (measured mean 8.80 m); the angle
       // was shallow at 35, so this is 8.8 m at exactly 45.
-      const vh = backfieldRow(a.x, [openSign * 4.5, brk * 6.5], RESET_BAND);
-      push(vh[0], a.z - dir * 6.5, 'handler', 0);
-      push(vh[1], a.z - dir * 3.5, 'handler', 1);
+      const vReset = openSign * 4.5, vSwing = brk * 6.5;
+      const vs = rowShift(a.x, Math.min(vReset, vSwing), Math.max(vReset, vSwing), RESET_BAND);
+      push(vs + vReset, a.z - dir * 6.5, 'handler', 0);
+      push(vs + vSwing, a.z - dir * 3.5, 'handler', 1);
       const sx = stackColumnX('vertical', a, openSign);
       for (let i = 0; i < 5; i++) {
         // Real stacks LEAN, with the back further to the break side. It widens
@@ -398,13 +405,14 @@ export function formationStations(
     }
     case 'horizontal': {
       // 3 handlers behind, 4 cutters spread the full width 15 m downfield.
-      // The handler row is centred on a *clamped* anchor so the outside
-      // stations cannot collapse onto each other against a sideline.
       // Coached geometry: the outside handlers sit 10-15 yd (9.1-13.7 m) either
       // side of the middle one. At 7 m "three handlers across the field" read as
       // a huddle rather than as the width the set exists to create.
-      const hh = backfieldRow(a.x, [openSign * 10.0, 0, brk * 10.0],
-        FIELD.halfWidth - FIELD.edgeMargin);
+      // The full playing surface, not a reset band: the ho handler row IS the
+      // width of the set, so the only limit on it is the field. Named from
+      // `clampToField`'s own bound so an `edgeMargin` change cannot leave this
+      // one caller behind.
+      const hs = rowShift(a.x, -10.0, 10.0, FIELD_BAND);
       /**
        * STATION 0 IS THE RESET, and it must be on the OPEN side.
        *
@@ -422,18 +430,19 @@ export function formationStations(
        *
        * Open side, centre, break side. The break-side handler is the swing.
        */
-      push(hh[0], a.z - dir * 5.5, 'handler', 0);
-      push(hh[1], a.z - dir * 4.0, 'handler', 1);
-      push(hh[2], a.z - dir * 5.5, 'handler', 2);
+      push(hs + openSign * 10.0, a.z - dir * 5.5, 'handler', 0);
+      push(hs, a.z - dir * 4.0, 'handler', 1);
+      push(hs + brk * 10.0, a.z - dir * 5.5, 'handler', 2);
       const xs = [-13.5, -4.5, 4.5, 13.5];
       for (let i = 0; i < 4; i++) push(xs[i], a.z + dir * 15, 'cutter', i);
       break;
     }
     case 'side': {
       // 5 cutters stacked on the break sideline, isolating the whole open side.
-      const sh = backfieldRow(a.x, [openSign * 4.0, brk * 6.0], RESET_BAND);
-      push(sh[0], a.z - dir * 6.5, 'handler', 0);
-      push(sh[1], a.z - dir * 3.0, 'handler', 1);
+      const sReset = openSign * 4.0, sSwing = brk * 6.0;
+      const ss = rowShift(a.x, Math.min(sReset, sSwing), Math.max(sReset, sSwing), RESET_BAND);
+      push(ss + sReset, a.z - dir * 6.5, 'handler', 0);
+      push(ss + sSwing, a.z - dir * 3.0, 'handler', 1);
       const lx = stackColumnX('side', a, openSign);
       for (let i = 0; i < 5; i++) {
         push(lx, a.z + dir * (9 + PLAY.stackSpacing * i), 'cutter', i);
@@ -446,10 +455,11 @@ export function formationStations(
       // deep, not against the back line: pinned to the back line they are 25 m
       // from a disc 12 m out, and the team reads as two disconnected knots of
       // people with the whole middle of the field empty between them.
-      const eh = backfieldRow(a.x, [openSign * 6.5, 0, brk * 6.5], RESET_BAND);
-      push(eh[0], a.z - dir * 5.0, 'handler', 0);
-      push(eh[1], a.z - dir * 6.5, 'handler', 1);
-      push(eh[2], a.z - dir * 5.0, 'handler', 2);
+      // Symmetric about the middle handler, so the extremes are +/-6.5 either way.
+      const es = rowShift(a.x, -6.5, 6.5, RESET_BAND);
+      push(es + openSign * 6.5, a.z - dir * 5.0, 'handler', 0);
+      push(es, a.z - dir * 6.5, 'handler', 1);
+      push(es + brk * 6.5, a.z - dir * 5.0, 'handler', 2);
       /**
        * The row stays CONNECTED TO THE DISC. Pinned to an absolute depth it sat
        * 26.4 m ahead of the disc at the exact moment the endzone call fired —
@@ -472,6 +482,20 @@ export function formationStations(
 export function handlerCount(name: FormationName): number {
   return name === 'horizontal' || name === 'endzone' ? 3 : 2;
 }
+
+/**
+ * Does this set stand its cutters in a COLUMN, or spread them in a ROW?
+ *
+ * It is the one structural fact that separates the four looks, and three
+ * different rules in `AI.ts` turn on it: which cut a cutter is offered (a
+ * column has a front and a back, a row does not), whether being out of position
+ * for that cut should be priced down, and where a dead cut clears to (a column
+ * has a line to rejoin; a row clears back along its own lane). Each of those
+ * used to spell the question out as its own list of formation names, so adding
+ * a fifth set meant finding all three.
+ */
+export const hasColumn = (name: FormationName): boolean =>
+  name === 'vertical' || name === 'side';
 
 /** Situational formation call. `prefer` is the team's base look. */
 export function chooseFormation(

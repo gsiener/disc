@@ -55,6 +55,7 @@ import {
   FIELD, SeededRng, clamp, dist2, openSideSign, markPoint, formationStations,
   type AttackDir,
   openSideFor, breakSideFor, FORCE_DEADBAND, chooseFormation, stackColumnX, PLAY,
+  hasColumn, type CutKind, type FormationName,
 } from '../src/sim/Playbook.ts';
 
 /* ------------------------------------------------------------ assertions */
@@ -637,7 +638,7 @@ interface Sim {
      * into a reset instead of dying, which is the contract that lets the sole
      * handler leave at all.
      */
-    cutKinds: Map<string, { n: number; depthSum: number; depthN: number }>;
+    cutKinds: Map<CutKind, { n: number; depthSum: number; depthN: number }>;
     upLines: number;
     upLineAborts: number;
   };
@@ -763,7 +764,7 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
   /** bodies that have already declared a bid on the live flight */
   const bidSeen = new Set<number>();
   /** Last frame's cut state per player, for detecting cut starts and aborts. */
-  const cutWas = new Map<number, { state: string; kind: string | null }>();
+  const cutWas = new Map<number, { state: string; kind: CutKind | null }>();
   let lastThrow: { aimX: number; aimZ: number; recv: number; exp: number; d: number; atRelease: number; tf: number; vAtRelease: number; minGap: number; minGapY: number } | null = null;
 
   while (t < maxT) {
@@ -853,20 +854,30 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
        * without passing through `stack` — see the `break` branch in
        * `tickHandlerCuts`.
        */
+      /**
+       * ONLY COLUMN SETS FEED THE DEPTH STATISTIC.
+       *
+       * `buildSim` defaults team 1 to the horizontal stack, and a row has no
+       * front and no back — its cutters are offered every kind from every
+       * position by design. Pooling both teams put roughly half the sample
+       * into `deep cuts come from the front of the stack` from a formation the
+       * rule does not apply to, so the assertion passed on the vertical team's
+       * signal while naming something broader than it measured. Counts stay
+       * whole-team; only the depths are restricted.
+       */
+      const column = hasColumn(offTeam.currentFormation as FormationName);
       for (const it of offIntents) {
-        const d = it.debug as { state: string; cutKind?: string | null; cutDepth?: number };
+        const d = it.debug;
         const prev = cutWas.get(it.id);
-        const kind = d.cutKind ?? null;
+        const kind = d.cutKind;
         if (kind && d.state === 'setup' && prev?.state !== 'setup') {
           const e = sim.totals.cutKinds.get(kind) ?? { n: 0, depthSum: 0, depthN: 0 };
           e.n++;
-          if ((d.cutDepth ?? -1) >= 0) { e.depthSum += d.cutDepth!; e.depthN++; }
+          if (column && d.cutDepth >= 0) { e.depthSum += d.cutDepth; e.depthN++; }
           sim.totals.cutKinds.set(kind, e);
           if (kind === 'up-line') sim.totals.upLines++;
         }
-        if (prev?.kind === 'up-line' && kind === 'dump' && prev.state !== 'stack') {
-          sim.totals.upLineAborts++;
-        }
+        if (prev?.kind === 'up-line' && kind === 'dump') sim.totals.upLineAborts++;
         cutWas.set(it.id, { state: d.state, kind });
       }
 
@@ -1411,11 +1422,11 @@ async function main(): Promise<void> {
   /* ------------------------------------- who runs which cut, and from where */
   {
     const K = T.cutKinds;
-    const mean = (k: string): number => {
+    const mean = (k: CutKind): number => {
       const e = K.get(k);
       return e && e.depthN ? e.depthSum / e.depthN : NaN;
     };
-    const n = (k: string): number => K.get(k)?.n ?? 0;
+    const n = (k: CutKind): number => K.get(k)?.n ?? 0;
     const mix = [...K.entries()].sort((a, b) => b[1].n - a[1].n)
       .map(([k, e]) => `${k}:${e.n}${e.depthN ? `@${f2(e.depthSum / e.depthN)}` : ''}`).join(' ');
 

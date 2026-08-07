@@ -567,21 +567,17 @@ export class GameSystem implements System {
     //   `lead room`              95.592 X |  passes    better on ho
     //   directional select       84.0%    |  87.8%     BETTER on ho, n=156
     //
-    // THE SELECT ROW USED TO READ THE OTHER WAY and it was wrong. Ho was
-    // recorded as costing 8 points of stick agreement — 66.7% against 75% — and
-    // the floor in `tools/test-game.ts` was lowered to 0.62 to accept it. That
-    // number came from ONE seed's 18 samples. Pooled over ten seeds the same
-    // measurement runs 66.7 / 95.0 / 100 / 87.5 / 86.7 / 100 / 93.8 / 77.8 /
-    // 93.8 / 85.7, and ho beats vertical 87.8% to 84.0%. The floor is back at
-    // 0.75 and the assertion now pools four matches.
+    // THE SELECT ROW USED TO READ THE OTHER WAY and it was wrong: ho was
+    // recorded as costing 8 points of stick agreement, and the floor in
+    // `tools/test-game.ts` was lowered to 0.62 to accept a cost taken from ONE
+    // seed's 18 samples. The full per-seed spread and the openness figures live
+    // with the floor they justify — see the SELECT_AGREEMENT_FLOOR note there.
     //
-    // Which is what the open question in that note predicted: the human's team
-    // is vertical either way and the select only ever scores the thrower's own
-    // teammates, so team 1's offensive shape could not have been the cause. It
-    // was trajectory sampling. The disagreements that do happen are the lane
-    // term working — the man the stick pointed at had a mean openness of 0.137
-    // against 0.926 for the man chosen, which is a defender standing in the
-    // corridor.
+    // Worth keeping here is only why it could never have been causal: the
+    // human's team is vertical either way and the select only ever scores the
+    // thrower's own teammates, so team 1's OFFENSIVE shape is not an input to
+    // it. That was written down as the open question at the time, and it was
+    // the right question.
     this.ai = [
       createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
       createTeamAI(1, d1, r, { formation: 'horizontal', force: 'middle', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
