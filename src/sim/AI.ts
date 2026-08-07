@@ -725,6 +725,34 @@ export class TeamAI {
   private forceSide: Sign | null = null;
   private forceSeen = false;
 
+  /**
+   * A force CALLED BY A HUMAN, overriding whatever `force` was configured.
+   *
+   * Calling the force is the defensive captaincy of this sport — one decision
+   * that re-points all seven bodies — so when a person is on the field it has
+   * to be theirs to make, not a string in a config object they cannot reach.
+   *
+   * It is deliberately applied at the DEFENCE, and nowhere else. The offence
+   * already discovers the force the only way a real team can: `readForce`
+   * watches which side of the thrower the mark is actually standing on. So
+   * flipping this moves the marker's body, and the stack, the reset and the
+   * break side all re-orient off that — through the same path they would if an
+   * AI marker had moved. Nothing needs to be told.
+   */
+  private calledForce: Sign | null = null;
+
+  /** Call the force to a sideline, or pass null to hand it back to `force`. */
+  setCalledForce(side: Sign | null): void { this.calledForce = side; }
+  get called(): Sign | null { return this.calledForce; }
+
+  /**
+   * The open side this defence is actually playing, once the force — configured
+   * or called — has been resolved against the disc. Null before the first live
+   * defensive step. The human's mark assist needs it to know which side of the
+   * thrower "holding the force" means standing on.
+   */
+  get openSideOnD(): Sign | null { return this.forceSide; }
+
   /* defence */
   private scheme: 'person' | 'zone' = 'person';
   force: Force;
@@ -2445,8 +2473,8 @@ export class TeamAI {
     // A positional force is re-read from the disc every step and latched, so
     // "force middle" actually swaps sides when the disc crosses the field.
     const fx = thrower ? thrower.pos.x : disc.pos.x;
-    const openSign = openSideFor(this.force, odir, fx, this.forceSide);
-    const brk = breakSideFor(this.force, odir, fx, this.forceSide);
+    const openSign = this.calledForce ?? openSideFor(this.force, odir, fx, this.forceSide);
+    const brk = -openSign as Sign;
     this.forceSide = openSign;
 
     // ---- the mark: whoever is matched on the thrower, unless badly beaten.
@@ -2704,7 +2732,7 @@ export class TeamAI {
     const odir = -this.dir as AttackDir;
     const disc = world.disc;
     const thrower = disc.carrier != null ? this.byId.get(disc.carrier) ?? null : null;
-    const openSign = openSideFor(
+    const openSign = this.calledForce ?? openSideFor(
       this.force, odir, thrower ? thrower.pos.x : disc.pos.x, this.forceSide);
     this.forceSide = openSign;
 

@@ -396,6 +396,8 @@ group('determinism');
 import { InputBuffer } from '../src/input/Buffer.ts';
 import { makeIntent, resetIntent, type PlayerIntent } from '../src/input/Intent.ts';
 import { Locomotion } from '../src/sim/Locomotion.ts';
+import { markPoint, PLAY as PB } from '../src/sim/Playbook.ts';
+const PLAY_DISC_SPACE = PB.discSpace;
 
 const DEG = 180 / Math.PI;
 const norm = (x: number, z: number): { x: number; z: number } => {
@@ -815,6 +817,204 @@ group('aim assist is capped and quality-scaled (§2)');
   ok(zeroQ > 0 && zeroQ === Math.ceil(fired / 2), 'a zero-quality release gets no assist at all',
     `${zeroQ} of ${Math.ceil(fired / 2)}`);
   ge(fullQ, 1, 'a perfect release gets the full assist');
+}
+
+/**
+ * Driving a DEFENDER. The two jobs are different jobs, so they are two tests.
+ *
+ * `stick` is the raw left stick for the step; `mark` holds the assist. The run
+ * hunts for the requested context, takes control of whoever is in it, and then
+ * records what the body actually did — because every claim here is about a
+ * body moving, not about a flag being set.
+ */
+function defenceRun(seed: number, want: 'mark' | 'matchup', opts: {
+  seconds?: number; mark: boolean;
+  /** `geo` is last frame's mark geometry, so a test can push truly tangentially. */
+  stick: (t: number, geo: { ux: number; uz: number } | null) => { x: number; z: number };
+  flipForceAt?: number;
+}) {
+  const c = makeCtx(seed);
+  const g = new GameSystem();
+  const stub = new StubInput();
+  c.sys['game'] = g;
+  c.sys['input'] = stub;
+  g.init(c);
+
+  const samples: {
+    t: number; bearing: number; standoff: number; force: -1 | 1;
+    px: number; pz: number; tx: number; tz: number; ctx: string;
+    /** Signed angle off the mark point the force implies, radians. */
+    shade: number;
+  }[] = [];
+  let geo: { ux: number; uz: number } | null = null;
+  let force: -1 | 1 = 1;
+  let flipped = false;
+  let simT = 0;
+  const N = Math.round((opts.seconds ?? 90) / DT);
+
+  for (let i = 0; i < N; i++) {
+    simT = i * DT;
+    // Adopt whoever currently holds the context we are testing.
+    let held = g.defenceContext(g.controlledPlayerId) === want;
+    if (!held) {
+      for (const e of g.roster) {
+        if (g.defenceContext(e.id) === want) { g.controlledPlayerId = e.id; held = true; break; }
+      }
+    }
+    const it = stub.begin(g.controlledPlayerId, simT);
+    if (held) {
+      const s = opts.stick(simT, geo);
+      const mg = Math.hypot(s.x, s.z);
+      it.move.x = s.x; it.move.z = s.z; it.move.mag = Math.min(1, mg);
+      it.defence.markHeld = opts.mark;
+      if (opts.flipForceAt !== undefined && !flipped && simT >= opts.flipForceAt) {
+        force = (force === 1 ? -1 : 1); flipped = true;
+        it.defence.forceFlipped = true;
+      }
+    }
+    it.defence.force = force;
+
+    g.update(DT, c);
+    c.time += DT;
+
+    const ctx = g.defenceContext(g.controlledPlayerId);
+    const me = g.entry(g.controlledPlayerId);
+    const th = g.gs.thrower !== null ? g.entry(g.gs.thrower) : undefined;
+    if (ctx && me) {
+      const ref = want === 'mark' ? th : undefined;
+      const bearing = ref
+        ? Math.atan2(me.loco.pos.z - ref.loco.pos.z, me.loco.pos.x - ref.loco.pos.x) : NaN;
+      // Where the force says the mark should be, so the shade can be signed.
+      let shade = NaN;
+      const open = g.defenceOpenSide();
+      if (ref && open !== null) {
+        const mp = markPoint({ x: ref.loco.pos.x, z: ref.loco.pos.z },
+          g.gs.attackDir[ref.team], -open as 1 | -1);
+        const base = Math.atan2(mp.z - ref.loco.pos.z, mp.x - ref.loco.pos.x);
+        let dd = bearing - base;
+        while (dd > Math.PI) dd -= 2 * Math.PI;
+        while (dd < -Math.PI) dd += 2 * Math.PI;
+        shade = dd;
+        geo = { ux: Math.cos(base), uz: Math.sin(base) };
+      } else geo = null;
+      samples.push({
+        t: simT, ctx,
+        px: me.loco.pos.x, pz: me.loco.pos.z,
+        tx: ref?.loco.pos.x ?? NaN, tz: ref?.loco.pos.z ?? NaN,
+        bearing,
+        standoff: ref ? Math.hypot(me.loco.pos.x - ref.loco.pos.x, me.loco.pos.z - ref.loco.pos.z) : NaN,
+        force, shade,
+      });
+    } else geo = null;
+  }
+  return { game: g, samples };
+}
+
+group('driving a defender — the two contexts (§3)');
+{
+  // ---- on the disc: the stick orbits the thrower rather than walking at him.
+  const MARK_SEEDS = [4242, 7, 101, 31337];
+  // A push that is always TANGENTIAL to the mark circle. A world-fixed stick
+  // will not do: its tangential component flips sign as the base bearing swings
+  // round the field, so the mean shade averages to nothing and the test reads
+  // as "no effect" whatever the code does.
+  const marks = MARK_SEEDS.flatMap((sd) => defenceRun(sd, 'mark', {
+    mark: true, seconds: 90,
+    stick: (_t, g0) => (g0 ? { x: -g0.uz, z: g0.ux } : { x: 0, z: 0 }),
+  }).samples).filter((s) => s.ctx === 'mark' && Number.isFinite(s.standoff));
+  ge(marks.length, 200, 'the human actually held the mark for a while');
+
+  /**
+   * LEGALITY FIRST — but measured against what the sim can actually deliver,
+   * not against zero.
+   *
+   * A body arrives at its target carrying speed, and the thrower it is marking
+   * pivots into it. The AI's own marker is inside the disc-space radius on 3.6%
+   * of live frames (95,588 frames over five seeds, minimum 0.62 m), so "never"
+   * is not a bar this
+   * engine can clear and an assertion demanding it would only be measuring the
+   * pre-existing contact model. What the assist owes is that a HUMAN holding
+   * the mark is no more of a foul risk than the AI doing the same job, which is
+   * a claim about the assist rather than about the sim.
+   */
+  const AI_MARKER_FOUL_RATE = 0.036;
+  const tooClose = marks.filter((s) => s.standoff < PLAY_DISC_SPACE).length;
+  const rate = tooClose / marks.length;
+  ok(rate <= AI_MARKER_FOUL_RATE * 1.35,
+    'a held mark is no closer to a foul than the AI marker',
+    `${(100 * rate).toFixed(1)}% of ${marks.length} frames inside `
+    + `${PLAY_DISC_SPACE} m, against the AI's ${(100 * AI_MARKER_FOUL_RATE).toFixed(1)}%`);
+  const p95 = marks.map((s) => s.standoff).sort((a, b) => a - b)[Math.floor(marks.length * 0.95)];
+  ok(p95 <= 3.6, 'and stays within a marker\'s stand-off', `p95 ${p95.toFixed(2)} m`);
+
+  /**
+   * A HELD MARK HOLDS THE FORCE. With no stick at all the body sits on the
+   * break side of the thrower, because that is what the force is: the mark
+   * standing between him and the side you are taking away. This is also the
+   * only thing the offence can see — `readForce` reads the call off exactly
+   * this — so if it does not hold, the force is a label on a config object.
+   */
+  const held = MARK_SEEDS.flatMap((sd) => defenceRun(sd, 'mark', {
+    mark: true, seconds: 90, stick: () => ({ x: 0, z: 0 }),
+  }).samples).filter((s) => s.ctx === 'mark' && Number.isFinite(s.standoff));
+  ge(held.length, 200, 'the no-stick run held the mark');
+  const onForce = held.filter((s) => Math.sign(s.px - s.tx) === -s.force).length / held.length;
+  ge(onForce, 0.85, 'a held mark with no stick sits on the force side of the thrower');
+
+  /**
+   * AND THE STICK CHEATS IT. Leaning tangentially moves you off the force by a
+   * bounded amount — you can take the around away, and you give up the inside
+   * to do it. Bounded is the point: this is a shade, not a teleport to the
+   * other side of the man.
+   */
+  const meanShade = (rows: typeof marks): number => {
+    const v = rows.map((r) => r.shade).filter(Number.isFinite);
+    return v.reduce((a, b) => a + b, 0) / Math.max(1, v.length) * 180 / Math.PI;
+  };
+  const leanDeg = meanShade(marks);
+  const restDeg = meanShade(held);
+  ok(leanDeg > 10 && leanDeg < 75,
+    'a tangential stick shades the mark off the force, and only so far',
+    `${leanDeg.toFixed(1)} deg off the force`);
+  ok(Math.abs(restDeg) < 8, 'and with no stick it sits on the force, not beside it',
+    `${restDeg.toFixed(1)} deg off`);
+  const sweptDeg = leanDeg;
+
+  // ---- off the disc: press and cushion move you along the line to the disc.
+  const press = defenceRun(4242, 'matchup', {
+    mark: true, seconds: 120, stick: () => ({ x: 0, z: 0 }),
+  });
+  const guarding = press.samples.filter((s) => s.ctx === 'matchup');
+  ge(guarding.length, 200, 'and spent time guarding a cutter');
+
+  /**
+   * THE FORCE IS A TEAM-WIDE CALL, and that is the whole claim: one button on
+   * one body re-points all seven. The check is the marker's SIDE of the
+   * thrower, because that is the force made physical — and it is also the only
+   * thing the offence can see, since `readForce` discovers the call by watching
+   * exactly this.
+   */
+  const flip = defenceRun(4242, 'mark', {
+    mark: true, seconds: 150, stick: () => ({ x: 0, z: 0 }), flipForceAt: 60,
+  });
+  const sided = flip.samples.filter((s) => s.ctx === 'mark' && Number.isFinite(s.standoff));
+  const before = sided.filter((s) => s.t < 55);
+  const after = sided.filter((s) => s.t > 75);
+  const sideOf = (rows: typeof sided): number =>
+    rows.reduce((a, s) => a + Math.sign(s.px - s.tx), 0) / Math.max(1, rows.length);
+  ge(before.length, 50, 'the force test held the mark before the flip');
+  ge(after.length, 50, 'and after it');
+  const sBefore = sideOf(before), sAfter = sideOf(after);
+  ok(Math.sign(sBefore) !== Math.sign(sAfter) && Math.abs(sBefore - sAfter) > 0.5,
+    'flipping the force moves the mark to the other side of the thrower',
+    `mean side ${sBefore.toFixed(2)} -> ${sAfter.toFixed(2)}`);
+
+  console.log(`\x1b[2m  mark frames ${marks.length}`
+    + `  stick shade ${sweptDeg.toFixed(0)} deg`
+    + `  standoff p95 ${p95.toFixed(2)} m`
+    + `  inside disc space ${(100 * rate).toFixed(1)}% (AI ${(100 * AI_MARKER_FOUL_RATE).toFixed(1)}%)`
+    + `  on-force ${(100 * onForce).toFixed(0)}%  matchup frames ${guarding.length}`
+    + `  force side ${sBefore.toFixed(2)} -> ${sAfter.toFixed(2)}\x1b[0m`);
 }
 
 group('control handoff (§3)');

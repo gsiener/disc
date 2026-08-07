@@ -9,7 +9,7 @@ import {
   type GamePhase, type PlayerAction, type PlayerIntent as AIIntent, type TeamAI,
   type ThrowType as AIThrowType,
 } from './AI.ts';
-import { laneOf, type CutRoute, type LaneKey, type Sign } from './Playbook.ts';
+import { laneOf, markPoint, PLAY, type CutRoute, type LaneKey, type Sign } from './Playbook.ts';
 import { Locomotion, type DesiredMove, type LocoPlayer } from './Locomotion.ts';
 import { createGameState, GameState, type Phase } from './GameState.ts';
 import {
@@ -205,6 +205,23 @@ const IDLE_MOVE = 0.05;
  * the constraint. They are different quantities and should not be unified.
  */
 const PIVOT_R = 0.75;
+
+/**
+ * The held-mark assist, in the units the stick is resolved into.
+ *
+ * `MARK_MIN` is the disc-space rule plus room for momentum. A marker inside one
+ * metre of the thrower is a foul, and an assist that steers you into one is
+ * worse than no assist — but the target being legal is not enough on its own,
+ * because a body arrives at its target carrying speed. At `discSpace + 0.15`
+ * the assist spent 9.0% of held frames inside the radius against the AI
+ * marker's own 4.6%; the extra 30 cm is what absorbs the overshoot. `MARK_SWING` is how far around the thrower a
+ * full deflection carries you per second — about 100 degrees, which is a real
+ * marker's lateral shuffle rather than a teleport to the other side.
+ */
+const MARK_MIN = PLAY.discSpace + 0.45;
+const MARK_CLOSE = 0.5;
+const MARK_SWING = 0.95;
+const MARK_REACH = 0.4;
 
 const ARCHETYPES: readonly Archetype[] = [
   'handler', 'handler', 'handler', 'cutter', 'cutter', 'deep', 'utility',
@@ -724,6 +741,24 @@ export class GameSystem implements System {
     if (!hi) { this.humanIdle = 99; return; }
     if (hi.step !== this.humanStep) { this.humanStep = hi.step; this.humanIdle = 0; }
     else this.humanIdle += dt;
+
+    /**
+     * THE FORCE IS THE HUMAN'S CALL WHENEVER THEY ARE ON DEFENCE.
+     *
+     * Not only while they hold the mark: a force is called for the point, and
+     * it has to survive the disc changing hands, a switch, and the player
+     * picking a different body to drive. It is handed back to the configured
+     * force the moment they are on offence, so their own team's `force` setting
+     * still governs when nobody is calling anything.
+     *
+     * Everything downstream follows for free. The defence re-points because
+     * `personDefence` reads it; the OFFENCE re-points because `readForce`
+     * watches which side of the thrower the mark is standing on and re-orients
+     * the stack, the reset and the break side off that — the same path it would
+     * take if an AI marker had moved. There is no second wire to keep in sync.
+     */
+    const onDefence = this.gs.possession !== null && this.gs.possession !== this.humanTeam;
+    this.ai[this.humanTeam].setCalledForce(onDefence ? hi.defence.force : null);
   }
 
   /**
@@ -739,6 +774,142 @@ export class GameSystem implements System {
     return hi;
   }
 
+  /**
+   * WHICH DEFENDER AM I? The two jobs on defence are not the same job, and a
+   * control scheme that pretends they are gives you one set of verbs for both.
+   *
+   *   'mark'    — you are on the disc. There is a thrower, and you are the man
+   *               the defence has matched to him. Your job is the force and the
+   *               stall, and you are the only player on the field who can be
+   *               beaten by a pivot.
+   *   'matchup' — you are guarding a cutter somewhere else. Your job is a
+   *               cushion and a shade, and you are beaten by a change of pace.
+   *
+   * Returned as the context the controls switch on, and published for the HUD
+   * so the player can see which set of verbs they currently hold.
+   */
+  /**
+   * The open side the human's defence is playing, once the force — configured
+   * or called with `forceFlip` — has been resolved against the disc. Null when
+   * they are not on defence. The HUD draws the call from this, and it is the
+   * reference the mark assist shades around.
+   */
+  defenceOpenSide(): Sign | null {
+    if (this.gs.possession === null || this.gs.possession === this.humanTeam) return null;
+    return this.ai[this.humanTeam].openSideOnD;
+  }
+
+  defenceContext(id: number = this.controlledPlayerId): 'mark' | 'matchup' | null {
+    const e = this.byId.get(id);
+    if (!e || e.team !== this.humanTeam) return null;
+    if (this.gs.possession === null || this.gs.possession === e.team) return null;
+    const ai = this.ai[e.team];
+    if (this.gs.phase === 'LIVE_POSSESSION' && ai.marker === id) return 'mark';
+    return 'matchup';
+  }
+
+  /**
+   * The defensive positioning assist, held rather than toggled.
+   *
+   * Both branches return a POINT to steer at instead of consuming the stick as
+   * a raw direction, which is what makes the two contexts feel different from
+   * one control: on the disc the stick moves you around a man, off it the stick
+   * moves you relative to a man. Let go and you get the raw stick back — the
+   * assist never takes the body away from the player, it only changes what the
+   * stick means while it is held.
+   */
+  private defenceAssist(hi: HumanIntent, e: RosterEntry): { x: number; z: number } | null {
+    if (!hi.defence.markHeld) return null;
+    const ctx = this.defenceContext(e.id);
+    const m = hi.move;
+    const px = e.loco.pos.x, pz = e.loco.pos.z;
+
+    if (ctx === 'mark') {
+      const th = this.gs.thrower;
+      const t = th !== null ? this.byId.get(th) : undefined;
+      if (!t) return null;
+      /**
+       * You ORBIT him. The stick is resolved against the stand-off circle, not
+       * against the world: tangential input slides you around the thrower,
+       * radial input closes or opens the gap. That is both how a marker
+       * actually moves and the only way to hold a force with a stick — steered
+       * in a straight line at where you want to be, you walk through the
+       * thrower, the disc-space rule shoves you back out along the radius you
+       * came in on, and you never change sides at all. The AI marker already
+       * travels the circle for exactly this reason.
+       */
+      /**
+       * The BASE BEARING IS THE FORCE, not wherever you happen to be standing.
+       *
+       * Holding the mark has to mean holding the force — otherwise calling one
+       * re-points the other six defenders and leaves the body you are actually
+       * driving facing the old way, which is the one place the call is supposed
+       * to be most visible. So the assist anchors to the mark point the force
+       * implies and the stick shades around it, up to `MARK_SWING`. Let go and
+       * you are exactly on the force; lean on it and you cheat toward the
+       * around or the inside, and give up the other one to do it.
+       */
+      const odir = this.gs.attackDir[t.team];
+      const open = this.ai[e.team].openSideOnD ?? (1 as Sign);
+      const mp = markPoint({ x: t.loco.pos.x, z: t.loco.pos.z }, odir, -open as Sign);
+      const base = Math.atan2(mp.z - t.loco.pos.z, mp.x - t.loco.pos.x);
+      const ux = Math.cos(base), uz = Math.sin(base);
+      // Tangent, 90 degrees counter-clockwise of the outward radius.
+      const tx = -uz, tz = ux;
+      const radial = m.x * ux + m.z * uz;
+      const tangent = m.x * tx + m.z * tz;
+      /**
+       * The stand-off is ABSOLUTE, not relative to where you already are.
+       *
+       * Expressed as `r - radial * close` it is a ratchet: every frame subtracts
+       * from the CURRENT radius, so any sustained inward stick walks the target
+       * down until it pins against the floor and stays there. Measured, that
+       * put a held mark inside the disc-space radius on 9.9% of frames against
+       * the AI marker's 4.6%, and widening the floor did nothing because the
+       * ratchet just pinned to the wider floor.
+       *
+       * A marker does not choose his distance freely anyway — the stall radius
+       * and disc space leave about a metre of play in it. He chooses the ANGLE.
+       * So the stick shades a fixed stand-off rather than integrating into one.
+       */
+      // A marker cheating around stands a touch further off — he is reaching,
+      // not crowding — which is both what a real one does and what keeps a hard
+      // lean from being a foul the assist walked the player into.
+      const want = clampNum(
+        PLAY.markDistance + Math.abs(tangent) * MARK_REACH - radial * MARK_CLOSE,
+        MARK_MIN, PLAY.markMax - 0.15);
+      const a = base + tangent * MARK_SWING;
+      return { x: t.loco.pos.x + Math.cos(a) * want, z: t.loco.pos.z + Math.sin(a) * want };
+    }
+
+    if (ctx === 'matchup') {
+      const foe = this.ai[e.team].matchupOf(e.id);
+      const o = foe !== null ? this.byId.get(foe) : undefined;
+      if (!o) return null;
+      /**
+       * You SHADE him, along the line to the disc. Pushing toward the disc
+       * presses up and takes the under away at the cost of the deep; pushing
+       * away gives a cushion and protects the deep at the cost of the under.
+       * That single axis is the whole of off-disc positioning in this sport,
+       * and it is the trade a defender is actually making every second.
+       */
+      const dx = this.discRuntime.state.pos.x - o.loco.pos.x;
+      const dz = this.discRuntime.state.pos.z - o.loco.pos.z;
+      const dl = Math.hypot(dx, dz) || 1e-6;
+      const gx = dx / dl, gz = dz / dl;
+      const press = clampNum(m.x * gx + m.z * gz, -1, 1);
+      // Lateral stick still shades which side of him you stand on.
+      const lx = m.x - press * gx, lz = m.z - press * gz;
+      const t = (press + 1) * 0.5;
+      const gap = PLAY.deepCushion + (-PLAY.underGap - PLAY.deepCushion) * t;
+      return {
+        x: o.loco.pos.x - gx * gap + lx * PLAY.shadeOpen,
+        z: o.loco.pos.z - gz * gap + lz * PLAY.shadeOpen,
+      };
+    }
+    return null;
+  }
+
   /** Human intent -> the same `DesiredMove` the AI's intents become. */
   private humanDesired(hi: HumanIntent, e: RosterEntry): DesiredMove {
     const d = this.desired;
@@ -749,6 +920,22 @@ export class GameSystem implements System {
     d.effort = mag * (0.55 + 0.45 * m.sprint);
     d.maxSpeed = undefined;
     d.mode = m.sprint > 0.55 ? 'sprint' : mag > 0.65 ? 'run' : 'jog';
+    /**
+     * The held mark replaces the stick's meaning, not the player's control:
+     * steer at the point the assist chose, at an effort set by how far away it
+     * is, so holding the button parks you in position instead of vibrating
+     * across it. Facing stays on the man you are guarding — a defender watches
+     * the disc, not his own feet.
+     */
+    const assist = this.defenceAssist(hi, e);
+    if (assist) {
+      const ax = assist.x - e.loco.pos.x, az = assist.z - e.loco.pos.z;
+      const al = Math.hypot(ax, az);
+      d.dir = al > 1e-3 ? { x: ax / al, z: az / al } : null;
+      d.effort = clampNum(al * 0.9, 0, 1) * (0.62 + 0.38 * m.sprint);
+      d.mode = al > 3.5 ? 'sprint' : 'shuffle';
+      d.brake = al < 0.28;
+    }
     d.brake = m.brake > 0.5;
     d.jump = hi.defence.bid && !hi.defence.layout;
     d.layout = hi.defence.layout;
