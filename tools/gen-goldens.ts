@@ -29,6 +29,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { coeffGoldens } from './goldens/coeffs.ts';
+import { aiMathGoldens } from './goldens/aimath.ts';
 import { flightGoldens } from './goldens/flight.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
 import { locomotionGoldens } from './goldens/locomotion.ts';
@@ -60,6 +61,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'move.json': moveGoldens,
   'locomotion.json': locomotionGoldens,
   'playbook.json': playbookGoldens,
+  'aimath.json': aiMathGoldens,
 };
 
 console.log('goldens →');
