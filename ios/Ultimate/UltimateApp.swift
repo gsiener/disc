@@ -13,17 +13,32 @@ import SwiftUI
 /// to produce the same numbers on arm64-ios as it does on the Mac.
 @main
 struct UltimateApp: App {
+    /// Which tab to open on, so a headless run can reach a specific screen.
+    ///
+    /// `xcrun simctl launch` can pass arguments but cannot tap, and the on-device check
+    /// run is the property this port is staking itself on — a verification you can only
+    /// trigger with a finger is one that stops happening. So:
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -tab checks
+    ///
+    /// Defaults to the game, which is what a person opening the app wants.
+    @State private var tab: Int = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-tab"), i + 1 < args.count else { return 0 }
+        return ["play": 0, "pitch": 1, "flight": 2, "checks": 3][args[i + 1]] ?? 0
+    }()
+
     var body: some Scene {
         WindowGroup {
-            TabView {
+            TabView(selection: $tab) {
                 MatchView()
-                    .tabItem { Label("Play", systemImage: "figure.run") }
+                    .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView()
-                    .tabItem { Label("Pitch", systemImage: "sportscourt") }
+                    .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
                 FlightView()
-                    .tabItem { Label("Flight", systemImage: "arrow.up.right") }
+                    .tabItem { Label("Flight", systemImage: "arrow.up.right") }.tag(2)
                 SelfCheckView()
-                    .tabItem { Label("Checks", systemImage: "checkmark.seal") }
+                    .tabItem { Label("Checks", systemImage: "checkmark.seal") }.tag(3)
             }
             .preferredColorScheme(.dark)
         }
@@ -83,10 +98,16 @@ struct SelfCheckView: View {
     }
 
     private func suites(_ r: CheckReport) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        // `String.padding(toLength:)` TRUNCATES anything longer than the length, so a
+        // fixed 8 turned "gamestate" into "gamestat" and ran it into the number beside
+        // it. The column is derived from the longest name instead, and padding is only
+        // ever added — a report about correctness that garbles its own suite names is
+        // not one you would trust.
+        let width = (r.suites.map(\.name.count).max() ?? 0) + 2
+        return VStack(alignment: .leading, spacing: 2) {
             ForEach(r.suites, id: \.name) { s in
                 Text(
-                    "\(s.name.padding(toLength: 8, withPad: " ", startingAt: 0))"
+                    s.name + String(repeating: " ", count: Swift.max(1, width - s.name.count))
                         + "\(s.assertions) assertions  \(String(format: "%.3fs", s.seconds))"
                 )
                 .font(.system(.caption, design: .monospaced))
