@@ -27,7 +27,7 @@ public struct MatchView: View {
     /// only reachable by finger is something that stops being looked at.
     private let startFormat: FieldSpec
 
-    @State private var match: Match
+    @State private var match: Engine
     @State private var drag: DragState? = nil
     @State private var lastTick = Date()
 
@@ -60,7 +60,7 @@ public struct MatchView: View {
 
     public init(format: FieldSpec = .minis) {
         startFormat = format
-        _match = State(initialValue: Match(field: format))
+        _match = State(initialValue: Engine(format: format.gameFormat))
     }
 
     public var body: some View {
@@ -79,7 +79,7 @@ public struct MatchView: View {
                 // changes how many players there are, so the scene has to be rebuilt
                 // rather than synced — without this, switching to 7v7 leaves eight
                 // players with no body to move.
-                .id(match.field.teamSize)
+                .id(match.fieldSpec.teamSize)
 
                 // Darkened corners. Drawn over the render and under the HUD, so it pulls
                 // the eye to the middle of the pitch without ever dimming the score.
@@ -106,14 +106,14 @@ public struct MatchView: View {
     }
 
     private func recordTrail() {
-        guard case .flight = match.phase else {
+        guard match.discInFlight else {
             if !trail.isEmpty { trail.removeAll() }
             return
         }
         // Every other tick. Twenty-two beads at 60 Hz would be a quarter of a second of
         // flight, which reads as a smear on the disc rather than as a path it took.
         guard frame % 2 == 0 else { return }
-        let p = match.disc.pos
+        let p = match.disc.state.pos
         trail.append([Float(p.x), Float(p.y), Float(p.z)])
         if trail.count > PitchScene.trailLength { trail.removeFirst() }
     }
@@ -125,11 +125,10 @@ public struct MatchView: View {
             .onChanged { g in
                 guard match.holder != nil else { return }
                 drag = interpret(from: g.startLocation, to: g.location, in: size)
-                match.aiming = true
             }
             .onEnded { g in
                 guard match.holder != nil, let d = drag else { return }
-                match.release(d.type, aim: d.aim, power: d.power, loft: d.loft)
+                match.humanRelease(d.type, aim: d.aim, power: d.power, loft: d.loft)
                 drag = nil
             }
     }
@@ -149,7 +148,7 @@ public struct MatchView: View {
     // MARK: scene
 
     private func build(_ content: RealityViewCameraContent) {
-        let f = match.field
+        let f = match.fieldSpec
         content.add(PitchScene.decor(f))
 
         let players = Entity()
@@ -252,14 +251,14 @@ public struct MatchView: View {
     /// the way down the frame wherever play is, which is both readable and steadier to
     /// watch. It still does not move while you aim, because a held disc does not move.
     private func cameraTarget() -> (from: SIMD3<Float>, at: SIMD3<Float>) {
-        let f = match.field
+        let f = match.fieldSpec
         let dir = Float(match.attackDirection(of: 0))
         let length = Float(f.length)
-        let z = Float(match.disc.pos.z)
+        let z = Float(match.disc.state.pos.z)
         // Lateral follow is deliberately partial. Full tracking centres the disc and
         // slides the pitch across the screen every time somebody runs to a sideline,
         // which reads as the world moving rather than the camera.
-        let lateral = Float(match.disc.pos.x) * 0.25
+        let lateral = Float(match.disc.state.pos.x) * 0.25
         return (
             from: [lateral, length * 0.26, z - dir * length * 0.44],
             at: [lateral, 1.2, z + dir * length * 0.27]
@@ -272,9 +271,10 @@ public struct MatchView: View {
     /// would mean re-integrating the flight here, and a second copy of the flight model
     /// in the renderer is exactly the thing this project refuses to have.
     private var incomingReceiver: Int? {
-        guard case .flight(let thrower) = match.phase else { return nil }
-        let team = match.players[thrower].team
-        let d = match.disc.pos
+        guard let thrower = match.thrower,
+            let team = match.players.first(where: { $0.id == thrower })?.team
+        else { return nil }
+        let d = match.disc.state.pos
         return match.players.indices
             .filter { match.players[$0].team == team && $0 != thrower }
             .min {
@@ -300,7 +300,7 @@ public struct MatchView: View {
                 let facing =
                     p.vel.lengthSq > 0.04
                     ? p.vel
-                    : Vec3d(match.disc.pos.x - p.pos.x, 0, match.disc.pos.z - p.pos.z)
+                    : Vec3d(match.disc.state.pos.x - p.pos.x, 0, match.disc.state.pos.z - p.pos.z)
                 if facing.lengthSq > 1e-6 {
                     let yaw = Foundation.atan2(facing.x, facing.z)
                     // Lean into the run. Purely cosmetic and bounded at about ten
@@ -332,7 +332,7 @@ public struct MatchView: View {
         }
 
         if let disc = named["disc"] {
-            let d = match.disc
+            let d = match.disc.state
             // A held disc sits at the holder's own position, which puts it inside their
             // torso and therefore invisible — you could not tell who had it. Offset it to
             // an extended arm for display only; the sim's position is untouched, so
@@ -356,16 +356,16 @@ public struct MatchView: View {
         }
 
         if let mark = named["discMark"] as? ModelEntity {
-            mark.position = [Float(match.disc.pos.x), 0.024, Float(match.disc.pos.z)]
-            let alpha = Swift.max(0.06, 0.4 - Float(match.disc.pos.y) * 0.03)
+            mark.position = [Float(match.disc.state.pos.x), 0.024, Float(match.disc.state.pos.z)]
+            let alpha = Swift.max(0.06, 0.4 - Float(match.disc.state.pos.y) * 0.03)
             mark.model?.materials = [PitchScene.groundMarkMaterial(alpha)]
         }
 
         if let post = named["post"] {
-            let inFlight: Bool = { if case .flight = match.phase { return true }; return false }()
-            let h = Float(match.disc.pos.y)
+            let inFlight = match.discInFlight
+            let h = Float(match.disc.state.pos.y)
             post.isEnabled = inFlight && h > 0.6
-            post.position = [Float(match.disc.pos.x), h / 2, Float(match.disc.pos.z)]
+            post.position = [Float(match.disc.state.pos.x), h / 2, Float(match.disc.state.pos.z)]
             post.scale = [1, Swift.max(h, 0.001), 1]
         }
 
@@ -413,7 +413,7 @@ public struct MatchView: View {
             var at = focus.position
             // Ease, except when the whole view is supposed to change — a turnover that
             // swaps ends should cut, not sweep the camera the length of the pitch.
-            if simd_distance(from, want.from) > Float(match.field.length) * 0.35 {
+            if simd_distance(from, want.from) > Float(match.fieldSpec.length) * 0.35 {
                 from = want.from
                 at = want.at
             } else {
@@ -459,12 +459,12 @@ public struct MatchView: View {
             if match.holder != nil {
                 Text("STALL \(Int(match.stall))")
                     .foregroundStyle(match.stall > 6 ? .orange : .white.opacity(0.7))
-            } else if case .scored(let team) = match.phase {
+            } else if let team = match.justScored {
                 Text(team == 0 ? "GOAL" : "THEIR POINT")
                     .foregroundStyle(team == 0 ? .green : .orange)
             }
 
-            Text("first to \(match.field.target)")
+            Text("first to \(match.fieldSpec.target)")
                 .foregroundStyle(.white.opacity(0.4))
 
             // Both formats, because both were asked for. Switching restarts the match
@@ -472,8 +472,8 @@ public struct MatchView: View {
             // towards an endzone that just moved is not a thing worth defining.
             ForEach([FieldSpec.minis, FieldSpec.full], id: \.teamSize) { spec in
                 Button {
-                    guard spec.teamSize != match.field.teamSize else { return }
-                    match = Match(field: spec)
+                    guard spec.teamSize != match.fieldSpec.teamSize else { return }
+                    match = Engine(format: spec.gameFormat)
                     drag = nil
                     trail.removeAll()
                 } label: {
@@ -483,10 +483,10 @@ public struct MatchView: View {
                         .background(
                             RoundedRectangle(cornerRadius: 5)
                                 .fill(
-                                    spec.teamSize == match.field.teamSize
+                                    spec.teamSize == match.fieldSpec.teamSize
                                         ? Color.orange : Color.white.opacity(0.12)))
                         .foregroundStyle(
-                            spec.teamSize == match.field.teamSize ? .black : .white.opacity(0.7))
+                            spec.teamSize == match.fieldSpec.teamSize ? .black : .white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
             }
@@ -509,7 +509,7 @@ public struct MatchView: View {
 
     /// The one thing worth interrupting the pitch for.
     @ViewBuilder private var callout: some View {
-        if case .scored(let team) = match.phase {
+        if let team = match.justScored {
             VStack(spacing: 3) {
                 Text(team == 0 ? "GOAL" : "THEIR POINT")
                     .font(.system(size: 30, weight: .heavy, design: .monospaced))

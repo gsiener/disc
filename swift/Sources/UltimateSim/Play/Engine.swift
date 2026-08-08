@@ -57,10 +57,22 @@ public final class Engine {
     public private(set) var controlled = 0
     public private(set) var stats = MatchStats()
 
+    /// The rule set. `stallMax` is the only part currently enforced here — the rest
+    /// arrives when `GameState` is wired in, which is the next job.
+    public let rules: RuleSet = DEFAULT_RULES
+
     private let rng: Rng
     private var records: [WorldPlayerRecord] = []
-    /// Set for one tick after a goal, so the view can react before the reset.
+    /// The team that just scored, held for `scoreFlash` seconds so a callout can be read.
+    ///
+    /// It was cleared on the very next tick, which is correct as a signal and useless as
+    /// something to draw: the GOAL banner would have existed for one frame at 120 Hz.
+    /// The flag outlives the event on purpose, and the deadline is in sim time so it
+    /// survives a replay at a different frame rate.
     public private(set) var justScored: TeamId?
+    private var scoreFlashUntil = -1.0
+    /// How long the goal callout stays up, seconds.
+    public static let scoreFlash = 2.5
 
     public var isOver: Bool { score[0] >= target || score[1] >= target }
 
@@ -152,6 +164,29 @@ public final class Engine {
 
     public func dirFor(_ team: TeamId) -> Dir { team == 0 ? attackDir : -attackDir }
 
+    /// The pitch in the view layer's vocabulary.
+    ///
+    /// `GameFormat` is the sim's spelling — a `FieldConstants` plus a roster size — and
+    /// `FieldSpec` is the renderer's, which also carries the target score because a
+    /// scoreboard needs it. They describe the same rectangle. This bridges rather than
+    /// unifying them, deliberately: the sim's version is what 3,098 gamestate assertions
+    /// are written against, and the renderer's is what `PitchScene` builds geometry from.
+    /// Collapsing them would mean editing one to suit the other, and the sim is not the
+    /// one that should move.
+    public var fieldSpec: FieldSpec {
+        FieldSpec(
+            length: format.field.length,
+            width: format.field.width,
+            endzoneDepth: format.field.endzoneDepth,
+            teamSize: format.playersPerSide,
+            target: target)
+    }
+
+    /// Whoever is holding, under the name the view already used.
+    public var holder: Int? { carrier }
+
+    public func attackDirection(of team: TeamId) -> Double { Double(dirFor(team)) }
+
     /// The AI's rating sheet as the name-keyed bag `fromAIAttributes` expects.
     ///
     /// The reference passes one duck-typed object between the two models, so the bridge
@@ -182,7 +217,7 @@ public final class Engine {
         guard !isOver else { return }
         clock += dt
         possessionTime += dt
-        justScored = nil
+        if justScored != nil, clock > scoreFlashUntil { justScored = nil }
 
         let world = buildWorld(dt: dt)
 
@@ -220,7 +255,20 @@ public final class Engine {
             break  // one disc
         }
 
-        // 5. The disc.
+        // 5. The count. A possession that never ends is not a rules edge case, it is the
+        //    game hanging: the first build of this file had no stall at all, and a
+        //    handler the human was not throwing for stood holding the disc past thirteen
+        //    seconds while the count on screen kept climbing.
+        //
+        //    `stallMax` comes from the rule set rather than a literal, because it is a
+        //    rule and because minis may well want a shorter one on a pitch a third the
+        //    size — that is a tuning decision with somewhere to live.
+        if carrier != nil, possessionTime >= Double(rules.stallMax) {
+            stats.stalled += 1
+            stalled()
+        }
+
+        // 6. The disc.
         stepDisc(dt: dt)
     }
 
@@ -398,6 +446,7 @@ public final class Engine {
             let scorer = p.team
             if !isOver { reset(receiving: scorer == 0 ? 1 : 0) }
             justScored = scorer
+            scoreFlashUntil = clock + Engine.scoreFlash
             return
         }
         stats.completions += 1
@@ -417,6 +466,14 @@ public final class Engine {
         if let p = players.first(where: { $0.id == id }) {
             disc.hold(id, Vec3d(p.pos.x, 1.1, p.pos.z), Vec3d(0, 1, 0))
         }
+    }
+
+    /// The count ran out. The disc goes over on the spot, which is where the thrower is.
+    private func stalled() {
+        guard let c = carrier, let p = players.first(where: { $0.id == c }) else { return }
+        let taking: TeamId = p.team == 0 ? 1 : 0
+        let taker = nearestOnTeam(taking, to: p.pos)
+        possess(taker, team: taking)
     }
 
     private func turnover(at spot: Vec3d) {
@@ -461,6 +518,39 @@ public final class Engine {
         return true
     }
 
+    /// Is the disc in the air right now?
+    ///
+    /// The interim engine spelled this as a `PlayPhase.flight(by:)` case carrying the
+    /// thrower. Here `GamePhase` is the ported vocabulary — setup, pull, live, dead —
+    /// which is about the *point*, not the disc, so "in flight" is a question about the
+    /// disc and is answered from the disc.
+    public var discInFlight: Bool { carrier == nil && !disc.state.atRest }
+
+    /// Who threw the disc that is currently in the air, if one is.
+    public var thrower: Int? { discInFlight ? thrownBy : nil }
+
     /// Seconds the current holder has had it, which is what a stall count reads.
     public var stall: Double { carrier == nil ? 0 : possessionTime }
+}
+
+extension FieldSpec {
+    /// The same pitch in the sim's vocabulary. The inverse of `Engine.fieldSpec`.
+    ///
+    /// The view picks a format from a button and the sim needs a `GameFormat`; this is
+    /// that one conversion, in one place, rather than each caller rebuilding it from
+    /// remembered numbers.
+    public var gameFormat: GameFormat {
+        GameFormat(
+            field: FieldConstants(
+                length: length,
+                width: width,
+                endzoneDepth: endzoneDepth,
+                centralLength: length - 2 * endzoneDepth,
+                goalLine: (length - 2 * endzoneDepth) / 2,
+                endLine: length / 2,
+                sideline: width / 2,
+                brickIn: endzoneDepth,
+                brickZ: (length - 2 * endzoneDepth) / 2 - endzoneDepth),
+            playersPerSide: teamSize)
+    }
 }

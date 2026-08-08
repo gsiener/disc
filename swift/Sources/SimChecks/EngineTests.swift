@@ -25,6 +25,7 @@ enum EngineTests {
         playsWithoutBlowingUp()
         scoreOnlyMovesOnGoals()
         theHumanCannotThrowADiscTheyDoNotHave()
+        theCountRunsOut()
         deterministic()
     }
 
@@ -144,6 +145,40 @@ enum EngineTests {
                 !e.humanRelease(.backhand, aim: Vec3d(0, 0, 1), power: 0.6),
                 "a player who is not holding cannot throw")
         }
+    }
+
+    /// A possession the human never throws must end on the count.
+    ///
+    /// The first build of `Engine` had no stall at all. With the computer switched off
+    /// for team 0, its handler simply stood there and the count on screen climbed past
+    /// thirteen — which is not a rules edge case, it is the game hanging. Nothing in the
+    /// suite noticed, because both other tests automate both teams and the AI throws long
+    /// before the count matters.
+    private static func theCountRunsOut() {
+        let e = Engine(format: .minis, seed: 17)
+        // Nobody throws: not the computer, and no human input either.
+        e.autoTeams = []
+
+        for _ in 0..<60 { e.step(dt: 1.0 / 120) }
+        guard let first = e.carrier else {
+            Check.ok(false, "somebody is holding to start with")
+            return
+        }
+        let firstTeam = e.players.first { $0.id == first }?.team
+
+        // Run past the count with a margin.
+        for _ in 0..<Int(120 * (Double(e.rules.stallMax) + 2)) { e.step(dt: 1.0 / 120) }
+
+        Check.ok(e.stats.stalled > 0, "the count ran out at least once (\(e.stats.stalled))")
+        Check.ok(
+            e.stall <= Double(e.rules.stallMax),
+            "the count never exceeds stallMax (reached \(e.stall))")
+        let nowTeam = e.carrier.flatMap { id in e.players.first { $0.id == id }?.team }
+        Check.ok(
+            nowTeam != nil, "somebody still has the disc after the turnover")
+        Check.ok(
+            nowTeam != firstTeam,
+            "a stall-out hands the disc to the other team")
     }
 
     /// One seed, one match — the property the whole project is built on.
