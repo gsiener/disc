@@ -87,28 +87,27 @@ public let THROW_SPECS: [ThrowType: ThrowSpec] = [
     ),
 ]
 
-/// Local to this file. `Move/Attributes.swift` exports a public `clamp01` with the same
-/// behaviour; the duplicate is worth collapsing into `SimMath` once the movement port
-/// has settled, but renaming here keeps the two ports from colliding mid-flight.
-@inline(__always)
-private func clampUnit(_ v: Double) -> Double { v < 0 ? 0 : (v > 1 ? 1 : v) }
+// The reference writes the `[0,1]` clamp out longhand in each of these three functions
+// and also exports it as `clamp01` from `move/Attributes.ts`. Swift has one namespace
+// per module, so here they are the same function — see `Move/Attributes.swift`. The
+// ternary is identical, so this is a naming change and not a numeric one.
 
 /// Release speed in m/s for a normalised power in [0,1].
 public func throwSpeed(_ type: ThrowType, _ power: Double) -> Double {
     let s = THROW_SPECS[type]!.speed
-    return s.0 + (s.1 - s.0) * clampUnit(power)
+    return s.0 + (s.1 - s.0) * clamp01(power)
 }
 
 /// Normalised power in [0,1] that produces `speed` m/s. Inverse of `throwSpeed`.
 public func powerForSpeed(_ type: ThrowType, _ speed: Double) -> Double {
     let s = THROW_SPECS[type]!.speed
-    return clampUnit((speed - s.0) / (s.1 - s.0))
+    return clamp01((speed - s.0) / (s.1 - s.0))
 }
 
 /// Unsigned spin rate in rad/s for a normalised spin in [0,1].
 public func throwSpinRate(_ type: ThrowType, _ spin: Double) -> Double {
     let s = THROW_SPECS[type]!.spin
-    return s.0 + (s.1 - s.0) * clampUnit(spin)
+    return s.0 + (s.1 - s.0) * clamp01(spin)
 }
 
 // MARK: - building a release state
