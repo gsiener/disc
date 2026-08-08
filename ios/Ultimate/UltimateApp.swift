@@ -1,3 +1,4 @@
+import FlightUI
 import SimChecks
 import SwiftUI
 
@@ -17,6 +18,11 @@ struct UltimateApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
+                // The 3D pitch is the headline view; the 2D plots stay because they are
+                // a better tuning surface, and the self-check because the whole port
+                // rests on it agreeing with the reference on device.
+                PitchView()
+                    .tabItem { Label("Pitch", systemImage: "sportscourt") }
                 FlightView()
                     .tabItem { Label("Flight", systemImage: "arrow.up.right") }
                 SelfCheckView()

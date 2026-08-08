@@ -32,6 +32,13 @@ struct FlightScopeApp: App {
     }
 
     var body: some Scene {
+        WindowGroup("Ultimate · pitch") {
+            PitchView()
+                .frame(minWidth: 900, minHeight: 520)
+                .preferredColorScheme(.dark)
+        }
+        .defaultSize(width: 1280, height: 720)
+
         WindowGroup("Ultimate · flight") {
             FlightView()
                 .frame(minWidth: 900, minHeight: 520)

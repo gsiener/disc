@@ -18,7 +18,7 @@ import PackageDescription
 //   swift run SimTests rng        — one suite
 let package = Package(
     name: "UltimateSim",
-    platforms: [.iOS(.v18), .macOS(.v14)],
+    platforms: [.iOS(.v18), .macOS(.v15)],
     products: [
         .library(name: "UltimateSim", targets: ["UltimateSim"]),
         .library(name: "SimChecks", targets: ["SimChecks"]),
