@@ -16,8 +16,13 @@ import SwiftUI
 struct UltimateApp: App {
     var body: some Scene {
         WindowGroup {
-            SelfCheckView()
-                .preferredColorScheme(.dark)
+            TabView {
+                FlightView()
+                    .tabItem { Label("Flight", systemImage: "arrow.up.right") }
+                SelfCheckView()
+                    .tabItem { Label("Checks", systemImage: "checkmark.seal") }
+            }
+            .preferredColorScheme(.dark)
         }
     }
 }
