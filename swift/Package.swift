@@ -42,7 +42,11 @@ let package = Package(
         // The flight view, shared by the iOS app and the macOS window so there is one
         // implementation and not two that drift. `FlightUI` imports SwiftUI but nothing
         // platform-specific; `UltimateSim` stays clean of both.
-        .target(name: "FlightUI", dependencies: ["UltimateSim"]),
+        // Depends on `SimChecks` as well as the sim, because `BenchView` draws a
+        // `BenchReport` and the self-check screen draws a `CheckReport`. Both are
+        // *returned* rather than printed precisely so a view can render them — see the
+        // note at the top of `Harness.swift`.
+        .target(name: "FlightUI", dependencies: ["UltimateSim", "SimChecks"]),
         .executableTarget(name: "FlightScope", dependencies: ["FlightUI"]),
     ]
 )
