@@ -2,10 +2,16 @@ import Foundation
 
 /// The real game: ported AI, ported locomotion, ported disc runtime, wired together.
 ///
-/// **This is what `Play/Match.swift` was standing in for.** That file said in its own doc
-/// comment that it was written to be deleted — its cutting, its marking, its `BID_EDGE`
-/// and `DEFENDER_LAG` were inventions, made up to get a thumb onto a playable possession
-/// before `AI.ts` and `Locomotion.ts` existed. They exist now, so this replaces them.
+/// **This replaced `Play/Match.swift`, which has been deleted.** That file said in its own
+/// doc comment that it was written to be deleted: its cutting, its marking and its
+/// `DEFENDER_LAG` were inventions, made up to get a thumb onto a playable possession
+/// before `AI.ts` and `Locomotion.ts` existed. They exist now. Its history is in git,
+/// which is the only archive a deleted file needs.
+///
+/// One piece of it survives in `PlayTypes.swift` and is worth naming: `BID_EDGE`, the
+/// margin by which a defender must beat a receiver to the disc. That was predicted to go
+/// away with the AI port and did not, because the ported AI decides *where* a throw goes
+/// rather than who wins the disc when it arrives.
 ///
 /// The reference's equivalent is `src/sim/Game.ts`, which is **not** a port target: it
 /// imports three.js, the engine's `Ctx`/`System` types and the web input layer, and is

@@ -183,10 +183,11 @@ enum EngineTests {
 
     /// One seed, one match — the property the whole project is built on.
     ///
-    /// This reaches further than `MatchTests`' version, because the interim engine drew
-    /// from the RNG exactly once (a throw-type coin flip) while this one draws a whole
-    /// roster and forks two independent AI streams. If the fork salt or the roster draw
-    /// order ever changes, this fails.
+    /// The seed reaches much further here than it did in the interim engine, which drew
+    /// from the RNG exactly once — a throw-type coin flip — so that two seeds could
+    /// produce a bit-identical match. This one deals a whole roster from the seed and
+    /// forks an independent stream per `TeamAI`, so two seeds diverge from the opening
+    /// tick. If the fork salt or the roster draw order ever changes, this fails.
     private static func deterministic() {
         func play(_ seed: UInt32) -> [Double] {
             let e = Engine(format: .minis, seed: seed)

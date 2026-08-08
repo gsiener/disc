@@ -3,7 +3,7 @@ import Foundation
 /// Recording a match as a seed plus a list of inputs, and playing it back exactly.
 ///
 /// The whole project is arranged so that this file can be short. The RNG is a bit-exact
-/// port, nothing is compiled with fast-math, and `Match` reads no clock — so the states
+/// port, nothing is compiled with fast-math, and `Engine` reads no clock — so the states
 /// of a match are a pure function of `(field, seed, autoTeams, the inputs, the tick
 /// sequence)`. A recording is therefore those five things and nothing else. It is not a
 /// state dump: thirty seconds of 3v3 is a few hundred bytes here and about a quarter of
@@ -19,12 +19,14 @@ import Foundation
 /// This is the design decision the rest of the file exists to serve, and it is the one
 /// that decides whether a replay made on a Mac plays back on a phone.
 ///
-/// `Match.step(dt:)` is **not associative in `dt`**. `step(0.02)` is not `step(0.01)`
-/// twice: the steering blend is `min(1, dt * 6.5)`, the cut timing is
-/// `sin(phaseTime * 0.9 + i)`, the stall accumulates in whole `dt`s, and the flight
-/// resolution samples the disc once per call. So the sequence of `dt`s is part of the
-/// simulation's input, exactly like the seed is. Anything that changes it changes the
-/// match.
+/// `Engine.step(dt:)` is **not associative in `dt`**. `step(0.02)` is not `step(0.01)`
+/// twice: `Locomotion` integrates each body once per call and decays its gait with
+/// `exp(-k * dt)`, `TeamAI` decides once per call from a world stamped with the
+/// accumulated clock, the stall accumulates in whole `dt`s, and the disc is sampled for a
+/// catch once per call. `Locomotion.step` even clamps a `dt` above 1/30 outright, so a
+/// long step is not merely a coarse approximation of several short ones — it is a
+/// different simulation. The sequence of `dt`s is therefore part of the input, exactly
+/// like the seed is. Anything that changes it changes the match.
 ///
 /// A display-paced loop hands the simulation whatever the wall clock last measured —
 /// 16.7 ms, then 15.9, then 48 because a notification arrived. Those numbers are not
@@ -299,24 +301,40 @@ public struct FixedClock: Equatable, Sendable {
 /// Applies one recorded input to a match.
 ///
 /// Shared by the recorder and the player, because two copies of this is exactly how a
-/// replay system starts lying. `Match.release` is itself a no-op unless someone is
-/// holding the disc, so an input that arrives at an impossible moment is dropped
-/// identically on both paths.
-func applyReplayInput(_ input: ReplayInput, to match: Match) {
+/// replay system starts lying. `Engine.humanRelease` refuses unless the controlled player
+/// is actually holding the disc, so an input that arrives at an impossible moment is
+/// dropped identically on both paths.
+func applyReplayInput(_ input: ReplayInput, to match: Engine) {
     switch input {
     case .drag(let dx, let dy, let shortEdge):
         let gesture = ThrowGesture.interpret(dx: dx, dy: dy, shortEdge: shortEdge)
-        // The human is always on team 0 — `Match.controlled` is documented that way — so
+        // The human is always on team 0 — `Engine.controlled` is documented that way — so
         // the aim frame is team 0's attacking direction, exactly as the view computes it.
         let aim = ThrowGesture.aim(dx: dx, dy: dy, attackDir: match.attackDirection(of: 0))
-        match.release(gesture.type, aim: aim, power: gesture.power, loft: gesture.loft)
+        match.humanRelease(gesture.type, aim: aim, power: gesture.power, loft: gesture.loft)
 
     case .release(let type, let ax, let ay, let az, let power, let loft):
         // Validation resolved this already; a recording that reached here with a bad name
         // is one nobody validated, and dropping the throw beats trapping in a game.
         guard let throwType = ThrowType(rawValue: type) else { return }
-        match.release(throwType, aim: Vec3d(ax, ay, az), power: power, loft: loft)
+        match.humanRelease(throwType, aim: Vec3d(ax, ay, az), power: power, loft: loft)
     }
+}
+
+// MARK: - building the match a recording describes
+
+/// The engine a pitch and a seed name.
+///
+/// One function rather than two call sites, because the recorder and the player must
+/// build *the same* match from the same numbers — an engine constructed even slightly
+/// differently at playback would diverge on tick zero and the blame would land on the
+/// simulation.
+///
+/// `target` is passed through rather than left to `Engine`'s own default. The two agree
+/// for both shipped formats, but a recording stores its target, and a stored number the
+/// replay path ignores is a lie in the file format rather than a redundancy.
+public func engineForRecording(_ spec: FieldSpec, seed: UInt32) -> Engine {
+    Engine(format: spec.gameFormat, target: spec.target, seed: seed)
 }
 
 // MARK: - recording
@@ -327,7 +345,7 @@ func applyReplayInput(_ input: ReplayInput, to match: Match) {
 /// else was stepping could not know what tick an input landed on, because it would not
 /// know the step size — and the step size is the thing that has to be pinned.
 public final class MatchRecorder {
-    public let match: Match
+    public let match: Engine
     /// Ticks executed so far. Also the stamp the next input receives.
     public private(set) var tickCount = 0
 
@@ -339,11 +357,11 @@ public final class MatchRecorder {
         field: FieldSpec = .minis,
         seed: UInt32 = 0x5eed_c0de,
         tickHz: Int = 120,
-        autoTeams: Set<Int> = [1]
+        autoTeams: Set<TeamId> = [1]
     ) {
         self.seed = seed
         self.clock = FixedClock(tickHz: tickHz)
-        self.match = Match(field: field, seed: seed)
+        self.match = engineForRecording(field, seed: seed)
         self.match.autoTeams = autoTeams
     }
 
@@ -386,7 +404,7 @@ public final class MatchRecorder {
         let lastInput = inputs.map(\.tick).max().map { $0 + 1 } ?? 0
         return Recording(
             seed: seed,
-            field: RecordedField(match.field),
+            field: RecordedField(match.fieldSpec),
             tickHz: clock.tickHz,
             autoTeams: match.autoTeams.sorted(),
             durationTicks: Swift.max(tickCount, lastInput),
@@ -403,7 +421,7 @@ public final class MatchRecorder {
 /// Wall clock affects only how quickly the ticks are handed over, never what they are.
 public final class ReplayPlayer {
     public let recording: Recording
-    public let match: Match
+    public let match: Engine
     /// Ticks executed. Reaches exactly `recording.durationTicks` and stops.
     public private(set) var tick = 0
 
@@ -418,7 +436,7 @@ public final class ReplayPlayer {
         self.recording = recording
         self.script = recording.ordered
         self.clock = FixedClock(tickHz: recording.tickHz)
-        self.match = Match(field: recording.field.spec, seed: recording.seed)
+        self.match = engineForRecording(recording.field.spec, seed: recording.seed)
         self.match.autoTeams = Set(recording.autoTeams)
         // Inputs stamped before the first tick are consumed by tick 0, not dropped.
         // `validate` has already rejected negative stamps.
@@ -454,7 +472,7 @@ public final class ReplayPlayer {
     }
 
     /// Replay a whole recording and hand back the match it produced.
-    public static func play(_ recording: Recording) throws -> Match {
+    public static func play(_ recording: Recording) throws -> Engine {
         let player = try ReplayPlayer(recording)
         player.runToEnd()
         return player.match
@@ -470,25 +488,37 @@ public final class ReplayPlayer {
 /// difference matters. Reals are compared by **bit pattern**, never by `==`: `==` says a
 /// negative zero equals a positive one and says a NaN equals nothing at all, so a
 /// divergence into either would pass a naive comparison. Discrete state — score, phase,
-/// who is marking whom — is exact by construction, and any difference at all is a bug.
+/// who is holding — is exact by construction, and any difference at all is a bug.
+///
+/// The player rows are `Engine`'s `AIPlayer`s in roster order, which is the order they
+/// were created in and never resorted. `energy` is in here with the positions rather than
+/// treated as bookkeeping: it is the one player quantity that accumulates across the whole
+/// match, so it is also the one that would expose a slow drift the positions recover from.
+///
+/// The disc is flattened from `DiscRuntime.state` — the integrated flight, which is what
+/// the physics reads and writes. The runtime's other fields are deliberately left out:
+/// `trail`, `wear` and `pendingScuff` exist for the renderer, and `mode`, `holderId` and
+/// `lastThrowTeam` follow from `carrier` and the hold/release calls that are already
+/// pinned here. Snapshotting a derived value adds a component that can only fail
+/// alongside one already covered.
 public struct MatchSnapshot: Sendable {
     public let teamSize: Int
     public let reals: [Double]
     public let discrete: [Int]
 
-    public init(_ m: Match) {
-        teamSize = m.field.teamSize
+    public init(_ m: Engine) {
+        teamSize = m.fieldSpec.teamSize
 
         var r: [Double] = []
-        r.reserveCapacity(m.players.count * 9 + 21)
+        r.reserveCapacity(m.players.count * 7 + 21)
         for p in m.players {
             r.append(contentsOf: [
                 p.pos.x, p.pos.y, p.pos.z,
                 p.vel.x, p.vel.y, p.vel.z,
-                p.target.x, p.target.y, p.target.z,
+                p.energy,
             ])
         }
-        let d = m.disc
+        let d = m.disc.state
         r.append(contentsOf: [
             d.pos.x, d.pos.y, d.pos.z,
             d.vel.x, d.vel.y, d.vel.z,
@@ -496,19 +526,25 @@ public struct MatchSnapshot: Sendable {
             d.omega.x, d.omega.y, d.omega.z,
             d.groundY, d.t, d.spin, d.alpha, d.airspeed,
         ])
-        r.append(contentsOf: [m.phaseTime, m.stall, m.attackDir])
+        // `possessionTime` and `stall` are not the same number: `stall` reads zero while
+        // the disc is in the air, and `possessionTime` keeps running. Both are recorded,
+        // because a replay that diverged only in the flight clock would otherwise show up
+        // several ticks later as a mystery.
+        r.append(contentsOf: [m.possessionTime, m.stall, m.clock])
         reals = r
 
         var k: [Int] = []
-        k.reserveCapacity(m.players.count * 3 + 16)
-        for p in m.players { k.append(contentsOf: [p.id, p.team, p.marking]) }
+        k.reserveCapacity(m.players.count * 3 + 19)
+        for p in m.players { k.append(contentsOf: [p.id, p.team, p.airborne ? 1 : 0]) }
         k.append(contentsOf: [m.score[0], m.score[1]])
         let s = m.stats
         k.append(contentsOf: [
             s.throwsMade, s.completions, s.blocks, s.grounded, s.outOfBounds, s.stalled, s.goals,
         ])
-        k.append(contentsOf: MatchSnapshot.phaseCode(m.phase))
-        k.append(contentsOf: [m.controlled, m.holder ?? -1])
+        k.append(MatchSnapshot.phaseCode(m.phase))
+        k.append(contentsOf: [
+            m.possession, m.attackDir, m.controlled, m.carrier ?? -1, m.justScored ?? -1,
+        ])
         k.append(contentsOf: [
             d.touchedGround ? 1 : 0, d.atRest ? 1 : 0, d.handed,
             d.throwType.flatMap { ThrowType.allCases.firstIndex(of: $0) } ?? -1,
@@ -516,13 +552,19 @@ public struct MatchSnapshot: Sendable {
         discrete = k
     }
 
-    /// The phase as a pair of integers: which case, and its payload.
-    private static func phaseCode(_ phase: PlayPhase) -> [Int] {
+    /// The phase as an integer.
+    ///
+    /// `GamePhase` is a `String` enum and its raw values would compare exactly, but the
+    /// snapshot's discrete half is `[Int]` and one code per case keeps it that way. The
+    /// interim engine's `PlayPhase` carried a payload — who was holding, who had thrown —
+    /// and needed two integers; `GamePhase` describes the point rather than the disc, so
+    /// the payload lives in `carrier` instead and is recorded separately.
+    private static func phaseCode(_ phase: GamePhase) -> Int {
         switch phase {
-        case .held(let by): [0, by]
-        case .flight(let by): [1, by]
-        case .dead(let next): [2, next]
-        case .scored(let team): [3, team]
+        case .setup: 0
+        case .pull: 1
+        case .live: 2
+        case .dead: 3
         }
     }
 
@@ -531,10 +573,7 @@ public struct MatchSnapshot: Sendable {
     public static func realLabels(teamSize: Int) -> [String] {
         var l: [String] = []
         for i in 0..<(teamSize * 2) {
-            for field in [
-                "pos.x", "pos.y", "pos.z", "vel.x", "vel.y", "vel.z",
-                "target.x", "target.y", "target.z",
-            ] {
+            for field in ["pos.x", "pos.y", "pos.z", "vel.x", "vel.y", "vel.z", "energy"] {
                 l.append("player[\(i)].\(field)")
             }
         }
@@ -545,7 +584,7 @@ public struct MatchSnapshot: Sendable {
             "disc.omega.x", "disc.omega.y", "disc.omega.z",
             "disc.groundY", "disc.t", "disc.spin", "disc.alpha", "disc.airspeed",
         ])
-        l.append(contentsOf: ["phaseTime", "stall", "attackDir"])
+        l.append(contentsOf: ["possessionTime", "stall", "clock"])
         return l
     }
 
@@ -553,14 +592,16 @@ public struct MatchSnapshot: Sendable {
     public static func discreteLabels(teamSize: Int) -> [String] {
         var l: [String] = []
         for i in 0..<(teamSize * 2) {
-            l.append(contentsOf: ["player[\(i)].id", "player[\(i)].team", "player[\(i)].marking"])
+            l.append(contentsOf: ["player[\(i)].id", "player[\(i)].team", "player[\(i)].airborne"])
         }
         l.append(contentsOf: ["score[0]", "score[1]"])
         l.append(contentsOf: [
             "stats.throwsMade", "stats.completions", "stats.blocks", "stats.grounded",
             "stats.outOfBounds", "stats.stalled", "stats.goals",
         ])
-        l.append(contentsOf: ["phase.kind", "phase.arg", "controlled", "holder"])
+        l.append(contentsOf: [
+            "phase", "possession", "attackDir", "controlled", "carrier", "justScored",
+        ])
         l.append(contentsOf: [
             "disc.touchedGround", "disc.atRest", "disc.handed", "disc.throwType",
         ])

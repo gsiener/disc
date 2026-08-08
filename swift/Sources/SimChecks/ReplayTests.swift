@@ -3,16 +3,17 @@ import UltimateSim
 
 /// Recording a match and playing it back, asserted rather than hoped for.
 ///
-/// `MatchTests.deterministic` already shows that one seed twice produces one match. This
+/// `EngineTests.deterministic` already shows that one seed twice produces one match. This
 /// suite asserts the harder and more useful thing: that a match with *human input in it*
 /// can be reconstructed from a seed and a few hundred bytes of stamped inputs, and that
-/// the reconstruction is bit-identical in every position, velocity, disc quantity, score
-/// and counter.
+/// the reconstruction is bit-identical in every position, velocity, energy, disc quantity,
+/// score and counter.
 ///
 /// That makes a recording the broadest regression test in the project. Every unit
 /// assertion elsewhere pins one operation; a replay pins the composition of all of them
-/// across thirty seconds of play. A recorded match that stops replaying is a behaviour
-/// change even when all 379,674 other assertions still pass.
+/// across thirty seconds of play — the roster draw, both forked `TeamAI` streams,
+/// `Locomotion`, and the flight model, composed. A recorded match that stops replaying is
+/// a behaviour change even when all 1,983,692 other assertions still pass.
 ///
 /// Two of these checks exist to keep the others honest:
 ///
@@ -184,11 +185,11 @@ enum ReplayTests {
         // failure rather than as one opaque one. Reals go through `bitEqViaJSON`: every
         // one of them is the output of `+ - * / sqrt min max clamp` and must agree to the
         // last bit, with the sign of a zero the only allowed slack.
-        let labels = MatchSnapshot.realLabels(teamSize: replayed.field.teamSize)
+        let labels = MatchSnapshot.realLabels(teamSize: replayed.fieldSpec.teamSize)
         for i in after.reals.indices where i < live.reals.count {
             Check.bitEqViaJSON(after.reals[i], live.reals[i], "replayed \(labels[i])")
         }
-        let discreteLabels = MatchSnapshot.discreteLabels(teamSize: replayed.field.teamSize)
+        let discreteLabels = MatchSnapshot.discreteLabels(teamSize: replayed.fieldSpec.teamSize)
         for i in after.discrete.indices where i < live.discrete.count {
             Check.eq(after.discrete[i], live.discrete[i], "replayed \(discreteLabels[i])")
         }
@@ -252,26 +253,31 @@ enum ReplayTests {
         Check.ok(base.match.stats.throwsMade > 0, "the baseline match contains throws")
         Check.ok(other.match.stats.throwsMade > 0, "the altered match contains throws")
 
-        // A different seed is a different match — but only where the seed reaches.
+        // A different seed is a different match, everywhere the seed reaches — and with
+        // `Engine` that is everywhere.
         //
-        // It is worth being precise about this, because it is a real and surprising
-        // property of the interim engine rather than a quirk of this check. `Match` draws
-        // from the RNG in exactly one place: the backhand-or-forehand coin flip in
-        // `autoThrow`. Everything else — cutting, marking, catching, the stall — is
-        // geometry. So with only team 1 automated over thirty seconds, seeds 77 and 78
-        // produce a *bit-identical* match, and asserting otherwise would be asserting a
-        // coincidence. Put both teams on the computer, where the flip is reached often,
-        // and the seed separates them immediately.
-        let seeded = { (seed: UInt32) -> MatchSnapshot in
-            let r = MatchRecorder(field: .minis, seed: seed, tickHz: tickHz, autoTeams: [0, 1])
+        // This claim used to be much weaker, and the weaker version was asserted here
+        // rather than assumed. The interim engine drew from the RNG in exactly one place,
+        // a backhand-or-forehand coin flip, so two seeds produced a *bit-identical* match
+        // unless that flip was actually reached; the check had to automate both teams to
+        // make the seed matter at all. `Engine` deals a whole roster from the seed and
+        // forks a stream per `TeamAI`, so two seeds are two different sets of athletes
+        // before the first tick runs. Both cases are asserted, because the unautomated one
+        // is the stronger claim and the one that changed.
+        let seeded = { (seed: UInt32, autos: Set<TeamId>) -> MatchSnapshot in
+            let r = MatchRecorder(field: .minis, seed: seed, tickHz: tickHz, autoTeams: autos)
             while r.tickCount < totalTicks { r.tick() }
             return MatchSnapshot(r.match)
         }
-        Check.ok(seeded(77) != seeded(78), "a different seed is a different match")
-        Check.ok(seeded(77) == seeded(77), "the same seed is the same match")
+        Check.ok(seeded(77, [0, 1]) != seeded(78, [0, 1]), "a different seed is a different match")
+        Check.ok(seeded(77, [0, 1]) == seeded(77, [0, 1]), "the same seed is the same match")
+        Check.ok(
+            seeded(77, [1]) != seeded(78, [1]),
+            "the seed separates two matches even with the human's side unautomated")
         Check.note(
-            "the seed reaches the interim engine through one draw — the throw-type coin "
-                + "flip in autoThrow — so an unautomated match is determined by its inputs alone")
+            "the seed now reaches the whole engine — the roster draw and both forked TeamAI "
+                + "streams — so two seeds differ from the opening tick rather than only at a "
+                + "throw-type coin flip")
     }
 
     // MARK: frame timing
@@ -325,7 +331,7 @@ enum ReplayTests {
 
         // Componentwise on the jittered playback, for the same reason as above: a single
         // quantity that drifts under variable timing should name itself.
-        let labels = MatchSnapshot.realLabels(teamSize: byTick.match.field.teamSize)
+        let labels = MatchSnapshot.realLabels(teamSize: byTick.match.fieldSpec.teamSize)
         for i in a.reals.indices where i < b.reals.count {
             Check.bitEqViaJSON(b.reals[i], a.reals[i], "frame-timing invariant: \(labels[i])")
         }
@@ -362,7 +368,7 @@ enum ReplayTests {
             Check.ok(false, "an empty recording replays into a fresh match")
             return
         }
-        let fresh = Match(field: .minis, seed: 5)
+        let fresh = engineForRecording(.minis, seed: 5)
         Check.ok(
             MatchSnapshot(played).firstDifference(from: MatchSnapshot(fresh)) == nil,
             "an empty recording replays into exactly the opening position")

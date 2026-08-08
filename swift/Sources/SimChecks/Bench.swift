@@ -107,8 +107,9 @@ public struct BenchReport: Sendable {
 ///   - matchSeeds: one full autoplayed match per seed. Varying the seed varies the
 ///     possessions played — a single scripted match could happen to be short or long
 ///     for reasons that have nothing to do with steady-state cost.
-///   - matchTimeoutSimSeconds: matches `MatchTests.terminates()`'s own ceiling, so a
-///     benchmark run and a correctness run agree on what "unreasonably long" means.
+///   - matchTimeoutSimSeconds: twenty simulated minutes. A 3v3 game to 7 that has not
+///     finished by then is not going to, and a benchmark that waited for it would be
+///     timing a hang rather than a match.
 public func runBench(
     matchSeeds: [UInt32] = [101, 202, 303, 404, 505],
     matchTimeoutSimSeconds: Double = 60 * 20
@@ -118,8 +119,10 @@ public func runBench(
 
     var measurements: [BenchReport.Measurement] = []
     measurements.append(benchDiscStep(checksum: &checksum))
-    measurements.append(benchMatchStep(field: .minis, label: "match.step 3v3", checksum: &checksum))
-    measurements.append(benchMatchStep(field: .full, label: "match.step 7v7", checksum: &checksum))
+    measurements.append(
+        benchMatchStep(field: .minis, label: "engine.step 3v3", checksum: &checksum))
+    measurements.append(
+        benchMatchStep(field: .full, label: "engine.step 7v7", checksum: &checksum))
 
     let matchRuns = matchSeeds.map {
         benchWholeMatch(seed: $0, timeoutSimSeconds: matchTimeoutSimSeconds, checksum: &checksum)
@@ -181,13 +184,14 @@ private func benchDiscStep(checksum: inout Double) -> BenchReport.Measurement {
     return summarize("disc.step (flight, innermost)", warmup: warmup, micros: micros)
 }
 
-/// One `Match.step(dt:)` call with both teams on autopilot, at the field size named.
+/// One `Engine.step(dt:)` call with both teams on autopilot, at the field size named.
 ///
 /// This is the number that actually answers "under 0.5 ms per tick": a tick in the game
-/// is this call, not the disc step alone, because every frame also steers every player,
-/// resolves catches, and — for whichever side is on autopilot — decides whether to
-/// throw. 7v7 repeats the O(n²) separation pass over more than twice the bodies of 3v3,
-/// so the two are measured separately rather than assumed to scale the same way.
+/// is this call, not the disc step alone, because every frame also asks both `TeamAI`s for
+/// intents, runs `Locomotion` over every body, and resolves whatever the disc did. 7v7
+/// repeats locomotion's O(n²) separation pass — and both AIs' per-opponent scans — over
+/// more than twice the bodies of 3v3, so the two are measured separately rather than
+/// assumed to scale the same way.
 private func benchMatchStep(
     field: FieldSpec, label: String, checksum: inout Double
 ) -> BenchReport.Measurement {
@@ -196,16 +200,25 @@ private func benchMatchStep(
     let dt = 1.0 / 60  // the app's own display-paced loop steps at this cadence.
 
     // One long-running match rather than a fresh one per sample: a fresh match spends
-    // its first tick in the post-pull setup, which is not what a steady-state tick
-    // costs, and a match that runs the full warmup-plus-samples span passes through
+    // its first tick standing everybody up from the pull, which is not what a steady-state
+    // tick costs, and a match that runs the full warmup-plus-samples span passes through
     // held, flight and dead phases the way real play does.
-    let m = Match(field: field, seed: 909)
-    m.autoTeams = [0, 1]
+    func fresh() -> Engine {
+        let e = engineForRecording(field, seed: 909)
+        e.autoTeams = [0, 1]
+        return e
+    }
+    var m = fresh()
 
     func stepOnce() -> Double {
-        if m.isOver { m.reset(pullingTeam: 0) }
+        // A won game must be replaced rather than reset: `Engine.step` returns immediately
+        // once `isOver`, and `reset(receiving:)` lines the teams up again without touching
+        // the score. Timing a guard clause instead of a tick is the failure this avoids.
+        // Neither format gets close to the target inside 550 steps, so this is a valve,
+        // not a path the numbers below come from.
+        if m.isOver { m = fresh() }
         m.step(dt: dt)
-        return Double(m.score[0] + m.score[1]) + m.disc.pos.x
+        return Double(m.score[0] + m.score[1]) + m.disc.state.pos.x
     }
 
     for _ in 0..<warmup { checksum += stepOnce() }
@@ -232,7 +245,7 @@ private func benchMatchStep(
 private func benchWholeMatch(
     seed: UInt32, timeoutSimSeconds: Double, checksum: inout Double
 ) -> BenchReport.MatchRun {
-    let m = Match(field: .minis, seed: seed)
+    let m = engineForRecording(.minis, seed: seed)
     m.autoTeams = [0, 1]
     let dt = 1.0 / 60
 
@@ -244,10 +257,10 @@ private func benchWholeMatch(
     }
     let wallSeconds = Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
 
-    checksum += Double(m.score[0] + m.score[1]) + m.disc.pos.x
+    checksum += Double(m.score[0] + m.score[1]) + m.disc.state.pos.x
 
     return BenchReport.MatchRun(
-        seed: seed, teamSize: m.field.teamSize,
+        seed: seed, teamSize: m.fieldSpec.teamSize,
         simSeconds: simSeconds, wallSeconds: wallSeconds, finished: m.isOver)
 }
 
