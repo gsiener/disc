@@ -1,0 +1,69 @@
+# XcodeGen spec for the iOS app.
+#
+#   cd ios && xcodegen generate && open Ultimate.xcodeproj
+#
+# The project file is generated from this spec rather than committed as an
+# .xcodeproj, for the same reason the goldens are generated rather than hand-written:
+# a pbxproj is a merge-hostile binary-in-disguise that nobody reviews. This file is
+# reviewable, and regenerating is idempotent.
+#
+# The app is deliberately thin. All logic lives in the `UltimateSim` Swift package;
+# this target exists to put it on a phone and to own the things only an app can own —
+# the window, the render surface when there is one, and the touch input.
+
+name: Ultimate
+options:
+  bundleIdPrefix: com.grahamsiener
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  UltimateSim:
+    # Relative to this directory, so `../swift` — not `..`, which is the repo root.
+    path: ../swift
+
+targets:
+  Ultimate:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Ultimate
+    dependencies:
+      - package: UltimateSim
+        product: UltimateSim
+      - package: UltimateSim
+        product: SimChecks
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.grahamsiener.ultimate
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        # The Info.plist is written from the `info:` block below, so the
+        # INFOPLIST_KEY_* build settings are deliberately not used — setting both is
+        # how you get an app whose orientation depends on which one Xcode read last.
+        GENERATE_INFOPLIST_FILE: false
+        SWIFT_VERSION: "6.0"
+
+        # Signing is left automatic and team-less on purpose: it resolves against
+        # whichever Apple ID is signed into Xcode, so this spec does not carry a
+        # personal team id into the repo.
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+        # Set explicitly. Without these, Xcode 26 resolves the scheme's supported
+        # platforms as *empty* and then rejects every destination you name — including
+        # simulators — with a misleading "iOS <version> is not installed". The platform
+        # was installed; the target simply advertised nothing to run on.
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+    info:
+      path: Ultimate/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight

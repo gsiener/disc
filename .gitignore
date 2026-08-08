@@ -15,7 +15,14 @@ restored/
 # agent scratch
 tools/.scratch/
 
-# SwiftPM build products. Goldens under swift/Goldens are generated but ARE
-# committed — the diff on a fixture is the record of a deliberate behaviour change.
+# SwiftPM build products. Goldens under swift/Sources/SimChecks/Goldens are
+# generated but ARE committed — the diff on a fixture is the record of a
+# deliberate behaviour change.
 swift/.build/
 *.xcuserdatad
+
+# Generated from ios/project.yml by xcodegen — the YAML is the reviewable source.
+# A pbxproj is merge-hostile and nobody reads it in a diff.
+ios/*.xcodeproj/
+ios/Ultimate/Info.plist
+DerivedData/

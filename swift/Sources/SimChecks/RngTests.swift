@@ -29,8 +29,8 @@ enum RngTests {
         let cases: [Case]
     }
 
-    static func run() {
-        let goldens = Goldens.load(File.self, "rng")
+    static func run() throws {
+        let goldens = try Goldens.load(File.self, "rng")
 
         // Fail loudly if a regenerate drops coverage. Seed 0 and seed 0xffffffff
         // are the two most likely to expose a sign or shift-width mistake.

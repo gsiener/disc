@@ -33,8 +33,8 @@ enum CoeffsTests {
     /// above the disagreement two libm implementations can produce.
     static let transcendentalTol = 1e-14
 
-    static func run() {
-        let g = Goldens.load(File.self, "coeffs")
+    static func run() throws {
+        let g = try Goldens.load(File.self, "coeffs")
         let aero = AeroCoeffs.standard
 
         // The constants themselves. One assertion each, so a mistyped coefficient
@@ -59,9 +59,9 @@ enum CoeffsTests {
         physicalProperties(aero)
 
         let headroom = transcendentalTol / Swift.max(worstDeviation, Double.leastNormalMagnitude)
-        print(
-            "               worst sin/tanh deviation \(worstDeviation) "
-                + "(\(worstLabel)) — \(String(format: "%.0f", headroom))× under tolerance")
+        Check.note(
+            "worst sin/tanh deviation \(worstDeviation) (\(worstLabel)) — "
+                + "\(String(format: "%.0f", headroom))× under tolerance")
     }
 
     /// The largest deviation actually seen, so the tolerance above is a measured
