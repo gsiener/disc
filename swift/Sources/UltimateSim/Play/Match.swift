@@ -108,6 +108,46 @@ public enum PlayPhase: Equatable, Sendable {
     case scored(team: Int)
 }
 
+/// A tally of how possessions end.
+///
+/// This exists because "the score stays 0-0" is a symptom with a dozen causes, and
+/// guessing between them is how tuning turns into superstition. A count of *why* a
+/// possession ended points straight at the one that is wrong: all `stalled` means the
+/// thrower will not release, all `outOfBounds` means the aim or the power is off, all
+/// `grounded` means the receivers are not getting there.
+public struct MatchStats: Equatable, Sendable {
+    public var throwsMade = 0
+    public var completions = 0
+    /// Caught by the other team.
+    public var blocks = 0
+    /// Landed in bounds with nobody on it.
+    public var grounded = 0
+    public var outOfBounds = 0
+    /// The count ran out with the disc still in someone's hands.
+    public var stalled = 0
+    public var goals = 0
+
+    public var completionRate: Double {
+        throwsMade == 0 ? 0 : Double(completions) / Double(throwsMade)
+    }
+}
+
+/// How much closer than the receiver a defender must be to take the disc away.
+///
+/// This is the single number that decides whether the game is playable. At 0 the defence
+/// catches everything, because a marker trails on the side the throw comes from. Large
+/// enough and the defence never matters. It is a stand-in for everything the real contest
+/// involves — who saw it first, who is running onto it, who has position — and it is a
+/// stand-in that goes away with the `AI.ts` and `Contest` ports.
+public let BID_EDGE = 0.55
+
+/// Seconds of the receiver's motion a defender fails to account for.
+///
+/// A defender who tracks the receiver's *current* position perfectly can never be beaten
+/// by a cut, because both run at the same speed and the gap is constant. Reacting late
+/// is the whole reason cutting works.
+public let DEFENDER_LAG = 0.34
+
 // MARK: - the match
 
 public final class Match {
@@ -124,10 +164,21 @@ public final class Match {
     public private(set) var attackDir = 1.0
     /// The player the human is controlling. Always on team 0.
     public private(set) var controlled = 0
+    /// How possessions have been ending. See `MatchStats`.
+    public private(set) var stats = MatchStats()
 
     private let rng: Rng
     /// Set while a throw is being aimed, so the thrower does not drift.
     public var aiming = false
+
+    /// Teams whose throws are decided by the computer.
+    ///
+    /// Defaults to the opponent only. Set it to both and the match plays itself, which
+    /// is how the checks run a full game headlessly and how an attract mode would work.
+    /// An empty set means nobody ever throws and every possession dies on the stall —
+    /// which is not a hypothetical, it is what this file did before `autoThrow` existed
+    /// and it read as a game where the score was broken.
+    public var autoTeams: Set<Int> = [1]
 
     public var isOver: Bool { score[0] >= field.target || score[1] >= field.target }
 
@@ -217,7 +268,11 @@ public final class Match {
         case .held(let holder):
             stall += dt
             disc.pos = Vec3d(players[holder].pos.x, 1.1, players[holder].pos.z)
-            if stall >= 10 { turnover(at: disc.pos, from: players[holder].team) }
+            if autoTeams.contains(players[holder].team) { autoThrow(from: holder) }
+            if stall >= 10 {
+                stats.stalled += 1
+                turnover(at: disc.pos, from: players[holder].team)
+            }
 
         case .flight:
             disc.step(dt: dt)
@@ -251,42 +306,76 @@ public final class Match {
 
         // Out of bounds while airborne is a turn at the crossing point.
         if !field.inBounds(disc.pos) {
+            stats.outOfBounds += 1
             turnover(at: field.clamped(disc.pos), from: throwerTeam)
             return
         }
 
-        // A catch. Anyone within reach of a low disc may take it; the closest wins, and
-        // a defender within the same reach takes it instead, which is a block.
-        if disc.pos.y < 2.3 {
-            var best = -1
-            var bestD = DISC_GRAB_R
-            for (i, p) in players.enumerated() where i != thrower || disc.t > 0.35 {
+        // A catch.
+        //
+        // The first version of this gave the disc to whoever was simply nearest, and it
+        // produced a game where 1,428 of 1,438 throws were intercepted — because a
+        // defender trails their receiver on exactly the side a throw arrives from, so
+        // "nearest" is almost always the defender. That is not what a contested throw is.
+        //
+        // Two rules fix it, and both are things the real sport does rather than knobs:
+        //
+        //  - **The receiver attacks the disc.** An offensive player wins any contest
+        //    unless the defender is clearly closer, because the receiver knows where it
+        //    is going and is already running onto it. `BID_EDGE` is that margin.
+        //  - **The mark cannot pick your pocket.** A throw is untouchable for the first
+        //    moments near the release point; a mark who could catch a disc at arm's
+        //    length from the thrower would make throwing impossible rather than hard.
+        if disc.pos.y < 2.3, disc.pos.y > 0.15 {
+            let releaseArea = distXZ(disc.pos, players[thrower].pos) < 2.6 && disc.t < 0.35
+
+            var bestOff = -1, bestOffD = DISC_GRAB_R
+            var bestDef = -1, bestDefD = DISC_GRAB_R
+            for (i, p) in players.enumerated() {
+                if i == thrower && disc.t < 0.35 { continue }
                 let d = distXZ(p.pos, disc.pos)
-                if d < bestD { bestD = d; best = i }
+                guard d < DISC_GRAB_R else { continue }
+                if p.team == throwerTeam {
+                    if d < bestOffD { bestOffD = d; bestOff = i }
+                } else if !releaseArea {
+                    if d < bestDefD { bestDefD = d; bestDef = i }
+                }
             }
-            if best >= 0 {
-                catchDisc(by: best, thrownBy: thrower)
+
+            if bestOff >= 0 && (bestDef < 0 || bestDefD > bestOffD - BID_EDGE) {
+                catchDisc(by: bestOff, thrownBy: thrower)
+                return
+            }
+            if bestDef >= 0 {
+                catchDisc(by: bestDef, thrownBy: thrower)
                 return
             }
         }
 
-        if disc.atRest { turnover(at: disc.pos, from: throwerTeam) }
+        if disc.atRest {
+            stats.grounded += 1
+            turnover(at: disc.pos, from: throwerTeam)
+        }
     }
 
     private func catchDisc(by receiver: Int, thrownBy thrower: Int) {
         let team = players[receiver].team
         if team != players[thrower].team {
             // A block. The intercepting team gets it where it was caught.
+            stats.blocks += 1
             possess(receiver)
             if team == 0 { controlled = receiver }
             return
         }
         if field.inAttackingEndzone(players[receiver].pos, attackDirection(of: team)) {
+            stats.completions += 1
+            stats.goals += 1
             score[team] += 1
             phase = .scored(team: team)
             phaseTime = 0
             return
         }
+        stats.completions += 1
         possess(receiver)
         // Catching moves control to the catcher — the decision recorded in the plan.
         // The alternative, keeping the camera on one player, makes the other five
@@ -327,9 +416,93 @@ public final class Match {
         disc = throwDisc(
             type, from: Vec3d(players[holder].pos.x, 1.25, players[holder].pos.z),
             aim: aim, power: power, angle: loft, spin: 0.6, options: opts)
+        stats.throwsMade += 1
         phase = .flight(by: holder)
         phaseTime = 0
         aiming = false
+    }
+
+    // MARK: the computer's throw
+
+    /// Decide whether the computer's thrower lets it go, and to whom.
+    ///
+    /// Deliberately simple, and deliberately not a placeholder that always throws: a
+    /// thrower who releases the instant they catch produces a game with no rhythm, and a
+    /// thrower who never releases produces the 0-0 match the checks caught. So it waits
+    /// for a receiver to actually be open, and takes the stall as a deadline — the same
+    /// two pressures a real handler is under.
+    ///
+    /// Receivers are scored on how much ground they gain against how covered they are.
+    /// As the stall climbs, `desperation` raises the tolerance for a covered receiver,
+    /// which is what produces the recognisable late-count dump rather than a turnover.
+    private func autoThrow(from holder: Int) {
+        // A beat to look up, so a catch is not instantly a release.
+        guard phaseTime > 0.8 else { return }
+
+        let team = players[holder].team
+        let dir = attackDirection(of: team)
+        let me = players[holder].pos
+        let desperation = clamp01((stall - 4) / 5)
+
+        var bestScore = -Double.infinity
+        var bestTarget: Vec3d? = nil
+        var bestDist = 0.0
+
+        for i in indices(of: team) where i != holder {
+            let r = players[i]
+            // Lead the receiver: throw where they will be, not where they are. Roughly
+            // the flight time at this range, which is enough for a first version.
+            let range = distXZ(me, r.pos)
+            let lead = Swift.min(1.6, range / 14)
+            let aimPoint = Vec3d(r.pos.x + r.vel.x * lead, 0, r.pos.z + r.vel.z * lead)
+
+            // How covered are they at that point?
+            var cover = Double.infinity
+            for d in indices(of: 1 - team) {
+                cover = Swift.min(cover, distXZ(players[d].pos, aimPoint))
+            }
+
+            // Ground gained towards the endzone, in metres.
+            let gain = (aimPoint.z - me.z) * dir
+
+            // Throws that go nowhere or off the pitch are not options.
+            guard field.inBounds(aimPoint), range > 3, range < field.length * 0.62 else { continue }
+
+            // An open receiver going forwards is the throw. `desperation` softens the
+            // openness requirement rather than the distance, because a covered dump is
+            // survivable and a covered huck is not.
+            let openness = Swift.min(cover, 6) / 6
+            let score = gain * 0.5 + openness * 10 * (1 - desperation * 0.6) - range * 0.08
+
+            // Wide enough early that the throw goes to someone genuinely open, closing
+            // towards a metre by the time the count is up. A handler with two seconds
+            // left throws into coverage; a handler with eight does not.
+            let mustBeOpen = 3.0 - desperation * 2.0
+            guard cover > mustBeOpen else { continue }
+
+            if score > bestScore {
+                bestScore = score
+                bestTarget = aimPoint
+                bestDist = range
+            }
+        }
+
+        guard let target = bestTarget else { return }
+        // Hold out for something better early; take what is there once the count is up.
+        guard bestScore > 6 - desperation * 9 else { return }
+
+        var aim = Vec3d(target.x - me.x, 0, target.z - me.z)
+        if aim.lengthSq < 1e-9 { return }
+        aim = aim.normalized
+
+        // Pick a power that lands near the receiver rather than a fixed one, so a dump
+        // is not thrown at huck speed. Calibrated against the flight model's carry, and
+        // it is an approximation — `powerForSpeed` is the exact inverse for speed, not
+        // for range, and a range inverse needs the aero solved rather than guessed.
+        let type: ThrowType = rng.next() < 0.5 ? .backhand : .forehand
+        let power = clamp01((bestDist - 4) / 26)
+        let loft = bestDist > 18 ? 0.10 : 0.0
+        release(type, aim: aim, power: power, loft: loft)
     }
 
     // MARK: movement
@@ -413,9 +586,18 @@ public final class Match {
                     off = off.lengthSq < 1e-6 ? Vec3d(0, 0, -dir) : off.normalized
                     players[i].target = mark.pos.addingScaled(off, 0.9)
                 } else {
-                    // Deny the cut: sit between the receiver and their own endzone.
+                    // Deny the cut: sit between the receiver and their own endzone —
+                    // but chase where the receiver *was*, not where they are.
+                    //
+                    // Without the lag the defence is glued: it steers to a fixed offset
+                    // from the receiver at the same top speed, so no cut can ever create
+                    // separation and every throw is contested. That produced a 34%
+                    // completion rate. The lag is what a change of direction actually
+                    // beats — the defender commits to the old direction for a moment,
+                    // and that moment is the throwing window.
+                    let stale = mark.pos.addingScaled(mark.vel, -DEFENDER_LAG)
                     players[i].target = field.clamped(
-                        Vec3d(mark.pos.x, 0, mark.pos.z + attackDirection(of: mark.team) * 1.4))
+                        Vec3d(stale.x, 0, stale.z + attackDirection(of: mark.team) * 1.2))
                 }
             }
         }
