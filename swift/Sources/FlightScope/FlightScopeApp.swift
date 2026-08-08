@@ -22,7 +22,12 @@ struct FlightScopeApp: App {
         // view can be captured from a script or a CI job.
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
-            Snapshot.run(path: args[i + 1])
+            var preset = ThrowPreset.backhand
+            if let j = args.firstIndex(of: "--preset"), j + 1 < args.count,
+                let named = ThrowPreset(rawValue: args[j + 1]) {
+                preset = named
+            }
+            Snapshot.run(path: args[i + 1], preset: preset)
         }
     }
 

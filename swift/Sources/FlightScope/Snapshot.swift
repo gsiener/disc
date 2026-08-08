@@ -16,9 +16,9 @@ import SwiftUI
 /// you can regression-test; one you can only photograph by hand is not.
 enum Snapshot {
     @MainActor
-    static func run(path: String) -> Never {
+    static func run(path: String, preset: ThrowPreset) -> Never {
         let view =
-            FlightView()
+            FlightView(preset: preset)
             .frame(width: 1100, height: 620)
             .preferredColorScheme(.dark)
             .background(Color.black)
