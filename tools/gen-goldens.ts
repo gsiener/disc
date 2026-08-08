@@ -30,6 +30,7 @@ import { dirname, join } from 'node:path';
 
 import { coeffGoldens } from './goldens/coeffs.ts';
 import { aiMathGoldens } from './goldens/aimath.ts';
+import { discRuntimeGoldens } from './goldens/discruntime.ts';
 import { flightGoldens } from './goldens/flight.ts';
 import { humanReleaseGoldens } from './goldens/humanrelease.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
@@ -64,6 +65,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'playbook.json': playbookGoldens,
   'aimath.json': aiMathGoldens,
   'humanrelease.json': humanReleaseGoldens,
+  'discruntime.json': discRuntimeGoldens,
 };
 
 console.log('goldens →');
