@@ -2,25 +2,22 @@ import FlightUI
 import SimChecks
 import SwiftUI
 
-/// The app, which for now is a self-check and a stopwatch.
+/// The app: a game, and the instruments used to build it.
 ///
-/// There is no game here yet and this screen does not pretend otherwise. What it does
-/// is worth more at this stage than a picture of a disc would be: it proves the sim
-/// compiles for arm64-ios, runs on the device, and produces **the same numbers there as
-/// on the Mac** — which is the one property this whole port is staking itself on and the
-/// one thing a desktop test run cannot tell you.
+/// **Play** is 3v3 to 7 on a minis pitch, thrown with one drag gesture.
 ///
-/// It also gives the tick-cost measurement somewhere to live. The plan has been carrying
-/// "under 0.5 ms per tick" as an estimate extrapolated from Node since before any Swift
-/// existed; this is where that becomes a number.
+/// The other three tabs are not debug leftovers, they are the reason the game can be
+/// trusted. **Flight** plots a single throw against the tolerances; **Checks** runs the
+/// whole differential suite *on the device*, which is the one property this port is
+/// staking itself on and the one thing a desktop test run cannot tell you — the sim has
+/// to produce the same numbers on arm64-ios as it does on the Mac.
 @main
 struct UltimateApp: App {
     var body: some Scene {
         WindowGroup {
             TabView {
-                // The 3D pitch is the headline view; the 2D plots stay because they are
-                // a better tuning surface, and the self-check because the whole port
-                // rests on it agreeing with the reference on device.
+                MatchView()
+                    .tabItem { Label("Play", systemImage: "figure.run") }
                 PitchView()
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }
                 FlightView()
