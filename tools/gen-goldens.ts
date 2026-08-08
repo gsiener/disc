@@ -33,6 +33,7 @@ import { flightGoldens } from './goldens/flight.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
 import { locomotionGoldens } from './goldens/locomotion.ts';
 import { moveGoldens } from './goldens/move.ts';
+import { playbookGoldens } from './goldens/playbook.ts';
 import { rngGoldens } from './goldens/rng.ts';
 import { rulesGoldens } from './goldens/rules.ts';
 import { simMathGoldens } from './goldens/simmath.ts';
@@ -58,6 +59,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'gamestate.json': gameStateGoldens,
   'move.json': moveGoldens,
   'locomotion.json': locomotionGoldens,
+  'playbook.json': playbookGoldens,
 };
 
 console.log('goldens →');
