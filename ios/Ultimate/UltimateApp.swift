@@ -1,6 +1,9 @@
 import FlightUI
 import SimChecks
 import SwiftUI
+// For `FieldSpec`, which the -format launch argument selects. The app otherwise talks
+// only to FlightUI and SimChecks.
+import UltimateSim
 
 /// The app: a game, and the instruments used to build it.
 ///
