@@ -46,10 +46,17 @@ targets:
         GENERATE_INFOPLIST_FILE: false
         SWIFT_VERSION: "6.0"
 
-        # Signing is left automatic and team-less on purpose: it resolves against
-        # whichever Apple ID is signed into Xcode, so this spec does not carry a
-        # personal team id into the repo.
+        # Automatic signing against the personal team. The team id is not a secret —
+        # it ships inside every signed app — and recording it here is what stops a
+        # `xcodegen generate` from silently wiping the Team selection made in the
+        # Xcode UI and putting signing back to "None".
+        #
+        # On a free Apple ID the resulting provisioning profile is good for SEVEN
+        # DAYS, after which the app stops launching and has to be reinstalled from
+        # Xcode. That is Apple's limit, not ours. The paid Developer Program raises
+        # it to a year and adds TestFlight.
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 87P5K2MP32
         TARGETED_DEVICE_FAMILY: "1,2"
 
         # Set explicitly. Without these, Xcode 26 resolves the scheme's supported
