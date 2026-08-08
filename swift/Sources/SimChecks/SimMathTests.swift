@@ -69,9 +69,9 @@ enum SimMathTests {
             Check.bitEqViaJSON(conj.z, c.conjugate[2], "\(at) conjugate.z")
             Check.bitEqViaJSON(conj.w, c.conjugate[3], "\(at) conjugate.w")
 
-            let deviation = abs(q.norm - c.quatNorm)
+            let deviation = abs(q.length - c.quatNorm)
             worstNormDeviation = Swift.max(worstNormDeviation, deviation)
-            Check.near(q.norm, c.quatNorm, hypotTol, "\(at) quaternion norm")
+            Check.near(q.length, c.quatNorm, hypotTol, "\(at) quaternion norm")
         }
 
         algebraicIdentities()

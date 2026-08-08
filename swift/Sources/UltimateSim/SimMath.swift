@@ -110,39 +110,121 @@ public struct Quatd: Equatable, Sendable {
     /// The conjugate, which for a unit quaternion is the inverse rotation.
     public var conjugated: Quatd { Quatd(-x, -y, -z, w) }
 
-    /// The 4-component norm.
-    ///
-    /// The reference uses `Math.hypot(x, y, z, w)` here, and this is one of only two
-    /// calls in the whole sim where `hypot` is not a two-argument planar distance that a
-    /// bit-exact `sqrt` could replace. `hypot` is not specified to the last ulp, so this
-    /// value — alone among the ops in this file — is asserted on a tolerance rather than
-    /// bit-exactly. It is used to renormalise the quaternion each step, where a
-    /// last-ulp difference is immediately washed out.
-    public var norm: Double {
-        // Deliberately `sqrt` of the sum of squares rather than a composed `hypot`.
-        // `hypot` exists to avoid overflow when a component is near the top of the
-        // double range; this quaternion is always near-unit, so that protection buys
-        // nothing and costs predictability. The difference from the reference is at the
-        // last ulp, which is why `norm` is the one operation in this file asserted on a
-        // tolerance instead of bit-exactly.
-        (x * x + y * y + z * z + w * w).squareRoot()
-    }
+    public var lengthSq: Double { x * x + y * y + z * z + w * w }
 
-    /// Renormalise in place, falling back to identity if the quaternion has collapsed.
+    /// `THREE.Quaternion.length()` — plain `sqrt` of the sum of squares, and bit-exact.
+    ///
+    /// **Not** the same as the integrator's `normQuat`, which uses a four-argument
+    /// `Math.hypot`. The reference really does normalise quaternions two different ways
+    /// in two different places, and collapsing them into one would be a silent
+    /// behavioural change. See `DiscPhysics.normQuat`.
+    public var length: Double { (x * x + y * y + z * z + w * w).squareRoot() }
+
+    public func dot(_ q: Quatd) -> Double { x * q.x + y * q.y + z * q.z + w * q.w }
+
+    /// `THREE.Quaternion.normalize()`, including its exact zero guard.
     public mutating func normalize() {
-        let m = norm
-        if m > 1e-12 {
-            let k = 1 / m
-            x *= k
-            y *= k
-            z *= k
-            w *= k
-        } else {
+        var l = length
+        if l == 0 {
             x = 0
             y = 0
             z = 0
             w = 1
+        } else {
+            l = 1 / l
+            x *= l
+            y *= l
+            z *= l
+            w *= l
         }
+    }
+
+    public var normalized: Quatd {
+        var q = self
+        q.normalize()
+        return q
+    }
+
+    /// `THREE.Quaternion.multiplyQuaternions(a, b)`.
+    public static func * (a: Quatd, b: Quatd) -> Quatd {
+        Quatd(
+            a.x * b.w + a.w * b.x + a.y * b.z - a.z * b.y,
+            a.y * b.w + a.w * b.y + a.z * b.x - a.x * b.z,
+            a.z * b.w + a.w * b.z + a.x * b.y - a.y * b.x,
+            a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
+        )
+    }
+
+    /// `THREE.Quaternion.premultiply(q)` — i.e. `q * self`, applying `q` after `self`.
+    public func premultiplied(by q: Quatd) -> Quatd { q * self }
+
+    /// `THREE.Quaternion.setFromUnitVectors`. Both arguments are assumed unit.
+    ///
+    /// The antiparallel branch and its `1e-8` epsilon are copied deliberately: three.js
+    /// picks a perpendicular axis by comparing `|x|` against `|z|`, and any other choice
+    /// of fallback axis produces a different — still valid — rotation, which would show
+    /// up as the disc settling onto the ground the other way round.
+    public static func fromUnitVectors(_ from: Vec3d, _ to: Vec3d) -> Quatd {
+        var r = from.dot(to) + 1
+        var q: Quatd
+        if r < 1e-8 {
+            r = 0
+            if abs(from.x) > abs(from.z) {
+                q = Quatd(-from.y, from.x, 0, r)
+            } else {
+                q = Quatd(0, -from.z, from.y, r)
+            }
+        } else {
+            q = Quatd(
+                from.y * to.z - from.z * to.y,
+                from.z * to.x - from.x * to.z,
+                from.x * to.y - from.y * to.x,
+                r
+            )
+        }
+        q.normalize()
+        return q
+    }
+
+    /// `THREE.Quaternion.slerp(qb, t)`, including the shortest-arc flip and the
+    /// lerp-then-normalise fast path below a `0.9995` dot.
+    public func slerped(to qb: Quatd, _ t: Double) -> Quatd {
+        var x = qb.x, y = qb.y, z = qb.z, w = qb.w
+        var dot = self.dot(qb)
+        var t = t
+
+        if dot < 0 {
+            x = -x
+            y = -y
+            z = -z
+            w = -w
+            dot = -dot
+        }
+
+        var s = 1 - t
+
+        if dot < 0.9995 {
+            let theta = Foundation.acos(dot)
+            let sin = Foundation.sin(theta)
+            s = Foundation.sin(s * theta) / sin
+            t = Foundation.sin(t * theta) / sin
+            return Quatd(
+                self.x * s + x * t,
+                self.y * s + y * t,
+                self.z * s + z * t,
+                self.w * s + w * t
+            )
+        }
+
+        // Small angles: lerp, then normalise.
+        var q = Quatd(
+            self.x * s + x * t,
+            self.y * s + y * t,
+            self.z * s + z * t,
+            self.w * s + w * t
+        )
+        q.normalize()
+        return q
     }
 
     public static func fromAxisAngle(_ axis: Vec3d, _ angle: Double) -> Quatd {
