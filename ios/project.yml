@@ -35,6 +35,8 @@ targets:
         product: UltimateSim
       - package: UltimateSim
         product: SimChecks
+      - package: UltimateSim
+        product: FlightUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.grahamsiener.ultimate

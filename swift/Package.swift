@@ -22,7 +22,9 @@ let package = Package(
     products: [
         .library(name: "UltimateSim", targets: ["UltimateSim"]),
         .library(name: "SimChecks", targets: ["SimChecks"]),
+        .library(name: "FlightUI", targets: ["FlightUI"]),
         .executable(name: "SimTests", targets: ["SimTests"]),
+        .executable(name: "FlightScope", targets: ["FlightScope"]),
     ],
     targets: [
         // No fast-math, no `-Ounchecked`. Replay determinism depends on IEEE 754 basic
@@ -36,5 +38,11 @@ let package = Package(
             resources: [.copy("Goldens")]
         ),
         .executableTarget(name: "SimTests", dependencies: ["SimChecks"]),
+
+        // The flight view, shared by the iOS app and the macOS window so there is one
+        // implementation and not two that drift. `FlightUI` imports SwiftUI but nothing
+        // platform-specific; `UltimateSim` stays clean of both.
+        .target(name: "FlightUI", dependencies: ["UltimateSim"]),
+        .executableTarget(name: "FlightScope", dependencies: ["FlightUI"]),
     ]
 )

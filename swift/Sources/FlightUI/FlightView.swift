@@ -13,7 +13,7 @@ import UltimateSim
 /// Two projections, because one is not enough to see what a disc does. The side view
 /// shows the glide; the top view shows the curve, which is the half a sports game lives
 /// on and the half a side view completely hides.
-struct FlightView: View {
+public struct FlightView: View {
     @State private var throwKind = ThrowPreset.backhand
     @State private var samples: [Vec3d] = []
     @State private var carry = 0.0
@@ -23,7 +23,9 @@ struct FlightView: View {
     @State private var stepMicros = 0.0
     @State private var playhead = 0.0
 
-    var body: some View {
+    public init() {}
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
 
@@ -178,7 +180,7 @@ struct FlightView: View {
 /// Not the real throw table — `aero/Throws.ts` and `throwDisc` are not ported yet, and
 /// these are hand-set release states rather than the game's actual specs. They exist to
 /// exercise the flight model, not to be balanced.
-enum ThrowPreset: String, CaseIterable {
+public enum ThrowPreset: String, CaseIterable {
     case backhand, hammer, anhyzer, huck
 
     var short: String {
