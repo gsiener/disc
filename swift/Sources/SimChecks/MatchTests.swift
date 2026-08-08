@@ -25,8 +25,70 @@ enum MatchTests {
         staysOnTheField()
         scoreOnlyMovesOnGoals()
         throwsGoWhereAimed()
+        theControlScheme()
         bothFormats()
         deterministic()
+    }
+
+    /// What a drag means. This is the game's entire control scheme, so it is asserted
+    /// rather than left to whether it felt right the one time somebody tried it.
+    private static func theControlScheme() {
+        let edge = 1000.0
+        func g(_ dx: Double, _ dy: Double) -> ThrowGesture {
+            ThrowGesture.interpret(dx: dx, dy: dy, shortEdge: edge)
+        }
+
+        // Screen +y is down, so a negative dy is a drag up the screen. If this
+        // convention were ever inverted the whole scheme would flip — up would throw a
+        // dump — and it would still compile and still feel like a game.
+        Check.eq(g(0, -400).type, .hammer, "dragging up the screen throws over the top")
+        Check.eq(g(0, 400).type, .push, "dragging back towards yourself is a dump")
+
+        // Flat drags: the two sides break opposite ways, which is what makes them
+        // different throws rather than the same throw mirrored.
+        Check.eq(g(400, 0).type, .forehand, "a flat drag to the right is a forehand")
+        Check.eq(g(-400, 0).type, .backhand, "a flat drag to the left is a backhand")
+        Check.ok(
+            THROW_SPECS[.forehand]!.spinSign != THROW_SPECS[.backhand]!.spinSign,
+            "the two flat throws really are opposites, not one throw twice")
+
+        // Power scales with the drag against the screen's short edge, so the same flick
+        // is the same throw on any device.
+        Check.near(g(450, 0).power, 1.0, 1e-12, "a drag of 45% of the short edge is full power")
+        Check.near(g(225, 0).power, 0.5, 1e-12, "half that is half power")
+        Check.near(g(9000, 0).power, 1.0, 1e-12, "power clamps rather than overflowing")
+        Check.ok(g(1, 0).power >= 0.15, "even a tiny drag leaves the hand")
+
+        // Aim. A drag up the screen must go downfield whichever way you are attacking,
+        // because "up" means "away from me" and not "towards +z".
+        for dir in [1.0, -1.0] {
+            let a = ThrowGesture.aim(dx: 0, dy: -100, attackDir: dir)
+            Check.ok(a.z * dir > 0.99, "dragging up throws downfield when attacking \(dir)")
+            let r = ThrowGesture.aim(dx: 100, dy: 0, attackDir: dir)
+            Check.ok(r.x > 0.99, "dragging right throws to the right, either direction")
+        }
+        // A zero drag must still produce a usable direction rather than a zero vector,
+        // which would make `normalized` a NaN and take the disc with it.
+        let degenerate = ThrowGesture.aim(dx: 0, dy: 0, attackDir: 1)
+        Check.ok(degenerate.length.isFinite && degenerate.length > 0.99, "a zero drag still aims somewhere")
+
+        // The gesture and the match agree: interpreting a drag and releasing it puts the
+        // disc in the air travelling that way.
+        let m = Match(field: .minis, seed: 11)
+        m.autoTeams = []
+        for _ in 0..<30 { m.step(dt: 1.0 / 60) }
+        guard let h = m.holder else {
+            Check.ok(false, "expected a holder to throw with")
+            return
+        }
+        let from = m.players[h].pos
+        let gesture = g(0, -300)
+        m.release(gesture.type, aim: ThrowGesture.aim(dx: 0, dy: -300, attackDir: m.attackDirection(of: 0)),
+            power: gesture.power, loft: gesture.loft)
+        for _ in 0..<90 { m.step(dt: 1.0 / 120) }
+        Check.ok(
+            (m.disc.pos.z - from.z) * m.attackDirection(of: 0) > 0,
+            "an upward drag actually moves the disc downfield")
     }
 
     /// Let both sides play themselves and require the match to reach a final score.

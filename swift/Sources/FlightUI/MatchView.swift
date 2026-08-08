@@ -90,56 +90,21 @@ public struct MatchView: View {
             }
     }
 
-    /// Turn a drag into a throw.
-    ///
-    /// Power is drag length against a fraction of the screen, so the gesture means the
-    /// same thing on any device size. Type comes from the vertical component: pulling
-    /// upward is how you ask for something that goes over a mark rather than around it.
+    /// Turn a drag into a throw. The rule itself lives in `ThrowGesture`, in the sim,
+    /// where the checks can reach it — this only supplies the numbers.
     private func interpret(from start: CGPoint, to current: CGPoint, in size: CGSize) -> DragState {
-        let dx = current.x - start.x
-        let dy = current.y - start.y
-        let len = Foundation.hypot(dx, dy)
-        let power = Swift.min(1, len / (Swift.min(size.width, size.height) * 0.45))
-
-        // Upward on screen is negative dy. `rise` in [-1, 1].
-        let rise = len < 1 ? 0 : -dy / Swift.max(len, 1e-6)
-
-        let type: ThrowType
-        let loft: Double
-        switch rise {
-        case ..<(-0.25):
-            // Dragging downward: a low dump.
-            type = .push
-            loft = 0
-        case 0.55...:
-            // Steeply up: over the top.
-            type = .hammer
-            loft = 0
-        case 0.25..<0.55:
-            type = .blade
-            loft = 0
-        default:
-            // Flat. Which side you drag to decides backhand or forehand, mirroring the
-            // way a right-handed player's two throws break opposite ways.
-            type = dx >= 0 ? .forehand : .backhand
-            loft = 0.10 * rise
-        }
-        return DragState(start: start, current: current, type: type, power: Swift.max(0.15, power), loft: loft)
+        let g = ThrowGesture.interpret(
+            dx: Double(current.x - start.x),
+            dy: Double(current.y - start.y),
+            shortEdge: Double(Swift.min(size.width, size.height)))
+        return DragState(start: start, current: current, type: g.type, power: g.power, loft: g.loft)
     }
 
-    /// The world-space horizontal direction a drag points.
-    ///
-    /// The camera looks down +z with x to the right, so screen x maps to world x and
-    /// screen "up" maps to world +z. Keeping that mapping trivial is worth more than a
-    /// clever camera: a throw must go where you pointed, and any per-frame camera swing
-    /// would make the same gesture mean different things on different frames.
     private func aimVector(_ d: DragState, in size: CGSize) -> Vec3d {
-        let dx = Double(d.current.x - d.start.x)
-        let dy = Double(d.current.y - d.start.y)
-        let dir = match.attackDirection(of: 0)
-        var v = Vec3d(dx, 0, -dy * dir)
-        if v.lengthSq < 1e-9 { v = Vec3d(0, 0, dir) }
-        return v.normalized
+        ThrowGesture.aim(
+            dx: Double(d.current.x - d.start.x),
+            dy: Double(d.current.y - d.start.y),
+            attackDir: match.attackDirection(of: 0))
     }
 
     // MARK: scene
