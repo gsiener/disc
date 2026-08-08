@@ -168,6 +168,7 @@ let allSuites: [Suite] = [
     Suite(name: "coeffs", run: CoeffsTests.run),
     Suite(name: "simmath", run: SimMathTests.run),
     Suite(name: "flight", run: FlightTests.run),
+    Suite(name: "throws", run: ThrowsTests.run),
 ]
 
 public var checkSuiteNames: [String] { allSuites.map(\.name) }

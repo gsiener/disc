@@ -21,12 +21,6 @@ import Foundation
 
 public let FIXED_DT = 1.0 / 120.0
 
-/// Which face is up and how the disc was released. Informational only — the physics
-/// does not branch on it.
-public enum ThrowKind: String, Sendable {
-    case raw
-}
-
 public struct DiscState: Sendable {
     /// World position of the centre of mass, metres.
     public var pos = Vec3d.zero
@@ -55,7 +49,8 @@ public struct DiscState: Sendable {
     /// Speed relative to the air, m/s.
     public private(set) var airspeed = 0.0
 
-    public var throwKind: ThrowKind = .raw
+    /// Informational only — the physics never branches on it.
+    public var throwType: ThrowType? = nil
     /// +1 right handed, −1 left handed.
     public var handed = 1
 

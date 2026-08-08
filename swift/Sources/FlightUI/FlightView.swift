@@ -292,62 +292,33 @@ struct Flight {
     }
 }
 
-/// A few throws worth looking at, built the way the flight fixtures build them.
+/// The game's actual throws, from `THROW_SPECS`.
 ///
-/// Not the real throw table — `aero/Throws.ts` and `throwDisc` are not ported yet, and
-/// these are hand-set release states rather than the game's actual specs. They exist to
-/// exercise the flight model, not to be balanced.
+/// An earlier version of this view had four hand-made release states, one of them
+/// labelled "anhyzer" — disc golf vocabulary for a *bank angle*, used as though it named
+/// a throw. It appears nowhere in this project; Ultimate says inside-out and outside-in.
+/// Worse, none of those presets was a forehand, because a forehand differs from a
+/// backhand by `spinSign` and they only varied bank. These are the real six.
 public enum ThrowPreset: String, CaseIterable {
-    case backhand, hammer, anhyzer, huck
+    case backhand, forehand, hammer, scoober, push, blade
 
-    var short: String {
+    var type: ThrowType {
         switch self {
-        case .backhand: "BACKHAND"
-        case .hammer: "HAMMER"
-        case .anhyzer: "ANHYZER"
-        case .huck: "HUCK"
+        case .backhand: .backhand
+        case .forehand: .forehand
+        case .hammer: .hammer
+        case .scoober: .scoober
+        case .push: .push
+        case .blade: .blade
         }
     }
 
-    var label: String {
-        switch self {
-        case .backhand: "flat backhand · 20 m/s, fades left"
-        case .hammer: "hammer · inverted, drops off the back"
-        case .anhyzer: "anhyzer · banked, curves right"
-        case .huck: "huck · 27 m/s, nose up"
-        }
-    }
+    var short: String { rawValue.uppercased() }
+
+    /// The spec's own description, so the label cannot drift from the physics.
+    var label: String { THROW_SPECS[type]?.about ?? "" }
 
     func release() -> DiscState {
-        switch self {
-        case .backhand: Self.make(speed: 20, nose: 0.05, bank: 0, invert: false, spin: -52)
-        case .hammer: Self.make(speed: 14, nose: 0, bank: 0, invert: true, spin: 46, climb: 4)
-        case .anhyzer: Self.make(speed: 22, nose: 0.05, bank: 0.44, invert: false, spin: -55)
-        case .huck: Self.make(speed: 27, nose: 0.14, bank: -0.2, invert: false, spin: -58, climb: 3)
-        }
-    }
-
-    private static func make(
-        speed: Double, nose: Double, bank: Double, invert: Bool, spin: Double,
-        climb: Double = 0, height: Double = 1.6
-    ) -> DiscState {
-        var s = DiscState()
-        s.pos = Vec3d(0, height, 0)
-        s.vel = Vec3d(speed, climb, 0)
-        s.omega = Vec3d(0, 0, spin)
-
-        let vdir = s.vel.normalized
-        let right = vdir.cross(Vec3d(0, 1, 0)).normalized
-        let upPerp = right.cross(vdir).normalized
-
-        var normal = upPerp.scaled(Foundation.cos(nose)).addingScaled(vdir, -Foundation.sin(nose))
-        if invert { normal = -normal }
-        normal = normal.applying(Quatd.fromAxisAngle(vdir, bank)).normalized
-
-        let bodyX = vdir.addingScaled(normal, -vdir.dot(normal)).normalized
-        let q1 = Quatd.fromUnitVectors(Vec3d(0, 0, 1), normal)
-        let q2 = Quatd.fromUnitVectors(Vec3d(1, 0, 0).applying(q1), bodyX)
-        s.orient = (q2 * q1).normalized
-        return s
+        throwDisc(type, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0), power: 0.85, spin: 0.5)
     }
 }
