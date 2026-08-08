@@ -2,12 +2,17 @@ import Foundation
 
 /// Shared vocabulary for the locomotion model. Ported from `src/sim/move/Types.ts`.
 ///
-/// This is a **partial** port: only the fields the five leaf modules under
-/// `Move/` (`Attributes`, `Gait`, `Separation`, `Contest`, `Ground`) actually read
-/// or write. The reference `LocoPlayer` also carries cut-state, footstep-audio
-/// debounce and a `derived` debug cache that nothing here touches; those belong
-/// to whichever port lands `Locomotion.ts` and `AI.ts`'s `DesiredMove`, and are
-/// left out rather than guessed at.
+/// This started as a **partial** port covering only the fields the five leaf
+/// modules under `Move/` (`Attributes`, `Gait`, `Separation`, `Contest`, `Ground`)
+/// read or write. `Locomotion.swift` needs the rest — cut state, the state-machine
+/// timers, stamina, the surface normal, the footstep-audio debounce and the
+/// `derived` debug cache — so those are now here too, and `LocoPlayer` matches the
+/// reference interface field for field.
+///
+/// Every field added for `Locomotion` carries a default and is appended to the end
+/// of the initialiser, so the leaf-module call sites that predate it still read the
+/// same. `DesiredMove` lives in `Locomotion.swift` alongside the only code that
+/// consumes it.
 
 /// Gait selection. `auto` derives the resolved mode from input elsewhere; the
 /// five leaf modules only ever see the resolved cases.
@@ -117,6 +122,16 @@ public struct Derived: Equatable, Decodable, Sendable {
         self.fatigue = fatigue
         self.slopeMul = slopeMul
     }
+
+    /// All-zero placeholder, for the one field on `LocoPlayer` the reference leaves
+    /// uninitialised until the first `solveGround` overwrites it. The reference's
+    /// `create()` seeds it with a real `derive()` call; this exists only so
+    /// `LocoPlayer.init` has a default and a hand-built test player does not have to
+    /// invent eleven numbers it will never read.
+    public static let zero = Derived(
+        topSpeed: 0, modeCap: 0, accelMax: 0, brakeMax: 0, gripMax: 0, turnRate: 0,
+        jumpHeight: 0, standingReach: 0, plantDur: 0, fatigue: 0, slopeMul: 0
+    )
 }
 
 /// Plain XZ pair — the ground-plane commands and axes `Separation` and `Gait`
@@ -172,9 +187,30 @@ public struct FootState {
 public struct AirState {
     /// True while the centre of mass is off the ground.
     public var airborne: Bool
+    /// Sim time of takeoff.
+    public var tTakeoff: Double
+    /// Sim time the ballistic arc peaks.
+    public var tApex: Double
+    /// Predicted peak COM height (world Y).
+    public var apexY: Double
+    /// COM height at takeoff (world Y).
+    public var takeoffY: Double
+    /// Predicted sim time of ground contact.
+    public var tLand: Double
+    /// Vertical velocity at takeoff (m/s).
+    public var vy0: Double
 
-    public init(airborne: Bool = false) {
+    public init(
+        airborne: Bool = false, tTakeoff: Double = 0, tApex: Double = 0, apexY: Double = 0,
+        takeoffY: Double = 0, tLand: Double = 0, vy0: Double = 0
+    ) {
         self.airborne = airborne
+        self.tTakeoff = tTakeoff
+        self.tApex = tApex
+        self.apexY = apexY
+        self.takeoffY = takeoffY
+        self.tLand = tLand
+        self.vy0 = vy0
     }
 }
 
@@ -200,6 +236,10 @@ public final class LocoPlayer {
     public var facing: Double
 
     public var state: LocoStateName
+    /// Seconds spent in the current state.
+    public var stateT: Double
+    /// Seconds the current state must run before it can end (committed states).
+    public var stateDur: Double
     /// True while the body is on the ground rather than upright.
     public var prone: Bool
     /// True while this body is a thrower standing on an established pivot.
@@ -210,6 +250,32 @@ public final class LocoPlayer {
 
     /// Surface height under the player's feet this step.
     public var groundY: Double
+    /// Surface normal under the player's feet this step.
+    ///
+    /// The reference keeps a `THREE.Vector3` here and writes into it with
+    /// `p.groundN.copy(SURF.n)` from a module-level scratch surface. `Vec3d` is a
+    /// value, so the port assigns instead — which is also why the scratch object can
+    /// go away entirely.
+    public var groundN: Vec3d
+
+    /// Which side. Carried for the consumers; the movement solve never reads it.
+    public var team: Int
+
+    /// 0..100.
+    public var stamina: Double
+
+    /// Direction the cut is pivoting toward, valid while `state == .cut`.
+    public var cutDir: Vec3d
+    /// Entry speed of the current/last cut (m/s).
+    public var cutEntrySpeed: Double
+    /// Turn angle of the current/last cut (radians).
+    public var cutAngle: Double
+
+    /// Sim time this player last emitted a footstep — debounce for audio.
+    public var lastStepT: Double
+
+    /// Scratch: last step's derived capabilities, for debug/HUD.
+    public var derived: Derived
 
     /// Hard-contact radius (m) — the volume no other body may enter.
     public var radius: Double
@@ -241,7 +307,19 @@ public final class LocoPlayer {
         personal: Double = 0.63,
         hipHeight: Double = 0.9,
         cmd: Vec2d = .zero,
-        t: Double = 0
+        t: Double = 0,
+        // Appended for the `Locomotion` port. Order matters: putting these last keeps
+        // every leaf-module call site that predates them compiling unchanged.
+        team: Int = 0,
+        stateT: Double = 0,
+        stateDur: Double = 0,
+        stamina: Double = 100,
+        groundN: Vec3d = Vec3d(0, 1, 0),
+        cutDir: Vec3d = .zero,
+        cutEntrySpeed: Double = 0,
+        cutAngle: Double = 0,
+        lastStepT: Double = 0,
+        derived: Derived = .zero
     ) {
         self.id = id
         self.attr = attr
@@ -249,11 +327,21 @@ public final class LocoPlayer {
         self.vel = vel
         self.facing = facing
         self.state = state
+        self.stateT = stateT
+        self.stateDur = stateDur
         self.prone = prone
         self.anchored = anchored
         self.foot = foot
         self.air = air
         self.groundY = groundY
+        self.groundN = groundN
+        self.team = team
+        self.stamina = stamina
+        self.cutDir = cutDir
+        self.cutEntrySpeed = cutEntrySpeed
+        self.cutAngle = cutAngle
+        self.lastStepT = lastStepT
+        self.derived = derived
         self.radius = radius
         self.personal = personal
         self.hipHeight = hipHeight
