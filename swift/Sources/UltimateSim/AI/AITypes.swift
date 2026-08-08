@@ -161,3 +161,250 @@ public struct TeamConfig: Equatable, Sendable {
         self.seed = seed
     }
 }
+
+// MARK: - world model
+
+/// The disc as the AI sees it. Distinct from `DiscState` in `DiscPhysics.swift`, which is
+/// the integrated flight state — this one is the *game's* view: who threw it, who it is
+/// meant for, what the count is. The physics one is named `DiscState` because it was here
+/// first and is the one the flight suites assert; this is `AIDiscState`.
+public struct AIDiscState: Equatable, Sendable {
+    public var pos: Vec3d
+    public var vel: Vec3d
+    public var state: DiscPhase
+    /// Player currently holding it, else nil.
+    public var carrier: Int?
+    public var thrownBy: Int?
+    public var intendedReceiver: Int?
+    /// 0…10, maintained by the game system from the marker's `stall` action.
+    public var stall: Double
+    public var spin: Double
+    public var throwType: AIThrowType?
+
+    public init(
+        pos: Vec3d = .zero, vel: Vec3d = .zero, state: DiscPhase = .ground,
+        carrier: Int? = nil, thrownBy: Int? = nil, intendedReceiver: Int? = nil,
+        stall: Double = 0, spin: Double = 0, throwType: AIThrowType? = nil
+    ) {
+        self.pos = pos
+        self.vel = vel
+        self.state = state
+        self.carrier = carrier
+        self.thrownBy = thrownBy
+        self.intendedReceiver = intendedReceiver
+        self.stall = stall
+        self.spin = spin
+        self.throwType = throwType
+    }
+}
+
+/// Everything one AI update sees.
+///
+/// The reference carries a `sys` bag of duck-typed peers read defensively. Here the two
+/// peers it actually looks for are typed optionals, matching how `Ground.swift` and
+/// `Separation.swift` already handle the same pattern — a dictionary of `Any` is not
+/// portable to a language that checks types, and the defensive reads existed only because
+/// it was.
+public struct AIWorld {
+    public var time: Double
+    public var players: [AIPlayer]
+    public var disc: AIDiscState
+    /// Which team is on offence right now.
+    public var possession: TeamId
+    public var phase: GamePhase
+    /// Wind velocity in m/s, field space.
+    public var wind: Vec2d
+    public var score: [Int]
+    public var scoreCap: Int
+    public var rand: Rng
+    /// The pitch. A value rather than the reference's module constant, for the reason
+    /// recorded throughout this port: this game runs on two of them.
+    public var field: FieldConstants
+    public var locomotion: LocomotionPeer?
+    public var discPeer: DiscPeer?
+
+    public init(
+        time: Double = 0, players: [AIPlayer] = [], disc: AIDiscState = AIDiscState(),
+        possession: TeamId = 0, phase: GamePhase = .setup, wind: Vec2d = .zero,
+        score: [Int] = [0, 0], scoreCap: Int = 15, rand: Rng = Rng(),
+        field: FieldConstants = .standard,
+        locomotion: LocomotionPeer? = nil, discPeer: DiscPeer? = nil
+    ) {
+        self.time = time
+        self.players = players
+        self.disc = disc
+        self.possession = possession
+        self.phase = phase
+        self.wind = wind
+        self.score = score
+        self.scoreCap = scoreCap
+        self.rand = rand
+        self.field = field
+        self.locomotion = locomotion
+        self.discPeer = discPeer
+    }
+}
+
+// MARK: - intents
+
+/// What the body is being asked to do. `Move/Types.swift` has a three-case `MoveMode` the
+/// gait model switches on; this is the AI's larger vocabulary, and the two are different
+/// alphabets rather than one split in half.
+public enum AIMoveMode: String, Equatable, Sendable {
+    case idle, jog, sprint, backpedal, shuffle
+    case plant, pivot, `throw`, `catch`, jump, layout, mark
+}
+
+/// The discrete thing a player is doing this frame, if anything.
+public enum PlayerAction: Equatable, Sendable {
+    case `throw`(
+        throwType: AIThrowType,
+        /// Where the disc is aimed, **including** the thrower's error.
+        aim: Vec3d,
+        /// Release speed in m/s and the flight time the thrower intends.
+        speed: Double, flightTime: Double, spin: Double,
+        receiverId: Int,
+        /// The thrower's own estimate of completion, 0…1. Telemetry and commentary.
+        expected: Double)
+    case `catch`(difficulty: Double)
+    case bid(x: Double, z: Double, extend: Double)
+    case jump(height: Double)
+    case stall(count: Double)
+    case pickup
+    case fake(throwType: AIThrowType)
+
+    /// The reference's discriminator, recovered so fixtures can compare it.
+    public var kind: String {
+        switch self {
+        case .throw: "throw"
+        case .catch: "catch"
+        case .bid: "bid"
+        case .jump: "jump"
+        case .stall: "stall"
+        case .pickup: "pickup"
+        case .fake: "fake"
+        }
+    }
+}
+
+/// Telemetry only. Locomotion must ignore it.
+///
+/// `cutKind` and `cutDepth` are not decoration: which cut belongs to which position *is*
+/// the vertical stack, so this is the only handle a test has on whether the shape on the
+/// field is the shape the sport plays. From outside, every cut looks identical whether it
+/// came from the front of the stack or the back.
+public struct IntentDebug: Equatable, Sendable {
+    public var role: String = ""
+    public var state: String = ""
+    public var lane: Playbook.LaneKey? = nil
+    /// The point the committed cut is attacking, if any.
+    public var cutX: Double = 0
+    public var cutZ: Double = 0
+    public var cutKind: Playbook.CutKind? = nil
+    public var cutDepth: Double = -1
+
+    public init() {}
+}
+
+/// One frame's instruction for one player. This is the entire AI-to-locomotion contract.
+public struct PlayerIntent: Equatable, Sendable {
+    public var id: Int
+    public var team: TeamId
+    public var targetX: Double
+    public var targetZ: Double
+    /// Unit-ish (x, z) the torso should face.
+    public var faceX: Double
+    public var faceZ: Double
+    public var mode: AIMoveMode
+    /// 0…1 fraction of `maxSpeed` wanted right now.
+    public var effort: Double
+    /// m/s — `maxSpeed * effort`, precomputed for locomotion.
+    public var desiredSpeed: Double
+    public var maxSpeed: Double
+    public var maxAccel: Double
+    public var maxDecel: Double
+    /// rad/s
+    public var turnRate: Double
+    public var arriveRadius: Double
+    public var personalSpace: Double
+    public var action: PlayerAction?
+    public var debug: IntentDebug
+
+    public init(
+        id: Int, team: TeamId, targetX: Double, targetZ: Double,
+        faceX: Double, faceZ: Double, mode: AIMoveMode, effort: Double,
+        desiredSpeed: Double, maxSpeed: Double, maxAccel: Double, maxDecel: Double,
+        turnRate: Double, arriveRadius: Double, personalSpace: Double,
+        action: PlayerAction? = nil, debug: IntentDebug = IntentDebug()
+    ) {
+        self.id = id
+        self.team = team
+        self.targetX = targetX
+        self.targetZ = targetZ
+        self.faceX = faceX
+        self.faceZ = faceZ
+        self.mode = mode
+        self.effort = effort
+        self.desiredSpeed = desiredSpeed
+        self.maxSpeed = maxSpeed
+        self.maxAccel = maxAccel
+        self.maxDecel = maxDecel
+        self.turnRate = turnRate
+        self.arriveRadius = arriveRadius
+        self.personalSpace = personalSpace
+        self.action = action
+        self.debug = debug
+    }
+}
+
+// MARK: - system peers
+
+public struct FlightSample: Equatable, Sendable {
+    public var t: Double
+    public var x: Double
+    public var y: Double
+    public var z: Double
+
+    public init(t: Double, x: Double, y: Double, z: Double) {
+        self.t = t
+        self.x = x
+        self.y = y
+        self.z = z
+    }
+}
+
+/// The two points on a flight anybody in the air cares about: where to run to, and where
+/// the disc stops being playable on your feet.
+public struct CatchPoint: Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var z: Double
+    public var t: Double
+    public var lastX: Double
+    public var lastZ: Double
+    public var lastT: Double
+
+    public init(
+        x: Double, y: Double, z: Double, t: Double,
+        lastX: Double, lastZ: Double, lastT: Double
+    ) {
+        self.x = x
+        self.y = y
+        self.z = z
+        self.t = t
+        self.lastX = lastX
+        self.lastZ = lastZ
+        self.lastT = lastT
+    }
+}
+
+/// Optional in the reference because the peer may not be registered. A protocol here, so
+/// "not registered" is `nil` rather than a missing key in a bag of `Any`.
+public protocol LocomotionPeer {
+    func timeToReach(_ p: AIPlayer, _ x: Double, _ z: Double) -> Double
+    func isAirborne(_ p: AIPlayer) -> Bool
+}
+
+public protocol DiscPeer {
+    func predictPath(_ state: AIDiscState, horizon: Double, step: Double) -> [FlightSample]
+}
