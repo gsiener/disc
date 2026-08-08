@@ -18,7 +18,12 @@ import UltimateSim
 /// does not give you any.
 @available(macOS 15.0, iOS 18.0, *)
 public struct MatchView: View {
-    @State private var match = Match(field: .minis)
+    /// Starting format. A parameter rather than a constant for the same reason the app's
+    /// initial tab is one: `simctl` can launch with arguments but cannot tap, so anything
+    /// only reachable by finger is something that stops being looked at.
+    private let startFormat: FieldSpec
+
+    @State private var match: Match
     @State private var drag: DragState? = nil
     @State private var lastTick = Date()
 
@@ -40,7 +45,10 @@ public struct MatchView: View {
         var loft: Double
     }
 
-    public init() {}
+    public init(format: FieldSpec = .minis) {
+        startFormat = format
+        _match = State(initialValue: Match(field: format))
+    }
 
     public var body: some View {
         GeometryReader { geo in
@@ -54,6 +62,11 @@ public struct MatchView: View {
                 }
                 .background(Color(red: 0.05, green: 0.07, blue: 0.09))
                 .gesture(throwGesture(in: geo.size))
+                // The scene is built once, with one entity per player. Changing format
+                // changes how many players there are, so the scene has to be rebuilt
+                // rather than synced — without this, switching to 7v7 leaves eight
+                // players with no body to move.
+                .id(match.field.teamSize)
 
                 scoreboard
                 if let d = drag { aimOverlay(d, in: geo.size) }
@@ -253,7 +266,19 @@ public struct MatchView: View {
 
         if let disc = content.entities.first(where: { $0.name == "disc" }) {
             let d = match.disc
-            disc.position = [Float(d.pos.x), Float(Swift.max(d.pos.y, 0.02)), Float(d.pos.z)]
+            // A held disc sits at the holder's own position, which puts it inside their
+            // torso and therefore invisible — you could not tell who had it. Offset it to
+            // an extended arm for display only; the sim's position is untouched, so
+            // nothing about the throw or the catch changes.
+            var shown = Vec3d(d.pos.x, Swift.max(d.pos.y, 0.02), d.pos.z)
+            if let h = match.holder {
+                let p = match.players[h]
+                // Out to the side, away from the middle of the pitch, the way a thrower
+                // holds it away from the mark.
+                let side = p.pos.x >= 0 ? 1.0 : -1.0
+                shown = Vec3d(p.pos.x + side * 0.42, 1.15, p.pos.z + 0.16)
+            }
+            disc.position = [Float(shown.x), Float(shown.y), Float(shown.z)]
             // The sim's body +Z is the disc normal; a RealityKit cylinder's axis is +Y.
             // One fixed quarter turn reconciles them and nothing else is corrected, which
             // is what makes this a rendering of the simulation rather than an animation
@@ -297,6 +322,29 @@ public struct MatchView: View {
 
             Text("first to \(match.field.target)")
                 .foregroundStyle(.white.opacity(0.35))
+
+            // Both formats, because both were asked for. Switching restarts the match
+            // rather than resizing the pitch underneath a live point — a disc in flight
+            // towards an endzone that just moved is not a thing worth defining.
+            ForEach([FieldSpec.minis, FieldSpec.full], id: \.teamSize) { spec in
+                Button {
+                    guard spec.teamSize != match.field.teamSize else { return }
+                    match = Match(field: spec)
+                    drag = nil
+                } label: {
+                    Text("\(spec.teamSize)v\(spec.teamSize)")
+                        .font(.system(size: 12, design: .monospaced).bold())
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5)
+                                .fill(
+                                    spec.teamSize == match.field.teamSize
+                                        ? Color.orange : Color.white.opacity(0.12)))
+                        .foregroundStyle(
+                            spec.teamSize == match.field.teamSize ? .black : .white.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+            }
         }
         .font(.system(.subheadline, design: .monospaced).bold())
         .padding(.horizontal, 20)

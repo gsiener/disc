@@ -22,6 +22,13 @@ struct UltimateApp: App {
     ///     xcrun simctl launch booted com.grahamsiener.ultimate -tab checks
     ///
     /// Defaults to the game, which is what a person opening the app wants.
+    /// `-format 7v7` starts the game on the regulation field. Same reasoning as `-tab`.
+    static let startFormat: FieldSpec = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-format"), i + 1 < args.count else { return .minis }
+        return args[i + 1] == "7v7" ? .full : .minis
+    }()
+
     @State private var tab: Int = {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-tab"), i + 1 < args.count else { return 0 }
@@ -31,7 +38,7 @@ struct UltimateApp: App {
     var body: some Scene {
         WindowGroup {
             TabView(selection: $tab) {
-                MatchView()
+                MatchView(format: Self.startFormat)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView()
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
