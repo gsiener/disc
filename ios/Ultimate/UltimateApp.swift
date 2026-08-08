@@ -9,11 +9,14 @@ import UltimateSim
 ///
 /// **Play** is 3v3 to 7 on a minis pitch, thrown with one drag gesture.
 ///
-/// The other three tabs are not debug leftovers, they are the reason the game can be
-/// trusted. **Flight** plots a single throw against the tolerances; **Checks** runs the
-/// whole differential suite *on the device*, which is the one property this port is
-/// staking itself on and the one thing a desktop test run cannot tell you — the sim has
-/// to produce the same numbers on arm64-ios as it does on the Mac.
+/// The other tabs are not debug leftovers, they are the reason the game can be trusted.
+/// **Flight** plots a single throw against the tolerances. **Checks** runs the whole
+/// differential suite *on the device*, which is the one property this port is staking
+/// itself on and the one thing a desktop test run cannot tell you — the sim has to
+/// produce the same numbers on arm64-ios as it does on the Mac. **Speed** measures the
+/// tick, for the same reason: a benchmark taken on a laptop says nothing about a phone,
+/// and the plan carried "under 0.5 ms per tick" as an extrapolation from Node for months
+/// before anyone measured it anywhere.
 @main
 struct UltimateApp: App {
     /// Which tab to open on, so a headless run can reach a specific screen.
@@ -35,7 +38,7 @@ struct UltimateApp: App {
     @State private var tab: Int = {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-tab"), i + 1 < args.count else { return 0 }
-        return ["play": 0, "pitch": 1, "flight": 2, "checks": 3][args[i + 1]] ?? 0
+        return ["play": 0, "pitch": 1, "flight": 2, "checks": 3, "bench": 4][args[i + 1]] ?? 0
     }()
 
     var body: some Scene {
@@ -49,6 +52,8 @@ struct UltimateApp: App {
                     .tabItem { Label("Flight", systemImage: "arrow.up.right") }.tag(2)
                 SelfCheckView()
                     .tabItem { Label("Checks", systemImage: "checkmark.seal") }.tag(3)
+                BenchView()
+                    .tabItem { Label("Speed", systemImage: "gauge.with.needle") }.tag(4)
             }
             .preferredColorScheme(.dark)
         }
