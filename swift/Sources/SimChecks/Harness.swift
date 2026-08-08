@@ -63,6 +63,29 @@ public enum Check {
         )
     }
 
+    /// Bit-equality for values that reached us through a JSON golden.
+    ///
+    /// Identical to `bitEq` except that `+0` and `-0` compare equal, because
+    /// `JSON.stringify(-0)` emits `0` and the fixture therefore cannot carry the sign of
+    /// a zero. This is a limit of the transport, not a relaxation of the port: asserting
+    /// something the file format cannot express would just be asserting the generator's
+    /// rounding.
+    ///
+    /// Signed zero is not load-bearing in this sim. The one place it could propagate is
+    /// `atan2(-vn, vpm)` feeding the angle of attack, and every coefficient curve is
+    /// linear in alpha near zero — `CL0 + CLa * (-0)` is `CL0`. If that ever stops being
+    /// true, the trajectory suites catch it, because they compare integrated flights
+    /// rather than single operations.
+    static func bitEqViaJSON(
+        _ got: Double, _ want: Double, _ label: @autoclosure () -> String
+    ) {
+        if got == 0 && want == 0 {
+            ok(true, label())
+            return
+        }
+        bitEq(got, want, label())
+    }
+
     static func near(
         _ got: Double, _ want: Double, _ tol: Double, _ label: @autoclosure () -> String
     ) {
@@ -143,6 +166,7 @@ struct Suite: Sendable {
 let allSuites: [Suite] = [
     Suite(name: "rng", run: RngTests.run),
     Suite(name: "coeffs", run: CoeffsTests.run),
+    Suite(name: "simmath", run: SimMathTests.run),
 ]
 
 public var checkSuiteNames: [String] { allSuites.map(\.name) }
