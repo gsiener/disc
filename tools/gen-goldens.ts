@@ -30,6 +30,7 @@ import { dirname, join } from 'node:path';
 
 import { coeffGoldens } from './goldens/coeffs.ts';
 import { flightGoldens } from './goldens/flight.ts';
+import { gameStateGoldens } from './goldens/gamestate.ts';
 import { moveGoldens } from './goldens/move.ts';
 import { rngGoldens } from './goldens/rng.ts';
 import { rulesGoldens } from './goldens/rules.ts';
@@ -53,6 +54,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'flight.json': flightGoldens,
   'throws.json': throwGoldens,
   'rules.json': rulesGoldens,
+  'gamestate.json': gameStateGoldens,
   'move.json': moveGoldens,
 };
 
