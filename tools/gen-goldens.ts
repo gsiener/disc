@@ -32,6 +32,7 @@ import { coeffGoldens } from './goldens/coeffs.ts';
 import { aiMathGoldens } from './goldens/aimath.ts';
 import { discRuntimeGoldens } from './goldens/discruntime.ts';
 import { flightGoldens } from './goldens/flight.ts';
+import { teamAIGoldens } from './goldens/teamai.ts';
 import { humanReleaseGoldens } from './goldens/humanrelease.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
 import { locomotionGoldens } from './goldens/locomotion.ts';
@@ -66,6 +67,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'aimath.json': aiMathGoldens,
   'humanrelease.json': humanReleaseGoldens,
   'discruntime.json': discRuntimeGoldens,
+  'teamai.json': teamAIGoldens,
 };
 
 console.log('goldens →');
