@@ -100,14 +100,14 @@ public struct PitchView: View {
         for offset in [-(g.length / 2 - g.endzone), g.length / 2 - g.endzone] {
             let line = ModelEntity(
                 mesh: .generatePlane(width: 0.16, depth: Float(g.width)),
-                materials: [UnlitMaterial(color: .init(white: 0.85, alpha: 0.75))])
+                materials: [PitchScene.unlit(.init(white: 0.85, alpha: 1), opacity: 0.75)])
             line.position = [Float(offset), 0.012, 0]
             content.add(line)
         }
         for side in [-g.width / 2, g.width / 2] {
             let line = ModelEntity(
                 mesh: .generatePlane(width: Float(g.length), depth: 0.16),
-                materials: [UnlitMaterial(color: .init(white: 0.85, alpha: 0.55))])
+                materials: [PitchScene.unlit(.init(white: 0.85, alpha: 1), opacity: 0.55)])
             line.position = [0, 0.012, Float(side)]
             content.add(line)
         }
@@ -125,7 +125,7 @@ public struct PitchView: View {
         // to read without one — this is the same reason sports broadcasts draw them.
         let shadow = ModelEntity(
             mesh: .generateCylinder(height: 0.01, radius: Float(body.radius * 0.9)),
-            materials: [UnlitMaterial(color: .init(white: 0, alpha: 0.35))])
+            materials: [PitchScene.unlit(.init(white: 0, alpha: 1), opacity: 0.35)])
         shadow.name = "shadow"
         content.add(shadow)
 
@@ -170,7 +170,7 @@ public struct PitchView: View {
             shadow.position = SIMD3(Float(state.pos.x), 0.02, Float(state.pos.z))
             // Fade the marker with height, so altitude is readable at a glance.
             let alpha = max(0.06, 0.4 - Float(state.pos.y) * 0.03)
-            shadow.model?.materials = [UnlitMaterial(color: .init(white: 0, alpha: CGFloat(alpha)))]
+            shadow.model?.materials = [PitchScene.unlit(.init(white: 0, alpha: 1), opacity: alpha)]
         }
     }
 

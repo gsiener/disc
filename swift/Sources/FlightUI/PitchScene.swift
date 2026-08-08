@@ -68,9 +68,26 @@ enum PitchScene {
             t == 0 ? rgb(0.62, 0.86, 1.0) : rgb(1.0, 0.72, 0.62)
         }
 
-        /// The treeline silhouette. Near-black and slightly cold, so it sits behind the
-        /// warm sky rather than in front of it.
-        static let treeline = rgb(0.038, 0.062, 0.074)
+        /// The treeline silhouette, hazed toward the sky behind it.
+        ///
+        /// It was near-black, and against a `(0.72, 0.40, 0.26)` horizon that read as a
+        /// void stripe across the screen rather than as trees — the eye takes a
+        /// high-contrast horizontal band as a hole in the render, not as distance.
+        ///
+        /// Aerial perspective is the fix and it is the physical one: air between you and
+        /// a distant object scatters the sky's own light toward you, so a silhouette at
+        /// the far end of a field is not black, it is a darkened version of what is
+        /// behind it. Mixing a quarter of the horizon colour in is enough to read as
+        /// haze while keeping the trees clearly darker than the sky.
+        static let treeline: UIOrNSColor = {
+            let haze = 0.25
+            let base = (0.038, 0.062, 0.074)
+            let sky = (0.72, 0.40, 0.26)
+            return rgb(
+                base.0 + (sky.0 - base.0) * haze,
+                base.1 + (sky.1 - base.1) * haze,
+                base.2 + (sky.2 - base.2) * haze)
+        }()
 
         /// Dusk, horizon first. Sampled continuously by `skyColor` rather than used as
         /// discrete bands — five hard stripes across the top of the screen looked like a
