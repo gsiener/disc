@@ -69,6 +69,7 @@ import {
   hasColumn,
   markPoint, zoneStations, shouldPlayZone,
 } from './Playbook.ts';
+import { SOLVE_CATCH_DROP, SOLVE_LOFT_RANGE } from './aero/ThrowSolver.ts';
 
 export type { Vec2, Vec3, AttackDir, Force, FormationName, LaneKey } from './Playbook.ts';
 
@@ -371,6 +372,30 @@ const CATCH_FLOOR = 0.85;
 const CATCH_CEILING = 1.45;
 
 /**
+ * Where a thrown disc leaves the hand and how far it has fallen by the catch, m.
+ * These mirror `Game.releaseOrigin` (`hipHeight * 1.10`, about 1.05 m on a 180 cm
+ * player) and `Game.CATCH_PLANE_DROP`, and they exist so `flightPath` models the
+ * flight the solver is actually going to make rather than one starting at the
+ * thrower's feet.
+ */
+const HAND_HEIGHT = 1.05;
+
+/**
+ * Most ground a defender is credited with covering to get into a throwing lane,
+ * m. See `laneBlockage`.
+ */
+const LANE_POACH_MAX = 99;
+
+/**
+ * How much longer a lofted deep throw hangs than the line drive the flat model
+ * describes, and how high above the release line it peaks, m. Both measured off
+ * the solver's own flights — see `throwFlightTime` and `flightPath`.
+ */
+const LOFT_FLIGHT = 1.75;
+const LOFT_ARC = 6.4;
+const CATCH_PLANE_DROP = 0.25;
+
+/**
  * Below this the disc is gone: Game.ts refuses a standing catch under
  * `groundY + 0.20`, and this leaves a frame of margin on top of that. The point
  * where the flight crosses it is the player's LAST CHANCE on his feet, and that
@@ -569,7 +594,18 @@ export function throwFlightTime(p: AIPlayer, type: ThrowType, d: number): number
     backhand: 1.0, forehand: 1.0, hammer: 0.80, scoober: 0.70, push: 0.78,
   };
   const arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor[type];
-  return 0.28 + d / arrive;
+  const flat = 0.28 + d / arrive;
+  /**
+   * **A huck is a different throw and it hangs.** Past `SOLVE_LOFT_RANGE` the
+   * solver stops taking the flat root and throws the disc over the top
+   * (`ThrowSolver.solveElevation`), and the flight time roughly doubles: sampled
+   * off the real integrator through the solver, a 70-power backhand arrives at
+   * 26/30/34/36 m in 3.32/3.60/3.86/4.00 s against 1.81/2.04/2.28/2.40 s for the
+   * line drive. The step is a real step — the throw changes — and the lead, the
+   * separation horizon and the deep-shot valuation all read this clock, so it
+   * has to have the step in it too.
+   */
+  return d >= SOLVE_LOFT_RANGE ? flat * LOFT_FLIGHT : flat;
 }
 
 /**
@@ -2335,21 +2371,44 @@ export class TeamAI {
     const n = 10;
     const out: FlightSample[] = [];
     /**
-     * The arc follows the FLIGHT TIME, not the distance. `0.28 + 0.05 * d` was
-     * fitted when every throw floated at ~14 m/s; the release-speed stretch made
-     * long throws fast and flat, and a 30 m huck modelled at a 1.8 m mid-flight
-     * bulge sailed, in the model, clean over defenders the real disc crossed at
-     * head height — measured as "blocked" being the top huck outcome (6 of 17).
-     * A ballistic bulge is g*tf^2/8; 0.36*tf^2 sits just above that for the lift
-     * the disc actually has, and reproduces the old numbers at the old speeds.
+     * **A disc is not a shell, and this used to model one.**
+     *
+     * The bulge was `0.28 + 0.36 * tf^2` — a ballistic arc, sized off gravity —
+     * and `laneBlockage` reads the height back to decide whether a defender can
+     * reach the flight, discarding every sample above his reach. So the two
+     * together asserted that any throw over about 26 m sails clean over
+     * everybody, and the AI could not see a defender standing in the lane of a
+     * huck at all: measured over four fifteen-minute matches, `blockage` was
+     * 0.008 on the mean completion and identically 0.000 on every throw that was
+     * actually blocked or intercepted. It was not misjudging coverage; it was
+     * blind to it.
+     *
+     * The disc flies flat. Sampled off the real integrator through the solved
+     * release (`tools/_lanearc.ts`), a backhand released at 1.05 m holds 0.9 to
+     * 1.3 m for the whole flight at every distance from 6 m to 30 m — it is a
+     * line from the hand to the catch with a hand's breadth of lift in it, and
+     * it crosses a defender at chest height the entire way. So that is what this
+     * models now: the endpoints as given, and a 0.16 m rise rather than a
+     * two-metre one. A hammer really does go over the top and keeps its arc.
      */
-    const arc = type === 'hammer' ? 3.2 : 0.28 + 0.36 * tf * tf;
+    // A huck is lofted over the defence (`ThrowSolver.SOLVE_LOFT_RANGE`); a line
+    // drive is not, and the whole point of the flat number is that the AI can
+    // then see the defenders it is throwing through.
+    const throwLen = Math.hypot(to.x - from.x, to.z - from.z);
+    const arc = type === 'hammer' ? 3.2
+      : throwLen >= SOLVE_LOFT_RANGE ? LOFT_ARC : 0.16;
+    // `from` is a player's ground position and `to` is a catch point, so neither
+    // y is the disc's. The flight runs hand to hands: `Game.releaseOrigin` puts
+    // the disc at 1.10 hip heights and `aiThrow` solves it down to a plane a
+    // quarter of a metre under that.
+    const y0 = Math.max(from.y, HAND_HEIGHT);
+    const y1 = Math.max(from.y, HAND_HEIGHT - SOLVE_CATCH_DROP);
     for (let i = 0; i <= n; i++) {
       const s = i / n;
       out.push({
         t: s * tf,
         x: lerp(from.x, to.x, s),
-        y: lerp(Math.max(from.y, 1.2), to.y, s) + arc * 4 * s * (1 - s),
+        y: lerp(y0, y1, s) + arc * 4 * s * (1 - s),
         z: lerp(from.z, to.z, s),
       });
     }
@@ -2376,9 +2435,28 @@ export class TeamAI {
         if (isMark ? s.t > 0.42 : (s.t > cut || s.t < 0.05)) continue;
         if (s.y > reach || s.y < 0.15) continue;
         const hd = dist2(f.pos.x, f.pos.z, s.x, s.z);
-        const reachable = isMark
-          ? 0.80 + v * Math.max(0, s.t - 0.08) * 0.32
-          : 0.60 + v * Math.max(0, s.t - 0.14) * 0.72;
+        /**
+         * **The closing term needs a ceiling, and it never had one because
+         * nothing ever reached it.**
+         *
+         * `v * (t - lag) * 0.72` is how far a defender could run, and on a
+         * two-second huck that is seven and a half metres — so every defender
+         * within six metres of the lane scored a full block and no deep throw
+         * was ever worth taking. It went unnoticed only because the old
+         * ballistic `flightPath` lofted long throws above `reachHeight` and the
+         * samples were discarded before they got here; flattening the arc to
+         * the flight the disc actually makes took hucks from 4.8 a match to 0.3.
+         *
+         * A defender who is seven metres away is guarding somebody else. What
+         * this term is really asking is how far he will abandon his own
+         * assignment on a read, and that is a couple of strides — not a
+         * sixty-metre-a-minute sprint across the field on a disc he has no
+         * reason to expect. `LANE_POACH_MAX` is that budget.
+         */
+        const closing = Math.min(
+          v * Math.max(0, s.t - (isMark ? 0.08 : 0.14)) * (isMark ? 0.32 : 0.72),
+          LANE_POACH_MAX);
+        const reachable = (isMark ? 0.80 : 0.60) + closing;
         const w = clamp((reachable - hd) / 1.4, 0, 1) * awareness;
         if (w > worst) worst = w;
       }
@@ -2388,13 +2466,45 @@ export class TeamAI {
       receiver.pos.x, receiver.pos.z, path[path.length - 1].x, path[path.length - 1].z))), 0, 0.97);
   }
 
-  /** Metres of separation the receiver will have when the disc arrives. */
+  /**
+   * Metres of separation the receiver will have when the disc arrives.
+   *
+   * **The threat is whoever gets to the DISC first, not whoever is standing
+   * nearest the receiver.** This used to pick the defender closest to the
+   * receiver's current position and price the pass off him alone, which makes a
+   * poach, an undercut and the deep help invisible: none of them is the
+   * receiver's man, so none of them existed. Measured over four fifteen-minute
+   * matches, the median interception was a disc taken 1.2 m from the intended
+   * receiver by a defender 0.5 m off it, on a throw the model had priced at
+   * 4.1 m of separation. The AI was not misjudging the cover; it was looking at
+   * a different defender.
+   *
+   * Both candidates are considered now — the man on the receiver and the man
+   * nearest the catch point — and the pass is priced off whichever of them makes
+   * it worse. Two candidates rather than the whole defence because
+   * `timeToReach` is the expensive call in this file and `evaluateOptions` runs
+   * it per receiver per throw type.
+   */
   private separationAt(r: AIPlayer, aim: Vec3, tf: number): number {
-    let bestDef: AIPlayer | null = null; let bd = 1e9;
+    let onMan: AIPlayer | null = null; let bd = 1e9;
+    let onDisc: AIPlayer | null = null; let ad = 1e9;
     for (const f of this.foes) {
       const d = dist2(f.pos.x, f.pos.z, r.pos.x, r.pos.z);
-      if (d < bd) { bd = d; bestDef = f; }
+      if (d < bd) { bd = d; onMan = f; }
+      const a = dist2(f.pos.x, f.pos.z, aim.x, aim.z);
+      if (a < ad) { ad = a; onDisc = f; }
     }
+    if (onDisc && onDisc !== onMan) {
+      return Math.min(
+        this.separationFrom(r, onMan, aim, tf), this.separationFrom(r, onDisc, aim, tf));
+    }
+    return this.separationFrom(r, onMan, aim, tf);
+  }
+
+  /** `separationAt` against one named defender. */
+  private separationFrom(
+    r: AIPlayer, bestDef: AIPlayer | null, aim: Vec3, tf: number,
+  ): number {
     if (!bestDef) return 6;
     const tR = this.timeToReach(r, aim.x, aim.z);
     const reaction = 0.30 - 0.18 * (bestDef.attr.defAwareness / 100);

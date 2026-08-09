@@ -181,8 +181,31 @@ public func throwFlightTime(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> 
         .backhand: 1.0, .forehand: 1.0, .hammer: 0.80, .scoober: 0.70, .push: 0.78,
     ]
     let arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor[type]!
-    return 0.28 + d / arrive
+    let flat = 0.28 + d / arrive
+    /// **A huck is a different throw and it hangs.** Past `ThrowSolver.loftRange` the
+    /// solver stops taking the flat root and throws the disc over the top, and the flight
+    /// time roughly doubles: sampled off the real integrator through the solver, a
+    /// 70-power backhand arrives at 26/30/34/36 m in 3.32/3.60/3.86/4.00 s against
+    /// 1.81/2.04/2.28/2.40 s for the line drive. The step is a real step — the throw
+    /// changes — and the lead, the separation horizon and the deep-shot valuation all read
+    /// this clock, so it has to have the step in it too.
+    return d >= ThrowSolver.loftRange ? flat * loftFlight : flat
 }
+
+/// How much longer a lofted deep throw hangs than the line drive the flat model describes,
+/// and how high above the release line it peaks, m. Both measured off the solver's own
+/// flights — see `throwFlightTime` and `TeamAI.flightPath`.
+public let loftFlight = 1.75
+public let loftArc = 6.4
+
+/// Where a thrown disc leaves the hand, m — mirrors `Engine.releaseOrigin`'s
+/// `hipHeight * 1.10` on a 180 cm player. `TeamAI.flightPath` needs it because a player's
+/// own `pos.y` is his feet.
+public let handHeight = 1.05
+
+/// Most ground a defender is credited with covering to get into a throwing lane, m.
+/// See `TeamAI.laneBlockage`.
+public let lanePoachMax = 99.0
 
 /// How much difficulty costs a catcher. See `catchProbability`.
 ///
