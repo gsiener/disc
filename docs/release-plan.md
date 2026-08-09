@@ -1,0 +1,139 @@
+# ULTIMATE — Release Plan v1
+
+*Written 2026-08-09 by a three-lens review: a principal-engineer pass on architecture and
+test posture, a coach's pass on rules fidelity and gameplay authenticity, and a
+player-experience pass on the app itself. Every claim below was verified against the code
+on `main`; file:line citations live in the underlying review reports (task transcripts)
+and the task list derived from this plan.*
+
+## The goal
+
+A first release of the iOS game that **fans of ultimate would love**: gameplay that is
+recognisably, measurably the real sport — force and stack, stall and check, hucks and
+layout blocks, self-officiated texture — wrapped in a game a person voluntarily plays
+twice. The reference grammar remains `BRIEF.md` ("FIFA, not Madden": continuous flow,
+broadcast camera, pass-with-curve) and the design intent in `docs/gameplay-design.md`,
+re-targeted from the Three.js build to the Swift/iOS one.
+
+## Where we are
+
+**The simulation core is release-grade.** GameState is a single rules authority with no
+RNG/clock/renderer; the WFDF/USAU rules layer is the most faithful any of the reviewers
+had seen in a game codebase (stall mechanics, brick, check, walk-outs, double-team
+nuance, a full call/contest machine, an UltiAnalytics-grade stat sheet). The AI plays a
+real force and a real stack — front-of-stack goes deep, back comes under, clears leave
+the lane, the mark travels around the thrower to the break side. 2.2M differential
+assertions pass, and the throw solver now has a 480-case golden against the reference.
+
+**Three things stand between this and the goal:**
+
+1. **The game the player holds isn't the game we validated.** `MatchView` drives the
+   engine with wall-clock dt on a `Task.sleep` loop; the entire validation ran at fixed
+   1/120. Every launch is the identical match (hardcoded seed). The single highest-risk
+   function — `tryCatch`, which decides every catch, drop, block and interception — is
+   still unguarded by a golden; mutation testing proved it breaks silently.
+
+2. **It doesn't yet feel like ultimate at the top end.** Measured: 72–79% completions
+   (real: 88–96%), ~50% break rate (real offences hold 65–80%), one throw per ~9 s
+   (real: 3–6 s), longest completion in 15 min of sevens: 16.7 m — **nobody ever
+   hucks**. Throwers drift with the disc (no pivot constraint) and travel is dead code;
+   fouls, picks, strips, timeouts and zone are all built and never fire in a match.
+
+3. **It's a sim viewer, not yet a game.** The whole input surface is one drag gesture;
+   the cone-select never shows who it picked until after release; a drop, block,
+   stall-out and OB all look identical; games end as a permanent freeze-frame (no
+   game-over screen); four engineering tabs ship next to Play; no lifecycle handling,
+   no persistence, no difficulty, no CI running the suite.
+
+## Success metrics (the definition of "great and accurate")
+
+Measured from headless 15-minute sevens matches unless noted:
+
+| Metric | Now | Target |
+|---|---|---|
+| Completion rate | 72–79% | 85–92% |
+| Holds vs breaks | ~50% breaks | offence holds 65–75% |
+| Release cadence | ~9 s/throw | 4–6 s/throw |
+| Hucks (≥30 m completions) | 0 | ≥2 per game, attempted more |
+| Calls (foul/pick/travel) per game | 0 | ≥1, resolved through the check machine |
+| Point length | ~2.5 min | 2–3 min (unchanged), with timeout/cap endgame |
+| Player-visible | freeze at game end | result screen + stats + rematch |
+| Loop | wall-clock dt | fixed 1/120 accumulator, display-linked |
+| tryCatch | unguarded | differential golden, mutations die |
+
+## The plan — four milestones
+
+### M0 · Trust what we ship (engineering foundations)
+The shipped loop must be the validated loop, and the function that decides the game's
+feel must be pinned before we start retuning it (M1 deliberately retunes catch odds —
+doing that against an unguarded function is how silent drift starts).
+
+- Fixed-tick accumulator in MatchView, display-linked (reuse `FixedClock`), so ProMotion
+  120 Hz is reachable and a frame hitch can't hand the sim a 3× step.
+- `tryCatch` differential golden (frozen states + injected roll → outcome), same recipe
+  as the throw solver. Kills the known surviving mutations.
+- Random match seed per game, surfaced for replay sharing.
+- CI: `swift run SimTests` + release-config iOS build on every push.
+- Extract `EngineConfig` (formations/force/aggression/tuning constants) — the seam that
+  difficulty levels and M2's pre-game sheet need.
+
+### M1 · It feels like ultimate (authenticity)
+The coach's ranked list. Order matters: pin tryCatch first (M0), then calibrate.
+
+- **Hucks**: explicit deep-shot valuation (goal proximity + jump-ball win% from
+  jumping/speed) instead of pricing 40 m throws through the multiplicative
+  completion chain that zeroes them.
+- **Offence advantage**: calibrate catch probability / defender roll (`p *= 0.62`,
+  interception `* 0.55`) until holds land 65–75%.
+- **Tempo**: release every 4–6 s — decision latency, early-stall hold bar, give-go
+  continuation after completions.
+- **Pivot + travel**: pivot constraint in Locomotion, wire `pivotFoot` into the
+  observation; the already-built travel machinery goes live and the visible
+  thrower-drift disappears.
+- **AI timeouts** (machinery exists, one call away) and **reachable zone** (widen the
+  match weather draw past the 4.5 m/s zone threshold so the 3-2-2 cup ever appears).
+- **Contact → foul/pick pipeline** feeding the existing `makeCall`/`resolveCall`
+  machine — the sport's self-officiated texture. (Largest item; can land after first
+  TestFlight.)
+- **Caps on a match clock** for the timed-match endgame.
+
+### M2 · It plays like a game (player experience)
+- **Live cone-select preview** while dragging (the hooks — `selectedReceiver`,
+  `lastAssist` — already exist and nothing reads them).
+- **Game-over screen** with personal stats + rematch (fresh seed).
+- **Turnover callouts** — DROPPED / BLOCKED / STALLED / OUT OF BOUNDS; the engine
+  already distinguishes them.
+- **Haptics + assist feedback** (release/catch/turnover; post-throw micro-toast from
+  `lastAssist.leadError`).
+- **First-run coach overlay** (drag to throw, finish height = throw type, cone picks
+  the receiver).
+- **Pre-game sheet**: game to 3/5/7 + Easy/Normal/Hard riding the M0 `EngineConfig`.
+- **Wind indicator + control-handoff cue.**
+- **Off-disc play** (the retention work, both L): tap a teammate to call a cut;
+  tap-to-bid on defence so the opponent's possession stops being a cutscene.
+
+### M3 · Ship it (release engineering)
+- Lifecycle: pause on `scenePhase != .active`, pause/resume UI, stop hidden-tab tick
+  loops.
+- Persist in-progress match via `MatchRecorder` (already serialized + tested; wiring).
+- Gate the four debug tabs behind a build flag; fix per-frame RealityKit churn
+  (per-frame material allocation, entity dict rebuild).
+- Replace invariant-dependent force-unwraps (`byId[...]!`, `THROW_SPECS[...]!`) with
+  guarded lookups + notes — subs are explicitly anticipated and each becomes a crash.
+- Tests for the surfaces that have already silently failed once: marker inference,
+  `collectDeadDisc` brick-vs-sideline, stall-out release.
+- Docs truth pass: README still says "not a playable game / Game.ts is a stub."
+
+## Sequencing and dependencies
+
+M0 first and strictly before M1's calibration (golden before retune). M1 and M2 then
+interleave — authenticity items are sim-side, UX items are app-side, so they
+parallelize cleanly. The two L-sized items (foul pipeline, off-disc controls) are the
+only things allowed to slip past the first TestFlight build; everything else above is
+in it. M3 lands last but CI (in M0) guards the whole run.
+
+## Explicitly out of scope for v1
+
+Gender-ratio/roster rules (correctly n/a for arcade), substitutions (seam exists,
+feature doesn't), multiplayer, the Three.js build (frozen as the reference
+implementation — it is the oracle, not a product).
