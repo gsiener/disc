@@ -45,8 +45,110 @@ enum EngineTests {
         aRefusedActionChangesNothing()
         theHumanCannotThrowADiscTheyDoNotHave()
         theDiscArrivesWhereItWasAimed()
+        theAssistLeadsARunningReceiver()
         bidsReachTheBody()
         deterministic()
+    }
+
+    /// The player gets told who they meant, and gets a little help hitting them.
+    ///
+    /// **The assist is a nudge, not a lead solver, and writing this check is what made that
+    /// clear.** The first version aimed straight at a receiver's chest 20 m away as he ran
+    /// across at 7 m/s and asserted the assist would lead him. It does not, and it should
+    /// not: that shot needs 27 degrees of lead and the window is twelve, so the assist
+    /// declines entirely and the disc goes where it was pointed. What it buys is the last
+    /// five degrees for somebody already nearly right.
+    ///
+    /// So a human still has to lead a runner by eye. That is the reference's design, stated
+    /// in its own words — **timing skill buys accuracy; it does not buy aim** — and the
+    /// bounds are asserted rather than trusted, because a helper that quietly drags a
+    /// deliberate throwaway back onto a receiver is a control that lies.
+    private static func theAssistLeadsARunningReceiver() {
+        // A middling athlete. The assist's behaviour must not depend on who is running.
+        let flatAttributes = AIAttributes(
+            speed: 70, acceleration: 70, agility: 70, jumping: 70, catching: 70,
+            throwAccuracy: [:], throwPower: 70, decision: 70, stamina: 70, defAwareness: 70)
+        let from = Vec3d(0, 1.35, 0)
+        // A receiver 20 m downfield, running across at 7 m/s.
+        let runner = HumanTargeting.Body(
+            id: 1, team: 0, pos: Vec3d(0, 0, 20), vel: Vec3d(7, 0, 0),
+            attr: flatAttributes, energy: 1, available: true)
+
+        // Where the lead actually is, and an aim eight degrees short of it — inside the
+        // window, so the assist engages.
+        let atChest = atan2(runner.pos.x - from.x, runner.pos.z - from.z)
+        let declined = HumanTargeting.assistedYaw(
+            rawYaw: atChest, quality: 1, power: 0.5, from: from, receiver: runner)
+        Check.ok(
+            abs(declined.leadError) > HumanTargeting.assistWindow,
+            "leading a 7 m/s runner at 20 m is well outside the window "
+                + "(\(declined.leadError) rad)")
+        Check.bitEqViaJSON(
+            declined.applied, 0, "so the assist declines and the disc goes where it was aimed")
+
+        let ideal = atChest + declined.leadError
+        let raw = ideal - 8 * Double.pi / 180
+        let clean = HumanTargeting.assistedYaw(
+            rawYaw: raw, quality: 1, power: 0.5, from: from, receiver: runner)
+        Check.ok(clean.applied > 0, "an aim eight degrees short of the lead is nudged onto it")
+        Check.ok(
+            abs(clean.applied) <= HumanTargeting.assistMax + 1e-12,
+            "and never rotates more than five degrees (\(clean.applied) rad)")
+        Check.near(
+            clean.leadError, 8 * Double.pi / 180, 1e-9,
+            "and the reported lead error is the eight degrees it was given")
+
+        // Quality scales it, and only it.
+        let rushed = HumanTargeting.assistedYaw(
+            rawYaw: raw, quality: 0.2, power: 0.5, from: from, receiver: runner)
+        Check.ok(
+            rushed.applied < clean.applied && rushed.applied > 0,
+            "a rushed release gets less of it (\(rushed.applied) vs \(clean.applied))")
+        Check.near(
+            rushed.applied, clean.applied * 0.2, 1e-12,
+            "in exact proportion to the quality")
+
+        // Outside the window it must decline entirely.
+        let elsewhere = HumanTargeting.assistedYaw(
+            rawYaw: raw - 0.6, quality: 1, power: 0.5, from: from, receiver: runner)
+        Check.bitEqViaJSON(
+            elsewhere.applied, 0, "a throw aimed somewhere else is left alone")
+        Check.bitEqViaJSON(
+            elsewhere.yaw, raw - 0.6, "and its heading is untouched")
+        Check.bitEqViaJSON(
+            HumanTargeting.assistedYaw(
+                rawYaw: raw, quality: 1, power: 0.5, from: from, receiver: nil).applied,
+            0, "and with nobody selected there is nothing to lead")
+
+        // The cone picks who you dragged at, and the lane term is what makes it more than
+        // an angle test: a teammate screened by a defender loses to an open one.
+        let thrower = HumanTargeting.Body(
+            id: 0, team: 0, pos: from, vel: .zero, attr: flatAttributes,
+            energy: 1, available: true)
+        let screened = HumanTargeting.Body(
+            id: 2, team: 0, pos: Vec3d(3, 0, 20), vel: .zero, attr: flatAttributes,
+            energy: 1, available: true)
+        let marker = HumanTargeting.Body(
+            id: 3, team: 1, pos: Vec3d(1.5, 0, 10), vel: .zero, attr: flatAttributes,
+            energy: 1, available: true)
+
+        let openPick = HumanTargeting.resolveConeSelect(
+            dx: 1.5, dz: 20, thrower: thrower, bodies: [thrower, runner, screened])
+        Check.ok(openPick != nil, "a drag downfield finds somebody")
+
+        let blocked = HumanTargeting.laneBlockage(
+            from: 0, 0, to: screened, bodies: [thrower, screened, marker])
+        let clear = HumanTargeting.laneBlockage(
+            from: 0, 0, to: screened, bodies: [thrower, screened])
+        Check.bitEqViaJSON(clear, 0, "an empty lane is not blocked")
+        Check.ok(blocked > 0.2, "a defender standing in it is (\(blocked))")
+        Check.ok(blocked <= 0.97, "and blockage is capped short of certainty")
+
+        // Nobody in the cone at all.
+        Check.ok(
+            HumanTargeting.resolveConeSelect(
+                dx: 0, dz: -20, thrower: thrower, bodies: [thrower, runner]) == nil,
+            "a drag with nobody in front of it selects nobody")
     }
 
     /// **The throw solver's actual property, asked directly.**
@@ -407,6 +509,7 @@ enum EngineTests {
         Check.ok(
             worstOut <= runOff + 1e-9,
             "players stay inside the run-off (worst excursion \(worstOut) m)")
+        Check.note("worst excursion onto the run-off: \(worstOut) m of 2.5")
 
         // Exactly one pull per point, and no point without one. The current point may not
         // have pulled yet, which is the only slack in the identity.

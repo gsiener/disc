@@ -103,6 +103,20 @@ public final class Engine {
     private var thrownBy: Int?
     private var intendedReceiver: Int?
 
+    /// Who the human's last drag was judged to mean, and what the assist did about it.
+    /// Read by the HUD, so the player can see who they are throwing to before it leaves.
+    public private(set) var selectedReceiver: Int?
+    public private(set) var lastAssist: HumanTargeting.Assist?
+
+    /// Every body as the targeting layer wants them.
+    private func targetingBodies() -> [HumanTargeting.Body] {
+        players.map { p in
+            HumanTargeting.Body(
+                id: p.id, team: p.team, pos: p.pos, vel: p.vel, attr: p.attr, energy: p.energy,
+                available: loco.get(p.id).map { loco.isAvailable($0) } ?? true)
+        }
+    }
+
     /// What the last AI release was asked for, so a check can ask whether it was delivered.
     ///
     /// **This exists because no match-level statistic can express the throw solver's actual
@@ -598,7 +612,17 @@ public final class Engine {
             loco.get(p.id)?.anchored = p.id == anchorId
         }
         loco.apply(intents.map(Engine.locoIntent), dt: dt, world: &records)
+        // The clamp, and then the sync **again**.
+        //
+        // `apply` syncs the bodies into `records` on its way out, so clamping after it left
+        // the AI reading the unclamped copy — a body pinned on the run-off kept the outward
+        // velocity this had just zeroed, and `tryCatch` mixed sources, taking its gap from
+        // the stale `AIPlayer.pos` and its reach from the clamped `LocoPlayer`. Worse, the
+        // check written to justify the clamp measures `AIPlayer.pos`, so it could only pass
+        // while the clamp never actually did anything. The reference has one source of
+        // truth: it clamps the body and copies loco → ai at the top of the next frame.
         keepOnField()
+        loco.syncTo(&records)
 
         // 5. Write the bodies back onto the AI's records. `syncTo` has already updated
         //    `records`; this is the copy back into the objects the AI reads next tick.
@@ -815,8 +839,34 @@ public final class Engine {
             disc.settle(game.discPos)
         }
 
+        // **Brick unless the sideline spot is genuinely further downfield.**
+        //
+        // This used to force `.brick` at the moment the pull went out, on the grounds that
+        // there is no interface for a captain to pick and a pending choice would park the
+        // machine. The second half is true and the first half is the wrong fix: the
+        // reference answers the question *here*, one tick later, with the actual rule — and
+        // answering it badly costs the receiving team the better mark on every pull that
+        // sails out deep, which is exactly the pull they are owed compensation for. It also
+        // made this guard, and `PullSpotChoice.sideline` with it, unreachable code.
+        //
+        // Answered *before* the possession guard, not after: `pullOutOfBounds` leaves
+        // possession nil until the spot is chosen, so a choice gated on possession is a
+        // choice that never gets made and a match that never restarts.
+        if game.awaitingPullChoice() {
+            let dir = Double(dirFor(game.receivingTeam))
+            let brick = format.field.brickMark(dirFor(game.receivingTeam))
+            let side = game.pullOobCrossing
+            let useSide = side.map { $0.z * dir > brick.z * dir + 2 } ?? false
+            demand(game.choosePullSpot(useSide ? .sideline : .brick))
+            // And put the physical disc where the choice just placed it. Without this the
+            // runtime keeps the disc at the point it crossed the line — the spot the AI
+            // then walks to — while the rules measure the pickup against the brick, so the
+            // collector stands over a disc the machine says is somewhere else and the
+            // match never restarts.
+            syncDisc()
+            return
+        }
         guard let team = game.possession else { return }
-        if game.awaitingPullChoice() { return }
         let spot = game.discPos
         // **A dead disc on the line is unreachable by design.** `AI.ts` caps every player's
         // speed by the room left to the perimeter, so nobody is ever steered over a
@@ -1082,7 +1132,7 @@ public final class Engine {
         beginFlight(from)
         demand(
             game.release(
-                playerId: id, pos: from, vel: vel, spin: req.spin, throwType: physType.rawValue))
+                playerId: id, pos: from, vel: vel, spin: disc.state.spin, throwType: physType.rawValue))
     }
 
     /// How close a player must be to a dead disc to pick it up, metres. `Game.ts:136`.
@@ -1131,16 +1181,6 @@ public final class Engine {
         disc.markScuff(clamp(Vec3d(s.vel.x, 0, s.vel.z).length / 14 + 0.35, 0.3, 1))
         if format.field.isInBounds(at) {
             demand(game.phase == .pullInFlight ? game.pullLanded(at) : game.ground(at))
-        } else if game.phase == .pullInFlight {
-            // Choose the brick immediately: there is no interface for a captain to pick,
-            // and leaving the choice pending would park the machine in TURNOVER_DEAD with
-            // `pickUp` refusing until somebody answered.
-            let crossing =
-                hadInBounds
-                ? (format.field.boundaryCrossing(lastInBounds, at)?.point
-                    ?? format.field.clampToField(at))
-                : format.field.clampToField(at)
-            demand(game.pullOutOfBounds(crossing, .brick))
         } else if hadInBounds {
             demand(game.outOfBoundsSegment(Vec3d(lastInBounds.x, 0, lastInBounds.z), at))
         } else {
@@ -1402,11 +1442,32 @@ public final class Engine {
         guard let c = carrier, c == controlled, let thrower = player(c) else { return false }
 
         let from = releaseOrigin(thrower)
+
+        // Who did they mean, and how much help do they get hitting them.
+        //
+        // The drag direction is both the aim and the select — a phone has one gesture, and
+        // the reference's cone exists precisely because a stick is a coarse instrument. The
+        // assist is a nudge and not a lead solver: see `HumanTargeting`, where nothing at
+        // all happens outside twelve degrees of the ideal lead, because past that the
+        // player is throwing somewhere else on purpose.
+        let bodies = targetingBodies()
+        var yaw = atan2(aim.x, aim.z)
+        if let me = bodies.first(where: { $0.id == c }) {
+            let picked = HumanTargeting.resolveConeSelect(
+                dx: aim.x, dz: aim.z, thrower: me, bodies: bodies)
+            selectedReceiver = picked
+            let assist = HumanTargeting.assistedYaw(
+                rawYaw: yaw, quality: quality, power: power, from: from,
+                receiver: picked.flatMap { id in bodies.first { $0.id == id } })
+            yaw = assist.yaw
+            lastAssist = assist
+        }
+
         let r = humanReleaseParams(type, power: power, quality: quality, tilt: loft)
         let req = ThrowRequest(
             type: type,
             from: from,
-            aim: aim,
+            aim: Vec3d(sin(yaw), 0, cos(yaw)),
             // `power: 1` because the release below is fully specified: `speed` overrides
             // it, and the remaining terms come from the mapping rather than the table.
             power: 1,
@@ -1423,11 +1484,15 @@ public final class Engine {
         case .livePossession:
             let vel = disc.release(req)
             thrownBy = c
-            intendedReceiver = nil
+            // The receiver the cone select judged the drag to mean. `TeamAIThrow`'s
+            // in-flight branch reads this to decide who backs the catch up, so a human
+            // throw used to be played by teammates as an unclaimed disc while an AI throw
+            // was not.
+            intendedReceiver = selectedReceiver
             beginFlight(from)
             return demand(
                 game.release(
-                    playerId: c, pos: from, vel: vel, spin: req.spin, throwType: type.rawValue))
+                    playerId: c, pos: from, vel: vel, spin: disc.state.spin, throwType: type.rawValue))
         default:
             // A check, a stoppage, a disc in the air: the machine would refuse it and so
             // does this, rather than putting a second disc into the sky to find out.
