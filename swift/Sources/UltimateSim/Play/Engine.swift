@@ -174,33 +174,12 @@ public final class Engine {
     /// The rule set in force. `GameState` owns it; this is the read.
     public var rules: RuleSet { game.rules }
 
-    /// Seconds a computer-run `PRE_PULL` line-up is given before the pull is thrown.
-    ///
-    /// Not a rule — the rules have nothing to say about how long a team takes to signal
-    /// ready — but the bodies have to arrive on their goal lines before the disc leaves,
-    /// or the pull is thrown at an empty half.
-    public static let pullSettle = 0.8
-
-    /// Seconds a *human* pulling team is given before the engine pulls for them.
-    ///
-    /// The pull is a throw, and a human whose team is pulling should get to make it — see
-    /// `humanRelease`. But a game that waits forever for a thumb that never arrives is a
-    /// game that never starts, so the wait has an end. Long enough to line up and aim,
-    /// short enough that an unattended match is only briefly boring.
-    public static let pullDeadline = 5.0
-
-    /// How long the goal callout stays up, seconds.
-    public static let scoreFlash = 2.5
-
-    /// Seconds of halftime.
-    ///
-    /// **A deliberate departure from `DEFAULT_RULES`, which says 300.** Five minutes is
-    /// right for a match and is the game hanging for a player: `GameState` sits in
-    /// `HALFTIME` doing nothing until the clock runs out, and there is no interface here
-    /// that could fill it. The rule itself — ends swap, timeouts come back, the opening
-    /// pull roles reverse — is wired and real; only its duration is tuned to something a
-    /// thumb can sit through.
-    public static let halftimeSeconds = 6.0
+    /// Every tuning knob this engine reads: pacing waits, the per-side style table, the
+    /// human-assist geometry, the match length. `.default` is today's engine exactly;
+    /// each field's story lives on the field. Fixed at construction because most of what
+    /// it sets — the rules, the rosters, the first point's `TeamAI`s — is spent by the
+    /// time `init` returns.
+    public let config: EngineConfig
 
     /// True once the machine has declared the game over. Not a score comparison: the
     /// caps, the win-by margin and the point cap all decide this and they all live in
@@ -216,8 +195,8 @@ public final class Engine {
     /// rather than inventing worse ones.
     ///
     /// Changing it after kickoff has no effect until the next point, since each point
-    /// builds fresh `TeamAI`s.
-    public var aggression = DEFAULT_TEAM_CONFIG.aggression
+    /// builds fresh `TeamAI`s. Starts at `config.aggression`.
+    public var aggression: Double
 
     /// Teams whose throws the computer makes. Defaults to the opponent only; set both and
     /// the game plays itself, which is how the checks run it headlessly.
@@ -225,17 +204,26 @@ public final class Engine {
     /// The **pull is not an AI throw** and is not gated by this: it is a rules event the
     /// machine demands before a point can start, so it happens with the computer switched
     /// off entirely. That is what makes a human-only engine reach a live possession at all.
-    public var autoTeams: Set<TeamId> = [1]
+    ///
+    /// Starts at `config.autoTeams`.
+    public var autoTeams: Set<TeamId>
 
     public init(
         format: GameFormat = .minis,
         target: Int? = nil,
-        seed: UInt32 = 0x5eed_c0de
+        seed: UInt32 = 0x5eed_c0de,
+        config: EngineConfig = .default
     ) {
         self.format = format
+        precondition(!config.sideStyles.isEmpty, "EngineConfig.sideStyles must not be empty")
+        self.config = config
+        self.aggression = config.aggression
+        self.autoTeams = config.autoTeams
         // A minis game is to 7 and a regulation game to 15 — the same numbers
-        // `FieldSpec` carried, kept here so the caller need not restate them.
-        let goal = target ?? (format.playersPerSide <= 3 ? 7 : 15)
+        // `FieldSpec` carried, kept here so the caller need not restate them. An explicit
+        // `target:` still outranks the config's override, because that parameter predates
+        // the config and the checks lean on it.
+        let goal = target ?? config.pointsToWin ?? (format.playersPerSide <= 3 ? 7 : 15)
         self.target = goal
         self.rng = Rng(seed: seed)
 
@@ -255,9 +243,10 @@ public final class Engine {
         opts.rules = { r in
             r.gameTo = goal
             // Halftime at the midpoint of whatever length this game is, which reproduces
-            // the regulation 8-of-15 and gives a minis game to 7 a break at 4.
-            r.halftimeAt = (goal + 1) / 2
-            r.halftimeDuration = Engine.halftimeSeconds
+            // the regulation 8-of-15 and gives a minis game to 7 a break at 4 — unless
+            // the config says otherwise.
+            r.halftimeAt = config.halftimeAt ?? (goal + 1) / 2
+            r.halftimeDuration = config.halftimeSeconds
             // NOT shortened for minis, and the reason is worth recording because it was
             // tried and measured.
             //
@@ -395,20 +384,21 @@ public final class Engine {
         //
         // Both sides defend person. A zone renders as bodies with no visible relationship
         // to each other, so the bias is pushed well negative rather than left at default.
-        let configs: [(Playbook.FormationName, Playbook.Force, Double, Double)] = [
-            (.vertical, .forehand, 1.05, -0.55),
-            (.horizontal, .middle, 0.95, -0.45),
-        ]
+        //
+        // The table itself lives on `EngineConfig.sideStyles` now, defaults unchanged, so
+        // a mode can restyle a side without editing this file.
+        let styles = config.sideStyles
         ai = (0..<2).map { t in
             var cfg = DEFAULT_TEAM_CONFIG
             cfg.seed = 1 + t + 2 * game.point
-            cfg.formation = configs[t].0
-            cfg.force = configs[t].1
+            let style = styles[t % styles.count]
+            cfg.formation = style.formation
+            cfg.force = style.force
             // `aggression` is the engine's exposed knob; the reference's per-side values
             // are folded into it rather than overriding it, so setting it still means
             // something and the two sides stay distinguishable.
-            cfg.aggression = aggression * configs[t].2
-            cfg.zoneBias = configs[t].3
+            cfg.aggression = aggression * style.aggressionScale
+            cfg.zoneBias = style.zoneBias
             return TeamAI(
                 team: t, dir: dirFor(t), rng: rng, cfg: cfg, field: format.field)
         }
@@ -549,7 +539,7 @@ public final class Engine {
     /// Derived from the machine's `POINT_SCORED` phase and its timer rather than latched
     /// here, so there is nothing to clear and nothing to leak into the next point.
     public var justScored: TeamId? {
-        guard game.phase == .pointScored, game.phaseTimer < Engine.scoreFlash else { return nil }
+        guard game.phase == .pointScored, game.phaseTimer < config.scoreFlash else { return nil }
         return game.lastScore?.team
     }
 
@@ -731,7 +721,7 @@ public final class Engine {
             // until the deadline to pull for itself; see `humanRelease`.
             let waited = game.phaseTimer
             let mine = !autoTeams.contains(game.pullingTeam)
-            if waited >= (mine ? Engine.pullDeadline : Engine.pullSettle) { autoPull() }
+            if waited >= (mine ? config.pullDeadline : config.pullSettle) { autoPull() }
         case .turnoverDead:
             collectDeadDisc()
         case .check:
@@ -740,7 +730,7 @@ public final class Engine {
             // that block was transcribed and this one was missed, which quietly removed
             // two-thirds of a second of dead time from every single turnover. It is a
             // pacing difference rather than a rules one, and the sport has that pause.
-            if game.phaseTimer >= Engine.checkWait {
+            if game.phaseTimer >= config.checkWait {
                 demand(game.check())
                 syncDisc()
             }
@@ -879,8 +869,8 @@ public final class Engine {
         // chalk. With a single fixed radius he stands there forever and the match stops:
         // the reference measured one seed sitting in `TURNOVER_DEAD` for 152 seconds. After
         // long enough standing over it, he bends down and takes it.
-        let reach = game.phaseTimer > Engine.pickupDwell
-            ? Engine.pickupDwellRadius : Engine.pickupRadius
+        let reach = game.phaseTimer > config.pickupDwell
+            ? config.pickupDwellRadius : config.pickupRadius
         var best = -1
         var bestD = reach
         for p in players where p.team == team {
@@ -1140,20 +1130,8 @@ public final class Engine {
                 playerId: id, pos: from, vel: vel, spin: disc.state.spin, throwType: physType.rawValue))
     }
 
-    /// The pause before the defence taps a checked disc back in. `Game.ts:134`.
-    private static let checkWait = 0.65
-
-    /// How close a player must be to a dead disc to pick it up, metres. `Game.ts:136`.
-    private static let pickupRadius = 1.6
-    /// …escalating to this after standing over it this long. See `collectDeadDisc`.
-    private static let pickupDwell = 1.4
-    private static let pickupDwellRadius = 3.6
-
-    /// How far a body can reach sideways for a disc, standing and laid out. `Game.ts:146`.
-    /// Nobody may touch a disc for the first tenth of a second after it leaves the hand.
-    /// Without it the mark is on top of the release point and takes it back off the
-    /// thrower's fingertips. `Game.ts:150`.
-    private static let releaseDeadtime = 0.10
+    // The check-wait, pickup radii and release deadtime moved to `EngineConfig`, docs
+    // and all; this file only reads them through `config`.
 
     private func stepDisc(dt: Double) {
         // Held: the disc rides with the holder's hand.
@@ -1179,7 +1157,7 @@ public final class Engine {
             return
         }
 
-        if disc.sinceRelease > Engine.releaseDeadtime, tryCatch() { return }
+        if disc.sinceRelease > config.releaseDeadtime, tryCatch() { return }
 
         guard s.touchedGround, !flightSettled else { return }
         flightSettled = true
@@ -1432,11 +1410,13 @@ public final class Engine {
         var yaw = atan2(aim.x, aim.z)
         if let me = bodies.first(where: { $0.id == c }) {
             let picked = HumanTargeting.resolveConeSelect(
-                dx: aim.x, dz: aim.z, thrower: me, bodies: bodies)
+                dx: aim.x, dz: aim.z, thrower: me, bodies: bodies,
+                cone: config.selectCone)
             selectedReceiver = picked
             let assist = HumanTargeting.assistedYaw(
                 rawYaw: yaw, quality: quality, power: power, from: from,
-                receiver: picked.flatMap { id in bodies.first { $0.id == id } })
+                receiver: picked.flatMap { id in bodies.first { $0.id == id } },
+                maxAssist: config.assistMax)
             yaw = assist.yaw
             lastAssist = assist
         }

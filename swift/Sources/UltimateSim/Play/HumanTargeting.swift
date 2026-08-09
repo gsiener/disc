@@ -124,8 +124,12 @@ public enum HumanTargeting {
     /// stops it handing you the player standing behind a defender, and the distance term is
     /// what stops a 2 m dish and a 55 m prayer from outscoring the 20 m cut you were
     /// obviously looking at.
+    ///
+    /// `cone` defaults to the pinned `selectCone`; `Engine` passes its config's value so
+    /// a mode can widen or tighten the select without touching the reference constant.
     public static func resolveConeSelect(
-        dx: Double, dz: Double, thrower: Body, bodies: [Body]
+        dx: Double, dz: Double, thrower: Body, bodies: [Body],
+        cone: Double = HumanTargeting.selectCone
     ) -> Int? {
         let l = (dx * dx + dz * dz).squareRoot()
         guard l > 1e-3 else { return nil }
@@ -144,9 +148,9 @@ public enum HumanTargeting {
             if d < selectMinRange { continue }
             let cosine = clamp((vx * ux + vz * uz) / d, -1, 1)
             let angle = acos(cosine)
-            if angle > selectCone { continue }
+            if angle > cone { continue }
 
-            let angular = 1 - angle / selectCone
+            let angular = 1 - angle / cone
             let openness = 1 - laneBlockage(from: ox, oz, to: r, bodies: bodies)
             // Everything from a 6 m dish out to a 30 m strike is worth full marks,
             // tapering to nothing at the 46 m the arm cannot reach anyway.
@@ -181,8 +185,12 @@ public enum HumanTargeting {
     /// The lead is solved against the receiver's own velocity in two passes, which is the
     /// same converging lead `AI.ts` uses and is accurate to well inside the five degrees
     /// this is allowed to move.
+    ///
+    /// `maxAssist` defaults to the pinned `assistMax`; `Engine` passes its config's
+    /// value so a mode can vary the help without touching the reference constant.
     public static func assistedYaw(
-        rawYaw: Double, quality: Double, power: Double, from: Vec3d, receiver: Body?
+        rawYaw: Double, quality: Double, power: Double, from: Vec3d, receiver: Body?,
+        maxAssist: Double = HumanTargeting.assistMax
     ) -> Assist {
         guard let r = receiver else {
             return Assist(yaw: rawYaw, leadError: 0, applied: 0)
@@ -201,7 +209,7 @@ public enum HumanTargeting {
         guard abs(err) <= assistWindow else {
             return Assist(yaw: rawYaw, leadError: err, applied: 0)
         }
-        let rot = clamp(err, -assistMax, assistMax) * clamp(quality, 0, 1)
+        let rot = clamp(err, -maxAssist, maxAssist) * clamp(quality, 0, 1)
         return Assist(yaw: rawYaw + rot, leadError: err, applied: rot)
     }
 }
