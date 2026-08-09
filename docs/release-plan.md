@@ -45,21 +45,66 @@ assertions pass, and the throw solver now has a 480-case golden against the refe
    game-over screen); four engineering tabs ship next to Play; no lifecycle handling,
    no persistence, no difficulty, no CI running the suite.
 
+## Progress — updated 2026-08-09
+
+**M0 is complete.** The shipped game now runs the validated dt regime (fixed 1/120
+accumulator on a display-linked timeline, clamped so a hitch can't hand the sim an
+oversized step), every match draws its own seed, `tryCatch` is pinned by a
+differential golden that kills all four previously-surviving mutations, `EngineConfig`
+exists as the seam for difficulty and modes, and CI runs the suite plus a simulator
+build on every push. CI earned its keep on the first run: it caught a type-check
+timeout in `TeamAI.swift` that only reproduces on the older toolchain GitHub ships.
+
+**M1 is roughly half done.** Hucks now exist and are thrown on purpose (1–4 completed
+≥30 m per 15-minute sevens match, longest 35.8 m, from a standing start of zero),
+release cadence is 5.1–5.5 s against a 4–6 s target, and the thrower has a pivot foot
+he may not move — settled drift fell 2.43 m → 0.77 m, and the travel machinery that
+had been dead code since it was written is now wired and asserted end to end.
+
+**M2 is mostly done.** The game has a beginning and an end: a pre-game sheet (length,
+format, difficulty), first-run coach cards, a live cone-select preview so you see who
+your drag means *before* you release, turnover callouts that name what went wrong,
+haptics matched to the feel spec, an assist toast that teaches aim honestly, a wind
+readout, and a result card with stats and rematch. A release build presents as Play
+only.
+
+**Two findings worth carrying forward**, both discovered by measurement rather than
+inspection:
+
+1. **The deep game cost completion percentage** — 75% → ~68%, moving *away* from the
+   85–92% target. That makes the offence-advantage calibration the necessary
+   counterweight rather than an independent item.
+2. **~35% of huck attempts go out of bounds**, and hucks cap near 36 m instead of
+   40–60 m, because the throw solver has no bank axis — it solves elevation only. The
+   disc physics already models hyzer correctly (the same huck flat dumps 17 m left; at
+   0.25 rad of hyzer it holds its line and travels 50.6 m). The AI simply never asks.
+   Fixing the *cause* is the honest way to buy back completion percentage; inflating
+   catch odds is not.
+
+Also found while chasing the deep game: a genuine porting bug in the release
+orientation (built from two `fromUnitVectors` calls instead of the reference's basis
+construction, so the antiparallel fallback fired on hucks aimed down −x and tilted the
+frame by metres). It was invisible until something finally threw far enough to trip
+it — an argument for the golden covering ranges the AI could not previously reach.
+
 ## Success metrics (the definition of "great and accurate")
 
 Measured from headless 15-minute sevens matches unless noted:
 
-| Metric | Now | Target |
-|---|---|---|
-| Completion rate | 72–79% | 85–92% |
-| Holds vs breaks | ~50% breaks | offence holds 65–75% |
-| Release cadence | ~9 s/throw | 4–6 s/throw |
-| Hucks (≥30 m completions) | 0 | ≥2 per game, attempted more |
-| Calls (foul/pick/travel) per game | 0 | ≥1, resolved through the check machine |
-| Point length | ~2.5 min | 2–3 min (unchanged), with timeout/cap endgame |
-| Player-visible | freeze at game end | result screen + stats + rematch |
-| Loop | wall-clock dt | fixed 1/120 accumulator, display-linked |
-| tryCatch | unguarded | differential golden, mutations die |
+| Metric | At review | Now | Target |
+|---|---|---|---|
+| Completion rate | 72–79% | ~68% ⚠ | 85–92% |
+| Holds vs breaks | ~50% breaks | holds > breaks on all seeds | offence holds 65–75% |
+| Release cadence | ~9 s/throw | 5.1–5.5 s ✅ | 4–6 s/throw |
+| Hucks (≥30 m completions) | 0 | 1–4 ✅ | ≥2 per game, attempted more |
+| Huck OB rate | n/a | ~35% ⚠ | well under that |
+| Thrower drift | 2.43 m | 0.77 m ✅ | one pivot radius |
+| Calls (foul/pick/travel) per game | 0 | 0 (machinery live, AI compliant) | ≥1, resolved through the check machine |
+| Point length | ~2.5 min | ~2.5 min | 2–3 min, with timeout/cap endgame |
+| Player-visible | freeze at game end | result screen + stats + rematch ✅ | — |
+| Loop | wall-clock dt | fixed 1/120, display-linked ✅ | — |
+| tryCatch | unguarded | differential golden ✅ | mutations die |
+| Throw execution skill | none (quality pinned to 1.0) | in progress | a charge with a perfect window |
 
 ## The plan — four milestones
 
