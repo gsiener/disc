@@ -105,7 +105,30 @@ public struct MatchView: View {
     /// The match settings, as last chosen — length, format, difficulty. Loaded from
     /// `Prefs` at construction and written back whenever a match starts from them, so the
     /// second launch opens on the game you were playing rather than on the defaults.
+    ///
+    /// **This is the sheet's copy, and it is editable while a match is running.**
+    /// `PreGameSheet` binds to it and writes every tap through live, and the gear on the
+    /// scoreboard opens that sheet mid-point. Nothing here is the setup the match on
+    /// screen is being played under — see `playedSetup`.
     @State private var setup: MatchSetup
+
+    /// The settings the live match is actually being played under.
+    ///
+    /// Written in exactly two places, `restart` and `adopt`, which are the only two ways
+    /// a match comes into existence. Everything that describes the match rather than the
+    /// sheet reads this: the save's fingerprint, the save's encoded setup, and REMATCH.
+    ///
+    /// **Why it has to be separate.** `setup` drifts the moment a player opens the gear
+    /// mid-match and changes anything, and `onDismiss` is a plain "close the sheet" with
+    /// no revert. Playing 3v3 to 5 on Normal, flicking FORMAT to 7v7 to see what it says,
+    /// tapping BACK and then backgrounding the app used to write a save that claimed to be
+    /// a 7v7 match: the resume built a 7v7 engine to replay a 3v3 tape, diverged, and
+    /// **discarded the match**. Changing only the *length* was worse — the physics is
+    /// identical until somebody reaches 5, so the checksum matched and the player was
+    /// silently resumed into a game to 7 they never started. The fingerprint cannot catch
+    /// either, because it is computed from the same drifted value on the write and on the
+    /// read.
+    @State private var playedSetup: MatchSetup
 
     /// Whether the pre-game sheet is up. True at launch, because a game should be chosen
     /// before it is played; true again whenever the sheet is reopened from the scoreboard
@@ -172,31 +195,29 @@ public struct MatchView: View {
     // The sim is advanced only in whole 1/120 s ticks; see the long comment on `body`'s
     // tick driver below and Sources/UltimateSim/Play/Replay.swift:19-56 for why.
 
-    /// The moment the previous display frame arrived, if one has.
-    @State private var lastFrame: Date? = nil
-    /// Wall-clock seconds owed to the simulation but not yet spent on whole ticks.
-    /// Clamped to `Self.maxAccumulated` so a hitch slows the game instead of
-    /// fast-forwarding it.
-    @State private var accumulator = 0.0
+    /// The wall clock, and everything measured against it: the frame stamp, the
+    /// accumulator, the charge, the slow motion and its cooldown.
+    ///
+    /// One value type in the sim package rather than six `@State` properties here, and
+    /// deliberately: those five quantities have invariants — the clamp, abandonment,
+    /// real-time slow motion, a charge that must not outlive the thumb — and while they
+    /// were arithmetic scattered through this file no check could reach a single one of
+    /// them. See `FrameClock`, and `ClockTests` for what is now asserted.
+    @State private var clock = FrameClock()
+
     /// Whole simulation ticks executed so far. The trail sampler keys off this, because
     /// the trail should sample the flight, not the display.
     @State private var tickCount = 0
-    /// Duration of the last rendered frame, in seconds. Feeds the camera's time-based
-    /// easing so a 120 Hz ProMotion display eases at the same speed as a 60 Hz one.
-    @State private var frameDt = 1.0 / 60.0
     /// Phase for the chevron's bob, advanced by wall time rather than by frame count so
     /// the bob speed does not depend on the display's refresh rate.
     @State private var bobPhase = 0.0
 
     /// The one and only step the simulation is advanced by. 1/120 is the regime the
     /// entire validation suite runs at (see `Replay.swift`), so it is the regime the
-    /// shipped game runs at.
-    private static let tickHz = 120
-    private static let tickDt = 1.0 / Double(tickHz)
-    /// The most wall time the accumulator will hold — 0.25 s, i.e. 30 ticks of catch-up
-    /// per frame at most. Anything beyond it (backgrounding, a debugger pause, a long
-    /// hitch) is dropped rather than replayed, so a stall can never spiral.
-    private static let maxAccumulated = 0.25
+    /// shipped game runs at. Named here as well because the recording carries the rate
+    /// and `saveMatch` settles the tick with it.
+    private static let tickHz = FrameClock.tickHz
+    private static let tickDt = FrameClock.tickDt
 
     /// Recent disc positions while it is in the air, oldest first. Collected in the tick
     /// loop rather than in the render pass, because the render pass runs once per drawn
@@ -210,25 +231,9 @@ public struct MatchView: View {
     /// `TurnoverFlash`, and `MatchEvent` for why the surface is a drained buffer.
     @State private var turnoverFlash: TurnoverFlash? = nil
 
-    /// The slow-motion in effect, if any. See `SlowMo`.
-    @State private var slowMo: SlowMo? = nil
-
-    /// Real seconds since the last hitstop started, so the cooldown has something to
-    /// measure. Starts large enough that the first one of a match is never swallowed.
-    @State private var sinceSlowMo = 999.0
-
     /// The defender the player has just sent at the disc, while it is worth saying so.
     /// See `DefenceCall`.
     @State private var defenceCall: DefenceCall? = nil
-
-    /// How long the thumb has been down on the current drag, in seconds of wall time.
-    ///
-    /// This is the charge. Advanced in `advance` off the frame clock rather than in the
-    /// gesture callback, because `DragGesture.onChanged` only fires when the finger
-    /// *moves* — a player who drags out and then holds perfectly still would otherwise
-    /// have a charge that stopped charging, which is the exact opposite of the skill
-    /// being asked for.
-    @State private var hold = 0.0
 
     /// What the aim assist did to the last throw, while it is still worth saying.
     @State private var assistToast: AssistToast? = nil
@@ -287,13 +292,10 @@ public struct MatchView: View {
     /// frame and never their size, and this varies the same number the same way. Slow
     /// motion is therefore invisible to a replay, which is the property that lets it
     /// exist at all.
-    private struct SlowMo: Equatable {
-        /// Wall time is multiplied by this before it reaches the accumulator.
-        let scale: Double
-        /// Seconds of *real* time remaining. Counted in real time on purpose: the effect
-        /// is 0.35 s of the player's life, not 0.35 s of a game that is running at 45%.
-        var timeLeft: Double
-    }
+    /// The pair of numbers themselves live in `FrameClock`, with the accumulator they
+    /// scale — see there for why the fuse burns in real seconds, and for the gap that used
+    /// to freeze it.
+    private typealias SlowMo = FrameClock.SlowMo
 
     /// The one place an event turns into a slowed clock.
     ///
@@ -427,6 +429,9 @@ public struct MatchView: View {
         var chosen = Prefs.loadSetup() ?? MatchSetup()
         if let format { chosen.format = format.teamSize <= 3 ? .minis : .full }
         _setup = State(initialValue: chosen)
+        // The match built below is played under `chosen`, and `-setup off` starts it
+        // without anybody pressing START — so the two agree from the first frame.
+        _playedSetup = State(initialValue: chosen)
         _showSetup = State(initialValue: !skipsSetup)
         _hasStarted = State(initialValue: skipsSetup)
 
@@ -480,6 +485,12 @@ public struct MatchView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 paused = true
+                // A gesture interrupted by the system is a gesture that never ends:
+                // SwiftUI does not reliably deliver `DragGesture.onEnded` when a call, a
+                // notification banner or the home gesture takes the touch away. See
+                // `cancelDrag` for what a drag that outlives its thumb does to the rest of
+                // the match.
+                cancelDrag()
                 saveMatch()
             }
         }
@@ -500,15 +511,22 @@ public struct MatchView: View {
     }
 
     /// Whether the simulation should be advancing at all: the tab is showing, the app is
-    /// frontmost, nobody has paused it, and nothing is being read over the top of it.
+    /// frontmost, nobody has paused it, nothing is being read over the top of it, and the
+    /// game is not already won.
     ///
     /// The sheet and the coach cards ride the pause path rather than inventing their own,
     /// which is what makes reading them free: `advance` drops the frame stamp and empties
     /// the accumulator while this is false, so a minute spent on the second coach card
     /// costs the match nothing and buys it nothing.
+    ///
+    /// **Full time is one of them.** `Engine.step` early-returns once the game is over, so
+    /// nothing diverged — but the loop went on buying 120 of those returns a second, for
+    /// as long as the result card was on screen, and `sync` went on easing a camera over a
+    /// match that had finished. That is unbounded work and battery on a screen whose only
+    /// remaining input is one button.
     private var running: Bool {
         active && scenePhase == .active && !paused && !showSetup && !showCoach
-            && restoring == nil
+            && restoring == nil && !match.isOver
     }
 
     private var matchContent: some View {
@@ -556,8 +574,12 @@ public struct MatchView: View {
                 // game is over the only interesting fact left is the result, and the
                 // only interesting input left is the rematch button.
                 if match.isOver {
+                    // REMATCH is "again", so it is the setup the match just played was
+                    // played under — not whatever the sheet was last left showing. Same
+                    // drift as the save's, with a milder ending: a rematch on a format
+                    // nobody chose.
                     ResultOverlay(match: match) {
-                        restart(setup)
+                        restart(playedSetup)
                     } onSetup: {
                         showSetup = true
                     }
@@ -618,6 +640,17 @@ public struct MatchView: View {
                     }
                 }
             }
+            // `-charge` promises the *whole* gesture and used to deliver two thirds of it.
+            // `demoDrag` reached the aim overlay directly, so the aim line, power bar and
+            // charge meter drew — but `drag` itself stayed nil, and the receiver bracket
+            // and the arrow on the grass are both drawn by `sync` from `drag`. The two
+            // pieces the argument exists to photograph were the two it could not reach.
+            // Setting the state the finger would have set fixes that and costs nothing:
+            // the charge is *not* started, so `clock.hold` stays zero and the meter keeps
+            // drawing the pinned value.
+            .onAppear {
+                if demoCharge != nil, drag == nil { drag = demoDrag(in: geo.size) }
+            }
         }
     }
 
@@ -627,42 +660,41 @@ public struct MatchView: View {
     /// before a full tick's worth of wall time has accrued — so frame rate changes
     /// what you see, never what happens.
     private func advance(to now: Date) {
-        // Paused, backgrounded, or on a tab nobody is looking at.
+        // Full time. There is nothing left to come back to, so the file that says
+        // otherwise goes — once, not once per tick. Checked before `running` and not
+        // after the tick loop, because full time is now one of the things that *stops*
+        // the loop.
+        if match.isOver, !clearedAtEnd {
+            clearedAtEnd = true
+            MatchSave.clear()
+            resumable = nil
+        }
+
+        // Paused, backgrounded, on a tab nobody is looking at, or over.
         //
-        // The accumulator is emptied and the frame stamp is *dropped* rather than kept.
-        // Keeping it would mean the first frame after a resume measures the whole spell
-        // away — thirty seconds in someone's pocket — and the clamp on the accumulator
-        // would still hand the sim its full 0.25 s of catch-up, i.e. thirty ticks of
-        // game the player never saw, fired off in one frame. Dropping the stamp means
-        // the first frame back measures nothing at all and the second measures one
-        // frame, which is exactly the truth. Rendering still happens, so a paused pitch
-        // is a picture rather than a black screen.
+        // See `FrameClock.abandon` for what that costs and why: the stamp is dropped, the
+        // accumulator emptied, the charge ended and any slow motion cancelled. Rendering
+        // still happens — `frame` is bumped regardless — so a paused pitch is a picture
+        // rather than a black screen.
         guard running else {
-            lastFrame = nil
-            accumulator = 0
+            clock.abandon()
             frame &+= 1
             return
         }
 
         defer {
-            lastFrame = now
             // The redraw subscription: `sync` reads this, so bumping it once per frame
             // is what keeps the RealityView following the sim (and the eased camera
             // moving even on frames where no tick ran).
             frame &+= 1
         }
-        guard let last = lastFrame else { return }
-        let wallDt = now.timeIntervalSince(last)
-        // A hiccup — a suspended app resuming, a clock adjustment — must not poison a
-        // simulation that never reads a clock.
-        guard wallDt.isFinite, wallDt > 0 else { return }
+        // The stamp, the clamp, the slow-motion scale and the charge, all in one place.
+        // Nil means there is nothing to measure from — the first frame, or the first
+        // frame back from a gap — or that the clock did something impossible.
+        guard let frameDt = clock.beginFrame(at: now.timeIntervalSinceReferenceDate)
+        else { return }
 
-        frameDt = Swift.min(wallDt, Self.maxAccumulated)
         bobPhase += frameDt * 3.6
-
-        // The charge. Wall time, outside the simulation, like every other clock the HUD
-        // owns — and only while a thumb is actually down.
-        if drag != nil { hold += frameDt }
 
         // The finger a headless run does not have. See `autoDefend`.
         if autoDefend, match.defensiveCommit == nil { defend() }
@@ -678,18 +710,10 @@ public struct MatchView: View {
             return
         }
 
-        // Clamp the *accumulated* debt, not just this frame's: a hitch or a spell in
-        // the background yields at most 0.25 s (30 ticks) of catch-up, and the rest is
-        // dropped. The game slows down for a moment instead of fast-forwarding, and a
-        // slow frame can never demand enough ticks to cause the next slow frame.
-        //
-        // The slow-motion scale is applied *here*, to the wall time being paid in, and
-        // nowhere else. `Engine.step` below is handed `tickDt` and only `tickDt`, in
-        // every branch, at every rate — see `SlowMo`.
-        accumulator = Swift.min(
-            accumulator + wallDt * (slowMo?.scale ?? 1), Self.maxAccumulated)
-        while accumulator >= Self.tickDt {
-            accumulator -= Self.tickDt
+        // The ticks the frame bought. The debt was clamped and scaled as it was paid in,
+        // above; `Engine.step` is handed `tickDt` and only `tickDt`, in every branch, at
+        // every rate — see `FrameClock`.
+        while clock.takeTick() {
             match.step(dt: Self.tickDt)
             tickCount &+= 1
             recordTrail()
@@ -705,9 +729,8 @@ public struct MatchView: View {
                 // The cooldown is checked here rather than inside `slowMo(for:)`, which
                 // stays a pure function of the event so it can be reasoned about — and
                 // measured — without a clock.
-                if let s = Self.slowMo(for: event), sinceSlowMo >= Self.slowMoCooldown {
-                    slowMo = s
-                    sinceSlowMo = 0
+                if let s = Self.slowMo(for: event), clock.canSlow(after: Self.slowMoCooldown) {
+                    clock.slow(s)
                     slowed = true
                 }
             }
@@ -724,17 +747,9 @@ public struct MatchView: View {
             // anyway — so nothing is lost, only deferred to the next frame, where it
             // will be paid at the slowed rate like everything else.
             if slowed {
-                accumulator = Swift.min(accumulator, Self.tickDt)
+                clock.deferRemainingTicks()
                 break
             }
-        }
-
-        // Full time. There is nothing left to come back to, so the file that says
-        // otherwise goes — once, not once per tick.
-        if match.isOver, !clearedAtEnd {
-            clearedAtEnd = true
-            MatchSave.clear()
-            resumable = nil
         }
 
         // The callout clocks run on wall time, outside the simulation, like everything
@@ -755,13 +770,10 @@ public struct MatchView: View {
             call.timeLeft -= frameDt
             defenceCall = call.timeLeft > 0 ? call : nil
         }
-        sinceSlowMo += frameDt
-        // Real seconds, not slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game*
-        // time would run for the better part of a second on the clock the player lives on.
-        if var s = slowMo {
-            s.timeLeft -= frameDt
-            slowMo = s.timeLeft > 0 ? s : nil
-        }
+        // The hitstop's own fuse and its cooldown, burned in real seconds rather than
+        // slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game* time would run for
+        // the better part of a second on the clock the player lives on.
+        clock.endFrame()
     }
 
     private func recordTrail() {
@@ -784,34 +796,32 @@ public struct MatchView: View {
     private func throwGesture(in size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 8)
             .onChanged { g in
-                guard match.holder != nil else { return }
+                // The disc left the hand while the thumb was down: the stall count reached
+                // ten, or the point ended. There is no throw to aim any more, so the
+                // gesture is *cancelled* rather than merely ignored — see `cancelDrag`.
+                guard match.holder != nil else { return cancelDrag() }
                 // The first frame of a gesture starts the charge. `hold` runs on the
-                // frame clock from here — see the property, and `advance`.
-                if drag == nil { hold = 0 }
+                // frame clock from here — see `FrameClock`, and `advance`.
+                clock.beginCharge()
                 drag = interpret(from: g.startLocation, to: g.location, in: size)
             }
             .onEnded { _ in
-                guard match.holder != nil, let d = drag else { return }
+                guard match.holder != nil, let d = drag else { return cancelDrag() }
                 // The abort. `ThrowGesture` has no say here on purpose: it is a pure
                 // function of a drag's numbers and it is right that *if* a release is
                 // made, an 8 pt drag is a throw. Whether to make one is this file's
                 // decision, and a thumb that came back to where it started has said no.
-                guard !d.aborted else {
-                    drag = nil
-                    hold = 0
-                    return
-                }
+                guard !d.aborted else { return cancelDrag() }
                 // The charge, cashed in. The window narrows with the throw's own
                 // difficulty — a blade is 1.60× harder to release cleanly than a
                 // backhand — which is what makes the hard throws hard rather than
                 // merely differently shaped.
                 let charge = ThrowGesture.charge(for: d.type)
-                let grade = charge.grade(hold: hold)
-                let quality = charge.quality(hold: hold)
+                let grade = charge.grade(hold: clock.hold)
+                let quality = charge.quality(hold: clock.hold)
                 let thrown = match.humanRelease(
                     d.type, aim: d.aim, power: d.power, loft: d.loft, quality: quality)
-                drag = nil
-                hold = 0
+                cancelDrag()
                 guard thrown else { return }
                 // Written down at the tick that has not run yet, which is where a replay
                 // will apply it — see `Replay.swift` on why the two are the same state
@@ -882,7 +892,27 @@ public struct MatchView: View {
     }
 
     /// The hold the meter should draw: the real one, or the pinned one.
-    private var meterHold: Double { demoCharge ?? hold }
+    private var meterHold: Double { demoCharge ?? clock.hold }
+
+    /// Put the gesture down: no aim line, no power bar, no charge.
+    ///
+    /// **Every way out of a drag comes through here.** A completed throw, a release the
+    /// engine refused, a thumb that came home to cancel, a holder who stopped being one
+    /// mid-gesture, a release delivered when there is no longer a drag to release, the app
+    /// leaving the foreground — which SwiftUI does not reliably follow with `onEnded` at
+    /// all — the tap that ends a pause, and a match being restarted or restored.
+    ///
+    /// Two of those used to `return` without clearing anything, and the resulting
+    /// state was terminal: `drag` stayed non-nil for the rest of the match, which pinned
+    /// the aim overlay on screen, kept the grass arrow pointed at whoever had the disc —
+    /// including the other team — and, because the old `onChanged` only zeroed the charge
+    /// when `drag` was nil, graded **every subsequent throw of the match** as
+    /// `.overcharged` no matter what the player did with the meter. Nothing but a restart
+    /// or a restore could clear it.
+    private func cancelDrag() {
+        if drag != nil { drag = nil }
+        if clock.charging { clock.endCharge() }
+    }
 
     /// Turn a drag into a throw. The rule itself lives in `ThrowGesture`, in the sim,
     /// where the checks can reach it — this only supplies the numbers.
@@ -1330,7 +1360,7 @@ public struct MatchView: View {
                 // would ease twice as fast. `1 - exp(-rate * frameDt)` converges to the
                 // same curve at any refresh rate; rate = 60 * -ln(0.9) ≈ 6.32 /s is
                 // exactly what 0.10-per-frame was at 60 fps.
-                let blend = Float(1 - Foundation.exp(-6.32 * frameDt))
+                let blend = Float(1 - Foundation.exp(-6.32 * clock.frameDt))
                 from = simd_mix(from, want.from, SIMD3(repeating: blend))
                 at = simd_mix(at, want.at, SIMD3(repeating: blend))
             }
@@ -1357,20 +1387,21 @@ public struct MatchView: View {
         clearedAtEnd = false
         restoring = nil
 
+        // This is the moment, and the only moment besides `adopt`, that a chosen setup
+        // becomes the setup a match is being *played* under. See `playedSetup`.
+        playedSetup = setup
+
         seed = Self.freshSeed()
         match = Engine(
             format: setup.fieldSpec.gameFormat, seed: seed, config: setup.engineConfig)
-        drag = nil
+        cancelDrag()
         trail.removeAll()
         tickCount = 0
-        accumulator = 0
+        clock.reset()
         turnoverFlash = nil
-        slowMo = nil
-        hold = 0
         assistToast = nil
         handoff = nil
         defenceCall = nil
-        sinceSlowMo = 999
         lastControlled = match.controlled
         markStep = -1
         // A rematch is a resume: whatever paused the old match has been dealt with by
@@ -1400,7 +1431,15 @@ public struct MatchView: View {
     ///
     /// **It writes what it can and complains about nothing.** See `MatchSave.write`.
     private func saveMatch() {
-        guard hasStarted, !match.isOver, restoring == nil else {
+        // A restore in flight is *replaying the very file this would delete*. The save
+        // path runs on every `scenePhase` change, and `.inactive` is enough — it fires for
+        // a notification banner, a Control Centre swipe, an incoming call — so during the
+        // one-to-eight seconds of the replay bar the old code reached the `else` below and
+        // removed the match it was in the middle of rebuilding. It survived in memory, so
+        // nothing looked wrong; an OS kill in that window lost it with no file to return
+        // to. There is nothing to write yet and nothing to clear: leave the disk alone.
+        guard restoring == nil else { return }
+        guard hasStarted, !match.isOver else {
             MatchSave.clear()
             return
         }
@@ -1423,11 +1462,15 @@ public struct MatchView: View {
             autoTeams: match.autoTeams.sorted(),
             durationTicks: tickCount,
             inputs: inputs)
+        // `playedSetup`, emphatically not `setup`. The sheet's copy is editable *while a
+        // match is running* — open the gear mid-point, flick FORMAT to see what 7v7 says,
+        // tap BACK — and a save stamped with what the sheet last showed describes a match
+        // nobody played. See `playedSetup` for the two ways that ended.
         let saved = SavedMatch(
-            fingerprint: MatchSave.fingerprint(for: setup),
+            fingerprint: MatchSave.fingerprint(for: playedSetup),
             recording: recording,
             checksum: MatchChecksum(match, tick: tickCount),
-            setup: MatchSave.encode(setup))
+            setup: MatchSave.encode(playedSetup))
         MatchSave.write(saved)
     }
 
@@ -1510,17 +1553,17 @@ public struct MatchView: View {
         seed = saved.recording.seed
         inputs = saved.recording.inputs
         tickCount = saved.recording.durationTicks
+        // The setup this match is now being played under is the one it was played under
+        // before it was put down — not whatever the sheet happens to be showing.
+        playedSetup = played
 
-        drag = nil
+        cancelDrag()
         trail.removeAll()
-        accumulator = 0
+        clock.reset()
         turnoverFlash = nil
-        slowMo = nil
-        hold = 0
         assistToast = nil
         handoff = nil
         defenceCall = nil
-        sinceSlowMo = 999
         lastControlled = restored.controlled
         markStep = -1
         clearedAtEnd = false
@@ -1801,7 +1844,16 @@ public struct MatchView: View {
         }
         .ignoresSafeArea()
         .contentShape(Rectangle())
-        .onTapGesture { paused = false }
+        // The tap that ends the pause is also the last chance to throw away anything
+        // measured against a moment that is gone: a drag whose `onEnded` never came, and a
+        // hitstop frozen part-way through its 0.45 s. `FrameClock.abandon` has already
+        // taken both — every paused frame runs it — and `cancelDrag` takes the drag state
+        // the clock cannot see. Doing it here as well is what makes the resume path
+        // *state* rather than a side effect of the pause path still ticking.
+        .onTapGesture {
+            paused = false
+            cancelDrag()
+        }
     }
 
     /// The match being rebuilt.
