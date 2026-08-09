@@ -9,11 +9,19 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same ref supersedes an in-flight run — CI results for a
-# commit nobody will merge are not worth a macOS runner's time.
+# Supersede in-flight runs on a pull request, where only the tip matters — but
+# never on `main`, where every commit is already merged and each one deserves its
+# own verdict.
+#
+# It used to cancel on `main` too, and that is worse than it sounds in a repo
+# several agents push to. A broken commit followed a minute later by a good one
+# has its run cancelled and is never reported, so `main` looks green at a commit
+# that does not build — which is precisely how a broken `main` went unnoticed
+# here. It also mis-notifies: GitHub renders a cancelled run as
+# "CI: All jobs have failed", so every rapid second push raises a false alarm.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # The differential suite: SimChecks loads the JSON goldens bundled as package
