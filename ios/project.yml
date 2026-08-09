@@ -67,6 +67,20 @@ targets:
         # was installed; the target simply advertised nothing to run on.
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+    # Generate a SHARED scheme.
+    #
+    # Without this the project has no `.xcscheme` at all, and `xcodebuild -scheme
+    # Ultimate` falls back to an implicit scheme with no buildables — which reports
+    # itself as "Supported platforms for the buildables in the current scheme is
+    # empty" and then refuses every destination, including simulators, with the
+    # misleading "iOS <version> is not installed". The SDK was installed and the
+    # settings above were already correct; there was simply no scheme naming the
+    # target. Opening the project in Xcode papers over it by writing a scheme into
+    # `xcuserdata`, which is not committed — so it works until someone cleans, and
+    # never works on a machine that has not opened the project.
+    scheme:
+      testTargets: []
+      gatherCoverageData: false
     info:
       path: Ultimate/Info.plist
       properties:
