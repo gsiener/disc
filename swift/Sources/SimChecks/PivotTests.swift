@@ -159,6 +159,7 @@ enum PivotTests {
     /// must end up where he STOPPED, not where he caught it, which is the yardage a
     /// real receiver keeps.
     private static func momentumAllowance() {
+        var carries: [(entry: Double, carry: Double)] = []
         for entry in [4.0, 6.0, 8.0] {
             let l = loco()
             let p = l.create(CreateOpts(id: 1, team: 0, pos: Vec3d(0, 0, 0)))
@@ -181,9 +182,42 @@ enum PivotTests {
                 continue
             }
             let carry = Foundation.hypot(foot.x, foot.z)
+            Check.note(
+                "pivot carry at \(entry) m/s: \(String(format: "%.3f", carry)) m, "
+                    + "brakeMax \(String(format: "%.2f", p.derived.brakeMax)) m/s², "
+                    + "lock at \(String(format: "%.3f", lockT)) s")
+            carries.append((entry, carry))
+
+            // THE FLOOR, WHICH IS THE HALF THIS CHECK WAS MISSING.
+            //
+            // The range started at zero, so a build that locked the pivot instantly at the
+            // catch point — deleting the entire WFDF 18.2 momentum allowance this test
+            // exists to prove — scored 0.0 m at every entry speed and passed. That is the
+            // one bug the file is here to catch and it was the one case the assertion could
+            // not see.
+            //
+            // The floor is derived rather than picked: a body braking flat out from `entry`
+            // to `PIVOT_STOP_SPEED` covers `(v² - stop²) / 2a`, which is what the rules are
+            // paying for, capped at `PIVOT_CARRY_MAX` because nothing pays past that. Half
+            // of that is the bar — the sim's brake ramps in rather than stepping to max, so
+            // the ideal is an upper bound on the real distance, not a target.
+            //
+            // **A pivot is a foot, so its resolution is a footfall**, and that is why the
+            // floor only applies once the stop is longer than a stride. At 4 m/s the body
+            // reaches walking pace in 0.23 s and never re-plants, so the pivot is honestly
+            // the foot he caught it on and the measured carry is 0.000 m. At 6 and 8 m/s it
+            // is 1.307 m and 2.689 m against ideals of 1.406 and 2.545 — i.e. the carry
+            // tracks the physics closely wherever there is a stride to spend.
+            let ideal = Swift.min(
+                (entry * entry - Locomotion.PIVOT_STOP_SPEED * Locomotion.PIVOT_STOP_SPEED)
+                    / (2 * p.derived.brakeMax),
+                Locomotion.PIVOT_CARRY_MAX)
+            let floor = ideal > strideLength ? 0.5 * ideal : 0
             Check.inRange(
-                carry, 0, Locomotion.PIVOT_CARRY_MAX + 0.5,
-                "a \(entry) m/s catch carries \(carry) m before the pivot is set")
+                carry, floor, Locomotion.PIVOT_CARRY_MAX + 0.5,
+                "a \(entry) m/s catch carries \(carry) m before the pivot is set — the "
+                    + "rules owe him at least \(String(format: "%.3f", floor)) m of it "
+                    + "(half the \(String(format: "%.3f", ideal)) m he needs to stop in)")
             Check.ok(lockT < Locomotion.PIVOT_GRACE + 1e-9, "and sets it in \(lockT) s")
             // The whole point of establishing where he stopped: measured from there,
             // stopping is not travelling.
@@ -192,7 +226,23 @@ enum PivotTests {
                 !isTravel(Vec3d(foot.x, 0, foot.z), Vec3d(after.x, 0, after.z), makeRules()),
                 "and stopping hard is never a travel")
         }
+
+        // AND THE ALLOWANCE SCALES, which no per-entry bound can say on its own. A build
+        // that paid every receiver the same fixed carry would clear all three floors above
+        // and still have thrown away the rule: 18.2 pays for the steps you actually needed,
+        // so a faster catch must buy more ground than a slower one.
+        for (a, b) in zip(carries, carries.dropFirst()) {
+            Check.ok(
+                b.carry > a.carry + 0.25,
+                "a \(b.entry) m/s catch carries meaningfully further than a \(a.entry) m/s "
+                    + "one (\(String(format: "%.3f", b.carry)) m vs "
+                    + "\(String(format: "%.3f", a.carry)) m)")
+        }
     }
+
+    /// One stride, metres. The resolution of a pivot: below this a stopping body never
+    /// re-plants, so the foot he caught it on is the foot he keeps.
+    private static let strideLength = 1.0
 
     // MARK: - carrying
 

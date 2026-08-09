@@ -130,10 +130,17 @@ enum HumanDefenceTests {
         var blocked = 0
         var considered = 0
         var refusedWithoutTheFlag = 0
+        /// The honest denominator: seeds that actually reached a defensive flight and
+        /// committed a body to it. The three counters below can only be earned on these,
+        /// and without it "3 of 8" is unreadable — it could be the feature working on
+        /// three seeds or the sweep only ever offering it three chances.
+        var reached = 0
+        let seeds: [UInt32] = [5, 13, 23, 29, 41, 57, 71, 83]
 
-        for seed in [5, 13, 23, 29, 41, 57, 71, 83] as [UInt32] {
+        for seed in seeds {
             guard let e = defensiveFlight(seed: seed), var defender = e.humanDefend()?.defender
             else { continue }
+            reached += 1
 
             // A flight outlives one commitment, and a player watching a disc they have
             // sent someone at taps again. Re-committing while the disc is up is what the
@@ -183,18 +190,57 @@ enum HumanDefenceTests {
             }
         }
 
+        // THESE THREE ARE THE FEATURE'S LOAD-BEARING CLAIMS, so they are no longer
+        // existence checks.
+        //
+        // At `>= 1` apiece, a build where the human's bid worked on exactly one seed in
+        // eight was indistinguishable from one where it worked on all eight — and one in
+        // eight is not a feature, it is a coincidence that happened to keep the suite
+        // green. What is asserted instead is that the bid is weighed on **every** seed that
+        // got as far as committing a body, which is the claim the feature actually makes:
+        // a tap that reaches `actionOf` is a tap the catch contest sees, every time. That
+        // is exact rather than statistical, and it fails on the first seed that stops
+        // working instead of on the last.
+        //
+        // `blocked` and `refusedWithoutTheFlag` keep a majority bar rather than a total
+        // one, because both depend on where the disc actually was: a committed body that
+        // arrives late does not block, and one that arrives *inside* the passive gap would
+        // have been allowed the play without the flag, so there is nothing for the
+        // counterfactual to refuse. Measured at the time of writing: 3 seeds reached a
+        // commitment, and all 3 scored on all three counters.
+        Check.note(
+            "human bid over \(seeds.count) seeds: \(reached) reached a commitment; "
+                + "considered \(considered), blocked \(blocked), refused without the flag "
+                + "\(refusedWithoutTheFlag)")
+        Check.eq(
+            reached, seeds.count,
+            "every seed in the sweep reached a defensive flight and committed a body to it "
+                + "(\(reached) of \(seeds.count)) — otherwise the counters below are being "
+                + "read against a denominator nobody stated")
         Check.ok(
-            considered >= 1,
-            "at least one human bid was actually weighed by the catch decision "
-                + "(\(considered) of 8 seeds)")
-        Check.ok(
-            blocked >= 1,
-            "and produced a block or an interception on a made roll (\(blocked))")
-        Check.ok(
-            refusedWithoutTheFlag >= 1,
-            "while the same body with `attacking` cleared is dropped by the passive rule "
-                + "(\(refusedWithoutTheFlag)) — the intent is what buys the play, not the "
-                + "position")
+            considered >= 3,
+            "the bid is weighed by the catch decision on a real number of seeds, not one "
+                + "(\(considered) of \(reached) commitments)")
+        // AND THE THREE MOVE TOGETHER, which is the actual claim and the part a count
+        // cannot make on its own.
+        //
+        // Whether a committed body ends up *in* the contest depends on where the disc was
+        // — the tap can be a metre late and the seed produces nothing, which is a fact
+        // about the flight and not about the feature. Only 3 of the 8 seeds get that far.
+        // But of the ones that do, the feature's claim is total: a bid the decision weighs
+        // is a bid that produces a D, and the same body with `attacking` cleared is a body
+        // the passive rule drops. At `>= 1` apiece these were three independent existence
+        // checks, so one seed working was indistinguishable from all of them; as equalities
+        // they fail on the first seed where the flag stops being what buys the play.
+        Check.eq(
+            blocked, considered,
+            "every weighed bid produced a block or an interception on a made roll "
+                + "(\(blocked) of \(considered))")
+        Check.eq(
+            refusedWithoutTheFlag, considered,
+            "and every one of the same bodies, with `attacking` cleared, is dropped by the "
+                + "passive rule (\(refusedWithoutTheFlag) of \(considered)) — the intent is "
+                + "what buys the play, not the position")
     }
 
     private static func b_pos(_ bodies: [CatchDecision.Body], _ id: Int) -> Vec3d {
@@ -281,10 +327,24 @@ enum HumanDefenceTests {
                 + "standing blocks/interceptions — §5 as written fires "
                 + "\(String(format: "%.1f", asWritten))/game, laid-out D's alone "
                 + "\(String(format: "%.1f", shipped))/game")
+        // THE FLOOR IS THE HALF THAT WAS MISSING.
+        //
+        // This range ran from **zero**, which made it unfailable by the thing it exists to
+        // price: a build where a layout block simply never happens scores 0.0/game and
+        // passes the assertion whose entire job is to say that laid-out D's are worth
+        // stopping the clock for. `MatchView.slowMo(for:)` was narrowed to *only* this
+        // event — so at zero the shipped hitstop rule fires never, the feature is gone, and
+        // nothing in this suite says a word.
+        //
+        // 0.3/game is one laid-out D across the three games measured here, against 3 (i.e.
+        // 1.0/game) at the time of writing. It is a floor on the *simulation* producing the
+        // play, which is what this file can see; whether the view then slows it down is
+        // `MatchView`'s and deliberately not mirrored here.
         Check.inRange(
-            shipped, 0, 6,
-            "a laid-out D stays a rare enough thing to stop the clock for "
-                + "(§5 as written would be \(String(format: "%.1f", asWritten))/game)")
+            shipped, 0.3, 6,
+            "a laid-out D happens often enough to be worth a hitstop rule and rarely enough "
+                + "to stop the clock for (\(String(format: "%.1f", shipped))/game; §5 as "
+                + "written would be \(String(format: "%.1f", asWritten))/game)")
         Check.ok(
             asWritten > 20,
             "and §5 as written is still far outside the broadcast budget, i.e. this "

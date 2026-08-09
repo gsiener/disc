@@ -2030,6 +2030,13 @@ public final class Engine {
         return Vec3d(last.x, last.y, last.z)
     }
 
+    /// How far short of the thrower a hard close stops, in metres.
+    ///
+    /// A stride. Comfortably outside `PIVOT_R` (0.75 m), which is the radius the pivot
+    /// constraint and the contact resolver both defend, so the closing body settles just
+    /// beyond the one circle it must not be inside.
+    static let holdStandoff = 1.0
+
     /// Where a hard close should be aimed: the thrower, less a stride.
     ///
     /// Not the thrower's own spot. A body steered *into* the pivot is a body the contact
@@ -2037,9 +2044,33 @@ public final class Engine {
     /// good defence — the pressure a close buys comes from being a metre away when the
     /// disc goes up, not from standing in someone.
     ///
-    private func holdPoint() -> Vec3d? {
+    /// This returned the thrower's exact position for as long as it existed, which the
+    /// comment above has always denied. On its own that was a metre of aim; combined with
+    /// the per-tick re-aim and a full-effort run it drove a body into the pivot and held
+    /// it there for the whole 1.6 s commitment — shove-and-separate against the contact
+    /// resolver, and, now that the calls layer scores contact, a marking foul against the
+    /// one body the player is watching.
+    ///
+    /// `defender` is nil while `humanDefend` is still *choosing* a body: with nobody to
+    /// back off from there is no vector to back off along, and the thrower's own spot is
+    /// the right thing to rank time-to-reach against. Once a body is committed the
+    /// standoff is taken along thrower→defender, so the close approaches from wherever the
+    /// defender actually is rather than through the thrower.
+    private func holdPoint(for defender: PlayerId? = nil) -> Vec3d? {
         guard let c = carrier, let holder = player(c) else { return nil }
-        return Vec3d(holder.pos.x, 0, holder.pos.z)
+        guard let defender, let d = player(defender) else {
+            return Vec3d(holder.pos.x, 0, holder.pos.z)
+        }
+        let dx = d.pos.x - holder.pos.x
+        let dz = d.pos.z - holder.pos.z
+        let l = Foundation.hypot(dx, dz)
+        // Already inside the standoff, or standing exactly on him: aim at the thrower and
+        // let the contact resolver do the separating. Backing off along a zero-length
+        // vector would pick an arbitrary direction, and backing off along a very short one
+        // would fling the aim across the pivot.
+        guard l > 1e-3 else { return Vec3d(holder.pos.x, 0, holder.pos.z) }
+        let k = Swift.min(Engine.holdStandoff, l) / l
+        return Vec3d(holder.pos.x + dx * k, 0, holder.pos.z + dz * k)
     }
 
     /// Write the human's commitment into this tick's intents, over the AI's.
@@ -2075,7 +2106,7 @@ public final class Engine {
 
         // Re-aim every tick. A bid at where the disc was going a fifth of a second ago is
         // a bid a body's length behind it.
-        commit.at = (commit.kind == .bid ? bidPoint() : holdPoint()) ?? commit.at
+        commit.at = (commit.kind == .bid ? bidPoint() : holdPoint(for: commit.defender)) ?? commit.at
         commit.committed = !loco.isAvailable(lp)
 
         // A body already on the floor — fallen or being scraped up — is not taking new
@@ -2099,7 +2130,28 @@ public final class Engine {
         intent.faceZ = commit.at.z - p.pos.z
         intent.effort = 1
 
-        intent.desiredSpeed = intent.maxSpeed
+        // RAISE THE EFFORT, KEEP THE CAP.
+        //
+        // `desiredSpeed = min(maxSpeed * effort, capTo, capVel, arriveCap)` is where
+        // `TeamAI.intent` puts the boundary constraint, so `desiredSpeed = maxSpeed` did
+        // not "raise the effort" — it deleted the perimeter. Tap to bid on a disc drifting
+        // toward the sideline and the committed body, the one body the player is watching,
+        // ran flat out with nothing but the hard `keepOnField` backstop for the full
+        // 1.6 s. That is the opposite of what the comment above this function promises.
+        //
+        // The cap has to be re-solved rather than reused: the commitment *re-aims* the
+        // body, and the cap the AI solved was the cap toward the AI's target, which is no
+        // longer where this body is going. `boundaryRoom` is the same function `TeamAI`
+        // calls — a call, not the second copy of the perimeter the comment warns about.
+        // No `arriveCap` term, for the reason `TeamAI` has none on a sprint: both branches
+        // below set `.sprint`, `.jump` or `.layout`, and a body committed to a point is
+        // not settling onto it.
+        let roomTo = boundaryRoom(
+            p.pos.x, p.pos.z, commit.at.x - p.pos.x, commit.at.z - p.pos.z, field: format.field)
+        let roomVel = boundaryRoom(p.pos.x, p.pos.z, p.vel.x, p.vel.z, field: format.field)
+        let capTo = (2 * intent.maxDecel * Swift.max(0, roomTo)).squareRoot()
+        let capVel = (2 * intent.maxDecel * Swift.max(0, roomVel)).squareRoot()
+        intent.desiredSpeed = Swift.min(intent.maxSpeed, Swift.min(capTo, capVel))
 
         switch commit.kind {
         case .bid:
