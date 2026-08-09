@@ -87,3 +87,25 @@ And **look at the pixels**. `tools/capture.mjs` pins the camera and freezes the
 world, which is right for judging a material and useless for judging anything
 that moves; `tools/capture-live.mjs` releases both and photographs real play.
 See BRIEF.md for the operational traps in both.
+
+### Shut the Simulator down when you are done with it
+
+A booted simulator is a running iOS: a dozen daemons, a live GPU context, and —
+if you left the app running — a match still ticking at 120 Hz forever. Several
+agents verify on device in a session and they accumulate.
+
+```sh
+xcrun simctl terminate booted <bundle-id> 2>/dev/null   # stop the app first
+xcrun simctl shutdown all
+osascript -e 'quit app "Simulator"' 2>/dev/null
+```
+
+Do it as the last step of your task, after your final screenshot — not between
+runs, since booting again costs more than leaving it up for the next check. If
+another agent is mid-verification, `shutdown all` takes their device out from
+under them, so shut down **only what you booted** (`xcrun simctl shutdown <udid>`)
+while peers are running.
+
+This is not only hygiene. A simulator process once recycled a PID that a stale
+`~/.gnupg` lock file named, which blocked every commit in the repository until
+the daemons were killed.
