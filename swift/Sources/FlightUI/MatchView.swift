@@ -36,6 +36,20 @@ public struct MatchView: View {
     /// and everything behind it would stop being screenshot-able.
     private let skipsSetup: Bool
 
+    /// A charge to pin on screen, in seconds of hold, instead of waiting for a thumb.
+    ///
+    /// The throw gesture — aim line, power bar, receiver bracket and now the charge meter
+    /// — exists only while a finger is down, and `xcrun simctl launch` can pass arguments
+    /// but cannot drag. Same door and same reasoning as `formatOverride` and `skipsSetup`:
+    /// a control that can only be photographed by hand is a control that stops being
+    /// looked at. `-charge 0.85` draws the gesture mid-hold, at the moment the meter is
+    /// in its window.
+    ///
+    /// Nil — the normal case — means the overlay is a real drag or nothing at all. It
+    /// changes no simulation state: it is a `DragState` handed to the overlay, and it
+    /// never reaches `humanRelease`, because nothing releases it.
+    private let demoCharge: Double?
+
     /// Whether this view is the one on screen.
     ///
     /// A `TabView` builds a tab when it is first selected and then keeps it alive
@@ -120,16 +134,25 @@ public struct MatchView: View {
     /// frame and a trail should sample the flight, not the frame rate.
     @State private var trail: [SIMD3<Float>] = []
 
-    /// Watches the box score for turnovers, one diff per tick. See `MatchOverlays.swift`
-    /// for why this is a diff and not a subscription: the engine's event emitter is
-    /// spoken for before any view exists.
-    @State private var turnoverWatch = TurnoverWatch()
     /// The turnover being shouted about, while there is one. Its `timeLeft` is burned
     /// down by wall time in `advance`, so the shout lasts 1.5 s at any refresh rate.
+    ///
+    /// Built from `Engine.drainEvents()` rather than from a box-score diff — see
+    /// `TurnoverFlash`, and `MatchEvent` for why the surface is a drained buffer.
     @State private var turnoverFlash: TurnoverFlash? = nil
 
-    /// Watches the same box score for the things worth *feeling* rather than reading.
-    @State private var beatWatch = BeatWatch()
+    /// The slow-motion in effect, if any. See `SlowMo`.
+    @State private var slowMo: SlowMo? = nil
+
+    /// How long the thumb has been down on the current drag, in seconds of wall time.
+    ///
+    /// This is the charge. Advanced in `advance` off the frame clock rather than in the
+    /// gesture callback, because `DragGesture.onChanged` only fires when the finger
+    /// *moves* — a player who drags out and then holds perfectly still would otherwise
+    /// have a charge that stopped charging, which is the exact opposite of the skill
+    /// being asked for.
+    @State private var hold = 0.0
+
     /// What the aim assist did to the last throw, while it is still worth saying.
     @State private var assistToast: AssistToast? = nil
     /// The control swap being announced, while there is one.
@@ -159,6 +182,51 @@ public struct MatchView: View {
     /// which looks exactly like a frozen simulation and is not one. The frame counter is
     /// the honest fix: the view depends on the tick, and the tick depends on the clock.
     @State private var frame = 0
+
+    /// Time, slowed, for as long as the moment is worth watching.
+    ///
+    /// `docs/gameplay-design.md` §5: a contested or laid-out catch gets 0.45× for 0.35 s
+    /// **starting at the catch frame** — never before, because pre-slowing telegraphs a
+    /// dice roll that has not been rolled — a block gets 0.35× for 0.45 s, and a drop
+    /// gets nothing at all, because dead air is the drop's feedback. None of it was
+    /// reachable before the event stream: the box score cannot tell a contested catch
+    /// from a routine one, and by the time a counter has moved the catch frame is gone.
+    ///
+    /// **The simulation does not know this exists.** §5 specifies it as "a render-side
+    /// scale on the fixed-step accumulator", and that is exactly what it is: `Engine.step`
+    /// is still handed 1/120 and nothing else, and the only thing that changes is how much
+    /// wall time `advance` pays into the accumulator. A match is a pure function of
+    /// `(format, seed, inputs)` — frame rate already varies the *number* of ticks per
+    /// frame and never their size, and this varies the same number the same way. Slow
+    /// motion is therefore invisible to a replay, which is the property that lets it
+    /// exist at all.
+    private struct SlowMo: Equatable {
+        /// Wall time is multiplied by this before it reaches the accumulator.
+        let scale: Double
+        /// Seconds of *real* time remaining. Counted in real time on purpose: the effect
+        /// is 0.35 s of the player's life, not 0.35 s of a game that is running at 45%.
+        var timeLeft: Double
+    }
+
+    /// The one place an event turns into a slowed clock. Everything not named here — a
+    /// drop above all — deliberately gets nothing.
+    private static func slowMo(for event: MatchEvent) -> SlowMo? {
+        switch event {
+        case .caught(_, _, let grade, _):
+            // Never a routine completion. Completions are the metronome (§5) and a
+            // metronome that stops time is not one.
+            return grade == .routine ? nil : SlowMo(scale: 0.45, timeLeft: 0.35)
+        case .turnover(let reason, _, _, _, _, _):
+            // The peak moment of the sport on defence, and the only event allowed the
+            // full hitstop treatment. An interception is a catch block and counts.
+            switch reason {
+            case .block, .interception: return SlowMo(scale: 0.35, timeLeft: 0.45)
+            default: return nil
+            }
+        default:
+            return nil
+        }
+    }
 
     /// A drag in progress, in view coordinates plus the throw it currently means.
     private struct DragState {
@@ -212,10 +280,14 @@ public struct MatchView: View {
         var focus: Entity?
     }
 
-    public init(format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false) {
+    public init(
+        format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false,
+        demoCharge: Double? = nil
+    ) {
         self.active = active
         self.formatOverride = format
         self.skipsSetup = skipsSetup
+        self.demoCharge = demoCharge
 
         // The saved setup, with the launch argument — when there is one — overriding the
         // format it names and nothing else.
@@ -312,7 +384,7 @@ public struct MatchView: View {
                 vignette(in: geo.size).allowsHitTesting(false)
 
                 scoreboard
-                if let d = drag { aimOverlay(d, in: geo.size) }
+                if let d = drag ?? demoDrag(in: geo.size) { aimOverlay(d, in: geo.size) }
                 callout
                 assistReadout
 
@@ -404,28 +476,54 @@ public struct MatchView: View {
         frameDt = Swift.min(wallDt, Self.maxAccumulated)
         bobPhase += frameDt * 3.6
 
+        // The charge. Wall time, outside the simulation, like every other clock the HUD
+        // owns — and only while a thumb is actually down.
+        if drag != nil { hold += frameDt }
+
         // Clamp the *accumulated* debt, not just this frame's: a hitch or a spell in
         // the background yields at most 0.25 s (30 ticks) of catch-up, and the rest is
         // dropped. The game slows down for a moment instead of fast-forwarding, and a
         // slow frame can never demand enough ticks to cause the next slow frame.
-        accumulator = Swift.min(accumulator + wallDt, Self.maxAccumulated)
+        //
+        // The slow-motion scale is applied *here*, to the wall time being paid in, and
+        // nowhere else. `Engine.step` below is handed `tickDt` and only `tickDt`, in
+        // every branch, at every rate — see `SlowMo`.
+        accumulator = Swift.min(
+            accumulator + wallDt * (slowMo?.scale ?? 1), Self.maxAccumulated)
         while accumulator >= Self.tickDt {
             accumulator -= Self.tickDt
             match.step(dt: Self.tickDt)
             tickCount &+= 1
             recordTrail()
-            // At most one turnover fits in a tick, so checking per tick — rather than
-            // per frame — means a catch-up burst cannot swallow one.
-            if let flash = turnoverWatch.check(match) {
-                turnoverFlash = flash
-                Feel.play(beat(for: flash))
+
+            // Everything the machine decided in this tick, in the order it decided it.
+            // Drained per tick rather than per frame so a catch-up burst cannot swallow
+            // one — which is what the old counter diffing did whenever two things landed
+            // between snapshots.
+            var slowed = false
+            for event in match.drainEvents() {
+                if let flash = TurnoverFlash.make(event) { turnoverFlash = flash }
+                if let b = Feel.beat(for: event) { Feel.play(b) }
+                if let s = Self.slowMo(for: event) {
+                    slowMo = s
+                    slowed = true
+                }
             }
-            for b in beatWatch.check(match) { Feel.play(b) }
             // Control moves on catches and on turnovers, both of which happen inside a
             // tick, so this is checked where they happen rather than once a frame.
             if match.controlled != lastControlled {
                 lastControlled = match.controlled
                 handoff = Handoff(to: match.controlled, timeLeft: Handoff.duration)
+            }
+
+            // "Starting at the catch frame". If a burst of catch-up ticks was owed and
+            // the third of them was the layout grab, the remaining ticks must not be
+            // spent before the screen has drawn it. The debt is kept — one tick of it,
+            // anyway — so nothing is lost, only deferred to the next frame, where it
+            // will be paid at the slowed rate like everything else.
+            if slowed {
+                accumulator = Swift.min(accumulator, Self.tickDt)
+                break
             }
         }
 
@@ -443,17 +541,12 @@ public struct MatchView: View {
             h.timeLeft -= frameDt
             handoff = h.timeLeft > 0 ? h : nil
         }
-    }
-
-    /// What a turnover should feel like.
-    ///
-    /// The callout already worked out what happened and who gained; this only has to
-    /// pick the tap. A drop is deliberately silent either way — see `Feel.Beat.drop` —
-    /// and a D we won is the one event in the game allowed the heavy tap.
-    private func beat(for flash: TurnoverFlash) -> Feel.Beat {
-        if flash.text == "DROPPED!" { return .drop }
-        if flash.good, flash.text == "BLOCKED!" || flash.text == "INTERCEPTED!" { return .block }
-        return .turnover
+        // Real seconds, not slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game*
+        // time would run for the better part of a second on the clock the player lives on.
+        if var s = slowMo {
+            s.timeLeft -= frameDt
+            slowMo = s.timeLeft > 0 ? s : nil
+        }
     }
 
     private func recordTrail() {
@@ -477,6 +570,9 @@ public struct MatchView: View {
         DragGesture(minimumDistance: 8)
             .onChanged { g in
                 guard match.holder != nil else { return }
+                // The first frame of a gesture starts the charge. `hold` runs on the
+                // frame clock from here — see the property, and `advance`.
+                if drag == nil { hold = 0 }
                 drag = interpret(from: g.startLocation, to: g.location, in: size)
             }
             .onEnded { _ in
@@ -487,13 +583,22 @@ public struct MatchView: View {
                 // decision, and a thumb that came back to where it started has said no.
                 guard !d.aborted else {
                     drag = nil
+                    hold = 0
                     return
                 }
+                // The charge, cashed in. The window narrows with the throw's own
+                // difficulty — a blade is 1.60× harder to release cleanly than a
+                // backhand — which is what makes the hard throws hard rather than
+                // merely differently shaped.
+                let charge = ThrowGesture.charge(for: d.type)
+                let grade = charge.grade(hold: hold)
+                let quality = charge.quality(hold: hold)
                 let thrown = match.humanRelease(
-                    d.type, aim: d.aim, power: d.power, loft: d.loft)
+                    d.type, aim: d.aim, power: d.power, loft: d.loft, quality: quality)
                 drag = nil
+                hold = 0
                 guard thrown else { return }
-                Feel.play(.release)
+                Feel.play(.release(grade))
                 // Read after the release, not before: `humanRelease` is what runs the
                 // cone select and the assist, and `selectedReceiver` and `lastAssist`
                 // are its answer. Asking the preview instead would report what the drag
@@ -501,10 +606,26 @@ public struct MatchView: View {
                 if let assist = match.lastAssist {
                     let slot = match.selectedReceiver
                         .flatMap { id in match.players.firstIndex { $0.id == id } }
-                    assistToast = AssistToast.make(assist, jersey: slot.map(jersey))
+                    assistToast = AssistToast.make(
+                        assist, jersey: slot.map(jersey), grade: grade)
                 }
             }
     }
+
+    /// The pinned gesture `-charge` asks for, if it asked for one. A drag up and to the
+    /// right of a plausible thrower, which reads as a flat forehand at about two-thirds
+    /// power — enough of a drag to name a throw type and fill a power bar, which is what
+    /// the screenshot is for.
+    private func demoDrag(in size: CGSize) -> DragState? {
+        guard demoCharge != nil else { return nil }
+        return interpret(
+            from: CGPoint(x: size.width * 0.34, y: size.height * 0.62),
+            to: CGPoint(x: size.width * 0.62, y: size.height * 0.50),
+            in: size)
+    }
+
+    /// The hold the meter should draw: the real one, or the pinned one.
+    private var meterHold: Double { demoCharge ?? hold }
 
     /// Turn a drag into a throw. The rule itself lives in `ThrowGesture`, in the sim,
     /// where the checks can reach it — this only supplies the numbers.
@@ -917,9 +1038,9 @@ public struct MatchView: View {
         trail.removeAll()
         tickCount = 0
         accumulator = 0
-        turnoverWatch = TurnoverWatch()
         turnoverFlash = nil
-        beatWatch = BeatWatch()
+        slowMo = nil
+        hold = 0
         assistToast = nil
         handoff = nil
         lastControlled = match.controlled
@@ -1051,6 +1172,15 @@ public struct MatchView: View {
                 Text(toast.detail)
                     .font(.system(size: 11, design: .monospaced).bold())
                     .foregroundStyle(.white.opacity(0.6))
+                // The timing half of the throw, when it is worth mentioning. Silent on
+                // the plateau — see `AssistToast.ReleaseLine`.
+                if let release = toast.release {
+                    Text(release.text)
+                        .font(.system(size: 10, design: .monospaced).bold())
+                        .foregroundStyle(
+                            release.perfect
+                                ? Color(red: 0.5, green: 1, blue: 0.62) : .orange.opacity(0.85))
+                }
             }
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(
@@ -1193,6 +1323,7 @@ public struct MatchView: View {
                         .overlay(alignment: .leading) {
                             Capsule().fill(.orange).frame(width: 74 * d.power, height: 4)
                         }
+                    chargeMeter(for: d.type)
                 }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
@@ -1201,5 +1332,57 @@ public struct MatchView: View {
             .position(x: d.current.x, y: d.current.y - 34)
         }
         .allowsHitTesting(false)
+    }
+
+    /// The charge meter: a bar that fills while you hold, and a bright band you are
+    /// trying to let go inside.
+    ///
+    /// It sits directly under the power bar, is the same width, and is the only other
+    /// thing by the thumb — so the two halves of a throw read as one instrument. The band
+    /// is drawn from `targetHold` and `targetHalfWidth` live (`ThrowCharge.fullTime` and
+    /// `perfectWindow`), which means it *visibly narrows and shifts* when the drag
+    /// crosses into a hammer or a blade. That is the lesson: the harder throw is not
+    /// merely a different arc, it is a smaller window.
+    ///
+    /// The bar runs to a little past the end of the grace rather than to `maxHold`. Two
+    /// seconds of track would put the band at 42% of it and give three-fifths of the
+    /// meter to a region no one should ever be in.
+    @ViewBuilder private func chargeMeter(for type: ThrowType) -> some View {
+        let charge = ThrowGesture.charge(for: type)
+        let span = charge.fullTime + charge.overGrace + 0.25
+        let width = 74.0
+        let progress = Swift.min(1, meterHold / span)
+        let perfect = charge.isPerfect(hold: meterHold)
+        let inWindow = charge.inWindow(hold: meterHold)
+        let bandX = width * (charge.fullTime - charge.perfectWindow) / span
+        let bandW = width * (2 * charge.perfectWindow) / span
+        let green = Color(red: 0.5, green: 1, blue: 0.62)
+        let fill: Color = perfect ? .white : (inWindow ? green : .orange)
+
+        ZStack(alignment: .leading) {
+            Capsule().fill(.white.opacity(0.16)).frame(width: width, height: 6)
+            // The window. Always visible, because a target you can only see once you
+            // have hit it is not a target you can aim at.
+            Capsule()
+                .fill(green.opacity(perfect ? 0.95 : 0.5))
+                .frame(width: Swift.max(3, bandW), height: 6)
+                .offset(x: bandX)
+            Capsule().fill(fill).frame(width: width * progress, height: 6)
+            // The head, so the exact instant is readable at a glance rather than by
+            // judging the end of a bar against a band behind it.
+            Capsule()
+                .fill(.white)
+                .frame(width: 2, height: 10)
+                .offset(x: Swift.max(0, width * progress - 1))
+        }
+        .frame(width: width, height: 10)
+        .overlay(alignment: .trailing) {
+            if charge.isOvercharged(hold: meterHold) {
+                Text("HELD")
+                    .font(.system(size: 8, design: .monospaced).bold())
+                    .foregroundStyle(.orange)
+                    .offset(y: -11)
+            }
+        }
     }
 }

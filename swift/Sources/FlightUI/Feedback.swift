@@ -40,11 +40,21 @@ import UltimateSim
 /// no Mac equivalent worth faking. On macOS every call below compiles to nothing.
 @MainActor
 enum Feel {
-    enum Beat {
-        /// The disc leaves the hand.
-        case release
+    enum Beat: Equatable {
+        /// The disc leaves the hand, and how cleanly it was released.
+        ///
+        /// §5 gives an ordinary throw 40 ms at 0.3 and gives the perfect-window release
+        /// its own signature — "meter flashes white, ring pulse, 40 ms rumble at 0.3"
+        /// against the overcharged throw's "audible flutter". Until the charge existed
+        /// every release was the same tap, because every release was quality 1. Now the
+        /// tap is the first place the timing is answered, before the disc has moved far
+        /// enough to show you what it cost.
+        case release(ReleaseGrade)
         /// A team-mate caught it. The metronome.
         case completion
+        /// A contested or laid-out catch. Not the metronome — this is the one the game
+        /// slows down for, so it is not allowed to feel like the routine one.
+        case bigCatch
         /// A D. The one event allowed the heavy tap.
         case block
         /// A drop. Deliberately silent; see the note above.
@@ -60,10 +70,23 @@ enum Feel {
     static func play(_ beat: Beat) {
         #if os(iOS)
             switch beat {
-            case .release:
-                impact(.light, intensity: 0.3)
+            case .release(let grade):
+                switch grade {
+                // Crisper and a touch heavier than the ordinary throw, and the only
+                // release that gets the rigid tap — it is meant to be tellable through
+                // a thumb without looking at the meter.
+                case .perfect: impact(.medium, intensity: 0.5)
+                case .clean: impact(.light, intensity: 0.4)
+                case .steady: impact(.light, intensity: 0.3)
+                // Both mistakes read as *less*, not as more. A punishing buzz for a
+                // rushed throw would be the game shouting at a player who already knows.
+                case .rushed: impact(.soft, intensity: 0.2)
+                case .overcharged: impact(.rigid, intensity: 0.22)
+                }
             case .completion:
                 impact(.soft, intensity: 0.5)
+            case .bigCatch:
+                impact(.medium, intensity: 0.65)
             case .block:
                 impact(.heavy, intensity: 0.7)
             case .drop:
@@ -110,39 +133,41 @@ enum Feel {
 
 // MARK: - noticing the beats
 
-/// Turns the box score into taps, one diff per tick.
-///
-/// Same shape and same reason as `TurnoverWatch`: `GameState` emits `disc:caught` and
-/// `score` events internally, but the emitter is handed to the engine's private stat
-/// sink at construction and nothing re-exposes it — that is the engine-side gap. What
-/// *is* public is monotone, which is enough: a completion is a completion counter that
-/// went up, and a goal is a score that did.
-///
-/// Turnovers are not counted here. `TurnoverWatch` already classifies them for the
-/// callout, and classifying the same event twice from the same counters is how the two
-/// copies drift; `MatchView` feeds its flash straight into `Feel.Beat` instead.
-struct BeatWatch {
-    private var completions: [Int]?
-    private var score: [Int]?
-
-    /// Diff against the previous tick. Returns the beats that happened in it, in the
-    /// order they should be felt.
-    mutating func check(_ match: Engine) -> [Feel.Beat] {
-        let nowCompletions = [match.game.teamStats(0).completions, match.game.teamStats(1).completions]
-        let nowScore = match.score
-        defer {
-            completions = nowCompletions
-            score = nowScore
+extension Feel {
+    /// What one event should feel like, or nothing when it should not be felt.
+    ///
+    /// This used to be `BeatWatch`, which diffed the completion counters and the score
+    /// between ticks because `GameState`'s emitter was spoken for before any view
+    /// existed. `Engine.drainEvents()` ended that, and with the real event the mapping
+    /// gets two things the counters could not give it: the catch *grade*, so a laid-out
+    /// grab does not feel like a five-metre dish, and the turnover reason, so the drop's
+    /// deliberate silence is keyed off the machine saying "drop" rather than off which
+    /// of five monotone integers moved.
+    ///
+    /// Only our beats are felt. The opponent's completions are their rhythm, and buzzing
+    /// for them would make a defensive point feel like a good one.
+    static func beat(for event: MatchEvent, humanTeam: TeamId = 0) -> Feel.Beat? {
+        switch event {
+        case .caught(_, let team, let grade, _):
+            guard team == humanTeam else { return nil }
+            return grade == .routine ? .completion : .bigCatch
+        case .pullCaught(_, let team, _):
+            return team == humanTeam ? .completion : nil
+        case .score(let team, _, _, _):
+            return team == humanTeam ? .goal : .conceded
+        case .turnover(let reason, _, let to, _, _, _):
+            switch reason {
+            // Dead air is the feedback. §5 is explicit, and it holds whichever way the
+            // disc went — a drop we caused is not a tap we get to enjoy.
+            case .drop, .pullDrop: return .drop
+            case .block, .interception: return to == humanTeam ? .block : .turnover
+            default: return .turnover
+            }
+        case .pullThrown, .pullLanded, .pullOutOfBounds, .released:
+            // The release tap is played by the gesture, which knows the grade; the pull
+            // outcomes are the opening of a point rather than events in one.
+            return nil
         }
-        guard let wasCompletions = completions, let wasScore = score else { return [] }
-
-        var beats: [Feel.Beat] = []
-        // Only our completions are the metronome. Theirs are the opponent's rhythm and
-        // buzzing for them would make a defensive point feel like a good one.
-        if nowCompletions[0] > wasCompletions[0] { beats.append(.completion) }
-        if nowScore[0] > wasScore[0] { beats.append(.goal) }
-        if nowScore[1] > wasScore[1] { beats.append(.conceded) }
-        return beats
     }
 }
 
@@ -161,6 +186,36 @@ struct AssistToast: Equatable {
     let title: String
     let detail: String
     let tint: Tint
+    /// What the charge meter said about the release, as a line the player can read
+    /// after the fact.
+    ///
+    /// The assist lines answer "did I point at the right place"; this answers "did I let
+    /// go at the right moment", and they are different skills that used to be one. The
+    /// second was invisible because every human throw was quality 1 — there was nothing
+    /// to report.
+    let release: ReleaseLine?
+
+    struct ReleaseLine: Equatable {
+        let text: String
+        let perfect: Bool
+
+        init?(_ grade: ReleaseGrade) {
+            switch grade {
+            case .perfect: self.init(text: "PERFECT RELEASE", perfect: true)
+            case .clean: self.init(text: "CLEAN RELEASE", perfect: false)
+            // The plateau is the throw most throws are. Saying so every time would turn
+            // the one line that means something into wallpaper.
+            case .steady: return nil
+            case .rushed: self.init(text: "RUSHED", perfect: false)
+            case .overcharged: self.init(text: "OVERCHARGED", perfect: false)
+            }
+        }
+
+        private init(text: String, perfect: Bool) {
+            self.text = text
+            self.perfect = perfect
+        }
+    }
     /// Seconds of display remaining, burned down by the frame loop like the turnover
     /// flash — 1.2 s, which is long enough to read four characters and short enough that
     /// it is gone before the disc lands.
@@ -178,10 +233,21 @@ struct AssistToast: Equatable {
     /// named nobody — which matters, because an assist with no receiver reports a lead
     /// error of zero, and reporting that as "PERFECT LEAD" would be the one lie this
     /// whole overlay exists to avoid.
-    static func make(_ assist: HumanTargeting.Assist, jersey: Int?) -> AssistToast {
+    /// `grade` is what the charge meter read at release. It is a second line rather than
+    /// a second toast because the two facts are about the same throw and arrive in the
+    /// same instant, and two overlapping plates in the middle of the screen is how you
+    /// make a player read neither.
+    static func make(
+        _ assist: HumanTargeting.Assist, jersey: Int?, grade: ReleaseGrade
+    ) -> AssistToast {
+        let line = ReleaseLine(grade)
+        func toast(_ title: String, _ detail: String, _ tint: Tint) -> AssistToast {
+            AssistToast(
+                title: title, detail: detail, tint: tint, release: line, timeLeft: duration)
+        }
+
         guard let jersey else {
-            return AssistToast(
-                title: "NO TARGET", detail: "OPEN THROW", tint: .neutral, timeLeft: duration)
+            return toast("NO TARGET", "OPEN THROW", .neutral)
         }
         let errorDeg = abs(assist.leadError) * 180 / .pi
         let appliedDeg = abs(assist.applied) * 180 / .pi
@@ -190,26 +256,22 @@ struct AssistToast: Equatable {
         if errorDeg > window {
             // The assist looked and refused. Say so, and say by how much, because that
             // number is the lesson.
-            return AssistToast(
-                title: "NO ASSIST", detail: "\(Self.deg(errorDeg)) WIDE", tint: .miss,
-                timeLeft: duration)
+            return toast("NO ASSIST", "\(Self.deg(errorDeg)) WIDE", .miss)
         }
         // Under a degree and a half of lead error is inside the disc's own width at
         // catching range. Calling that perfect is not flattery, it is rounding.
         if errorDeg < 1.5 {
-            return AssistToast(
-                title: "PERFECT LEAD", detail: "TO #\(jersey)", tint: .good, timeLeft: duration)
+            return toast("PERFECT LEAD", "TO #\(jersey)", .good)
         }
         if appliedDeg < 0.25 {
-            // Inside the window but the release quality bought nothing. Rare, and worth
-            // distinguishing from a refusal — the drag was fine, the timing was not.
-            return AssistToast(
-                title: "NO ASSIST", detail: "\(Self.deg(errorDeg)) OFF · #\(jersey)",
-                tint: .miss, timeLeft: duration)
+            // Inside the window but the release quality bought nothing — which is now a
+            // sentence with teeth, because the assist is scaled by exactly the quality
+            // the charge meter just showed. A rushed release is the usual cause, and the
+            // release line underneath says so.
+            return toast("NO ASSIST", "\(Self.deg(errorDeg)) OFF · #\(jersey)", .miss)
         }
-        return AssistToast(
-            title: "ASSIST \(Self.deg(appliedDeg))",
-            detail: "\(Self.deg(errorDeg)) OFF · #\(jersey)", tint: .help, timeLeft: duration)
+        return toast(
+            "ASSIST \(Self.deg(appliedDeg))", "\(Self.deg(errorDeg)) OFF · #\(jersey)", .help)
     }
 
     private static func deg(_ v: Double) -> String { "\(Int(v.rounded()))°" }

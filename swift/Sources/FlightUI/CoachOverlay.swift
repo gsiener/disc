@@ -1,25 +1,33 @@
 import SwiftUI
 import UltimateSim
 
-/// The three sentences the game cannot be played without.
+/// The four sentences the game cannot be played without.
 ///
 /// Everything else here is discoverable — you find out what a stall count is by watching
 /// one run out — but the control scheme is not: it is one drag that encodes direction,
-/// power, throw type *and* receiver, and nothing on screen says so. A player who is never
-/// told reads their first five throws as the game misunderstanding them.
+/// power, throw type, receiver *and*, since the charge, timing, and nothing on screen
+/// says so. A player who is never told reads their first five throws as the game
+/// misunderstanding them.
 ///
-/// So: three cards, in the order you need them, shown once and replayable from the
+/// So: four cards, in the order you need them, shown once and replayable from the
 /// pre-game sheet. Nothing is animated in from the side and nothing is timed, because the
 /// match behind this is paused (see `MatchView.running`) and the only cost of reading is
 /// reading.
 ///
-/// **The second card is the one that has to stay true.** It states the throw table from
-/// `ThrowGesture.interpret`, whose thresholds are on `rise` — the drag's vertical
-/// component over its length, positive up the screen: below −0.25 is a push, −0.25 to
-/// 0.25 is flat (forehand right, backhand left), 0.25 to 0.55 is a blade and 0.55 up is a
-/// hammer. If that switch ever moves, this card is wrong and the game lies to new
-/// players; the thresholds are named here rather than restated as prose so the drift is
-/// at least visible in a diff.
+/// **The second and third cards are the ones that have to stay true.**
+///
+/// The second states the charge from `ThrowCharge`: the meter fills, the band is centred
+/// on `fullTime` and is `perfectWindow` wide either side, and both narrow with
+/// `difficulty` per throw type. It is one sentence on purpose — "let go when the bar
+/// reaches the bright band" — because a timing skill you have to read a paragraph about
+/// is a timing skill nobody acquires.
+///
+/// The third states the throw table from `ThrowGesture.interpret`, whose thresholds are
+/// on `rise` — the drag's vertical component over its length, positive up the screen:
+/// below −0.25 is a push, −0.25 to 0.25 is flat (forehand right, backhand left), 0.25 to
+/// 0.55 is a blade and 0.55 up is a hammer. If that switch ever moves, this card is wrong
+/// and the game lies to new players; the thresholds are named here rather than restated
+/// as prose so the drift is at least visible in a diff.
 @available(macOS 15.0, iOS 18.0, *)
 struct CoachOverlay: View {
     /// Called when the player is done — by skipping or by reaching the end. The caller
@@ -28,7 +36,7 @@ struct CoachOverlay: View {
 
     @State private var page = 0
 
-    private static let pages = 3
+    private static let pages = 4
 
     var body: some View {
         ZStack {
@@ -85,7 +93,8 @@ struct CoachOverlay: View {
     @ViewBuilder private var card: some View {
         switch page {
         case 0: lesson(title: "DRAG TO THROW", body: dragLesson)
-        case 1: lesson(title: "FINISH HIGH OR LOW", body: typeLesson)
+        case 1: lesson(title: "TIME THE RELEASE", body: chargeLesson)
+        case 2: lesson(title: "FINISH HIGH OR LOW", body: typeLesson)
         default: lesson(title: "AIM AT A TEAM-MATE", body: coneLesson)
         }
     }
@@ -131,6 +140,17 @@ struct CoachOverlay: View {
             .frame(height: 92)
             .padding(.vertical, 2)
         note("Drag back onto your starting point to call it off. The line greys out and reads CANCEL.")
+    }
+
+    @ViewBuilder private func chargeLesson() -> some View {
+        line("Let go when the second bar reaches the bright band. That is a perfect release.")
+        ChargeDiagram()
+            .frame(height: 74)
+            .padding(.vertical, 2)
+        line(
+            "Let go too early and the throw is rushed; hold too long and the nose wobbles. Both fly wide."
+        )
+        note("Harder throws have a narrower band. A hammer or a blade will not forgive what a backhand does.")
     }
 
     @ViewBuilder private func typeLesson() -> some View {
@@ -232,6 +252,51 @@ private struct DragDiagram: View {
                 .foregroundStyle(.orange)
                 .position(x: Swift.min(end.x + 40, geo.size.width - 56), y: end.y)
             }
+        }
+    }
+}
+
+/// The charge meter, mid-hold, with the band it is heading for.
+///
+/// Geometry taken from `ThrowCharge.base` rather than from remembered numbers, so a card
+/// that promises a band in the middle of the bar keeps promising the right one if the
+/// timing is ever retuned. Drawn at the backhand's difficulty — the baseline, and the
+/// widest band any throw gets — because the card's own last line is that the hard throws
+/// are narrower than this.
+@available(macOS 15.0, iOS 18.0, *)
+private struct ChargeDiagram: View {
+    var body: some View {
+        let charge = ThrowCharge.base
+        let span = charge.fullTime + charge.overGrace + 0.25
+        let green = Color(red: 0.5, green: 1, blue: 0.62)
+        GeometryReader { geo in
+            let w = geo.size.width * 0.62
+            let bandX = w * (charge.fullTime - charge.perfectWindow) / span
+            let bandW = w * (2 * charge.perfectWindow) / span
+            VStack(alignment: .leading, spacing: 7) {
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.16)).frame(width: w, height: 8)
+                    Capsule().fill(green.opacity(0.75))
+                        .frame(width: Swift.max(4, bandW), height: 8)
+                        .offset(x: bandX)
+                    // Held to just short of the band: the instant before the release the
+                    // card is asking for.
+                    Capsule().fill(.orange).frame(width: bandX * 0.86, height: 8)
+                }
+                HStack(spacing: 0) {
+                    Text("RUSHED")
+                        .frame(width: bandX, alignment: .leading)
+                        .foregroundStyle(.white.opacity(0.4))
+                    Text("PERFECT")
+                        .foregroundStyle(green)
+                    Spacer(minLength: 0)
+                    Text("HELD")
+                        .foregroundStyle(.orange.opacity(0.7))
+                }
+                .font(.system(size: 9, design: .monospaced).bold())
+                .frame(width: w)
+            }
+            .frame(maxHeight: .infinity, alignment: .center)
         }
     }
 }

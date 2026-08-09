@@ -54,6 +54,19 @@ struct UltimateApp: App {
         return args[i + 1] == "off"
     }()
 
+    /// `-charge 0.85` pins the throw gesture on screen at that hold, in seconds.
+    ///
+    /// The gesture — aim line, power bar, receiver bracket, charge meter — lives entirely
+    /// under a finger, and `simctl` cannot drag. Same door as `-setup off`: the screens
+    /// behind a finger have to stay reachable without one, or they stop being looked at.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -charge 0.85
+    static let demoCharge: Double? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-charge"), i + 1 < args.count else { return nil }
+        return Double(args[i + 1])
+    }()
+
     /// The tab named on the command line, or `play` when none was.
     static let requestedTab: Int = {
         let args = ProcessInfo.processInfo.arguments
@@ -102,7 +115,8 @@ struct UltimateApp: App {
                 // so without this the match and the flight loop both keep running behind
                 // whatever is on screen.
                 MatchView(
-                    format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup)
+                    format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup,
+                    demoCharge: Self.demoCharge)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -114,7 +128,9 @@ struct UltimateApp: App {
                     .tabItem { Label("Speed", systemImage: "gauge.with.needle") }.tag(4)
             }
         } else {
-            MatchView(format: Self.startFormat, skipsSetup: Self.skipsSetup)
+            MatchView(
+                format: Self.startFormat, skipsSetup: Self.skipsSetup,
+                demoCharge: Self.demoCharge)
         }
     }
 }

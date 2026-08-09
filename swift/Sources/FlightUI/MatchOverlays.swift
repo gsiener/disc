@@ -9,6 +9,15 @@ import UltimateSim
 // MARK: - turnover watching
 
 /// A turnover callout, ready to draw: what to shout and whether it was good news.
+///
+/// **Built from the machine's own event, not from its box score.** This used to diff
+/// five monotone counters between ticks and reconstruct the kind from which of them
+/// moved, because `GameState`'s emitter was handed to the engine's private stat sink at
+/// construction and nothing re-exposed it. `Engine.drainEvents()` is that surface now,
+/// and the reconstruction is gone — with it goes the one hair the counters could not
+/// split (an interception carried out of bounds reads as a block on the stat sheet, and
+/// read as one on screen) and the whole class of bug where two things in one tick show
+/// as one.
 struct TurnoverFlash: Equatable {
     let text: String
     /// True when the human's team (team 0) gained possession from it.
@@ -16,78 +25,31 @@ struct TurnoverFlash: Equatable {
     /// Seconds of display remaining. Counted down by the frame loop, so the flash
     /// survives exactly as long on a 120 Hz display as on a 60 Hz one.
     var timeLeft: Double
-}
 
-/// Notices turnovers by diffing the machine's box score between ticks.
-///
-/// The engine already distinguishes every turnover kind — `GameState` emits a
-/// `.turnover(reason:...)` event for each — but the emitter is handed to the engine's
-/// private stat sink at construction, before any view exists to listen, and nothing
-/// re-exposes the event or a `lastTurnover`. That is the engine-side gap. The public
-/// stat surface is enough to reconstruct the kind, though, because each turnover path
-/// increments a distinct, disjoint set of counters:
-///
-///   - `drops`        → a drop (pull drops included; they read the same on screen)
-///   - `stallOuts`    → stalled out
-///   - gainer `blocks`→ a block or an interception — told apart by what the machine
-///                      did next: an interception keeps play live in the defender's
-///                      hands (`livePossession`), a block leaves the disc dead
-///   - `MatchStats.outOfBounds` (the engine's own event tally) → thrown or caught out
-///   - otherwise      → a plain grounded throwaway
-///
-/// Called once per simulation tick, right after `step`, so at most one turnover can
-/// land between snapshots. Nothing here writes to the engine; it only reads.
-struct TurnoverWatch {
-    private struct Counts: Equatable {
-        var committed: [Int]
-        var drops: [Int]
-        var stallOuts: [Int]
-        var blocks: [Int]
-        var outOfBounds: Int
-    }
+    static let duration = 1.5
 
-    private var last: Counts?
-
-    /// Diff the box score against the previous tick's. Returns a flash to show when a
-    /// turnover happened in this tick, and re-baselines either way.
-    mutating func check(_ match: Engine) -> TurnoverFlash? {
-        let now = Self.read(match)
-        defer { last = now }
-        guard let prev = last, now != prev else { return nil }
-
-        for team in 0...1 where now.committed[team] > prev.committed[team] {
-            let gainer = 1 - team
-            let text: String
-            if now.drops[team] > prev.drops[team] {
-                text = "DROPPED!"
-            } else if now.stallOuts[team] > prev.stallOuts[team] {
-                text = "STALLED OUT"
-            } else if now.blocks[gainer] > prev.blocks[gainer] {
-                // A catch block puts the disc straight into the defender's hands and
-                // play stays live; a knock-down leaves it dead on the ground. (An
-                // interception carried out of bounds is dead too and reads as a
-                // block — the stat surface cannot split that hair, and it is a D
-                // either way.)
-                text = match.game.phase == .livePossession ? "INTERCEPTED!" : "BLOCKED!"
-            } else if now.outOfBounds > prev.outOfBounds {
-                text = "OUT OF BOUNDS"
-            } else {
-                text = "THROWN AWAY"
-            }
-            return TurnoverFlash(text: text, good: gainer == 0, timeLeft: 1.5)
+    /// The callout for an event, or nil if it is not one worth shouting about.
+    ///
+    /// Every branch is on `TurnoverReason`, which is the rules machine's own vocabulary,
+    /// so nothing here has to infer what happened — the exhaustive switch also means a
+    /// new reason is a compile error rather than a silent "THROWN AWAY".
+    static func make(_ event: MatchEvent, humanTeam: TeamId = 0) -> TurnoverFlash? {
+        guard case .turnover(let reason, _, let to, _, let grade, _) = event else { return nil }
+        let text: String
+        switch reason {
+        case .drop:
+            text = grade == .layout ? "LAID OUT — DROPPED" : "DROPPED!"
+        case .throwaway: text = "THROWN AWAY"
+        case .outOfBounds: text = "OUT OF BOUNDS"
+        case .caughtOutOfBounds: text = "CAUGHT OUT"
+        case .block: text = "BLOCKED!"
+        case .interception: text = "INTERCEPTED!"
+        case .stallOut: text = "STALLED OUT"
+        case .pullDrop: text = "PULL DROPPED"
+        case .travelViolation: text = "TRAVEL"
+        case .doubleTouch: text = "DOUBLE TOUCH"
         }
-        return nil
-    }
-
-    private static func read(_ match: Engine) -> Counts {
-        let a = match.game.teamStats(0)
-        let b = match.game.teamStats(1)
-        return Counts(
-            committed: [a.turnoversCommitted, b.turnoversCommitted],
-            drops: [a.drops, b.drops],
-            stallOuts: [a.stallOuts, b.stallOuts],
-            blocks: [a.blocks, b.blocks],
-            outOfBounds: match.stats.outOfBounds)
+        return TurnoverFlash(text: text, good: to == humanTeam, timeLeft: duration)
     }
 }
 

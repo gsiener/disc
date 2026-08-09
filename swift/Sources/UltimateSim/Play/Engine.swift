@@ -592,6 +592,17 @@ public final class Engine {
         return s
     }
 
+    /// Everything that has happened since the last time this was asked, oldest first.
+    ///
+    /// The engine's answer to "what just happened" — see `MatchEvent` for why it is a
+    /// drained buffer rather than a tap or a `lastEvent`. Call it once per tick, right
+    /// after `step`, which is the cadence the fixed-tick loop already runs at.
+    ///
+    /// Nothing in the simulation reads this and nothing outside it can write to it, so a
+    /// caller that never drains changes no outcome — it only loses the events past the
+    /// buffer's cap.
+    public func drainEvents() -> [MatchEvent] { sink.drain() }
+
     // MARK: the tick
 
     /// Advance one fixed tick. `dt` is expected to be `1/120`; anything else works but a
@@ -1151,44 +1162,20 @@ public final class Engine {
         let power = clamp(powerForSpeed(type, speed) * 1.02, 0.12, 1)
         let catchY = max(0.35, aim.y)
 
-        var heading = atan2(tx, tz)
-        var angle = 0.02
+        // Elevation, bank and heading all come out of `Aero/ThrowSolver.swift`, which
+        // is the port of `src/sim/aero/ThrowSolver.ts`. It used to be open-coded here,
+        // solving elevation only; its own header carries why that was wrong on both
+        // axes.
         var req = ThrowRequest(
             type: type,
             from: from,
-            aim: Vec3d(sin(heading), 0, cos(heading)),
+            aim: Vec3d(sin(atan2(tx, tz)), 0, cos(atan2(tx, tz))),
             power: power,
-            angle: angle,
+            angle: 0.02,
             spin: spin,
-            hand: hand)
-
-        for pass in 0..<2 {
-            var lo = -0.34
-            var hi = 0.62
-            var best = angle
-            var bestErr = Double.infinity
-            var lat = 0.0
-            for _ in 0..<7 {
-                let mid = (lo + hi) * 0.5
-                req.angle = mid
-                req.aim = Vec3d(sin(heading), 0, cos(heading))
-                let r = disc.probeThrow(req, catchY: catchY, maxT: 6)
-                let err = r.dist - want
-                if abs(err) < abs(bestErr) {
-                    bestErr = err
-                    best = mid
-                    lat = r.lat
-                }
-                if err < 0 { lo = mid } else { hi = mid }
-            }
-            angle = best
-            req.angle = best
-            if abs(lat) > 0.25, want > 1 { heading -= atan2(lat, want) }
-            if pass == 1 || abs(lat) <= 0.25 { break }
-        }
-
-        req.aim = Vec3d(sin(heading), 0, cos(heading))
-        req.angle = angle
+            hand: hand,
+            bank: 0)
+        ThrowSolver.solve(disc, &req, heading0: atan2(tx, tz), want: want, catchY: catchY)
         return req
     }
 
@@ -1301,12 +1288,17 @@ public final class Engine {
         // The decision itself lives in `CatchDecision.decide` so it can be differed
         // against the reference — see that file's header. This builds its inputs and
         // applies its outcome; nothing here decides anything.
+        let bodies = catchBodies()
         guard let d = CatchDecision.decide(
             discPos: s.pos, discVel: s.vel, pull: phase == .pullInFlight,
-            offence: offence, bodies: catchBodies(), roll: { rng.next() })
+            offence: offence, bodies: bodies, roll: { rng.next() })
         else { return false }
 
         let at = s.pos
+        // Stamp the grade on whatever the machine is about to emit. Set here rather than
+        // read out of `CatchDecision.Result`, which does not carry it — see `CatchGrade`.
+        sink.catchGrade = Engine.grade(taker: d.takerId, at: at, bodies: bodies)
+        defer { sink.catchGrade = nil }
         switch d.outcome {
         case .none:
             return false
@@ -1326,6 +1318,22 @@ public final class Engine {
         }
         afterFlight()
         return true
+    }
+
+    /// How hard the catch the contest just resolved was.
+    ///
+    /// The two expressions are `CatchDecision.decide`'s own, on the same `Body` array it
+    /// was handed: `laidOut` is its `b.state == "layout" || (b.prone && b.airborne)`, and
+    /// the contest is its `contestCount`, which is the term that pushes `difficulty` up.
+    /// Re-derived rather than returned because widening `Result` would change a struct
+    /// that is differed against the reference fixture, and this layer does not own it.
+    ///
+    /// Layout outranks contested: a full-stretch grab with a defender on it is a layout,
+    /// and that is the one the crowd stands up for.
+    static func grade(taker: Int, at: Vec3d, bodies: [CatchDecision.Body]) -> CatchGrade {
+        guard let b = bodies.first(where: { $0.id == taker }) else { return .routine }
+        if b.state == "layout" || (b.prone && b.airborne) { return .layout }
+        return CatchDecision.contestCount(at.x, at.z, b.team, bodies) > 0 ? .contested : .routine
     }
 
     /// The roster as `CatchDecision` needs it. Every body goes in — the eligibility
@@ -1569,9 +1577,92 @@ public final class Engine {
     }
 }
 
-// MARK: - the event tally
+// MARK: - the event stream
 
-/// Turns the machine's `turnover` events into the play layer's summary.
+/// How hard the catch was, as the contest actually resolved it.
+///
+/// `CatchDecision.decide` computes both halves of this — a `bestLaidOut` flag and a
+/// contest count that feeds `difficulty` — but its `Result` carries only `difficulty`
+/// and `p` out, so neither is reachable from the outside. Rather than widen that struct
+/// (it is differed against the reference fixture and is not this layer's to change), the
+/// engine re-derives the same two facts from the same `Body` array it just handed in,
+/// with the same expressions, at the one call site that has them.
+///
+/// The grade exists because the renderer needs to tell three catches apart that the box
+/// score cannot: a routine completion is the metronome, a contested or laid-out one is
+/// the moment the game slows down for (`docs/gameplay-design.md` §5).
+public enum CatchGrade: String, Equatable, Sendable {
+    /// Nobody within contesting range and both feet under you.
+    case routine
+    /// At least one opponent inside the 1.9 m contest radius.
+    case contested
+    /// Full stretch, off the ground.
+    case layout
+}
+
+/// One thing that happened, as the play layer says it.
+///
+/// This is the surface `#39` asked for, and the shape is a **drained buffer** rather
+/// than a tap the view installs. Three reasons, in order of weight:
+///
+///   1. `GameState` takes its emitter at construction, before an `Engine` exists to be
+///      captured — which is the whole reason the events were unreachable in the first
+///      place. A buffer the engine owns needs no closure retained anywhere.
+///   2. The engine is stepped from a fixed-tick loop that already runs zero-or-more
+///      whole ticks per rendered frame. `drainEvents()` at the foot of the tick is the
+///      same cadence the loop already has, so nothing has to be re-entrant and nothing
+///      fires while the engine is half-way through a step.
+///   3. A `lastEvent` — the other option, mirroring `lastScore` — cannot survive a
+///      catch-up burst: two turnovers in one frame would show as one. The buffer is
+///      lossless within a frame, which is exactly the failure the counter-diffing
+///      watchers had.
+///
+/// These are **not** a second set of books. Every case is a translation of a
+/// `GameEvent` the rules machine already emitted, with no arithmetic of its own — the
+/// one thing added is `CatchGrade`, which the engine derives at the contest it is about
+/// to resolve because the machine's event does not carry it.
+public enum MatchEvent: Equatable, Sendable {
+    /// The pull left the puller's hand.
+    case pullThrown(team: TeamId, playerId: PlayerId)
+    /// The receiving team caught the pull cleanly (or the pulling team touched their
+    /// own, which the rules resolve the same way).
+    case pullCaught(playerId: PlayerId, team: TeamId, pos: Vec3d)
+    /// The pull was allowed to land in bounds.
+    case pullLanded(pos: Vec3d)
+    /// The pull went out. The receivers take it at the brick or the sideline.
+    case pullOutOfBounds(pos: Vec3d)
+    /// A throw left a hand. `stall` is the count it went at, when there was one.
+    case released(playerId: PlayerId, team: TeamId, throwType: String, stall: Int?)
+    /// Somebody on the throwing team caught it. The completion.
+    case caught(playerId: PlayerId, team: TeamId, grade: CatchGrade, pos: Vec3d)
+    /// Possession changed. `reason` is the machine's own vocabulary — drop, throwaway,
+    /// out-of-bounds, caught-out-of-bounds, block, interception, stall-out, pull-drop,
+    /// travel, double-touch — so nothing here has to guess which of them it was.
+    ///
+    /// `grade` is present on the three that resolved through a contest (drop, block,
+    /// interception) and nil on the rest, because a stall-out has no catch to grade.
+    case turnover(
+        reason: TurnoverReason, from: TeamId, to: TeamId, playerId: PlayerId,
+        grade: CatchGrade?, pos: Vec3d)
+    /// A point. `score` is the machine's, after the goal.
+    case score(team: TeamId, playerId: PlayerId, assistId: PlayerId?, score: [Int])
+
+    /// The team this event happened *to* — whoever gained on a turnover, whoever caught
+    /// or scored. Nil for the events that are nobody's in particular.
+    public var team: TeamId? {
+        switch self {
+        case .pullThrown(let t, _): t
+        case .pullCaught(_, let t, _): t
+        case .released(_, let t, _, _): t
+        case .caught(_, let t, _, _): t
+        case .turnover(_, _, let to, _, _, _): to
+        case .score(let t, _, _, _): t
+        case .pullLanded, .pullOutOfBounds: nil
+        }
+    }
+}
+
+/// Turns the machine's events into the play layer's summary and its event stream.
 ///
 /// A class, and constructed before the `GameState` that feeds it, because `GameState`
 /// takes its emitter at construction — before `Engine` exists to be captured. Nothing
@@ -1586,12 +1677,89 @@ private final class EngineEventSink {
     /// Discs that left the field, thrown or carried.
     var outOfBounds = 0
 
+    /// How the contest currently being resolved graded out. Set by `Engine.tryCatch`
+    /// immediately before it asks the machine to apply an outcome and cleared
+    /// immediately after, so any catch, drop, block or interception event emitted during
+    /// that call is stamped with it and nothing else ever is.
+    var catchGrade: CatchGrade?
+
+    /// The undrained events, oldest first.
+    ///
+    /// Capped, and the cap drops the *oldest*. This is a per-tick hand-off, not a log —
+    /// `GameState.getLog()` is the log — and a headless engine that runs a whole match
+    /// without a renderer must not grow a buffer nobody will ever read. A caller draining
+    /// every tick, which is the intended use and the only one in the app, can never reach
+    /// the cap: at most one turnover and one catch fit in a 1/120 s tick.
+    private var buffer: [MatchEvent] = []
+    static let maxBuffered = 512
+
     func absorb(_ event: GameEvent) {
-        guard case .turnover(let reason, _, _, _, _, _, _, _) = event else { return }
-        switch reason {
-        case .throwaway: grounded += 1
-        case .outOfBounds, .caughtOutOfBounds: outOfBounds += 1
-        default: break
+        // The stat split first, unchanged.
+        if case .turnover(let reason, _, _, _, _, _, _, _) = event {
+            switch reason {
+            case .throwaway: grounded += 1
+            case .outOfBounds, .caughtOutOfBounds: outOfBounds += 1
+            default: break
+            }
+        }
+        guard let translated = Self.translate(event, grade: catchGrade) else { return }
+        buffer.append(translated)
+        if buffer.count > Self.maxBuffered { buffer.removeFirst(buffer.count - Self.maxBuffered) }
+    }
+
+    func drain() -> [MatchEvent] {
+        defer { buffer.removeAll(keepingCapacity: true) }
+        return buffer
+    }
+
+    /// One machine event → zero or one play-layer events.
+    ///
+    /// Zero for the ones that are already said another way. Every `disc:grounded` except
+    /// the two pull outcomes is accompanied by a `turnover` carrying the reason, and
+    /// reporting both would make every throwaway two events — which is precisely the sort
+    /// of double count the counter-diffing watchers used to produce.
+    private static func translate(_ event: GameEvent, grade: CatchGrade?) -> MatchEvent? {
+        switch event {
+        case .pull(let team, let playerId, _, _):
+            return .pullThrown(team: team, playerId: playerId)
+        case .discReleased(_, _, _, let throwType, let playerId, let team, let stall):
+            // A pull emits both `pull` and `disc:released`. Said once, by the first —
+            // which keeps `released` countable against the box score's `attempts`, a
+            // number that does not count pulls either.
+            if throwType == "pull" { return nil }
+            return .released(playerId: playerId, team: team, throwType: throwType, stall: stall)
+        case .discCaught(let playerId, let pos, let team, let outcome):
+            switch outcome {
+            case "pull":
+                return .pullCaught(playerId: playerId, team: team, pos: pos)
+            case "interception":
+                // Said once, by the turnover — which is the event that carries who lost
+                // it as well as who took it, and which is graded the same way.
+                return nil
+            default:
+                return .caught(playerId: playerId, team: team, grade: grade ?? .routine, pos: pos)
+            }
+        case .discGrounded(let pos, let reason):
+            switch reason {
+            case "pull": return .pullLanded(pos: pos)
+            case "pull-oob": return .pullOutOfBounds(pos: pos)
+            default: return nil
+            }
+        case .turnover(let reason, let from, let to, let playerId, let pos, _, _, _):
+            // Only the three that resolved through a contest carry a grade. A stall-out
+            // or a travel has no catch to grade and must not inherit the last one.
+            let contested: Bool
+            switch reason {
+            case .drop, .block, .interception, .pullDrop: contested = true
+            default: contested = false
+            }
+            return .turnover(
+                reason: reason, from: from, to: to, playerId: playerId,
+                grade: contested ? grade : nil, pos: pos)
+        case .score(let team, let playerId, let assistId, let score, _, _):
+            return .score(team: team, playerId: playerId, assistId: assistId, score: score)
+        default:
+            return nil
         }
     }
 }

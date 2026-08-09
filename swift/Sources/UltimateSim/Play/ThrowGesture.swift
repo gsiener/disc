@@ -69,6 +69,12 @@ public struct ThrowGesture: Equatable, Sendable {
             type: type, power: Swift.max(0.15, power), loft: loft, length: length)
     }
 
+    /// How long the thumb has been down, turned into how clean the release was.
+    ///
+    /// See `ThrowCharge`. Kept as a nested alias so a caller that has a gesture has the
+    /// timing that goes with it without a second import site.
+    public static func charge(for type: ThrowType) -> ThrowCharge { ThrowCharge.for(type) }
+
     /// The world-space horizontal direction a drag points.
     ///
     /// Screen x maps to world x, and screen *up* maps downfield — which is the direction
@@ -80,4 +86,166 @@ public struct ThrowGesture: Equatable, Sendable {
         if v.lengthSq < 1e-12 { return Vec3d(0, 0, attackDir) }
         return v.normalized
     }
+}
+
+// MARK: - the charge
+
+/// How long you held it, and what that cost.
+///
+/// A port of the quality half of `src/input/Throw.ts` — `DEFAULT_TIMING`,
+/// `THROW_DIFFICULTY`, `applyDifficulty`, `releaseQuality`, `isPerfect`. Only the
+/// quality half: the reference is a console charge where hold time also sets *power*,
+/// and on a phone the drag already sets power, so `chargePower` has no job here. The
+/// numbers are the reference's, unchanged, because the feel is tuned and this is an
+/// exposure rather than a retune.
+///
+/// The shape, from that file's own diagram:
+///
+///     quality
+///     1.0                      /\
+///     0.9   _________________ /  \_______
+///          /                              \
+///     0.34 |                                \____ 0.28
+///          0   minTime      fullTime  +grace   maxHold
+///          rushed            perfect          overcharged
+///
+/// Which means: let go instantly and the throw is a scramble; hold for anything past a
+/// beat and you are on a safe plateau; hit the window centred on `fullTime` and the
+/// throw is perfect; hold past the grace and the wind-up starts telegraphing and
+/// wobbling. `quality` is what `Engine.humanRelease` takes, where it buys spin and nose
+/// and scales the aim assist — see the `spread = (1 - q) * 0.16` noise model there.
+///
+/// Pure, `Sendable`, and in the sim rather than in the view for exactly the reason
+/// `ThrowGesture` is: a rule that only exists inside a `DragGesture` closure is a rule
+/// nothing can check.
+public struct ThrowCharge: Equatable, Sendable {
+    /// Hold time at which the perfect window is centred.
+    public let fullTime: Double
+    /// Below this, the release is rushed and quality is scaled down hard.
+    public let minTime: Double
+    /// Half-width of the perfect window, seconds. The HUD draws the band from this.
+    public let perfectWindow: Double
+    /// Seconds past `fullTime` before the wind-up starts costing quality.
+    public let overGrace: Double
+    /// Where the overcharge bottoms out. Nothing fires itself at this on touch — see
+    /// the note on `quality(hold:)`.
+    public let maxHold: Double
+    /// Quality at hold = 0.
+    public let rushFloor: Double
+    /// Quality on the safe plateau.
+    public let plateau: Double
+    /// Quality at `maxHold`.
+    public let overFloor: Double
+
+    public init(
+        fullTime: Double, minTime: Double, perfectWindow: Double, overGrace: Double,
+        maxHold: Double, rushFloor: Double, plateau: Double, overFloor: Double
+    ) {
+        self.fullTime = fullTime
+        self.minTime = minTime
+        self.perfectWindow = perfectWindow
+        self.overGrace = overGrace
+        self.maxHold = maxHold
+        self.rushFloor = rushFloor
+        self.plateau = plateau
+        self.overFloor = overFloor
+    }
+
+    /// `DEFAULT_TIMING`, minus the two power fields a touch charge does not use.
+    public static let base = ThrowCharge(
+        fullTime: 0.85, minTime: 0.14, perfectWindow: 0.09, overGrace: 0.30,
+        maxHold: 2.00, rushFloor: 0.34, plateau: 0.90, overFloor: 0.28)
+
+    /// `THROW_DIFFICULTY`. Backhand is the baseline; the dump shares it, because a reset
+    /// to a handler five metres away is the throw you make when everything has already
+    /// gone wrong and it should not also be the hard one.
+    public static func difficulty(_ type: ThrowType) -> Double {
+        switch type {
+        case .backhand: 1.00
+        case .push: 1.00
+        case .forehand: 1.08
+        case .hammer: 1.35
+        case .scoober: 1.45
+        case .blade: 1.60
+        }
+    }
+
+    /// `applyDifficulty`: harder throws get a narrower window, need a longer wind-up
+    /// before they stop being rushed, lose their grace faster and sit on a lower plateau.
+    public static func `for`(_ type: ThrowType) -> ThrowCharge {
+        base.scaled(by: difficulty(type))
+    }
+
+    public func scaled(by d: Double) -> ThrowCharge {
+        let k = Swift.max(0.25, d)
+        return ThrowCharge(
+            fullTime: fullTime,
+            minTime: minTime * k,
+            perfectWindow: perfectWindow / k,
+            overGrace: overGrace / k,
+            maxHold: maxHold,
+            rushFloor: clamp01(rushFloor - 0.06 * (k - 1)),
+            plateau: clamp01(plateau - 0.12 * (k - 1)),
+            overFloor: overFloor)
+    }
+
+    /// Hold time in seconds → release quality in 0…1.
+    ///
+    /// The reference fires the throw for you at `maxHold`; this does not, because a phone
+    /// throw that leaves your hand while your thumb is still on the glass is a throw you
+    /// did not make. Instead the curve simply keeps decaying and the hold is clamped, so
+    /// holding forever is its own punishment and never a surprise.
+    public func quality(hold: Double) -> Double {
+        let h = Swift.max(0, Swift.min(hold, maxHold))
+        let overStart = fullTime + overGrace
+        var base: Double
+        if h < minTime {
+            base = Self.lerp(rushFloor, plateau, smoothstep01(h / Swift.max(1e-6, minTime)))
+        } else if h <= overStart {
+            base = plateau
+        } else {
+            let span = Swift.max(1e-6, maxHold - overStart)
+            base = Self.lerp(plateau, overFloor, smoothstep01((h - overStart) / span))
+        }
+        let d = abs(h - fullTime)
+        let bump = 1 - smoothstep01(d / Swift.max(1e-6, perfectWindow))
+        return clamp01(base + (1 - base) * bump)
+    }
+
+    private static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+
+    /// The tight centre of the window — what the meter flashes on, and the only release
+    /// the game calls perfect out loud.
+    public func isPerfect(hold: Double) -> Bool { abs(hold - fullTime) <= perfectWindow * 0.35 }
+
+    /// Anywhere in the window at all. Quality is 1.0 at the centre and falls off across
+    /// this, so the band the HUD draws is this one and the flash is `isPerfect`.
+    public func inWindow(hold: Double) -> Bool { abs(hold - fullTime) <= perfectWindow }
+
+    public func isRushed(hold: Double) -> Bool { hold < minTime }
+    public func isOvercharged(hold: Double) -> Bool { hold > fullTime + overGrace }
+
+    /// How a release should be described to the player in two words.
+    public func grade(hold: Double) -> ReleaseGrade {
+        if isPerfect(hold: hold) { return .perfect }
+        if isRushed(hold: hold) { return .rushed }
+        if isOvercharged(hold: hold) { return .overcharged }
+        return inWindow(hold: hold) ? .clean : .steady
+    }
+}
+
+/// What the charge meter just said, in the vocabulary the HUD and the taptic engine
+/// both read. Ordered worst to best is deliberately *not* the case order — these are
+/// names, not a scale, and the game says a different sentence for each.
+public enum ReleaseGrade: String, Equatable, Sendable {
+    /// Dead centre of the window.
+    case perfect
+    /// Inside the window but off centre.
+    case clean
+    /// On the plateau. The safe throw, and the one most releases are.
+    case steady
+    /// Let go before the wind-up finished.
+    case rushed
+    /// Held past the grace. The physics wobbles the nose for this one.
+    case overcharged
 }
