@@ -331,9 +331,17 @@ enum EngineTests {
             abs(e.score[0] - e.score[1]) >= e.rules.winBy, "with a winning margin")
         Check.ok(
             Swift.max(e.score[0], e.score[1]) >= e.game.target, "and somebody on the target")
-        Check.ok(
-            e.game.attackDir[0] != dirsAtHalf[0] || e.game.attackDir[0] != openingDirs[0],
-            "ends were swapped along the way")
+        // Guarded rather than indexed blind. `dirsAtHalf` is only filled if halftime was
+        // observed, and when it was not this line crashed the entire suite with an index
+        // out of range — turning one failed assertion into no report at all. A check that
+        // cannot fail cleanly is worse than one that fails.
+        if let atHalf = dirsAtHalf.first {
+            Check.ok(
+                e.game.attackDir[0] != atHalf || e.game.attackDir[0] != openingDirs[0],
+                "ends were swapped along the way")
+        } else {
+            Check.ok(false, "no halftime was observed, so ends could not be checked")
+        }
         Check.eq(
             e.game.openingPullTeam, openingPuller, "the opening pull team is remembered")
         Check.ok(e.refusals.isEmpty, "and nothing was refused: \(e.refusals.prefix(3))")

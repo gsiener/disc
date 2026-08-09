@@ -182,6 +182,26 @@ public final class Engine {
             // the regulation 8-of-15 and gives a minis game to 7 a break at 4.
             r.halftimeAt = (goal + 1) / 2
             r.halftimeDuration = Engine.halftimeSeconds
+            // NOT shortened for minis, and the reason is worth recording because it was
+            // tried and measured.
+            //
+            // Ten seconds is calibrated to a 100 x 37 m field, and a minis pitch is barely
+            // a third that area, so a shorter count looks like the obvious way to quicken
+            // a point that currently runs two and a half to three minutes. It is not a
+            // configuration change, because **`TeamAI` hardcodes the ten**:
+            //
+            //     stall >= 8.5 ? -1e9 : (-0.135 - 0.26 * pow(clamp(stall, 0, 10) / 10, 2))
+            //
+            // 8.5 is where it abandons its standards and throws the best thing available.
+            // Set `stallMax` to 7 and that point is never reached — the AI is still
+            // holding out for a good look when the count expires. Measured over ten
+            // simulated minutes: **80 stall-outs, 2 throws, 0 goals**, against 0 stall-outs
+            // and 69 throws at ten.
+            //
+            // So the rule and the offence's sense of time are one thing, not two. Pacing
+            // has to move through `cfg.aggression`, which is the knob the reference
+            // exposes for exactly this, or by rescaling that curve — which is ported logic
+            // and would need its own goldens.
         }
         self.game = GameState(opts)
 
@@ -636,6 +656,21 @@ public final class Engine {
     /// disc up on proximity alone — a collector who arrives without the action still has
     /// his hands on it, and a possession that waits for a flag is a game that stops.
     private func collectDeadDisc() {
+        // Get it out of the old thrower's hand first.
+        //
+        // A stall-out is the one turnover the disc never physically leaves anyone on: the
+        // machine takes the possession away, but nothing here had told the runtime to let
+        // go, so the disc stayed held by a player who no longer had it. The invariant that
+        // the disc's hand and the machine's thrower agree then failed on every tick of the
+        // dead phase.
+        //
+        // It went unnoticed because the AI never stalled — it releases well inside a
+        // ten-count — so the path only opened when the count was shortened and the AI
+        // began running out of time. A legal, reachable outcome that no play had reached.
+        if disc.holderId != nil, game.thrower == nil {
+            disc.settle(game.discPos)
+        }
+
         guard let team = game.possession else { return }
         if game.awaitingPullChoice() { return }
         let spot = game.discPos
