@@ -42,6 +42,7 @@ import { rngGoldens } from './goldens/rng.ts';
 import { rulesGoldens } from './goldens/rules.ts';
 import { simMathGoldens } from './goldens/simmath.ts';
 import { throwGoldens } from './goldens/throws.ts';
+import { throwSolverGoldens } from './goldens/throwsolver.ts';
 
 const OUT = join(import.meta.dirname, '..', 'swift', 'Sources', 'SimChecks', 'Goldens');
 
@@ -68,6 +69,7 @@ const GENERATORS: Record<string, () => unknown> = {
   'humanrelease.json': humanReleaseGoldens,
   'discruntime.json': discRuntimeGoldens,
   'teamai.json': teamAIGoldens,
+  'throwsolver.json': throwSolverGoldens,
 };
 
 console.log('goldens →');
