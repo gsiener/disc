@@ -1,196 +1,140 @@
 # ULTIMATE
 
-A 7v7 Ultimate Frisbee game in Three.js, built with **zero binary assets** — every
-mesh, texture, environment map and sound is generated in code at load time.
+A 7v7 Ultimate Frisbee game. It began as a Three.js renderer with a simulation
+underneath; the simulation won. Today the repository is two things:
 
-### ▶ [gsiener.github.io/ultimate-threejs](https://gsiener.github.io/ultimate-threejs/)
+1. **The product: a native iOS game** (`ios/` + `swift/`) — SwiftUI + RealityKit,
+   playable on an iPhone. Drag to throw, a cone picks your receiver, real WFDF
+   rules run the match, and the AI plays a force and a stack.
+2. **The reference: the TypeScript simulation** (`src/sim/`) — frozen as the
+   oracle. Every Swift system is a port of a TS system, validated differentially:
+   `tools/gen-goldens.ts` runs the reference and writes JSON fixtures, and the
+   Swift suite replays them — **2.2 million assertions, bit-exact where the maths
+   allows and inside a stated envelope where libm differs by an ulp.**
 
-> **Status: in progress — and what is deployed is a renderer preview, not a
-> playable game.** You can fly around a stadium and jump between camera
-> framings. You cannot throw a disc: `src/sim/Game.ts` is still a stub, so
-> nothing yet connects the (fully tested) input, locomotion, disc-physics and
-> rules systems into a game loop. Players render as placeholder capsules.
-> See [Current state](#current-state) for the full accounting.
+The Three.js build still deploys as a renderer preview
+([gsiener.github.io/ultimate-threejs](https://gsiener.github.io/ultimate-threejs/)),
+but it is not where the game lives anymore.
 
-## Controls
+> **Status: the first playable version exists.** Full matches run on an iPhone —
+> pulls, stall counts, checks after turnovers, brick marks, halftime, a box
+> score. The human plays the throwing game (drag-to-throw with receiver select
+> and aim assist); off-disc play and defense are AI-driven. The road to a
+> release fans of the sport would love is captured in
+> [`docs/release-plan.md`](docs/release-plan.md) — measurable targets for
+> completion rate, hold/break balance, tempo, and hucks.
 
-Everything is camera control for now — there is no gameplay to drive.
+## The iOS game
 
-| input | does |
-|---|---|
-| **drag** | orbit the camera around its target |
-| **wheel** | zoom (multiplicative, so it feels the same at 2 m and 200 m) |
-| **1**–**0** | jump between the ten named framings — broadcast, sideline, closeup, layout, disc, stadium, turf, crowd, endzone, night |
-| **F** | toggle free-fly — **WASD** to move, **Q**/**E** down/up, hold **shift** for speed |
-| **R** | toggle slow auto-orbit |
-| **H** | hide the overlay |
+```bash
+cd swift && swift run -c release SimTests   # the differential suite (terminal)
+cd ios && xcodegen && xcodebuild -project Ultimate.xcodeproj -scheme Ultimate \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+```
 
-Quality is auto-detected (mobile → `low`, few cores or little RAM → `medium`,
-otherwise `high`; `ultra` is never chosen for you because it costs ~47 ms/frame
-on an M1 Max). Override it with `?q=low|medium|high|ultra`. `?debug=1` enables
-gizmos, `?seed=N` reseeds the deterministic RNG.
+The app's Play tab runs a live match on a fixed 1/120 s tick (the same dt regime
+the entire validation suite runs; see `swift/Sources/UltimateSim/Play/Replay.swift`
+for why that is not optional). The other tabs are engineering instruments — the
+same check suite on-device, a disc-flight viewer, trajectory plots, and a tick
+benchmark — which will be gated behind a debug flag before release.
 
-The **night** framing (`0`) and the **stadium** exterior (`6`) currently look
-best. The **turf** macro (`7`) shows the procedural grass up close.
+Controls today: drag direction aims, drag length is power, the finish height
+picks the throw type (down = dump, flat = backhand/forehand, up = hammer). A 35°
+cone resolves which teammate you meant — scored on angle, lane openness and
+distance sanity — and a quality-scaled assist may rotate the release up to 5°
+toward the ideal lead. Timing skill buys accuracy; it does not buy aim.
 
 ## Why it's interesting
 
 Most of the difficulty in a sports game is not drawing the field — it's that the
-sport has to actually behave like itself. Two parts of this went deeper than a
-demo usually does:
+sport has to behave like itself.
 
-**The disc really flies.** `src/sim/DiscPhysics.ts` is a 6-DOF rigid-body model
-with lift, drag, pitching moment, spin decay, and — critically — *gyroscopic
-precession*. A spinning disc doesn't tip when you apply a pitching moment; it
-precesses 90° out of phase. That single term is why a flat backhand turns over,
-holds, and then fades at the end of its flight. None of that is scripted:
+**The disc really flies.** `DiscPhysics` (both languages) is a 6-DOF rigid-body
+model with lift, drag, pitching moment, spin decay, and *gyroscopic precession* —
+a spinning disc doesn't tip when you apply a pitching moment; it precesses 90°
+out of phase. That single term is why a flat backhand turns over, holds, and
+fades at the end of its flight. Hyzer and anhyzer emerge rather than being
+scripted.
 
-| throw | distance | lateral drift | notes |
-|---|---|---|---|
-| backhand, 20 m/s flat | 37.7 m | 2.29 m left | bank goes `0° → +7.1° → −48.1°` — turn, then fade |
-| forehand, 20 m/s flat | 37.0 m | 2.08 m right | opposite curve, as it must be |
-| hammer | 18.8 m | 3.00 m | fully inverted, 52° descent, falls off hard |
-| huck upwind vs downwind | 17.9 m vs 38.3 m | — | stalls at 36.5° AoA, past the 22.9° stall onset |
+**Players move like athletes.** `Locomotion` models ground forces as a friction
+ellipse rather than clamping axes independently. Consequences fall out: a 90°
+cut keeps ~74% of entry speed, backpedalling tops out at 0.55× sprint (which is
+*why* getting beaten deep is real), and a layout costs 2.04 s out of the play.
 
-Hyzer and anhyzer emerge too: at 26 m/s a flat huck turns over and dumps 17 m
-left, while the same throw with 0.25 rad of hyzer holds its line and goes 50.6 m.
+**The rules are the real rules.** Stall to 10 gated on marker proximity (3 m,
+disc-space enforced), checks after every stoppage, brick-or-sideline choice on
+an OB pull (WFDF 12.4), a pulling team touching its own pull handing the disc
+over (12.5), walk-out rules, distinct turnover taxonomy (drop / block /
+interception / stall-out / OB / caught-OB), timeouts, caps, and a
+self-officiated call machine (fouls, picks, strips, travel, contested/
+uncontested) with a box score that reads like UltiAnalytics — holds, breaks,
+hockey assists, +/-.
 
-**Players move like athletes.** `src/sim/Locomotion.ts` models ground forces as a
-friction ellipse rather than clamping each axis independently — the requested
-velocity change is decomposed into drive/brake and lateral components and scaled
-*uniformly* onto the ellipse. That detail is load-bearing: independent per-axis
-clamping leaves a residual sideways force during a near-180° turn that spirals
-the player. Consequences fall out of the model:
+**The AI plays ultimate.** Vertical and horizontal stacks with lane arbitration
+so two cuts never share space, front-of-stack-goes-deep / back-comes-under, a
+mark that travels around the thrower to the break side, downfield defenders who
+never flip their shade, dump activation at stall 4, poach-and-bracket schemes,
+and a 3-2-2 zone cup for windy days.
 
-- 40 m from a standing start in 5.03 s (elite), 5.43 s (average)
-- a 90° cut keeps 66.7% of entry speed and costs 1.67 s to regain
-- backpedalling tops out at 0.553× sprint speed — which is *why* beating a
-  defender deep works: 16.4 m of separation in 5 s
-- a layout is 0.558 s of air and 5.14 m of ground, then a slide and a get-up:
-  **2.04 s out of the play**, about 15.5 m of coverage conceded
+## The differential harness
 
-## Architecture
+The Swift port is not trusted because it looks right; it is trusted because the
+reference is executable. `tools/gen-goldens.ts` runs the TS systems across
+sixteen fixture families — RNG streams, aero coefficients, flight integration,
+rules tables, locomotion traces, playbook geometry, full TeamAI decision sweeps,
+and two integration-layer fixtures born from mutation testing (the AI throw
+solver and the catch decision, each of which had previously been broken in ways
+2.2 M component assertions could not see). `SimChecks` is a library, not a test
+target, so the identical assertions run in the terminal and on the phone.
 
-`Engine` owns the GL context, a fixed 1/120 s simulation accumulator and an
-ordered system registry. A system is just:
-
-```ts
-export class ThingSystem implements System {
-  readonly name = 'thing';
-  readonly order = 4;                     // lower inits and updates first
-  init(ctx: Ctx): void | Promise<void>    // build meshes, bake textures
-  update?(dt, ctx): void                  // fixed 1/120 s steps
-  lateUpdate?(dt, ctx): void              // after all updates — camera, IK
-}
-```
-
-Systems never import each other. They communicate through a small event bus
-(`disc:released`, `disc:caught`, `score`, `sun:changed`, `player:footstep`, …)
-and find peers at runtime via `ctx.sys`, degrading gracefully when one is
-absent. That's what let a dozen agents build subsystems in parallel against a
-shared contract.
-
-Everything is deterministic — a seeded xorshift RNG (`ctx.rand`), never
-`Math.random` — because the screenshot rig depends on the same seed producing
-the same frame.
-
-## The screenshot rig
-
-`tools/capture.mjs` drives headless Chrome on the real GPU (ANGLE/Metal, not a
-software rasteriser — it checks and warns) and advances the simulation through
-`window.__RIG__` in exact fixed steps rather than wall-clock. The same shot name
-always produces the same pixels, so an image change means a *code* change.
+The rule the harness enforces: **the reference evolves first.** A gameplay
+change lands in `src/sim/`, is mirrored in Swift, and the goldens are
+regenerated — never the other way around, and never by editing a JSON.
 
 ```bash
-node tools/capture.mjs                      # all shots -> shots/
-node tools/capture.mjs broadcast turf       # named shots
-node tools/capture.mjs --q high --out shots/round2
+node --experimental-strip-types tools/gen-goldens.ts   # regenerate fixtures
+cd swift && swift run -c release SimTests              # replay them
 ```
 
-Ten named shots live in `src/capture/Shots.ts`, each pinning camera, framing,
-time of day, focus distance and aperture — a broadcast wide, a sideline
-telephoto, a chest-up character closeup, a peak-action layout, a disc macro, a
-turf macro, the crowd, an endzone score, and a night game.
+CI (`.github/workflows/ci.yml`) runs the suite and the simulator build on every
+push.
 
-`tools/compare.mjs` composites two frames as an unlabelled A/B pair, writing the
-key to a separate file, so a reviewer's preference is genuinely blind.
+## Repository map
 
-## Current state
+| path | what |
+|---|---|
+| `swift/Sources/UltimateSim/` | the engine — rules (`GameState` is the single authority), AI, locomotion, disc physics, `Engine` integration |
+| `swift/Sources/SimChecks/` | the differential suite + goldens (runs on device and in terminal) |
+| `swift/Sources/FlightUI/` | SwiftUI + RealityKit match view, HUD, overlays |
+| `ios/` | XcodeGen project for the app shell |
+| `src/sim/` | the TypeScript reference simulation (the oracle) |
+| `tools/` | golden generators, TS test harnesses, capture rigs |
+| `docs/release-plan.md` | the plan to v1, with measurable authenticity targets |
+| `docs/gameplay-design.md` | the design-director brief (camera grammar, controls, legibility, feel) |
+| `BRIEF.md` | the original engineering brief — "the reference is FIFA, not Madden" |
 
-**Working and tested — 828 assertions across five suites:**
+## The Three.js build
 
-| system | file | tests |
-|---|---|---|
-| Disc aerodynamics | `src/sim/DiscPhysics.ts` | 104 |
-| Rules & box score | `src/sim/GameState.ts`, `Rules.ts` | 373 |
-| Team AI | `src/sim/AI.ts`, `Playbook.ts` | 34 |
-| Locomotion | `src/sim/Locomotion.ts` | 80 |
-| Input | `src/input/*.ts` | 237 |
+The original web build remains as the deployed renderer preview and the home of
+the reference sim. Its zero-binary-assets constraint (every mesh, texture,
+environment map and sound generated in code), deterministic screenshot rig
+(`tools/capture.mjs`), and blind-review process are documented in
+[`BRIEF.md`](BRIEF.md) and [`docs/reviews/`](docs/reviews/).
 
 ```bash
-node tools/test-disc.ts        # and test-rules / test-ai / test-locomotion / test-input
+npm install && npm run dev    # http://localhost:5173 — camera/renderer preview
+npm run check                 # tsc --noEmit
+node --experimental-strip-types tools/test-game.ts   # headless reference match
 ```
-
-Full WFDF 7v7 rules: stall counting with marker-proximity gating, out-of-bounds
-geometry, pulls and brick marks, caps, self-officiated calls, and a complete box
-score. Team AI runs vertical and horizontal stacks, force-side person defence
-and zone. Input is analogue throughout, with a throw-charge quality curve and
-input buffering; humans and AI emit the same intent struct, so both drive the
-same code path.
-
-**Builds and runs, but not finished:**
-
-- Stadium, crowd, field, grass, sky, lighting (CSM) and post-processing all
-  render, but are mid-iteration — the bowl is over-scaled, the turf aliases, and
-  atmospheric haze is too strong.
-- Ultra quality tier does not currently render in reasonable time; use
-  `--q low` or `--q medium`.
-
-**Not started:**
-
-- Player rig, materials and animation — players are placeholder capsules.
-- **The game loop.** `src/sim/Game.ts` is a 9-line stub. Input, locomotion, disc
-  physics and rules are each built and tested in isolation, but nothing wires
-  them together, so the deployed build is not playable.
-- Broadcast camera direction (the camera is a viewer/explorer instead), HUD, audio.
-
-## Blind review
-
-Frames are scored by critics that are not told what they are looking at and are
-asked to guess the product tier from the pixels alone, against a rubric where 10
-means indistinguishable from a shipped Madden 26 marketing frame.
-
-Round 2 scored **3.33/10, unanimous PROTOTYPE**. All three reviewers independently
-named the same root cause — an *inversion of effort*: an ambitious renderer (CSM,
-GTAO, scattering sky, single-tone-map AgX chain) drawing a placeholder world of
-two-box cars and trees made of three icospheres. The full review, with 28 ranked
-defects and fixes across 19 files, is in
-[`docs/reviews/round-2.md`](docs/reviews/round-2.md).
-
-## Running it
-
-```bash
-npm install
-npm run dev          # http://localhost:5173
-npm run check        # tsc --noEmit
-npm run build        # static bundle -> dist/
-npm run preview      # serve the built bundle
-npm run shots        # capture all shots -> shots/
-```
-
-Deploys to GitHub Pages from `main` via `.github/workflows/pages.yml`. `vite.config.ts`
-sets `base: './'` so the same bundle works at a domain root or under a project
-subpath without hardcoding the repo name.
 
 ## Note on how this was built
 
-Written by Claude Opus 5 agents working in parallel against the contract in
-[`BRIEF.md`](BRIEF.md), with a deterministic screenshot rig so that visual work
-could be checked by looking at rendered frames rather than by assertion. Where an
-agent disagreed with a spec it was given, the disagreement is recorded in the
-code — see the constants discussion at the top of `src/sim/aero/Coeffs.ts`, where
-the briefed pitching-moment coefficient was rejected on the grounds that it rolls
-a flat disc onto its edge in under a second.
+Written by Claude agents working against the contract in `BRIEF.md`. Where an
+agent disagreed with a spec, the disagreement is recorded in the code — see the
+constants discussion at the top of `src/sim/aero/Coeffs.ts`, or the header of
+`swift/Sources/UltimateSim/Play/Engine.swift`, which retracts this project's
+most expensive wrong claim (that `Game.ts` was "integration glue rather than
+simulation") and accounts for what the claim cost.
 
 ## Licence
 
