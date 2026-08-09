@@ -690,6 +690,65 @@ enum EngineTests {
             !e.humanRelease(.backhand, aim: Vec3d(0, 0, 1), power: 0.6),
             "a second throw with no disc is refused")
         Check.ok(e.refusals.isEmpty, "no engine call was refused: \(e.refusals.prefix(3))")
+
+        aTapIsNotABomb()
+    }
+
+    /// **The player must be able to throw short.**
+    ///
+    /// `humanReleaseParams` is a full port with its own suite, and it had no caller outside
+    /// that suite — `humanRelease` was passing the drag straight through as `power`, which
+    /// maps the charge across the *throw's own* range. The backhand spec floors at 12 m/s,
+    /// so a release at zero charge still flew about 23 m: there was no dump, no reset, no
+    /// five-metre swing in the game at all, only bombs. The mapping exists to drive an
+    /// absolute release speed from `MIN_THROW_SPEED` instead.
+    ///
+    /// Measured through the engine rather than through the mapping, because the mapping was
+    /// already correct and already asserted — the bug was that nothing called it. This is
+    /// the check that fails if the wiring is undone again.
+    private static func aTapIsNotABomb() {
+        var carries: [Double] = []
+        for power in [0.0, 0.5, 1.0] {
+            let e = Engine(format: .sevens, seed: 17)
+            e.autoTeams = []
+            // Skip the pull and get a live disc into the controlled player's hand.
+            var ticks = 0
+            while !(e.game.phase == .livePossession && e.carrier == e.controlled),
+                ticks < 120 * 240
+            {
+                e.step(dt: dt)
+                ticks += 1
+            }
+            guard e.carrier == e.controlled, let thrower = e.players.first(where: { $0.id == e.carrier })
+            else {
+                Check.ok(false, "a live disc reached the controlled player")
+                return
+            }
+
+            let from = thrower.pos
+            Check.ok(
+                e.humanRelease(.backhand, aim: Vec3d(0, 0, Double(e.dirFor(0))), power: power),
+                "a backhand at power \(power) releases")
+            // Fly it until it comes down.
+            var carry = 0.0
+            for _ in 0..<(120 * 12) where e.game.phase == .discInFlight {
+                e.step(dt: dt)
+                carry = Swift.max(carry, distXZ(from, e.disc.state.pos))
+            }
+            carries.append(carry)
+        }
+
+        Check.inRange(carries[0], 4, 16, "a tap is a dump, not a bomb (\(carries[0]) m)")
+        Check.ok(
+            carries[2] > carries[0] * 1.8,
+            "and full power is a different throw entirely "
+                + "(\(carries[0]) m vs \(carries[2]) m)")
+        Check.ok(
+            carries[1] > carries[0] && carries[2] > carries[1],
+            "the charge is monotonic: \(carries.map { Int($0) })")
+        Check.note(
+            "human backhand carry by charge: "
+                + carries.map { String(format: "%.1f m", $0) }.joined(separator: "  "))
     }
 
     /// The AI's one-shot actions reach the body, with their target intact.

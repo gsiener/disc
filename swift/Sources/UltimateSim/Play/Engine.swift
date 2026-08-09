@@ -1176,21 +1176,47 @@ public final class Engine {
     /// `PRE_PULL` and `LIVE_POSSESSION` are therefore the only two phases this does
     /// anything in, and in both of them the test is the same one — are you holding it. If
     /// the thumb never arrives, `pullDeadline` pulls for them.
+    ///
+    /// **The release goes through `humanReleaseParams`**, which is a full port with its own
+    /// suite and which, until now, had no caller outside that suite. Both regressions it
+    /// was written to prevent were live in this build:
+    ///
+    ///   - **You could not throw short.** Passing the drag straight through as `power`
+    ///     maps the charge across the *throw's own* range, and the backhand spec floors at
+    ///     12 m/s — a release at zero charge still flew 23.6 m. There was no dump, no
+    ///     reset, no five-metre swing, only bombs. `humanReleaseParams` drives an absolute
+    ///     speed from `MIN_THROW_SPEED` instead, which puts a tap at about 10 m.
+    ///   - **Harder was sideways.** A flat release turns over at speed: measured on the old
+    ///     mapping the backhand's drift ran +3.1, +4.6, +4.3, +0.1, −3.3, −8.4, −16.7 m as
+    ///     the charge went up. Aim at a receiver, pull harder, and the disc finishes
+    ///     seventeen metres the *other* side of them. That is not difficulty, it is a
+    ///     control that lies. The power-squared hyzer collapses that to 6.4 m, same-signed
+    ///     all the way up, which is a curve a player can learn to lead.
+    ///
+    /// `quality` is the cleanliness of the release, 0…1. There is no timing meter on the
+    /// drag gesture yet, so it defaults to a clean one; when there is, it is the value to
+    /// feed here, because quality buys nose and spin rather than distance.
     @discardableResult
     public func humanRelease(
-        _ type: ThrowType, aim: Vec3d, power: Double, loft: Double = 0
+        _ type: ThrowType, aim: Vec3d, power: Double, loft: Double = 0, quality: Double = 1
     ) -> Bool {
         guard let c = carrier, c == controlled, let thrower = player(c) else { return false }
 
-        let from = Vec3d(thrower.pos.x, 1.25, thrower.pos.z)
+        let from = releaseOrigin(thrower)
+        let r = humanReleaseParams(type, power: power, quality: quality, tilt: loft)
         let req = ThrowRequest(
             type: type,
             from: from,
             aim: aim,
-            power: power,
-            angle: loft,
-            spin: 0.6,
-            hand: thrower.handed == .left ? .left : .right)
+            // `power: 1` because the release below is fully specified: `speed` overrides
+            // it, and the remaining terms come from the mapping rather than the table.
+            power: 1,
+            angle: r.angle,
+            spin: r.spin,
+            hand: thrower.handed == .left ? .left : .right,
+            bank: r.bank,
+            nose: r.nose,
+            speed: r.speed)
 
         switch game.phase {
         case .prePull:
@@ -1199,6 +1225,7 @@ public final class Engine {
             let vel = disc.release(req)
             thrownBy = c
             intendedReceiver = nil
+            beginFlight(from)
             return demand(
                 game.release(
                     playerId: c, pos: from, vel: vel, spin: req.spin, throwType: type.rawValue))
