@@ -390,10 +390,23 @@ enum EngineTests {
                 e.stall <= Double(e.rules.stallMax), "the count never passes stallMax")
         }
 
-        // Locomotion clamps to the field, so any excursion at all is a path that skipped
-        // the clamp. A metre of slack is allowed for a body carried out by momentum on
-        // the very frame it crosses, which the reference also permits.
-        Check.ok(worstOut < 1.0, "players stay on the pitch (worst excursion \(worstOut) m)")
+        // **The bound is the reference's, which is not what this used to say.**
+        //
+        // It asserted one metre, with a comment claiming the reference permitted the same.
+        // It does not: `PLAY_BOUND_X/Z` are `SIDELINE + 2.5` and `END_LINE + 2.5`, because
+        // a sideline has run-off behind it and a body carrying speed across the line has
+        // to go somewhere. One metre held only for as long as nothing perturbed the match;
+        // the first change that did — a breeze — put a shoved body at 1.09 m and failed a
+        // check that was measuring the wrong thing.
+        //
+        // Two and a half metres is now enforced rather than hoped for: `Engine.keepOnField`
+        // is a hard clamp, ported from the reference, where before there was nothing but
+        // the AI's perimeter *steering* cap — which cannot survive contact separation
+        // pushing a body sideways.
+        let runOff = 2.5
+        Check.ok(
+            worstOut <= runOff + 1e-9,
+            "players stay inside the run-off (worst excursion \(worstOut) m)")
 
         // Exactly one pull per point, and no point without one. The current point may not
         // have pulled yet, which is the only slack in the identity.

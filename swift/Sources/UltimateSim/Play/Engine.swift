@@ -83,6 +83,9 @@ public final class Engine {
     public private(set) var loco = Locomotion()
     public private(set) var ai: [TeamAI] = []
     public private(set) var disc = DiscRuntime()
+    /// The match's breeze. Fed to both the flight model and the AI's world — the reference
+    /// sets both from one vector and they must not drift apart.
+    public private(set) var wind = Vec3d.zero
     /// The player the human is controlling, always on team 0.
     public private(set) var controlled = 0
 
@@ -264,6 +267,18 @@ public final class Engine {
         }
         self.game = GameState(opts)
 
+        // A light, steady breeze — enough that hucks bend and zone becomes a real call, not
+        // enough that the flight model becomes unreadable.
+        //
+        // It was `.zero`, which is not a neutral default: `Playbook.shouldPlayZone` needs
+        // `windSpeed` to clear its threshold, so with no wind at all it could never return
+        // true and the whole zone defence, the upwind force flip in `pickScheme` and the
+        // wind term in `maxThrowRange` were unreachable code. Forked from its own salt so
+        // adding it does not shift any other stream.
+        let w = rng.fork(salt: 0x117d)
+        wind = Vec3d(w.range(-1.5, 1.5), 0, w.range(-1.1, 1.1))
+        disc.wind = wind
+
         buildRoster()
         game.startGame()
         stagePoint()
@@ -377,6 +392,7 @@ public final class Engine {
         thrownBy = nil
         intendedReceiver = nil
         disc = DiscRuntime()
+        disc.wind = wind
         controlled = nearestOnTeam(0, to: Vec3d(game.discPos.x, 0, game.discPos.z))
         syncDisc()
     }
@@ -562,6 +578,7 @@ public final class Engine {
             loco.get(p.id)?.anchored = p.id == anchorId
         }
         loco.apply(intents.map(Engine.locoIntent), dt: dt, world: &records)
+        keepOnField()
 
         // 5. Write the bodies back onto the AI's records. `syncTo` has already updated
         //    `records`; this is the copy back into the objects the AI reads next tick.
@@ -791,7 +808,7 @@ public final class Engine {
         w.scoreCap = game.target
         w.rand = rng
         w.field = format.field
-        w.wind = .zero
+        w.wind = Vec2d(wind.x, wind.z)
         w.disc = AIDiscState(
             pos: disc.state.pos,
             vel: disc.state.vel,
@@ -1201,6 +1218,46 @@ public final class Engine {
             if distXZ(p.pos, Vec3d(x, 0, z)) < 1.9 { n += 1 }
         }
         return Swift.min(2, n)
+    }
+
+    /// Nobody leaves the park. Locomotion caps speed; this is the hard backstop.
+    ///
+    /// Ported from `Game.ts:keepOnField`, and it had no counterpart here at all — this
+    /// engine relied entirely on the AI's perimeter speed cap, which is a *steering*
+    /// constraint and cannot survive being shoved. Contact separation has no clamp of its
+    /// own, so a body squeezed between two others walked off the pitch, and the checks
+    /// caught it the first time anything perturbed the match: 1.09 m out against a 1.0 m
+    /// tolerance. Two and a half metres of run-off outside the line, which is what a
+    /// sideline actually has.
+    ///
+    /// The non-finite reset is the reference's too. A NaN position is unrecoverable and
+    /// silently poisons every distance in the frame; putting the body back on the centre
+    /// spot is a visible, survivable failure instead of an invisible fatal one.
+    private func keepOnField() {
+        let boundX = format.field.sideline + 2.5
+        let boundZ = format.field.endLine + 2.5
+        for p in players {
+            guard let lp = loco.get(p.id) else { continue }
+            if lp.pos.x > boundX {
+                lp.pos.x = boundX
+                if lp.vel.x > 0 { lp.vel.x = 0 }
+            } else if lp.pos.x < -boundX {
+                lp.pos.x = -boundX
+                if lp.vel.x < 0 { lp.vel.x = 0 }
+            }
+            if lp.pos.z > boundZ {
+                lp.pos.z = boundZ
+                if lp.vel.z > 0 { lp.vel.z = 0 }
+            } else if lp.pos.z < -boundZ {
+                lp.pos.z = -boundZ
+                if lp.vel.z < 0 { lp.vel.z = 0 }
+            }
+            if !lp.pos.x.isFinite || !lp.pos.y.isFinite || !lp.pos.z.isFinite {
+                lp.pos = Vec3d(0, lp.groundY + lp.hipHeight, 0)
+                lp.vel = .zero
+                note("a body went non-finite and was reset to the centre spot")
+            }
+        }
     }
 
     /// A new flight starts. The release point is in bounds by construction — a thrower
