@@ -18,6 +18,15 @@ import Foundation
 /// solved for by a secant on the probe's own lateral error, so its sign is read off
 /// the flight rather than tabulated — which is what makes it right for either hand,
 /// either spin direction, and either side of the turnover speed at once.
+///
+/// **Elevation alone cannot make a short throw.** The rising-crossing scan records
+/// nothing when the flattest legal launch already carries further than the ask, and
+/// control then fell through to "throw it as far as it goes" — a 1 m dump released as a
+/// 19.6 m bomb, 42% of asks under 6 m overshooting by more than three metres. Nor is it
+/// only the bracketing: at the 0.12 power floor a backhand leaves at 13.8 m/s and carries
+/// 4.8 m at its worst angle, so no elevation makes the throw. The human path solved this
+/// years ago with an absolute release speed from `MIN_THROW_SPEED`; the solver now solves
+/// for that speed as well.
 public enum ThrowSolver {
     /// Launch-elevation bracket, rad — the range of a human wrist.
     public static let elevLo = -0.34
@@ -40,6 +49,14 @@ public enum ThrowSolver {
     public static let reachTolerance = 0.5
     /// How many times one solve may lift the power. See `solve`.
     public static let powerLifts = 2
+    /// Slowest release the solver will ask an arm for, m/s, and how many times one solve
+    /// may reach for it. See the THROW SOFTER note in `solve`.
+    ///
+    /// The same 9 m/s as `MIN_THROW_SPEED` in `HumanRelease.swift`, for the same reason:
+    /// every throw spec's own speed floor is a twenty metre throw, so a solver that can
+    /// only move inside the spec's band cannot make a dump at all.
+    public static let speedMin = 9.0
+    public static let speedDrops = 2
     /// Clamp on the residual heading trim, rad.
     public static let headingTrim = 0.15
 
@@ -58,7 +75,7 @@ public enum ThrowSolver {
     private static func solveElevation(
         _ probe: DiscRuntime, _ req: inout ThrowRequest,
         heading: Double, want: Double, catchY: Double
-    ) -> (angle: Double, lat: Double, reach: Double) {
+    ) -> (angle: Double, lat: Double, reach: Double, floor: Double) {
         req.aim = Vec3d(sin(heading), 0, cos(heading))
         let step = (elevHi - elevLo) / Double(elevScan)
 
@@ -67,8 +84,14 @@ public enum ThrowSolver {
         var peakA = elevLo
         var peakD = -Double.infinity
         var peakLat = 0.0
+        var minA = elevLo
+        var minD = Double.infinity
+        var minLat = 0.0
         var loA = Double.nan
         var hiA = Double.nan
+        var rising = true
+        var fallLoA = Double.nan
+        var fallHiA = Double.nan
 
         for i in 0...elevScan {
             let a = elevLo + step * Double(i)
@@ -79,21 +102,47 @@ public enum ThrowSolver {
                 peakA = a
                 peakLat = r.lat
             }
+            if r.dist < minD {
+                minD = r.dist
+                minA = a
+                minLat = r.lat
+            }
             if i > 0, r.dist >= want, prevD < want {
                 loA = prevA
                 hiA = a
                 break
             }
+            // A FALLING CROSSING IS A ROOT TOO, and it is only ever the fallback. The
+            // rising crossing above still wins outright: for any carry curve that starts
+            // BELOW the ask — every throw long enough to need a peak — no falling crossing
+            // can exist before it. This one fires on an INVERTED disc, whose carry falls
+            // across the whole bracket instead of peaking inside it; see the reference.
+            if i > 0, r.dist <= want, prevD > want, fallLoA.isNaN {
+                fallLoA = prevA
+                fallHiA = a
+            }
             prevA = a
             prevD = r.dist
         }
 
-        // Out of range: throw it as far as it goes. The AI's range model is more
-        // optimistic than the flight model above about a third of `maxThrowRange`,
-        // so this branch is taken on purpose and often.
+        if loA.isNaN, !fallLoA.isNaN {
+            loA = fallLoA
+            hiA = fallHiA
+            rising = false
+        }
+
+        // NO CROSSING — two opposite failures, and this used to answer both with the peak.
+        // Below the trough the ask is shorter than anything this release can throw, and
+        // answering it with the maximum-distance angle turned a 1 m dump into a 19.6 m
+        // bomb; above the peak it is genuinely out of range. Throw it as short as it goes,
+        // or as far as it goes. The caller then drops the release SPEED and solves again.
         if loA.isNaN {
+            if minD >= want {
+                req.angle = minA
+                return (minA, minLat, peakD, minD)
+            }
             req.angle = peakA
-            return (peakA, peakLat, peakD)
+            return (peakA, peakLat, peakD, minD)
         }
 
         var bestA = loA
@@ -109,10 +158,11 @@ public enum ThrowSolver {
                 bestA = mid
                 bestLat = r.lat
             }
-            if err < 0 { loA = mid } else { hiA = mid }
+            // Which half to keep depends on which way the carry runs across the cell.
+            if (err < 0) == rising { loA = mid } else { hiA = mid }
         }
         req.angle = bestA
-        return (bestA, bestLat, peakD)
+        return (bestA, bestLat, peakD, minD)
     }
 
     /// Solve power, elevation, bank and heading for a throw of `want` m along `heading0`.
@@ -128,6 +178,7 @@ public enum ThrowSolver {
         var angle = 0.02
         var lat = 0.0
         var lifts = 0
+        var drops = 0
 
         var pass = 0
         while pass < passes {
@@ -136,13 +187,34 @@ public enum ThrowSolver {
             angle = e.angle
             lat = e.lat
 
+            // THROW SOFTER RATHER THAN LONGER — the mirror of the lift below, and the half
+            // of the problem the lift could never reach. `powerForSpeed` is clamped to a
+            // floor of 0.12 in `aiThrow`, and 12% power on a backhand is still 13.8 m/s,
+            // which carries about 19 m at the best angle and never less than 4.8 m at the
+            // worst — so a 1 m dump to a named receiver was released as a 19.6 m bomb, and
+            // 42% of the AI's asks under 6 m overshot by more than three metres.
+            //
+            // The human path was given an absolute release speed for exactly this
+            // (`HumanRelease.swift`, `MIN_THROW_SPEED`) and the AI path never was.
+            // `ThrowRequest.speed` is that same override; the solver reaches for it here,
+            // scaling toward the shortest carry the scan could find, carry going roughly as
+            // speed squared. See the reference for the measurements.
+            let cur = req.speed ?? throwSpeed(req.type, req.power)
+            if e.floor > want + reachTolerance, cur > speedMin, drops < speedDrops {
+                drops += 1
+                req.speed = clamp(cur * (want / max(0.5, e.floor)).squareRoot(), speedMin, cur)
+                continue
+            }
+
             // THROW HARDER RATHER THAN SHORTER. The release speed the AI asks for comes
             // from `throwFlightTime`, and above about a third of `maxThrowRange` that model
             // and the flight model disagree — a 42 m huck asked for at 22.7 m/s that no
             // launch angle carries past about 34 m. Carry goes roughly as speed squared, so
             // the lift is `sqrt(want / reach)` on power, capped at full. See the reference
             // header for the measurement.
-            if e.reach < want - reachTolerance, req.power < 1, lifts < powerLifts {
+            // `drops == 0` because the two are opposite corrections and the lift acts on
+            // `power`, which an absolute `speed` has already overridden.
+            if drops == 0, e.reach < want - reachTolerance, req.power < 1, lifts < powerLifts {
                 lifts += 1
                 req.power = clamp(req.power * (want / max(1, e.reach)).squareRoot(), req.power, 1)
                 continue

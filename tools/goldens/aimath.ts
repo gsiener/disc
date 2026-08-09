@@ -17,7 +17,7 @@
 import {
   baseMaxSpeed, effectiveMaxSpeed, effectiveAccel, effectiveDecel, turnRateOf,
   reachHeight, layoutExtend, effectiveDecision,
-  discStakes, shouldBid, possessionValue, maxThrowRange, throwFlightTime,
+  discStakes, shouldBid, possessionValue, maxThrowRange, throwFlightTime, throwReleaseSpeed,
   catchProbability, tickStamina, boundaryRoom, makeAttributes, makePlayer,
   THROW_TYPES, type ThrowType, type Archetype, type AIPlayer,
 } from '../../src/sim/AI.ts';
@@ -85,10 +85,21 @@ export function aiMathGoldens() {
     }
   }
 
-  // Throw range and flight time across every type, both wind clamp edges.
+  /**
+   * Throw range, flight time and RELEASE SPEED across every type, both wind clamp edges.
+   *
+   * `throwReleaseSpeed` was in no fixture at all until now, and it decides how hard
+   * every AI throw leaves the hand. Mutation-tested to prove it: the stretch term's
+   * two smoothstep weights were changed in the Swift port alone and the whole suite
+   * stayed green at 2.24 million assertions. The distances below are chosen to
+   * evaluate it non-trivially — 20 m sits inside `smoothstep(15, 23, d)`, 25 m inside
+   * `smoothstep(23, 40, d)`, 45 and 80 saturate both, 0 and 5 are under them — and the
+   * type sweep is what evaluates the hammer's 0.8 zip factor, which the trace fixtures
+   * never reached at all.
+   */
   const throwRows: {
     type: ThrowType; energy: number; windAlong: number; d: number;
-    range: number; flight: number;
+    range: number; flight: number; releaseSpeed: number;
   }[] = [];
   for (const type of THROW_TYPES) {
     for (const energy of [0.12, 0.6, 1]) {
@@ -98,6 +109,7 @@ export function aiMathGoldens() {
           type, energy, windAlong, d: 25,
           range: maxThrowRange(p, type, windAlong),
           flight: throwFlightTime(p, type, 25),
+          releaseSpeed: throwReleaseSpeed(p, type, 25),
         });
       }
       for (const d of [0, 5, 20, 45, 80]) {
@@ -105,6 +117,7 @@ export function aiMathGoldens() {
           type, energy, windAlong: 0, d,
           range: maxThrowRange(p, type, 0),
           flight: throwFlightTime(p, type, d),
+          releaseSpeed: throwReleaseSpeed(p, type, d),
         });
       }
     }

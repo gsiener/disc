@@ -534,16 +534,19 @@ public final class DiscRuntime {
     /// Where a released disc first descends through `catchY`, and how far that is from the
     /// release point, resolved along and across the aim line.
     ///
-    /// **`req.speed` is not forwarded**, which means probing a speed-overridden pull
-    /// answers for the power-lerped speed instead. That is the reference's options bag,
-    /// verbatim: it builds `hand`, `bank`, `nose`, `groundY` and `out` and stops. It looks
+    /// **`req.speed` IS forwarded**, and this comment used to say it was not — "it looks
     /// like an oversight and it may be one, but the throw solver is tuned against these
-    /// numbers, so it is behaviour until somebody changes it deliberately.
+    /// numbers". It was an oversight, and the reference has fixed it: `speed` was the one
+    /// release parameter `release` honoured and this did not, so a request carrying an
+    /// absolute release speed probed at its `power` speed and then flew at a completely
+    /// different one. The solver's whole job is comparing the probe against the flight,
+    /// and it now solves for that speed.
     public func probeThrow(_ req: ThrowRequest, catchY: Double, maxT: Double = 6) -> ThrowProbe {
         var opts = ThrowOptions()
         opts.hand = req.hand ?? .right
         opts.bank = req.bank ?? 0
         opts.nose = req.nose ?? 0
+        opts.speed = req.speed
         opts.groundY = groundAt(req.from.x, req.from.z)
 
         // ALIAS SITE — `out: this.probe`, so the reference reuses and resets the same

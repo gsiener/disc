@@ -52,7 +52,19 @@ const arm = {
 } as unknown as AIPlayer;
 
 const TYPES = ['backhand', 'forehand', 'hammer', 'scoober', 'push'] as const;
-const FRACTIONS = [0.15, 0.3, 0.35, 0.5, 0.7, 0.9];
+/**
+ * The two SHORT fractions are new, and they are the ones that pin the dump.
+ *
+ * The sweep used to start at 0.15 — 8.3 m on a backhand — and every case in it
+ * bracketed a rising root, so the whole under-reachable half of the solver was
+ * unpinned: a 1 m ask was answered with the maximum-distance angle and flew
+ * 19.6 m, in both languages, with 2.2 million assertions green. 0.05 and 0.10 are
+ * below the flattest carry of every throw in the table (and above the solver's own
+ * 0.4 m floor even for the push, whose range is the shortest), so they exercise the
+ * speed drop, the trough fallback and — on the hammer, whose carry falls across the
+ * whole elevation bracket — the falling crossing.
+ */
+const FRACTIONS = [0.05, 0.10, 0.15, 0.3, 0.35, 0.5, 0.7, 0.9];
 const HEADINGS = 8;
 
 /**
@@ -177,6 +189,9 @@ function sweep(wind: { x: number; z: number }): unknown {
           aim: { x: aim.x, y: aim.y, z: aim.z },
           solved: {
             power: req.power,
+            // `null` when the solve never had to reach below the throw's own speed
+            // band — which is every throw long enough to bracket a rising root.
+            speed: req.speed ?? null,
             angle: req.angle,
             spin: req.spin,
             bank: req.bank,
@@ -204,7 +219,9 @@ export function throwSolverGoldens(): unknown {
       'Game.ts:aiThrow solved against the reference DiscRuntime, then flown to rest. '
       + 'The solve itself is src/sim/aero/ThrowSolver.ts and is imported, not '
       + 'transcribed; probeThrow, release and powerForSpeed are imported too. '
-      + 'Two sweeps: still air, and a breeze of the size '
+      + 'The short fractions solve below the throw table\'s own speed floor, so '
+      + '`solved.speed` is the absolute release speed the solver settled on and is '
+      + 'null wherever it never had to. Two sweeps: still air, and a breeze of the size '
       + 'the match actually sets, because the solver bisects against the runtime that '
       + 'carries the wind. Fractions above ~0.35 of maxThrowRange land short on '
       + 'purpose: the AI range model and the flight model disagree there, in both '

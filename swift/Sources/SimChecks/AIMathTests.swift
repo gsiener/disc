@@ -68,6 +68,7 @@ enum AIMathTests {
         let d: Double
         let range: Double
         let flight: Double
+        let releaseSpeed: Double
     }
     struct CatchRow: Decodable {
         let energy: Double
@@ -246,6 +247,14 @@ enum AIMathTests {
                 "\(at) maxThrowRange(wind \(row.windAlong))")
             Check.bitEqViaJSON(
                 throwFlightTime(p, t, row.d), row.flight, "\(at) throwFlightTime(d \(row.d))")
+            // `throwReleaseSpeed` appeared in no fixture until this line: the reviewer
+            // mutated its stretch term in Swift alone — changing how hard every throw
+            // over 15 m is released — and 2,240,645 assertions stayed green. The
+            // generator's distances straddle both of its smoothsteps and its type sweep
+            // reaches the hammer's zip factor, so a mutation of either dies here.
+            Check.bitEqViaJSON(
+                throwReleaseSpeed(p, t, row.d), row.releaseSpeed,
+                "\(at) throwReleaseSpeed(d \(row.d))")
         }
     }
 

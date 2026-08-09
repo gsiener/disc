@@ -7,7 +7,7 @@
  * it were only findable by driving it directly, and because a golden that
  * IMPORTS its reference cannot drift from it the way a transcription can.
  *
- * ------------------------------------------------------------------ the two bugs
+ * ----------------------------------------------------------------- the three bugs
  *
  * **1. Range is not monotonic in launch elevation, and the old search assumed it
  * was.** A 20.5 m/s backhand carries, as the launch angle sweeps -0.34 -> +0.62
@@ -39,6 +39,24 @@
  * turnover it is still fading and above it it is rolling over. A signed constant
  * per throw type gets the slow half of that backwards. The secant reads the sign
  * off the flight the disc is actually going to make.
+ *
+ * **3. Elevation alone cannot make a short throw, and the search answered a
+ * too-SHORT ask as though it were a too-LONG one.** The scan above brackets on a
+ * rising crossing, so it records nothing when the flattest legal launch already
+ * carries further than the ask — and control then fell through to the branch that
+ * throws as far as the arm can. A one metre dump to a receiver standing there was
+ * released as a 19.6 m bomb. Live, 9-13% of every AI throw overshot its aim by
+ * more than three metres and 42% of asks under 6 m did.
+ *
+ * The bracketing is half the story. The other half is that `aiThrow` clamps
+ * `powerForSpeed` at 0.12, and 12% power on a backhand is 13.8 m/s, which carries
+ * 4.8 m at its very worst angle — the throw is not reachable at any elevation. The
+ * human path had already solved exactly this by driving an ABSOLUTE release speed
+ * from `MIN_THROW_SPEED` (`Game.ts:humanReleaseParams`) and the AI path never got
+ * the fix, so a human could throw a 10 m dump and the AI physically could not. So
+ * the solver now solves the release speed too, downward, against the shortest
+ * carry it can measure. Three faces, one wrong assumption: that the only free
+ * variable is the angle.
  */
 
 import type { ThrowRequest } from '../../entities/Disc.ts';

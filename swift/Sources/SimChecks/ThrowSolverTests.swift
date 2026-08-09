@@ -50,6 +50,10 @@ enum ThrowSolverTests {
 
     private struct Solved: Decodable {
         let power: Double
+        /// Absolute release speed, m/s, or null where the solve stayed inside the throw
+        /// table's own band. This is the solver's fourth output and the one that makes a
+        /// dump possible at all — see the THROW SOFTER note in `Aero/ThrowSolver.swift`.
+        let speed: Double?
         let angle: Double
         let spin: Double
         /// Release bank, rad. The solver's second axis — see `Aero/ThrowSolver.swift`.
@@ -148,6 +152,21 @@ enum ThrowSolverTests {
                 // a substituted constant is still caught at a glance; what is given up is
                 // the last bit, not the assertion.
                 Check.near(req.power, c.solved.power, 1e-12, "\(label): release power")
+                // The absolute speed, including its absence. A port that kept the old
+                // power-only solve answers every short case with the maximum-distance
+                // angle instead, and this is where that shows.
+                switch (req.speed, c.solved.speed) {
+                case (nil, nil):
+                    break
+                case let (mine?, want?):
+                    Check.near(mine, want, 1e-9, "\(label): absolute release speed")
+                default:
+                    Check.ok(
+                        false,
+                        "\(label): release speed is present in both or neither "
+                            + "(\(String(describing: req.speed)) vs "
+                            + "\(String(describing: c.solved.speed)))")
+                }
                 Check.near(req.angle, c.solved.angle, 1e-9, "\(label): launch elevation")
                 Check.bitEqViaJSON(req.spin, c.solved.spin, "\(label): spin")
                 // Bank is solved, not tabulated, so it is as much the solver's output as the
@@ -194,5 +213,48 @@ enum ThrowSolverTests {
             "throw solver golden: \(total) cases, worst solve deviation "
                 + "\(worstSolve), worst release velocity \(worstVel), worst flown "
                 + "\(worstFlight)")
+
+        shortAsksStayShort()
+    }
+
+    /// A DUMP IS NOT A BOMB. The golden pins the numbers; this states the property, in the
+    /// units a reader has an opinion about.
+    ///
+    /// The solver used to answer any ask shorter than its own flattest carry with the
+    /// MAXIMUM-distance angle — an ask it could not bracket was treated as an ask it could
+    /// not reach — so a 1 m reset to a named receiver left the hand as a 19.6 m huck. The
+    /// floor below is a physical one, not a tuning one: a disc released at a person's
+    /// slowest throw still crosses a few metres before it can descend through the catch
+    /// plane, which is the same floor the human's `MIN_THROW_SPEED` sets.
+    private static func shortAsksStayShort() {
+        let e = Engine(format: .sevens, seed: 3)
+        let rt = DiscRuntime()
+        let from = Vec3d(0, 1.35, 0)
+        for type in [ThrowType.backhand, .forehand, .hammer, .scoober, .push] {
+            for want in [1.0, 2.0, 4.0, 6.0] {
+                let aim = Vec3d(0, 1.35, want)
+                guard
+                    let req = e.solveRelease(
+                        from: from, aim: aim, type: type, speed: want / 0.6,
+                        throwPower: 70, hand: .right)
+                else {
+                    Check.ok(false, "\(type.rawValue) \(want) m solves at all")
+                    continue
+                }
+                _ = rt.release(req)
+                var flown = 0.0
+                var prevY = rt.state.pos.y
+                for _ in 0..<(120 * 8) {
+                    rt.step(dt: 1.0 / 120)
+                    flown = distXZ(from, rt.state.pos)
+                    if (rt.state.pos.y <= 1.35 && prevY > 1.35) || rt.state.touchedGround { break }
+                    prevY = rt.state.pos.y
+                }
+                Check.ok(
+                    flown <= want + 3,
+                    "a \(want) m \(type.rawValue) is not a bomb "
+                        + "(flew \(String(format: "%.2f", flown)) m)")
+            }
+        }
     }
 }
