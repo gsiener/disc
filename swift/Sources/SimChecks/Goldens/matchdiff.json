@@ -1,0 +1,49 @@
+{
+  "spec": {
+    "seeds": [
+      11,
+      23,
+      37,
+      2,
+      5,
+      7,
+      13,
+      19,
+      29,
+      41,
+      53
+    ],
+    "seconds": 900,
+    "dt": 0.008333333333333333,
+    "format": "sevens",
+    "playersPerSide": 7
+  },
+  "matches": 11,
+  "turnovers": {
+    "drop": 64,
+    "throwaway": 73,
+    "out-of-bounds": 10,
+    "caught-out-of-bounds": 0,
+    "block": 57,
+    "interception": 60,
+    "stall-out": 0,
+    "pull-drop": 12,
+    "travel-violation": 0,
+    "double-touch": 0
+  },
+  "calls": {
+    "foul": 22,
+    "pick": 12,
+    "strip": 3,
+    "travel": 0,
+    "contested": 5
+  },
+  "totals": {
+    "attempts": 1926,
+    "completions": 1659,
+    "goals": 149,
+    "blocks": 117,
+    "stallOuts": 0,
+    "points": 160
+  }
+}

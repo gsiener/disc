@@ -36,6 +36,7 @@ import { teamAIGoldens } from './goldens/teamai.ts';
 import { humanReleaseGoldens } from './goldens/humanrelease.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
 import { locomotionGoldens } from './goldens/locomotion.ts';
+import { matchDiffGoldens } from './goldens/matchdiff.ts';
 import { moveGoldens } from './goldens/move.ts';
 import { playbookGoldens } from './goldens/playbook.ts';
 import { rngGoldens } from './goldens/rng.ts';
@@ -72,16 +73,23 @@ const GENERATORS: Record<string, () => unknown> = {
   'teamai.json': teamAIGoldens,
   'throwsolver.json': throwSolverGoldens,
   'trycatch.json': tryCatchGoldens,
+  // Slow (eleven full matches). Named-module runs skip it unless you ask for it.
+  'matchdiff.json': matchDiffGoldens,
 };
 
 /**
  * Optional module filter. `node tools/gen-goldens.ts rules gamestate` rewrites
- * only `rules.json` and `gamestate.json`; no arguments rewrites all sixteen.
+ * only `rules.json` and `gamestate.json`; no arguments rewrites every one.
  *
  * This exists because several agents share the checkout and each owns a subset
  * of the fixtures. An unfiltered run rewrites everyone's, which has already put
  * stale goldens on main once and forced two agents to hand-stage their own JSON.
  * Regenerate only what you own.
+ *
+ * It is also the difference between a fast regeneration and a slow one now that
+ * `matchdiff` is here: every other module is arithmetic and finishes instantly,
+ * that one plays eleven full matches and takes minutes. Naming your modules is
+ * the way to not pay for it.
  */
 const requested = process.argv.slice(2).map((a) => a.replace(/\.json$/, ''));
 
