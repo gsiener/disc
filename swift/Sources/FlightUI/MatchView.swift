@@ -29,14 +29,51 @@ public struct MatchView: View {
 
     @State private var match: Engine
     @State private var drag: DragState? = nil
-    @State private var lastTick = Date()
+
+    /// The seed this match was built from. Freshly drawn from the clock for every new
+    /// match — including the format-switch restart — so no two launches replay the same
+    /// wind and rosters. Deliberately not shown anywhere yet; it is kept so a later
+    /// result screen can display it, and so the match stays a pure function of
+    /// `(format, seed, inputs)` exactly as `Replay.swift` requires. All randomness
+    /// enters the engine through this one number.
+    @State private var seed: UInt32
+
+    // MARK: fixed-tick clock state
+    //
+    // The sim is advanced only in whole 1/120 s ticks; see the long comment on `body`'s
+    // tick driver below and Sources/UltimateSim/Play/Replay.swift:19-56 for why.
+
+    /// The moment the previous display frame arrived, if one has.
+    @State private var lastFrame: Date? = nil
+    /// Wall-clock seconds owed to the simulation but not yet spent on whole ticks.
+    /// Clamped to `Self.maxAccumulated` so a hitch slows the game instead of
+    /// fast-forwarding it.
+    @State private var accumulator = 0.0
+    /// Whole simulation ticks executed so far. The trail sampler keys off this, because
+    /// the trail should sample the flight, not the display.
+    @State private var tickCount = 0
+    /// Duration of the last rendered frame, in seconds. Feeds the camera's time-based
+    /// easing so a 120 Hz ProMotion display eases at the same speed as a 60 Hz one.
+    @State private var frameDt = 1.0 / 60.0
+    /// Phase for the chevron's bob, advanced by wall time rather than by frame count so
+    /// the bob speed does not depend on the display's refresh rate.
+    @State private var bobPhase = 0.0
+
+    /// The one and only step the simulation is advanced by. 1/120 is the regime the
+    /// entire validation suite runs at (see `Replay.swift`), so it is the regime the
+    /// shipped game runs at.
+    private static let tickDt = 1.0 / 120.0
+    /// The most wall time the accumulator will hold — 0.25 s, i.e. 30 ticks of catch-up
+    /// per frame at most. Anything beyond it (backgrounding, a debugger pause, a long
+    /// hitch) is dropped rather than replayed, so a stall can never spiral.
+    private static let maxAccumulated = 0.25
 
     /// Recent disc positions while it is in the air, oldest first. Collected in the tick
     /// loop rather than in the render pass, because the render pass runs once per drawn
     /// frame and a trail should sample the flight, not the frame rate.
     @State private var trail: [SIMD3<Float>] = []
 
-    /// Bumped once per simulated frame purely so SwiftUI knows something happened.
+    /// Bumped once per rendered frame purely so SwiftUI knows something happened.
     ///
     /// `Match` is a `final class` — deliberately, since passing a match around must not
     /// silently copy it — and SwiftUI does not observe mutations through a class
@@ -60,10 +97,43 @@ public struct MatchView: View {
 
     public init(format: FieldSpec = .minis) {
         startFormat = format
-        _match = State(initialValue: Engine(format: format.gameFormat))
+        let s = Self.freshSeed()
+        _seed = State(initialValue: s)
+        _match = State(initialValue: Engine(format: format.gameFormat, seed: s))
+    }
+
+    /// A seed for a new match, drawn from the clock. The engine stays fully
+    /// deterministic — replay a match by constructing an `Engine` with the same seed —
+    /// but each *new* match gets its own wind and rosters instead of the compiled-in
+    /// default that made every launch identical.
+    private static func freshSeed() -> UInt32 {
+        UInt32(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds)
     }
 
     public var body: some View {
+        // The tick driver. `TimelineView(.animation)` re-evaluates once per rendered
+        // frame, paced by the display on both platforms this target builds for, and the
+        // `onChange` below turns each frame into zero or more *fixed* 1/120 s steps.
+        //
+        // Why fixed and not "whatever the wall clock measured": `Engine.step` is not
+        // associative in `dt` — see Sources/UltimateSim/Play/Replay.swift:19-56.
+        // `Locomotion` decays gait with `exp(-k * dt)` once per call and clamps a `dt`
+        // above 1/30 outright, `TeamAI` decides once per call, the stall accumulates in
+        // whole `dt`s — so `step(0.02)` is a *different simulation* from `step(0.01)`
+        // twice, and the 2.2M-assertion validation suite runs entirely at 1/120. The
+        // shipped game must run the same regime, or it ships a physics nobody validated.
+        // Wall time therefore decides only *how many* whole ticks run, never how big
+        // they are; the leftover fraction of a frame stays in `accumulator`, outside
+        // the simulation, where nothing the sim computes can read it.
+        TimelineView(.animation) { timeline in
+            matchContent
+                .onChange(of: timeline.date) { _, now in
+                    advance(to: now)
+                }
+        }
+    }
+
+    private var matchContent: some View {
         GeometryReader { geo in
             ZStack(alignment: .top) {
                 RealityView { content in
@@ -90,18 +160,40 @@ public struct MatchView: View {
                 callout
             }
         }
-        .task {
-            // A display-paced loop. The disc still integrates at its own fixed 1/120
-            // internally, so frame rate changes what you see and not what happens.
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .milliseconds(16))
-                let now = Date()
-                let dt = Swift.min(0.05, now.timeIntervalSince(lastTick))
-                lastTick = now
-                match.step(dt: dt)
-                recordTrail()
-                frame &+= 1
-            }
+    }
+
+    /// One rendered frame's worth of simulation: accumulate the wall time since the
+    /// previous frame and spend it on whole 1/120 s ticks. Rendering happens every
+    /// frame regardless of how many ticks ran — including zero, when a frame arrives
+    /// before a full tick's worth of wall time has accrued — so frame rate changes
+    /// what you see, never what happens.
+    private func advance(to now: Date) {
+        defer {
+            lastFrame = now
+            // The redraw subscription: `sync` reads this, so bumping it once per frame
+            // is what keeps the RealityView following the sim (and the eased camera
+            // moving even on frames where no tick ran).
+            frame &+= 1
+        }
+        guard let last = lastFrame else { return }
+        let wallDt = now.timeIntervalSince(last)
+        // A hiccup — a suspended app resuming, a clock adjustment — must not poison a
+        // simulation that never reads a clock.
+        guard wallDt.isFinite, wallDt > 0 else { return }
+
+        frameDt = Swift.min(wallDt, Self.maxAccumulated)
+        bobPhase += frameDt * 3.6
+
+        // Clamp the *accumulated* debt, not just this frame's: a hitch or a spell in
+        // the background yields at most 0.25 s (30 ticks) of catch-up, and the rest is
+        // dropped. The game slows down for a moment instead of fast-forwarding, and a
+        // slow frame can never demand enough ticks to cause the next slow frame.
+        accumulator = Swift.min(accumulator + wallDt, Self.maxAccumulated)
+        while accumulator >= Self.tickDt {
+            accumulator -= Self.tickDt
+            match.step(dt: Self.tickDt)
+            tickCount &+= 1
+            recordTrail()
         }
     }
 
@@ -110,9 +202,11 @@ public struct MatchView: View {
             if !trail.isEmpty { trail.removeAll() }
             return
         }
-        // Every other tick. Twenty-two beads at 60 Hz would be a quarter of a second of
-        // flight, which reads as a smear on the disc rather than as a path it took.
-        guard frame % 2 == 0 else { return }
+        // Every fourth tick — 30 Hz of flight, the same cadence the old 60 Hz loop's
+        // every-other-frame sampling gave. Twenty-two beads at 60 Hz would be a quarter
+        // of a second of flight, which reads as a smear on the disc rather than as a
+        // path it took.
+        guard tickCount % 4 == 0 else { return }
         let p = match.disc.state.pos
         trail.append([Float(p.x), Float(p.y), Float(p.z)])
         if trail.count > PitchScene.trailLength { trail.removeFirst() }
@@ -326,8 +420,10 @@ public struct MatchView: View {
 
         if let chevron = named["chevron"], match.controlled < match.players.count {
             let p = match.players[match.controlled]
-            // A slow bob, so it is findable by movement as well as by colour.
-            let bob = Foundation.sin(Double(frame) * 0.06) * 0.06
+            // A slow bob, so it is findable by movement as well as by colour. Phased by
+            // wall time (advanced in `advance`), not by frame count, so it bobs at the
+            // same speed on a 120 Hz display as on a 60 Hz one.
+            let bob = Foundation.sin(bobPhase) * 0.06
             chevron.position = [Float(p.pos.x), Float(2.28 + bob), Float(p.pos.z)]
         }
 
@@ -417,8 +513,14 @@ public struct MatchView: View {
                 from = want.from
                 at = want.at
             } else {
-                from = simd_mix(from, want.from, SIMD3(repeating: 0.10))
-                at = simd_mix(at, want.at, SIMD3(repeating: 0.10))
+                // Time-based exponential smoothing. The old constant here was 0.10 per
+                // frame, which assumed 60 fps frames — on a 120 Hz ProMotion display it
+                // would ease twice as fast. `1 - exp(-rate * frameDt)` converges to the
+                // same curve at any refresh rate; rate = 60 * -ln(0.9) ≈ 6.32 /s is
+                // exactly what 0.10-per-frame was at 60 fps.
+                let blend = Float(1 - Foundation.exp(-6.32 * frameDt))
+                from = simd_mix(from, want.from, SIMD3(repeating: blend))
+                at = simd_mix(at, want.at, SIMD3(repeating: blend))
             }
             focus.position = at
             cam.look(at: at, from: from, relativeTo: nil)
@@ -473,9 +575,15 @@ public struct MatchView: View {
             ForEach([FieldSpec.minis, FieldSpec.full], id: \.teamSize) { spec in
                 Button {
                     guard spec.teamSize != match.fieldSpec.teamSize else { return }
-                    match = Engine(format: spec.gameFormat)
+                    // A restart is a new match, so it draws a new seed — otherwise
+                    // switching format would be the one path back to the compiled-in
+                    // default and its identical wind and rosters.
+                    seed = Self.freshSeed()
+                    match = Engine(format: spec.gameFormat, seed: seed)
                     drag = nil
                     trail.removeAll()
+                    tickCount = 0
+                    accumulator = 0
                 } label: {
                     Text("\(spec.teamSize)v\(spec.teamSize)")
                         .font(.system(size: 12, design: .monospaced).bold())
