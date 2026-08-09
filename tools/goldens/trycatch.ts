@@ -32,6 +32,8 @@ const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? 
 
 const CATCH_REACH = 0.82;
 const LAYOUT_REACH = 1.55;
+/** What a full-extension bid costs, scaled across the reach band. `Game.ts`. */
+const LAYOUT_STRETCH = 0.90;
 
 interface Body {
   id: number;
@@ -67,6 +69,7 @@ function decide(
   let bestScore = Infinity;
   let bestHigh = 0;
   let bestLaidOut = false;
+  let bestReach = 0;
 
   for (const b of bodies) {
     if (b.state === 'fall' || b.state === 'recovery') continue;
@@ -81,7 +84,9 @@ function decide(
     }
     const high = clampNum((disc.y - (b.groundY + b.hipHeight + 0.35)) / 0.9, 0, 1);
     const score = gap + high * 0.4 + (b.team === offence ? 0 : 0.25);
-    if (score < bestScore) { bestScore = score; best = b; bestHigh = high; bestLaidOut = laidOut; }
+    if (score < bestScore) {
+      bestScore = score; best = b; bestHigh = high; bestLaidOut = laidOut; bestReach = gap;
+    }
   }
   if (!best) return null;
 
@@ -92,8 +97,11 @@ function decide(
     if (Math.hypot(b.x - disc.x, b.z - disc.z) < 1.9) contest++;
   }
   contest = Math.min(2, contest) * 0.30;
+  const stretch = bestLaidOut
+    ? LAYOUT_STRETCH * clampNum((bestReach - CATCH_REACH) / (LAYOUT_REACH - CATCH_REACH), 0, 1)
+    : 0;
   const difficulty = clampNum(
-    0.12 + bestHigh * 0.55 + (bestLaidOut ? 0.55 : 0) + contest
+    0.12 + bestHigh * 0.55 + stretch + contest
     + clampNum((speed - 17) / 22, 0, 0.45),
     0, 1.7,
   );

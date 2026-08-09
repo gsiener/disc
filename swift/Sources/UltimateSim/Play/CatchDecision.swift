@@ -29,6 +29,15 @@ public enum CatchDecision {
     /// Below this difficulty a failed offensive roll is charged as a drop; at full
     /// stretch a miss is just a disc that keeps flying.
     public static let dropThreshold = 0.85
+    /// What a full-extension bid costs, scaled across the reach band.
+    ///
+    /// **This was a flat +0.55 the moment a body left the ground**, which priced a disc
+    /// 0.83 m away — a fingertip past a standing catch — identically to one at 1.54 m, a
+    /// genuine full-extension bid. Those are not the same catch, and in a match where 42%
+    /// of receptions are layouts the difference is most of the drop rate. Scaled across
+    /// the band and widened to 0.90, so the top of it is HARDER than it was: the
+    /// near-layout falls from 0.55 to ~0.05 and the full-stretch grab rises to 0.90.
+    public static let layoutStretch = 0.90
 
     /// A body as the catch decision needs it — locomotion already read off.
     public struct Body {
@@ -115,6 +124,7 @@ public enum CatchDecision {
         var bestScore = Double.infinity
         var bestHigh = 0.0
         var bestLaidOut = false
+        var bestReach = 0.0
 
         for b in bodies {
             if b.state == "fall" || b.state == "recovery" { continue }
@@ -134,14 +144,19 @@ public enum CatchDecision {
                 best = b
                 bestHigh = high
                 bestLaidOut = laidOut
+                bestReach = gap
             }
         }
         guard let taker = best else { return nil }
 
         let speed = discVel.length
         let contest = contestCount(discPos.x, discPos.z, taker.team, bodies) * 0.30
+        let stretch =
+            bestLaidOut
+            ? layoutStretch * clamp((bestReach - catchReach) / (layoutReach - catchReach), 0, 1)
+            : 0
         let difficulty = clamp(
-            0.12 + bestHigh * 0.55 + (bestLaidOut ? 0.55 : 0) + contest
+            0.12 + bestHigh * 0.55 + stretch + contest
                 + clamp((speed - 17) / 22, 0, 0.45),
             0, 1.7)
         var p = catchProbability(scratch(taker), difficulty)

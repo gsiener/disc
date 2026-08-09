@@ -704,6 +704,27 @@ enum EngineTests {
             ? 100.0 * Double(e.stats.completions) / Double(throwsTotal) : 0
         let cadence = throwsTotal > 0
             ? Double(liveTicks) * dt / Double(throwsTotal) : .infinity
+        // Where the incompletions go, off the RULES MACHINE's box score rather than the
+        // engine's counters.
+        //
+        // **The engine's `throwsMade` counts pulls, and a pull is not a pass.** Fourteen
+        // pulls in a fifteen-minute match against about sixty completions is a ten-point
+        // hole in any completion percentage computed from it, and every one of those pulls
+        // also lands as a `grounded` or an `out`. The percentage below is
+        // `completions / attempts` from `TeamStats`, which is the sport's own definition
+        // and the number the 85-96% real-ultimate band is quoted against.
+        let att = e.game.teamStats(0).attempts + e.game.teamStats(1).attempts
+        let comp = e.game.teamStats(0).completions + e.game.teamStats(1).completions
+        let aways = e.game.teamStats(0).throwaways + e.game.teamStats(1).throwaways
+        let drops = e.game.teamStats(0).drops + e.game.teamStats(1).drops
+        let stalls = e.game.teamStats(0).stallOuts + e.game.teamStats(1).stallOuts
+        let passPct = att > 0 ? 100.0 * Double(comp) / Double(att) : 0
+        Check.note(
+            "\(label) passing: \(comp)/\(att) = " + String(format: "%.0f%%", passPct)
+                + "  (\(aways) throwaways, \(drops) drops, \(stalls) stall-outs); "
+                + "engine counters incl. pulls: \(e.stats.completions) caught  "
+                + "\(e.stats.blocks) blocked  \(e.stats.grounded) grounded  "
+                + "\(e.stats.outOfBounds) out  of \(throwsTotal)")
         Check.note(
             "\(label) tempo/hucks: \(throwsTotal) throws, "
                 + String(format: "%.0f%%", compPct) + " completed, release every "

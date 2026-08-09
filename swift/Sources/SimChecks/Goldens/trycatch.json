@@ -48,7 +48,7 @@
       ],
       "taker": 1,
       "difficulty": 0.12,
-      "p": 0.9522639999999999,
+      "p": 0.963772,
       "outcomes": [
         "catch",
         "catch",
@@ -97,7 +97,7 @@
       ],
       "taker": 1,
       "difficulty": 0.67,
-      "p": 0.8090989999999999,
+      "p": 0.8733519999999999,
       "outcomes": [
         "catch",
         "catch",
@@ -109,7 +109,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -145,8 +145,8 @@
         }
       ],
       "taker": 1,
-      "difficulty": 0.67,
-      "p": 0.8090989999999999,
+      "difficulty": 0.6340253683791346,
+      "p": 0.8792662294384702,
       "outcomes": [
         "catch",
         "catch",
@@ -158,7 +158,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -194,8 +194,8 @@
         }
       ],
       "taker": 1,
-      "difficulty": 1.0480899001065602,
-      "p": 0.7106821990022623,
+      "difficulty": 1.0121152684856947,
+      "p": 0.8171082498609517,
       "outcomes": [
         "catch",
         "catch",
@@ -205,8 +205,8 @@
         "catch",
         "catch",
         "catch",
-        "none",
-        "none",
+        "catch",
+        "catch",
         "none",
         "none",
         "none",
@@ -258,8 +258,8 @@
         }
       ],
       "taker": 1,
-      "difficulty": 0.7616666666666667,
-      "p": 0.7852381666666666,
+      "difficulty": 0.5568721461187216,
+      "p": 0.8919502191780821,
       "outcomes": [
         "catch",
         "catch",
@@ -270,8 +270,8 @@
         "catch",
         "catch",
         "catch",
-        "drop",
-        "drop",
+        "catch",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -470,7 +470,7 @@
       ],
       "taker": 9,
       "difficulty": 0.12000000000000013,
-      "p": 0.5904036799999999,
+      "p": 0.5975386399999999,
       "outcomes": [
         "interception",
         "interception",
@@ -568,7 +568,7 @@
       ],
       "taker": 9,
       "difficulty": 0.18511145159452302,
-      "p": 0.5798956032729662,
+      "p": 0.5909019599618734,
       "outcomes": [
         "interception",
         "interception",
@@ -632,7 +632,7 @@
       ],
       "taker": 1,
       "difficulty": 0.42000000000000015,
-      "p": 0.8741739999999999,
+      "p": 0.9144519999999999,
       "outcomes": [
         "catch",
         "catch",
@@ -645,7 +645,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop"
       ]
@@ -696,12 +696,12 @@
       ],
       "taker": 9,
       "difficulty": 0.42000000000000015,
-      "p": 0.54198788,
+      "p": 0.56696024,
       "outcomes": [
         "interception",
         "interception",
         "interception",
-        "block",
+        "interception",
         "block",
         "block",
         "none",
@@ -790,7 +790,7 @@
       ],
       "taker": 1,
       "difficulty": 0.7811111111111111,
-      "p": 0.7801767777777777,
+      "p": 0.8550853333333333,
       "outcomes": [
         "catch",
         "catch",
@@ -801,8 +801,8 @@
         "catch",
         "catch",
         "catch",
-        "drop",
-        "drop",
+        "catch",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -839,7 +839,7 @@
       ],
       "taker": 1,
       "difficulty": 0.635472707529555,
-      "p": 0.8180864542300568,
+      "p": 0.8790282868821411,
       "outcomes": [
         "catch",
         "catch",
@@ -851,7 +851,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -918,7 +918,7 @@
       ],
       "taker": 3,
       "difficulty": 0.12,
-      "p": 0.9522639999999999,
+      "p": 0.963772,
       "outcomes": [
         "catch",
         "catch",
@@ -966,8 +966,8 @@
         }
       ],
       "taker": 1,
-      "difficulty": 0.67,
-      "p": 0.8090989999999999,
+      "difficulty": 0.7117808219178083,
+      "p": 0.8664832328767123,
       "outcomes": [
         "catch",
         "catch",
@@ -979,7 +979,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -1016,7 +1016,7 @@
       ],
       "taker": 1,
       "difficulty": 0.4255555555555557,
-      "p": 0.8257848888888888,
+      "p": 0.8732981666666666,
       "outcomes": [
         "catch",
         "catch",
@@ -1028,7 +1028,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop",
         "drop"
@@ -1065,7 +1065,7 @@
       ],
       "taker": 1,
       "difficulty": 0.4255555555555557,
-      "p": 0.8986372888888888,
+      "p": 0.9335498666666666,
       "outcomes": [
         "catch",
         "catch",
@@ -1078,7 +1078,7 @@
         "catch",
         "catch",
         "catch",
-        "drop",
+        "catch",
         "drop",
         "drop"
       ]
@@ -1114,7 +1114,7 @@
       ],
       "taker": 8,
       "difficulty": 0.3033333333333335,
-      "p": 0.9045423333333332,
+      "p": 0.9336319999999999,
       "outcomes": [
         "pull-catch",
         "pull-catch",
@@ -1163,7 +1163,7 @@
       ],
       "taker": 2,
       "difficulty": 0.18111111111111117,
-      "p": 0.5805412022222222,
+      "p": 0.5913097066666666,
       "outcomes": [
         "pull-touch",
         "pull-touch",
@@ -1227,7 +1227,7 @@
       ],
       "taker": 1,
       "difficulty": 0.97,
-      "p": 0.7310089999999999,
+      "p": 0.8240319999999999,
       "outcomes": [
         "catch",
         "catch",
@@ -1237,8 +1237,8 @@
         "catch",
         "catch",
         "catch",
-        "none",
-        "none",
+        "catch",
+        "catch",
         "none",
         "none",
         "none",

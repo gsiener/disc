@@ -14,11 +14,13 @@
  * checks were added, and they help, but the honest answer for a function that is
  * a transcription of a reference function is a differential fixture. This is it.
  *
- * `aiThrow` is private to `GameSystem`, so it is transcribed here rather than
- * imported. That is a real risk — a transcription can drift from its original —
- * and it is mitigated the only way it can be: the transcription is kept beside
- * the reference in this repo, and the numbers below come from the reference's own
- * `DiscRuntime.probeThrow` and `powerForSpeed`, which are imported, not copied.
+ * `aiThrow` USED to be private to `GameSystem`, and this fixture used to carry a
+ * hand transcription of it — with the risk, stated here in full, that a
+ * transcription can drift from its original. It no longer has to: the solve moved
+ * out into `src/sim/aero/ThrowSolver.ts`, and this file imports it. What is left
+ * below is only the part of `aiThrow` that is not the solve — the arm's spin, the
+ * power for the asked-for speed, and the catch plane — and every one of those is
+ * three lines quoted beside the reference.
  *
  * The sweep covers every throw type the AI uses, headings all round the clock
  * (a disc banks, so lateral error changes sign with the heading, and a forehand
@@ -34,6 +36,7 @@
 import * as THREE from 'three';
 import { DiscRuntime, type ThrowRequest } from '../../src/entities/Disc.ts';
 import { powerForSpeed } from '../../src/sim/aero/Throws.ts';
+import { solveRelease } from '../../src/sim/aero/ThrowSolver.ts';
 import { maxThrowRange, throwFlightTime, type AIPlayer } from '../../src/sim/AI.ts';
 
 const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
@@ -53,9 +56,10 @@ const FRACTIONS = [0.15, 0.3, 0.35, 0.5, 0.7, 0.9];
 const HEADINGS = 8;
 
 /**
- * A transcription of `Game.ts:aiThrow`, lines 1508-1550. Every constant here is
- * the reference's: the [-0.34, 0.62] elevation bracket, seven halvings, the 1.02
- * on power, the 0.12 floor, the 0.25 m lateral gate and the two outer passes.
+ * The non-solve half of `Game.ts:aiThrow`, lines 1517-1541. The 1.02 on power,
+ * the 0.12 floor, the 0.45/0.55 spin from the arm and the 0.35 m catch-plane
+ * floor are the reference's; everything after them is `solveRelease` itself,
+ * imported.
  */
 function solve(
   rt: DiscRuntime, from: THREE.Vector3, aim: THREE.Vector3, type: string, speed: number,
@@ -68,32 +72,10 @@ function solve(
   const power = clampNum(powerForSpeed(type as never, speed) * 1.02, 0.12, 1);
   const catchY = Math.max(0.35, aim.y);
 
-  let heading = Math.atan2(tx, tz);
-  let angle = 0.02;
-  const dir = new THREE.Vector3();
   const req = {
-    type, from, aim: dir, power, angle, spin, hand: 'R', bank: 0,
+    type, from, aim: new THREE.Vector3(), power, angle: 0.02, spin, hand: 'R', bank: 0,
   } as unknown as ThrowRequest;
-
-  for (let pass = 0; pass < 2; pass++) {
-    let lo = -0.34, hi = 0.62;
-    let best = angle, bestErr = Infinity, lat = 0;
-    for (let i = 0; i < 7; i++) {
-      const mid = (lo + hi) * 0.5;
-      req.angle = mid;
-      dir.set(Math.sin(heading), 0, Math.cos(heading));
-      const r = rt.probeThrow(req, catchY, 6);
-      const err = r.dist - want;
-      if (Math.abs(err) < Math.abs(bestErr)) { bestErr = err; best = mid; lat = r.lat; }
-      if (err < 0) lo = mid; else hi = mid;
-    }
-    angle = best;
-    req.angle = best;
-    if (Math.abs(lat) > 0.25 && want > 1) heading -= Math.atan2(lat, want);
-    if (pass === 1 || Math.abs(lat) <= 0.25) break;
-  }
-  dir.set(Math.sin(heading), 0, Math.cos(heading));
-  req.angle = angle;
+  solveRelease(rt, req, Math.atan2(tx, tz), want, catchY);
   return req;
 }
 
@@ -197,6 +179,7 @@ function sweep(wind: { x: number; z: number }): unknown {
             power: req.power,
             angle: req.angle,
             spin: req.spin,
+            bank: req.bank,
             aimX: req.aim.x,
             aimZ: req.aim.z,
           },
@@ -219,9 +202,9 @@ export function throwSolverGoldens(): unknown {
   return {
     note:
       'Game.ts:aiThrow solved against the reference DiscRuntime, then flown to rest. '
-      + 'aiThrow is private to GameSystem so it is transcribed in '
-      + 'tools/goldens/throwsolver.ts; probeThrow, release and powerForSpeed are '
-      + 'imported from the reference. Two sweeps: still air, and a breeze of the size '
+      + 'The solve itself is src/sim/aero/ThrowSolver.ts and is imported, not '
+      + 'transcribed; probeThrow, release and powerForSpeed are imported too. '
+      + 'Two sweeps: still air, and a breeze of the size '
       + 'the match actually sets, because the solver bisects against the runtime that '
       + 'carries the wind. Fractions above ~0.35 of maxThrowRange land short on '
       + 'purpose: the AI range model and the flight model disagree there, in both '

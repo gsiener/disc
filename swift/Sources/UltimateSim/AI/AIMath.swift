@@ -143,22 +143,61 @@ public func maxThrowRange(_ p: AIPlayer, _ type: AIThrowType, _ windAlong: Doubl
     return base * (1 + 0.045 * clamp(windAlong, -8, 8)) * (0.86 + 0.14 * p.energy)
 }
 
-/// Seconds of flight the thrower will put on a throw of length `d`.
+/// Release speed in m/s the thrower will put on a throw of length `d`.
 ///
 /// A huck is not a floated under: past ~15 m a real thrower puts arm into it, so the
-/// implied release speed (`d / tf`, which the engine inverts back onto the physics power
-/// band via `powerForSpeed`) climbs toward the top of the band instead of pinning at the
-/// bottom. Without the stretch a 30 m request came out at 14 m/s — 15% power on a
-/// [12,27] m/s backhand — and every deep shot landed a dozen metres short of everything.
-public func throwFlightTime(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> Double {
+/// implied release speed — which `ThrowSolver` inverts back onto the physics power band
+/// via `powerForSpeed` — climbs toward the top of the band instead of pinning at the
+/// bottom. Without the stretch a 30 m request came out at 14 m/s, 15% power on a
+/// [12,27] m/s backhand, and every deep shot landed a dozen metres short of everything.
+///
+/// It is only a STARTING point now: the solver measures the carry it gets and lifts the
+/// power itself when this model asks for a throw the arm cannot make at that speed.
+public func throwReleaseSpeed(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> Double {
     let zip = 10.5 + 7.5 * (p.attr.throwPower / 100) * (type == .hammer ? 0.8 : 1)
     // Two pieces, fitted against the flight model directly — see the reference for
     // the sweep. The disc has a narrow speed window per distance; the sum of ramps
     // tracks the window's floor from ~18 m/s at 26 m to ~22 m/s at 36 m.
     let stretch =
         1 + 0.42 * Playbook.smoothstep(15, 23, d) + 0.28 * Playbook.smoothstep(23, 40, d)
-    return 0.28 + d / (zip * stretch)
+    return d / Swift.max(0.2, 0.28 + d / (zip * stretch))
 }
+
+/// Seconds until the disc ARRIVES, for a throw of length `d`.
+///
+/// **This used to be the same function as `throwReleaseSpeed`, and the two wanted opposite
+/// numbers.** One sets how hard to throw; the other is the lead — how far ahead of a
+/// running receiver to aim, and how much separation he still has when the disc gets there.
+/// Serving both off one curve meant the curve was fitted for the first job and merely used
+/// for the second, and it was short by 25% at 23 m, 39% at 32 m and 50% at 42 m: always in
+/// the direction that puts the disc behind a receiver who is still running, and always
+/// telling the AI a covered receiver was open.
+///
+/// Fitted against the solver's own flights: the disc's mean horizontal speed over a solved
+/// flight is close to constant in distance once the throw is longer than a dump, about
+/// 17 m/s for a 70-power backhand. See the reference for the sweep.
+public func throwFlightTime(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> Double {
+    let typeFactor: [AIThrowType: Double] = [
+        .backhand: 1.0, .forehand: 1.0, .hammer: 0.80, .scoober: 0.70, .push: 0.78,
+    ]
+    let arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor[type]!
+    return 0.28 + d / arrive
+}
+
+/// How much difficulty costs a catcher. See `catchProbability`.
+///
+/// **0.38 was priced against nothing, and it made the sport unrecognisable.** With it a
+/// receiver a metre past his standing reach — the commonest catch in this game, 42% of
+/// all of them — completed about 81%, and the match dropped 10% of every pass thrown.
+/// Real ultimate drops 2-4%. Measured over eight fifteen-minute sevens matches, this and
+/// the stretch-scaled layout term in `CatchDecision` together take the drop rate to 4.0%
+/// and completion from 78.5% to 87.9%, inside the sport's 85-96% band for the first time.
+///
+/// The top of the curve is deliberately NOT flattened with it: the layout penalty was
+/// widened from a flat 0.55 to a proportional 0.90 in the same change, so a full-extension
+/// contested grab still prices at difficulty ~1.6 and completes about 0.73, while the
+/// fingertip-past-reach catch it used to be indistinguishable from completes 0.95.
+public let catchSlope = 0.24
 
 /// Probability a player completes the catch.
 ///
@@ -169,7 +208,7 @@ public func catchProbability(_ p: AIPlayer, _ difficulty: Double) -> Double {
     let base = 0.952 + 0.045 * (p.attr.catching / 100)
     let fatigue = 0.96 + 0.04 * p.energy
     let skill = 0.55 + 0.45 * (1 - p.attr.catching / 100)
-    return clamp(base * fatigue - 0.38 * skill * clamp(difficulty, 0, 1.8), 0.18, 0.995)
+    return clamp(base * fatigue - catchSlope * skill * clamp(difficulty, 0, 1.8), 0.18, 0.995)
 }
 
 // MARK: - stamina

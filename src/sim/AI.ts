@@ -479,18 +479,41 @@ export function maxThrowRange(p: AIPlayer, type: ThrowType, windAlong: number): 
 }
 
 /**
- * Seconds of flight the thrower will put on a throw of length `d`.
+ * Release speed in m/s the thrower will put on a throw of length `d`.
  *
- * A huck is not a floated under: past ~15 m a real thrower puts arm into it,
- * so the implied release speed (`d / tf`, which `Game.ts:aiThrow` inverts back
- * onto the physics power band via `powerForSpeed`) climbs toward the top of
- * the band instead of pinning at the bottom. Without the stretch a 30 m
- * request came out at 14 m/s — 15% power on a [12,27] m/s backhand — and no
- * elevation in the solver's range carries 15% power thirty metres, so every
- * deep shot landed a dozen metres short of everything. This is the
- * reconciliation the throw-solver sweep in the Swift suite asked for.
+ * A huck is not a floated under: past ~15 m a real thrower puts arm into it, so
+ * the implied release speed — which `ThrowSolver` inverts back onto the physics
+ * power band via `powerForSpeed` — climbs toward the top of the band instead of
+ * pinning at the bottom. Without the stretch a 30 m request came out at 14 m/s,
+ * 15% power on a [12,27] m/s backhand, and no elevation carries 15% power thirty
+ * metres, so every deep shot landed a dozen metres short of everything.
+ *
+ * It is only a STARTING point now. The solver measures the carry it actually gets
+ * and lifts the power itself when this model has asked for a throw the arm cannot
+ * make at that speed, so this no longer has to be exactly right — which is what
+ * finally let `throwFlightTime` stop pretending to be two functions at once.
  */
-export function throwFlightTime(p: AIPlayer, type: ThrowType, d: number): number {
+/**
+ * How much of the flight time a receiver is led by.
+ *
+ * A receiver does not hold his velocity for the whole flight — he plants, he
+ * decelerates into the disc, he is a person and not a projectile — so the lead is
+ * a FRACTION of the arrival time, and always has been. What changed is the clock:
+ * these fractions were fitted against a `throwFlightTime` that ran 25-50% short,
+ * so the number that was actually being applied was ~0.7 of the true flight on a
+ * run and ~1.2 on a cut. Corrected against a true clock they refit to 0.42 and
+ * 0.60, which is very nearly the same lead in metres — the point of the change is
+ * that `separationAt` and the deep-shot valuation now get an honest horizon
+ * without the lead moving underneath them.
+ *
+ * Swept over eight seeds of fifteen-minute sevens: 0.36/0.60 completes 75.4%,
+ * 0.42/0.60 78.5%, 0.42/0.55 79.3%, 0.48/0.60 77.0%, and the old effective
+ * 0.5/0.85 against the true clock 71.2%.
+ */
+const LEAD_CUT = 0.60;
+const LEAD_RUN = 0.42;
+
+export function throwReleaseSpeed(p: AIPlayer, type: ThrowType, d: number): number {
   const zip = 10.5 + 7.5 * (p.attr.throwPower / 100) * (type === 'hammer' ? 0.8 : 1);
   // Two pieces, fitted against the flight model directly (sweep: miss vs release
   // speed per distance). The disc has a narrow speed window per distance — below
@@ -498,8 +521,58 @@ export function throwFlightTime(p: AIPlayer, type: ThrowType, d: number): number
   // the window's floor runs ~18 m/s at 26 m to ~22 m/s at 36 m. One smoothstep
   // could hit either the 20 m band or the 30 m band; the sum hits both.
   const stretch = 1 + 0.42 * smoothstep(15, 23, d) + 0.28 * smoothstep(23, 40, d);
-  return 0.28 + d / (zip * stretch);
+  return d / Math.max(0.2, 0.28 + d / (zip * stretch));
 }
+
+/**
+ * Seconds until the disc ARRIVES, for a throw of length `d`.
+ *
+ * **This used to be the same function as `throwReleaseSpeed`, and the two wanted
+ * opposite numbers.** One sets how hard to throw; the other is the lead — how far
+ * ahead of a running receiver to aim, and how much separation he will still have
+ * when the disc gets there. Serving both off one curve meant the curve was fitted
+ * for the first job and simply used for the second, and it was wrong by 25% at
+ * 23 m, 39% at 32 m and 50% at 42 m — always short, always in the direction that
+ * puts the disc behind a receiver who is still running, and always telling the AI
+ * a covered receiver was open. That is a large part of the game's incompletions:
+ * 14% of throws hit the ground uncaught, against 4-8% in the sport.
+ *
+ * Fitted directly against the solver's own flights (see `tools/.scratch` sweeps
+ * reproduced in the header of `src/sim/aero/ThrowSolver.ts`): the disc's mean
+ * horizontal speed over a solved flight is close to constant in distance once the
+ * throw is longer than a dump, at about 17 m/s for a 70-power backhand. Measured
+ * arrivals were 0.53, 1.16, 1.64, 2.19, 2.74 s at 6.9, 13.9, 23.1, 32.3, 41.6 m;
+ * this model gives 0.69, 1.10, 1.63, 2.16, 2.69. The one place it is loose is the
+ * shortest throws, where it over-leads by ~0.15 s — half a metre of lead on a
+ * dump, and erring toward the receiver's own momentum is the safe side of it.
+ */
+export function throwFlightTime(p: AIPlayer, type: ThrowType, d: number): number {
+  const typeFactor: Record<ThrowType, number> = {
+    backhand: 1.0, forehand: 1.0, hammer: 0.80, scoober: 0.70, push: 0.78,
+  };
+  const arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor[type];
+  return 0.28 + d / arrive;
+}
+
+/**
+ * How much difficulty costs a catcher. See `catchProbability`.
+ *
+ * **0.38 was priced against nothing, and it made the sport unrecognisable.** With it
+ * a receiver a metre past his standing reach — the commonest catch in this game,
+ * 42% of all of them — was completing about 81%, and the match dropped 10% of every
+ * pass thrown. Real ultimate drops 2-4%. Measured over eight fifteen-minute sevens
+ * matches, this and the stretch-scaled layout term together take the drop rate to
+ * 4.0% and the completion rate from 78.5% to 87.9%, which is inside the sport's
+ * 85-96% band for the first time.
+ *
+ * The top of the curve is deliberately NOT flattened with it: the layout penalty was
+ * widened from a flat 0.55 to a proportional 0.90 in the same change, so a
+ * full-extension contested grab still prices at difficulty ~1.6 and completes about
+ * 0.73, while the fingertip-past-reach catch it used to be indistinguishable from
+ * completes 0.95. The ratings sheet keeps its teeth; what it lost was a flat tax on
+ * every catch in the match.
+ */
+const CATCH_SLOPE = 0.24;
 
 /**
  * Probability a player completes the catch. `difficulty` 0 = a chest-high disc
@@ -509,7 +582,7 @@ export function catchProbability(p: AIPlayer, difficulty: number): number {
   const base = 0.952 + 0.045 * (p.attr.catching / 100);
   const fatigue = 0.96 + 0.04 * p.energy;
   const skill = 0.55 + 0.45 * (1 - p.attr.catching / 100);
-  return clamp(base * fatigue - 0.38 * skill * clamp(difficulty, 0, 1.8), 0.18, 0.995);
+  return clamp(base * fatigue - CATCH_SLOPE * skill * clamp(difficulty, 0, 1.8), 0.18, 0.995);
 }
 
 /** Fatigue integration. Call once per fixed step per player you own. */
@@ -2095,12 +2168,12 @@ export class TeamAI {
         if (cutTo) {
           const dx = cutTo.x - r.pos.x, dz = cutTo.z - r.pos.z;
           const dl = Math.hypot(dx, dz);
-          const travel = Math.min(dl, Math.hypot(r.vel.x, r.vel.z) * tf * 0.85);
+          const travel = Math.min(dl, Math.hypot(r.vel.x, r.vel.z) * tf * LEAD_CUT);
           lx = r.pos.x + (dl > 1e-3 ? dx / dl : 0) * travel;
           lz = r.pos.z + (dl > 1e-3 ? dz / dl : 0) * travel;
         } else {
-          lx = r.pos.x + r.vel.x * tf * 0.5;
-          lz = r.pos.z + r.vel.z * tf * 0.5;
+          lx = r.pos.x + r.vel.x * tf * LEAD_RUN;
+          lz = r.pos.z + r.vel.z * tf * LEAD_RUN;
         }
         const cl = clampToField({ x: lx, z: lz }, 1.4);
         aim = { x: cl.x, y: 1.4, z: cl.z };
@@ -2371,12 +2444,12 @@ export class TeamAI {
         if (cutTo) {
           const dx = cutTo.x - r.pos.x, dz = cutTo.z - r.pos.z;
           const dl = Math.hypot(dx, dz);
-          const travel = Math.min(dl, Math.hypot(r.vel.x, r.vel.z) * tf * 0.85);
+          const travel = Math.min(dl, Math.hypot(r.vel.x, r.vel.z) * tf * LEAD_CUT);
           lx = r.pos.x + (dl > 1e-3 ? dx / dl : 0) * travel;
           lz = r.pos.z + (dl > 1e-3 ? dz / dl : 0) * travel;
         } else {
-          lx = r.pos.x + r.vel.x * tf * 0.5;
-          lz = r.pos.z + r.vel.z * tf * 0.5;
+          lx = r.pos.x + r.vel.x * tf * LEAD_RUN;
+          lz = r.pos.z + r.vel.z * tf * LEAD_RUN;
         }
         const cl = clampToField({ x: lx, z: lz }, 1.4);
         o.aim = { x: cl.x, y: 1.4, z: cl.z };
@@ -2387,10 +2460,21 @@ export class TeamAI {
     }
     const acc = thrower.attr.throwAccuracy[o.type] * (0.85 + 0.15 * thrower.energy);
     const cross = Math.hypot(world.wind.x, world.wind.z);
-    const sigma = (0.26 + 1.45 * (1 - acc / 100)) * (0.55 + 0.030 * o.dist)
-      + 0.85 * o.powerRatio * o.powerRatio
-      + 0.55 * o.breakPenalty
-      + 0.035 * cross * (o.dist / 20);
+    /**
+     * Release scatter, metres per axis.
+     *
+     * **Every coefficient here is 0.6 of what it was**, and the reason is that the
+     * old spread put a 20 m pass down a full metre from the receiver on average —
+     * a Gaussian on each axis at sigma 1.0 is 1.25 m of radial error, which is
+     * precisely the band between a standing catch (0.82 m reach) and a full layout
+     * (1.55 m). An offence that has to dive for its own resets is not an offence,
+     * and the match was diving for 42% of its catches. At 0.6 the same 20 m pass
+     * lands 0.75 m out, which is a catch a standing receiver adjusts to.
+     */
+    const sigma = (0.156 + 0.87 * (1 - acc / 100)) * (0.55 + 0.030 * o.dist)
+      + 0.51 * o.powerRatio * o.powerRatio
+      + 0.33 * o.breakPenalty
+      + 0.021 * cross * (o.dist / 20);
     const ex = this.rng.gauss() * sigma;
     const ez = this.rng.gauss() * sigma;
     const aimX = clamp(o.aim.x + ex, -FIELD.halfWidth - 1.5, FIELD.halfWidth + 1.5);
@@ -2398,7 +2482,10 @@ export class TeamAI {
     return {
       kind: 'throw', throwType: o.type,
       aimX, aimY: 1.35, aimZ,
-      speed: o.dist / Math.max(0.2, o.flightTime),
+      // Release speed and arrival time are separate models now — see
+      // `throwFlightTime`. Dividing the distance by the lead time was the coupling
+      // that forced one curve to do both jobs.
+      speed: throwReleaseSpeed(thrower, o.type, o.dist),
       flightTime: o.flightTime,
       spin: 22 + 14 * (thrower.attr.throwPower / 100),
       receiverId: o.receiverId,

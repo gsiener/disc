@@ -18,6 +18,12 @@ import UltimateSim
 /// correction, discarding the elevation bisection, replacing `powerForSpeed` with a constant,
 /// and solving to the ground instead of chest height — all left 2.2 million assertions green.
 ///
+/// The solve has since moved out of `Engine.swift` into `Aero/ThrowSolver.swift`, and gained a
+/// second axis: it solves the release BANK as well as the elevation, by secant on the probe's
+/// lateral error. `bank` is compared below for exactly the reason the rest of this list is —
+/// a port that dropped the secant agrees on power, spin and heading right up until the disc
+/// leaves the hand.
+///
 /// What is compared, per case:
 ///
 ///   - the **solved request** — power, elevation, spin, and the corrected heading. This is
@@ -29,7 +35,7 @@ import UltimateSim
 ///
 /// Tolerances rather than bit-equality, and the reason is specific. `powerForSpeed` is
 /// division and could be pinned exactly, but everything downstream of it runs through the
-/// bisection, which evaluates the flight integrator — `atan2`, `sin`, `cos`, `exp` and a
+/// elevation search, which evaluates the flight integrator — `atan2`, `sin`, `cos`, `exp` and a
 /// thousand accumulated steps. A libm that differs by an ulp moves the seventh halving's
 /// comparison and can select a neighbouring elevation, which is a discrete branch flip, not
 /// drift. So the assertion is a stated envelope and the *worst observed* deviation is
@@ -46,6 +52,8 @@ enum ThrowSolverTests {
         let power: Double
         let angle: Double
         let spin: Double
+        /// Release bank, rad. The solver's second axis — see `Aero/ThrowSolver.swift`.
+        let bank: Double
         let aimX: Double
         let aimZ: Double
     }
@@ -124,17 +132,37 @@ enum ThrowSolverTests {
                 let label = "\(c.type) \(Int(c.fraction * 100))% \(String(format: "%.1f", c.range))m"
 
 
-                // The solved request. `power` is the one value with no integrator behind it —
-                // `powerForSpeed` is a subtraction and a division — so it is held to bit
-                // equality, which is what catches a constant substituted for it.
-                Check.bitEqViaJSON(req.power, c.solved.power, "\(label): release power")
+                // The solved request.
+                //
+                // **`power` USED to be held to bit equality and no longer can be.** The
+                // rationale was that it had no integrator behind it: `powerForSpeed` is a
+                // subtraction and a division, and pinning it exactly is what catches a
+                // constant substituted for it. That stopped being true when the solver
+                // gained the power lift — a throw the flight model cannot reach at the
+                // asked-for speed is now re-solved at `power * sqrt(want / reach)`, and
+                // `reach` is a probe result, so the value arrives through the integrator
+                // and a square root. Measured, V8 and Darwin then disagree by one ulp on
+                // 73 of 480 cases, all of them hammers and scoobers past a third of range.
+                //
+                // 1e-12 is four decades under the smallest power in the fixture (0.12), so
+                // a substituted constant is still caught at a glance; what is given up is
+                // the last bit, not the assertion.
+                Check.near(req.power, c.solved.power, 1e-12, "\(label): release power")
                 Check.near(req.angle, c.solved.angle, 1e-9, "\(label): launch elevation")
                 Check.bitEqViaJSON(req.spin, c.solved.spin, "\(label): spin")
+                // Bank is solved, not tabulated, so it is as much the solver's output as the
+                // elevation is — and a port that dropped the secant would still agree on
+                // everything else until the disc flew.
+                Check.near(req.bank ?? 0, c.solved.bank, 1e-9, "\(label): release bank")
                 Check.near(req.aim.x, c.solved.aimX, 1e-9, "\(label): corrected heading x")
                 Check.near(req.aim.z, c.solved.aimZ, 1e-9, "\(label): corrected heading z")
                 worstSolve = Swift.max(
                     worstSolve,
-                    Swift.max(abs(req.angle - c.solved.angle), abs(req.aim.x - c.solved.aimX)))
+                    Swift.max(
+                        abs(req.angle - c.solved.angle),
+                        Swift.max(
+                            abs(req.aim.x - c.solved.aimX),
+                            abs((req.bank ?? 0) - c.solved.bank))))
 
                 // The velocity handed to the disc.
                 let vel = rt.release(req)

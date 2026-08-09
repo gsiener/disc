@@ -19,6 +19,7 @@ import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
 import {
   powerForSpeed, throwSpeed, THROW_SPECS, type ThrowType as PhysThrowType,
 } from './DiscPhysics.ts';
+import { solveRelease } from './aero/ThrowSolver.ts';
 import { SHOTS, type Shot } from '../capture/Shots.ts';
 import type { PlayerIntent as HumanIntent } from '../input/Intent.ts';
 import type { IntentGates } from '../input/Human.ts';
@@ -1509,10 +1510,12 @@ export class GameSystem implements System {
    *
    * The AI hands us a point it wants the disc to arrive at. A disc is not a
    * projectile — lift, drag and precession move the landing point tens of
-   * metres — so the launch elevation is bisected against the real integrator
-   * and the heading is then corrected for the curve the disc actually flew.
-   * Two outer passes is enough to land inside a receiver's catch radius, and it
-   * costs a couple of milliseconds on the frame a throw is released.
+   * metres — so elevation AND bank are solved against the real integrator, and
+   * the small residue that is left is trimmed out of the heading. The solve
+   * itself is `src/sim/aero/ThrowSolver.ts`; its header carries the measurements
+   * behind both axes, and the goldens import it rather than transcribing it.
+   *
+   * It costs a few milliseconds on the frame a throw is released.
    */
   private aiThrow(e: RosterEntry, act: ThrowIntent): void {
     const type = THROW_MAP[act.throwType] ?? 'backhand';
@@ -1526,34 +1529,11 @@ export class GameSystem implements System {
     const power = clampNum(powerForSpeed(type, act.speed) * 1.02, 0.12, 1);
     const catchY = Math.max(0.35, act.aimY);
 
-    let heading = Math.atan2(tx, tz);
-    let angle = 0.02;
     const req: ThrowRequest = {
-      type, from: _from, aim: _aim, power, angle, spin, hand, bank: 0,
+      type, from: _from, aim: _aim, power, angle: 0.02, spin, hand, bank: 0,
     };
+    solveRelease(this.discRuntime, req, Math.atan2(tx, tz), want, catchY);
 
-    for (let pass = 0; pass < 2; pass++) {
-      // Bisect the elevation for range.
-      let lo = -0.34, hi = 0.62;
-      let best = angle, bestErr = Infinity, lat = 0;
-      for (let i = 0; i < 7; i++) {
-        const mid = (lo + hi) * 0.5;
-        req.angle = mid;
-        _aim.set(Math.sin(heading), 0, Math.cos(heading));
-        const r = this.discRuntime.probeThrow(req, catchY, 6);
-        const err = r.dist - want;
-        if (Math.abs(err) < Math.abs(bestErr)) { bestErr = err; best = mid; lat = r.lat; }
-        if (err < 0) lo = mid; else hi = mid;
-      }
-      angle = best;
-      req.angle = best;
-      // Correct the heading for the curve the disc actually flew.
-      if (Math.abs(lat) > 0.25 && want > 1) heading -= Math.atan2(lat, want);
-      if (pass === 1 || Math.abs(lat) <= 0.25) break;
-    }
-
-    _aim.set(Math.sin(heading), 0, Math.cos(heading));
-    req.angle = angle;
     const vel = this.discRuntime.release(req);
     this.commitRelease(e, type, act.receiverId, vel);
   }
@@ -1809,6 +1789,7 @@ export class GameSystem implements System {
     const offense: TeamId | null = phase === 'PULL_IN_FLIGHT' ? this.gs.receivingTeam : this.gs.possession;
     let best: RosterEntry | null = null;
     let bestGap = Infinity;
+    let bestReach = 0;
     let bestHigh = 0;
 
     for (const e of this.roster) {
@@ -1829,7 +1810,7 @@ export class GameSystem implements System {
       }
       const high = clampNum((s.pos.y - (lp.groundY + lp.hipHeight + 0.35)) / 0.9, 0, 1);
       const score = gap + high * 0.4 + (e.team === offense ? 0 : 0.25);
-      if (score < bestGap) { bestGap = score; best = e; bestHigh = high; }
+      if (score < bestGap) { bestGap = score; best = e; bestHigh = high; bestReach = gap; }
     }
     if (!best) return false;
 
@@ -1838,8 +1819,23 @@ export class GameSystem implements System {
     const laidOut = lp.state === 'layout' || (lp.prone && lp.air.airborne);
     const speed = Math.hypot(s.vel.x, s.vel.y, s.vel.z);
     const contest = this.contestCount(s.pos.x, s.pos.z, best.team) * 0.30;
+    /**
+     * HOW FAR PAST HIS FEET HE HAD TO GO, not merely THAT he left them.
+     *
+     * This was a flat +0.55 the moment a body was off the ground, which priced a
+     * disc 0.83 m away — a fingertip past a standing catch — identically to one at
+     * 1.54 m, a genuine full-extension bid. Those are not the same catch, and in a
+     * match where 42% of receptions are layouts the difference is most of the drop
+     * rate. Scaled across the reach band instead, and widened to 0.90 so the top of
+     * it is HARDER than it was: the near-layout falls from 0.55 to ~0.05 and the
+     * full-stretch grab rises from 0.55 to 0.90.
+     */
+    const stretch = laidOut
+      ? 0.90 * clampNum(
+        (bestReach - CATCH_REACH) / (LAYOUT_REACH - CATCH_REACH), 0, 1)
+      : 0;
     const difficulty = clampNum(
-      0.12 + bestHigh * 0.55 + (laidOut ? 0.55 : 0) + contest
+      0.12 + bestHigh * 0.55 + stretch + contest
       + clampNum((speed - 17) / 22, 0, 0.45),
       0, 1.7,
     );

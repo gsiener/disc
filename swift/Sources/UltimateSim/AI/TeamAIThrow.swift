@@ -12,6 +12,20 @@ import Foundation
 ///     or not that option wins. Skipping the losers' draws would shift the stream.
 ///   - `release` draws two `gauss()`, x then z.
 extension TeamAI {
+    /// How much of the flight time a receiver is led by.
+    ///
+    /// A receiver does not hold his velocity for the whole flight — he plants, he
+    /// decelerates into the disc — so the lead is a FRACTION of the arrival time, and
+    /// always has been. What changed is the clock: these were fitted against a
+    /// `throwFlightTime` that ran 25-50% short, so what was actually applied was ~0.7 of
+    /// the true flight on a run and ~1.2 on a cut. Refitted against the true clock they
+    /// come to 0.42 and 0.60 — nearly the same lead in metres, but now `separationAt` and
+    /// the deep-shot valuation get an honest horizon without the lead moving underneath
+    /// them. Swept over eight seeds: 0.36/0.60 completes 75.4%, 0.42/0.60 78.5%,
+    /// 0.42/0.55 79.3%, 0.48/0.60 77.0%, the old 0.5/0.85 on the true clock 71.2%.
+    static let leadCut = 0.60
+    static let leadRun = 0.42
+
 
     // MARK: - decide
 
@@ -121,12 +135,12 @@ extension TeamAI {
                     let dx = cutTo.x - r.pos.x
                     let dz = cutTo.z - r.pos.z
                     let dl = Foundation.hypot(dx, dz)
-                    let travel = Swift.min(dl, Foundation.hypot(r.vel.x, r.vel.z) * tf * 0.85)
+                    let travel = Swift.min(dl, Foundation.hypot(r.vel.x, r.vel.z) * tf * TeamAI.leadCut)
                     lx = r.pos.x + (dl > 1e-3 ? dx / dl : 0) * travel
                     lz = r.pos.z + (dl > 1e-3 ? dz / dl : 0) * travel
                 } else {
-                    lx = r.pos.x + r.vel.x * tf * 0.5
-                    lz = r.pos.z + r.vel.z * tf * 0.5
+                    lx = r.pos.x + r.vel.x * tf * TeamAI.leadRun
+                    lz = r.pos.z + r.vel.z * tf * TeamAI.leadRun
                 }
                 let cl = pb.clampToField(Vec2d(lx, lz), margin: 1.4)
                 aim = Vec3d(cl.x, 1.4, cl.z)
@@ -415,12 +429,12 @@ extension TeamAI {
                     let dx = cutTo.x - r.pos.x
                     let dz = cutTo.z - r.pos.z
                     let dl = Foundation.hypot(dx, dz)
-                    let travel = Swift.min(dl, Foundation.hypot(r.vel.x, r.vel.z) * tf * 0.85)
+                    let travel = Swift.min(dl, Foundation.hypot(r.vel.x, r.vel.z) * tf * TeamAI.leadCut)
                     lx = r.pos.x + (dl > 1e-3 ? dx / dl : 0) * travel
                     lz = r.pos.z + (dl > 1e-3 ? dz / dl : 0) * travel
                 } else {
-                    lx = r.pos.x + r.vel.x * tf * 0.5
-                    lz = r.pos.z + r.vel.z * tf * 0.5
+                    lx = r.pos.x + r.vel.x * tf * TeamAI.leadRun
+                    lz = r.pos.z + r.vel.z * tf * TeamAI.leadRun
                 }
                 let cl = pb.clampToField(Vec2d(lx, lz), margin: 1.4)
                 o.aim = Vec3d(cl.x, 1.4, cl.z)
@@ -431,11 +445,16 @@ extension TeamAI {
         }
         let acc = (thrower.attr.throwAccuracy[o.type] ?? 0) * (0.85 + 0.15 * thrower.energy)
         let cross = Foundation.hypot(world.wind.x, world.wind.z)
+        // Release scatter, metres per axis. **Every coefficient here is 0.6 of what it
+        // was**: the old spread put a 20 m pass a full metre from the receiver on average
+        // — a Gaussian per axis at sigma 1.0 is 1.25 m of radial error, exactly the band
+        // between a standing catch (0.82 m reach) and a full layout (1.55 m). The match
+        // was diving for 42% of its catches. At 0.6 the same pass lands 0.75 m out.
         let sigma =
-            (0.26 + 1.45 * (1 - acc / 100)) * (0.55 + 0.030 * o.dist)
-            + 0.85 * o.powerRatio * o.powerRatio
-            + 0.55 * o.breakPenalty
-            + 0.035 * cross * (o.dist / 20)
+            (0.156 + 0.87 * (1 - acc / 100)) * (0.55 + 0.030 * o.dist)
+            + 0.51 * o.powerRatio * o.powerRatio
+            + 0.33 * o.breakPenalty
+            + 0.021 * cross * (o.dist / 20)
         let ex = rng.gauss() * sigma
         let ez = rng.gauss() * sigma
         let aimX = clamp(o.aim.x + ex, -pb.field.sideline - 1.5, pb.field.sideline + 1.5)
@@ -443,7 +462,10 @@ extension TeamAI {
         return .throw(
             throwType: o.type,
             aim: Vec3d(aimX, 1.35, aimZ),
-            speed: o.dist / Swift.max(0.2, o.flightTime),
+            // Release speed and arrival time are separate models now — see
+            // `throwFlightTime`. Dividing the distance by the lead time was the coupling
+            // that forced one curve to do both jobs.
+            speed: throwReleaseSpeed(thrower, o.type, o.dist),
             flightTime: o.flightTime,
             spin: 22 + 14 * (thrower.attr.throwPower / 100),
             receiverId: o.receiverId,
