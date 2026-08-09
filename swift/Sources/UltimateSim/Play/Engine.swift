@@ -372,6 +372,49 @@ public final class Engine {
 
     func player(_ id: Int) -> AIPlayer? { players.first { $0.id == id } }
 
+    /// The body carrying this id — **the lookup, not the subscript.**
+    ///
+    /// `holder`, `controlled`, `thrower` and every id on a `MatchEvent` are `PlayerId`s,
+    /// and the app layer had been spending them as `players[id]` because `buildRoster`
+    /// happens to deal `id == index` and nothing has ever reordered the array. That is a
+    /// coincidence, not a contract: `setLine` exists precisely so a caller can start
+    /// fielding substitutions, and the first line change that reorders `players` turns
+    /// every one of those subscripts into an out-of-range crash — or worse, into a
+    /// highlight drawn on the wrong athlete, which nothing would report at all.
+    ///
+    /// So there is one public read that goes through the id, it is the one the renderer
+    /// uses, and `checkRosterIsIndexable` asserts the coincidence still holds everywhere
+    /// it could be broken. Fourteen elements: the linear scan is not the cost.
+    public func body(of id: PlayerId) -> AIPlayer? { player(id) }
+
+    /// Where in `players` the body with this id sits, for the two callers that genuinely
+    /// need a slot rather than a body — a parallel array of entities, say. Nil for an id
+    /// no longer on the roster, which a raw subscript would have crashed on.
+    public func index(of id: PlayerId) -> Int? { players.firstIndex { $0.id == id } }
+
+    /// **`PlayerId` and "index into `players`" are the same number, and until now nothing
+    /// said so.**
+    ///
+    /// The invariant is real and it is load-bearing: `buildRoster` deals
+    /// `id = team * playersPerSide + i`, which is exactly `GameState.defaultRoster`'s
+    /// numbering, and every `players[someId]` in the app layer is correct only because of
+    /// it. It is also the invariant with no owner — `setLine` is documented as the seam a
+    /// substitution system will arrive through, and a substitution that reorders or
+    /// filters `players` breaks this silently in three different ways at once.
+    ///
+    /// Checked where it can be broken rather than where it is spent: after the roster is
+    /// dealt and after every line declaration. `assertionFailure` traps a debug build on
+    /// the spot; the `note` is what the release suite sees, because `EngineTests` asserts
+    /// `refusals` stays empty through a full automated match — so a future substitution
+    /// system cannot land this quietly.
+    func checkRosterIsIndexable(_ site: String) {
+        for (i, p) in players.enumerated() where p.id != i {
+            note("roster is no longer indexable by id: players[\(i)].id == \(p.id) (\(site))")
+            assertionFailure("players[\(i)].id == \(p.id); the app layer indexes by id (\(site))")
+            return
+        }
+    }
+
     func nearestOnTeam(_ team: TeamId, to p: Vec3d) -> Int {
         players.filter { $0.team == team }
             .min { distXZ($0.pos, p) < distXZ($1.pos, p) }?.id

@@ -38,6 +38,7 @@ extension Engine {
                 players.append(makePlayer(id, t, order[i % order.count], rng, overall: 72))
             }
         }
+        checkRosterIsIndexable("buildRoster")
     }
 
     /// Stand both lines up for the point the machine has just opened.
@@ -144,9 +145,14 @@ extension Engine {
         // nothing today; it is here because the machine's contract is that a line is
         // declared and a caller that starts fielding subs must not have to remember to
         // add the call.
+        // The check is on the *line change*, not on the roster: `setLine` is the seam a
+        // substitution system will arrive through, and the day it filters or reorders
+        // `players` is the day every `players[someId]` in the app layer is wrong. See
+        // `checkRosterIsIndexable`.
         for t in 0..<2 {
             game.setLine(t, players.filter { $0.team == t }.map(\.id))
         }
+        checkRosterIsIndexable("setLine @ point \(game.point)")
 
         // The puller picks the disc up off the line and holds it until he pulls, which is
         // what makes `humanRelease` able to throw one.

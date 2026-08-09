@@ -335,17 +335,23 @@ extension MatchView {
     /// "Nearest to the disc right now" rather than a predicted landing point: predicting
     /// would mean re-integrating the flight here, and a second copy of the flight model
     /// in the renderer is exactly the thing this project refuses to have.
-    var incomingReceiver: Int? {
+    ///
+    /// **A `PlayerId`, and it used to be an index that was compared against one.** The
+    /// filter read `$0 != thrower` with `$0` an index into `players` and `thrower` an id
+    /// from the engine — the same number today only because `buildRoster` deals
+    /// `id == index`, and the wrong athlete excluded from the ring the moment that stops
+    /// being true. Both sides are ids now, and the one consumer compares against `p.id`.
+    var incomingReceiver: PlayerId? {
         guard let thrower = match.thrower,
-            let team = match.players.first(where: { $0.id == thrower })?.team
+            let team = match.body(of: thrower)?.team
         else { return nil }
         let d = match.disc.state.pos
-        return match.players.indices
-            .filter { match.players[$0].team == team && $0 != thrower }
+        return match.players
+            .filter { $0.team == team && $0.id != thrower }
             .min {
-                Foundation.hypot(match.players[$0].pos.x - d.x, match.players[$0].pos.z - d.z)
-                    < Foundation.hypot(match.players[$1].pos.x - d.x, match.players[$1].pos.z - d.z)
-            }
+                Foundation.hypot($0.pos.x - d.x, $0.pos.z - d.z)
+                    < Foundation.hypot($1.pos.x - d.x, $1.pos.z - d.z)
+            }?.id
     }
 
     // MARK: - moving it
@@ -399,18 +405,18 @@ extension MatchView {
                 if i < rings.children.count {
                     let ring = rings.children[i]
                     ring.position = [Float(p.pos.x), 0.022, Float(p.pos.z)]
-                    ring.isEnabled = (i == match.controlled)
+                    ring.isEnabled = (p.id == match.controlled)
                     // Dimmed while this body cannot act — §4's legible layout cost. Only
                     // the controlled ring is ever drawn, so only it is ever repainted,
                     // and only on the two frames a match where the answer changes.
-                    if i == match.controlled {
+                    if p.id == match.controlled {
                         let dim = match.recovery(of: p.id) != nil
                         // Keyed on the ring as well as the treatment: control moves, and
                         // a cache that only remembered "dimmed" would leave the previous
                         // player's ring painted at 40% for the rest of the match.
-                        if dim != scene.ringDimmed || i != scene.ringPainted {
+                        if dim != scene.ringDimmed || p.id != scene.ringPainted {
                             scene.ringDimmed = dim
-                            scene.ringPainted = i
+                            scene.ringPainted = p.id
                             let material = PitchScene.controlRingRamp[dim ? 1 : 0]
                             for seg in ring.children {
                                 (seg as? ModelEntity)?.model?.materials = [material]
@@ -421,13 +427,12 @@ extension MatchView {
                 if i < targets.children.count {
                     let target = targets.children[i]
                     target.position = [Float(p.pos.x), 0.018, Float(p.pos.z)]
-                    target.isEnabled = (i == receiver)
+                    target.isEnabled = (p.id == receiver)
                 }
             }
         }
 
-        if let chevron = scene.chevron, match.controlled < match.players.count {
-            let p = match.players[match.controlled]
+        if let chevron = scene.chevron, let p = match.body(of: match.controlled) {
             // A slow bob, so it is findable by movement as well as by colour. Phased by
             // wall time (advanced in `advance`), not by frame count, so it bobs at the
             // same speed on a 120 Hz display as on a 60 Hz one.
@@ -442,8 +447,7 @@ extension MatchView {
             // an extended arm for display only; the sim's position is untouched, so
             // nothing about the throw or the catch changes.
             var shown = Vec3d(d.pos.x, Swift.max(d.pos.y, 0.02), d.pos.z)
-            if let h = match.holder {
-                let p = match.players[h]
+            if let h = match.holder, let p = match.body(of: h) {
                 // Out to the side, away from the middle of the pitch, the way a thrower
                 // holds it away from the mark.
                 let side = p.pos.x >= 0 ? 1.0 : -1.0
@@ -479,8 +483,7 @@ extension MatchView {
         // is re-read every frame rather than frozen at the swap, because in the third of
         // a second this lasts the player is running.
         if let pulse = scene.pulse {
-            if let h = handoff, h.to < match.players.count {
-                let p = match.players[h.to]
+            if let h = handoff, let p = match.body(of: h.to) {
                 pulse.isEnabled = true
                 pulse.position = [Float(p.pos.x), 0.02, Float(p.pos.z)]
                 pulse.scale = .init(repeating: Float(0.7 + 2.3 * h.progress))
@@ -518,8 +521,7 @@ extension MatchView {
             // An aborted drag keeps its line on screen — greyed, and saying CANCEL — but
             // takes its arrow off the grass. The arrow is a claim about where the disc is
             // going, and it is going nowhere.
-            if let d = drag, !d.aborted, let h = match.holder {
-                let p = match.players[h]
+            if let d = drag, !d.aborted, let h = match.holder, let p = match.body(of: h) {
                 // Roughly how far this power carries. An approximation on purpose — the
                 // exact range needs the aero solved, and a arrow that lies by a metre is
                 // still worth more than no arrow.
@@ -545,7 +547,7 @@ extension MatchView {
         // can never draw at once: the release that starts the flight is the same event
         // that ends the drag and clears this.
         if let bracket = scene.preview {
-            if let r = previewedReceiver, let p = match.players.first(where: { $0.id == r }) {
+            if let r = previewedReceiver, let p = match.body(of: r) {
                 bracket.isEnabled = true
                 bracket.position = [Float(p.pos.x), 0.026, Float(p.pos.z)]
                 // A slow pulse and creep, phased by wall time like the chevron's bob,
