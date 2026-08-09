@@ -186,7 +186,7 @@ public final class Engine {
     /// throw that passed within arm's reach of him, on the release tick, without ever
     /// bidding for it — which is a large part of why the offence had stopped throwing
     /// downfield at all.
-    private var actionOf: [Int: PlayerAction] = [:]
+    var actionOf: [Int: PlayerAction] = [:]
     /// The point number the bodies were last stood up for. See `stagePoint`.
     private var stagedPoint = -1
 
@@ -202,6 +202,14 @@ public final class Engine {
     /// Capped so a pathological run cannot grow without bound; the first ones are the
     /// informative ones, because everything after the first desync is a consequence.
     private static let maxRefusals = 64
+
+    /// The four latches and the tally the self-officiated calls run on. See
+    /// `EngineCalls.swift`, which owns every detector that reads or writes them.
+    let calls = CallState()
+
+    /// Calls made this match, by kind, plus how many of them were contested.
+    /// Telemetry only — nothing in the simulation reads it.
+    public var callTally: CallTally { calls.tally }
 
     /// The rule set in force. `GameState` owns it; this is the read.
     public var rules: RuleSet { game.rules }
@@ -408,7 +416,7 @@ public final class Engine {
         // Nothing from the last point is still in flight: a buffered hit whose bodies were
         // rebuilt underneath it would be blamed on whoever inherited the id.
         _ = contacts?.drain()
-        lastContact.removeAll(keepingCapacity: true)
+        calls.lastContact.removeAll(keepingCapacity: true)
         records = []
 
         // Both teams line up on their own goal lines, facing each other. Positions are
@@ -537,7 +545,7 @@ public final class Engine {
         ]
     }
 
-    private func player(_ id: Int) -> AIPlayer? { players.first { $0.id == id } }
+    func player(_ id: Int) -> AIPlayer? { players.first { $0.id == id } }
 
     private func nearestOnTeam(_ team: TeamId, to p: Vec3d) -> Int {
         players.filter { $0.team == team }
@@ -835,305 +843,6 @@ public final class Engine {
     /// Whose established pivot the machine has already been told about.
     private var pivotOwner: Int?
 
-    /// A travel, called and resolved.
-    ///
-    /// `GameState.observe` has already flagged it and written the play-by-play line; a
-    /// flag is not a call. In a self-officiated sport somebody has to say it, and the
-    /// only body close enough to see the foot is the mark — so a travel nobody is
-    /// marking is a travel nobody calls, which is both the rule and the reason this is
-    /// gated on there being a marker.
-    ///
-    /// The remedy is WFDF 18.2.4: the thrower returns to his pivot and the count backs
-    /// up one. `resolveCall` owns both halves of that; all this does is put the body
-    /// back on the spot the machine kept for it and re-establish the foot there, without
-    /// which the same call fires again on the very next step.
-    private func policeTravel() {
-        guard game.phase == .livePossession,
-            let id = game.thrower, let thrower = player(id),
-            let marker = game.marker,
-            let foot = loco.pivotOf(id),
-            isTravel(game.pivot, Vec3d(foot.x, 0, foot.z), game.rules)
-        else { return }
-        guard game.makeCall(.travel, marker, id, Vec3d(foot.x, 0, foot.z)).ok else { return }
-        game.resolveCall(false)
-        thrower.pos.x = game.pivot.x
-        thrower.pos.z = game.pivot.z
-        thrower.vel = .zero
-        if let body = loco.get(id) {
-            body.pos.x = game.pivot.x
-            body.pos.z = game.pivot.z
-            body.vel = .zero
-        }
-        loco.rePivot(id, game.pivot.x, game.pivot.z)
-        callTally.travel += 1
-    }
-
-    // MARK: - self-officiated calls
-
-    /// Calls made this match, by kind, plus how many of them were contested.
-    /// Telemetry only — nothing in the simulation reads it. A call rate is the one
-    /// number that says whether the detection below is a rule or a nuisance.
-    public struct CallTally: Equatable, Sendable {
-        public var foul = 0
-        public var pick = 0
-        public var strip = 0
-        public var travel = 0
-        public var contested = 0
-        public var total: Int { foul + pick + strip + travel }
-        public init() {}
-    }
-    public private(set) var callTally = CallTally()
-
-    /// THE HIT, RECORDED WHERE IT HAPPENS.
-    ///
-    /// `Locomotion` measures a collision's closing speed BEFORE it spends it on an
-    /// impulse, and it is the only place in the game where that number exists. By the time
-    /// the disc is stepped and a catch fails, the impulse has already removed the velocity
-    /// that caused it: measured over three matches, every defender still inside a receiver
-    /// at the instant of a drop had a residual closing speed of 0.0-0.5 m/s. A receiving
-    /// foul derived from the geometry at the catch is therefore a detector that can never
-    /// fire, and the honest reading of that is not "there are no receiving fouls" but "you
-    /// are asking the wrong tick".
-    ///
-    /// So the contact is caught at source — `Locomotion`'s `.contact` event, via the
-    /// `LocoHost` this engine attaches for exactly this — and kept for
-    /// `CATCH_CONTACT_WINDOW`. Only opposing contact is kept: running into a team-mate is
-    /// a foul on nobody.
-    struct ContactMark {
-        var otherId: Int
-        var impact: Double
-        var t: Double
-    }
-    private var lastContact: [Int: ContactMark] = [:]
-
-    private func noteContact(_ id: Int, _ otherId: Int, _ impact: Double) {
-        guard let me = player(id), let them = player(otherId), me.team != them.team else { return }
-        // Within one window the hardest hit is the one that decided the play.
-        if let prev = lastContact[id], game.clock - prev.t <= CATCH_CONTACT_WINDOW,
-            prev.impact >= impact
-        { return }
-        lastContact[id] = ContactMark(otherId: otherId, impact: impact, t: game.clock)
-    }
-
-    /// Latched so one act of contact is one foul, not one per tick.
-    private var markFoulHeld = false
-    /// Per defender: what he was doing when the obstruction on him began.
-    private struct PickWatch {
-        var speed: Double
-        var gap: Double
-        var called: Bool
-    }
-    private var pickWatch: [Int: PickWatch] = [:]
-
-    /// NOBODY IS WATCHING BUT THE FOURTEEN OF THEM.
-    ///
-    /// Ultimate has no referee: a foul exists when the player it happened to says so,
-    /// and it goes away when the player it is said about disagrees. The rules machine
-    /// has always known the consequences — `makeCall` / `resolveCall` handle contested
-    /// and uncontested, marking fouls, receiving fouls, picks and strips — and until now
-    /// the only thing that ever spoke to it was `policeTravel`. This is the rest of the
-    /// mouth.
-    ///
-    /// Two of the four live here, because both are things that are true of the frame
-    /// rather than of an event: the mark leaning on a thrower who has nowhere to go, and
-    /// a defender running into a body that was not his to worry about. The other two —
-    /// the receiving foul and the strip — belong to the instant a catch fails and are
-    /// made in `policeCatch`.
-    ///
-    /// ONE CALL PER EPISODE. Both detectors latch: a marking foul is not called again
-    /// until the two bodies come apart, and a pick is not called again until the
-    /// obstruction clears. Without that the first frame of contact is followed by a
-    /// hundred and nineteen more of it, and a rule that is correct becomes a game that is
-    /// unplayable.
-    ///
-    /// Ported from `Game.ts:policeCalls`.
-    private func policeCalls() {
-        guard game.phase == .livePossession,
-            let throwerId = game.thrower,
-            let thrower = loco.get(throwerId)
-        else { return }
-
-        let markerId = game.marker
-
-        // THE MARK ON A MAN WHO CANNOT STEP AWAY.
-        //
-        // The thrower is `anchored` while he holds it, so the contact resolver gives him
-        // infinite mass and the marker takes the whole positional correction — which is
-        // the right physics and, in the rules, exactly the event being described. A
-        // defender who has to be pushed back out of the thrower every tick has fouled him.
-        if let markerId, let marker = loco.get(markerId) {
-            if !contactBetween(marker, thrower).touching {
-                markFoulHeld = false
-            } else if !markFoulHeld {
-                let impact = markingFoulImpact(marker, thrower)
-                if impact > 0 {
-                    markFoulHeld = true
-                    let at = Vec3d(thrower.pos.x, 0, thrower.pos.z)
-                    if game.makeCall(.foul, throwerId, markerId, at).ok {
-                        resolveWith(
-                            .foul,
-                            CallSituation(
-                                impact: impact, threshold: MARK_FOUL_IMPACT,
-                                playedDisc: false, plainToSee: false,
-                                decision: player(markerId)?.attr.decision ?? 72))
-                        return
-                    }
-                }
-            }
-        } else {
-            markFoulHeld = false
-        }
-
-        // THE PICK, and what makes one a call rather than a collision.
-        //
-        // Bodies brush past each other two hundred times a match and none of that is a
-        // pick. What a defender actually calls is an obstruction that COST him, so both
-        // halves of the cost are measured against what he was doing at the instant it
-        // started: the speed he has lost, and the ground his matchup has gained. See
-        // `pickIsWorthCalling`.
-        //
-        // A zone defender has no matchup and cannot be picked; the mark is guarding the
-        // disc rather than chasing anyone, and is left out for the same reason.
-        guard let offenceTeam = game.possession else { return }
-        let offence = players.compactMap { $0.team == offenceTeam ? loco.get($0.id) : nil }
-            .filter { loco.isAvailable($0) }
-        for d in players where d.team != offenceTeam {
-            if d.id == markerId { continue }
-            guard let dp = loco.get(d.id), loco.isAvailable(dp) else {
-                pickWatch.removeValue(forKey: d.id)
-                continue
-            }
-            guard let matchupId = ai.first(where: { $0.team == d.team })?.matchupOf(d.id),
-                let mp = loco.get(matchupId)
-            else {
-                pickWatch.removeValue(forKey: d.id)
-                continue
-            }
-            guard let obstructor = obstructionOf(dp, offence, throwerId, matchupId) else {
-                pickWatch.removeValue(forKey: d.id)
-                continue
-            }
-
-            let speed = Foundation.hypot(dp.vel.x, dp.vel.z)
-            let gap = Foundation.hypot(dp.pos.x - mp.pos.x, dp.pos.z - mp.pos.z)
-            guard var w = pickWatch[d.id] else {
-                pickWatch[d.id] = PickWatch(speed: speed, gap: gap, called: false)
-                continue
-            }
-            if w.called { continue }
-            if !pickIsWorthCalling(lostSpeed: w.speed - speed, gainedGap: gap - w.gap) {
-                continue
-            }
-            w.called = true
-            pickWatch[d.id] = w
-            guard game.makeCall(.pick, d.id, obstructor).ok else { continue }
-            resolveWith(
-                .pick,
-                CallSituation(
-                    impact: 0, threshold: 0, playedDisc: false, plainToSee: true,
-                    decision: player(obstructor)?.attr.decision ?? 72))
-            return
-        }
-    }
-
-    /// CONTACT AT THE CATCH — the receiving foul and the strip.
-    ///
-    /// Called from `tryCatch` at the instant the contest has decided the offence does not
-    /// have it, and BEFORE that outcome is reported, because a foul means the pass never
-    /// happened: the machine's receiving-foul remedy puts the disc in the receiver's
-    /// hands at the spot, and it can only do that while the phase is still
-    /// `DISC_IN_FLIGHT`.
-    ///
-    /// Returns true when a call was made, in which case the caller must not report the
-    /// drop or the block — there is no turnover to report.
-    ///
-    /// Ported from `Game.ts:policeCatch`.
-    private func policeCatch(
-        _ offence: TeamId?, at: Vec3d, established: Bool, taker: Int
-    ) -> Bool {
-        guard let offence, game.phase == .discInFlight else { return false }
-
-        // The offensive body the disc was arriving at. A little wider than a catch,
-        // because the man who was fouled is by definition the man who did not get his
-        // hands to it.
-        var receiver: LocoPlayer?
-        var bestGap = CatchDecision.catchReach * 1.5
-        for p in players where p.team == offence {
-            guard let lp = loco.get(p.id) else { continue }
-            let g = Foundation.hypot(lp.pos.x - at.x, lp.pos.z - at.z)
-            if g < bestGap {
-                bestGap = g
-                receiver = lp
-            }
-        }
-        guard let receiver else { return false }
-
-        // Whoever hit him, and how hard, from `Locomotion`'s own measurement of the
-        // collision rather than a re-derivation off the post-impulse velocities.
-        guard let hit = lastContact[receiver.id], game.clock - hit.t <= CATCH_CONTACT_WINDOW,
-            let defender = player(hit.otherId), defender.team != offence
-        else { return false }
-
-        let kind = actionOf[defender.id]?.kind
-        // A man who got a hand on it played the disc whatever his intent said he was
-        // doing — the block is the evidence, and it is his whole defence.
-        let defenderPlayed = defender.id == taker
-            || kind == "bid" || kind == "jump" || kind == "catch"
-        let call = catchContactCall(
-            impact: hit.impact, defenderPlayedDisc: defenderPlayed,
-            possessionEstablished: established)
-        // One hit is one call.
-        lastContact.removeValue(forKey: receiver.id)
-        guard let call else { return false }
-
-        let type: CallType = call.kind == .strip ? .strip : .foul
-        guard game.makeCall(type, receiver.id, defender.id, Vec3d(at.x, 0, at.z)).ok else {
-            return false
-        }
-        resolveWith(
-            type,
-            CallSituation(
-                impact: call.impact, threshold: CATCH_FOUL_IMPACT,
-                playedDisc: defenderPlayed, plainToSee: false,
-                decision: defender.attr.decision),
-            receiverId: receiver.id)
-        // The flight is over, but it did not end in a turnover: the machine has already
-        // put the disc in a hand, so `afterFlight`'s `syncDisc` finds it there.
-        afterFlight()
-        return true
-    }
-
-    /// Resolve the outstanding call and put the bodies where the machine now says play
-    /// restarts from.
-    ///
-    /// The reposition is `policeTravel`'s, for `policeTravel`'s reason: a stoppage that
-    /// leaves the thrower two metres from his own pivot is a stoppage that hands out free
-    /// yardage, and one that leaves the fouling body inside him calls the same foul again
-    /// on the next tick.
-    private func resolveWith(
-        _ type: CallType, _ situation: CallSituation, receiverId: PlayerId? = nil
-    ) {
-        let contested = callContested(situation)
-        game.resolveCall(contested, receiverId: receiverId)
-        switch type {
-        case .foul: callTally.foul += 1
-        case .pick: callTally.pick += 1
-        case .strip: callTally.strip += 1
-        case .travel: callTally.travel += 1
-        case .violation: break
-        }
-        if contested { callTally.contested += 1 }
-        guard let id = game.thrower, let p = player(id) else { return }
-        p.pos.x = game.pivot.x
-        p.pos.z = game.pivot.z
-        p.vel = .zero
-        if let body = loco.get(id) {
-            body.pos.x = game.pivot.x
-            body.pos.z = game.pivot.z
-            body.vel = .zero
-        }
-        loco.rePivot(id, game.pivot.x, game.pivot.z)
-    }
 
     /// The duties a phase puts on the play layer, before anybody decides anything.
     private func servicePhase() {
@@ -1752,7 +1461,7 @@ public final class Engine {
 
     /// The flight is over, however it ended. Clears the bookkeeping and puts the physical
     /// disc where the machine now says it is.
-    private func afterFlight() {
+    func afterFlight() {
         thrownBy = nil
         intendedReceiver = nil
         flightSettled = true
