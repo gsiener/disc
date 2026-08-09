@@ -117,6 +117,35 @@ public final class Engine {
         }
     }
 
+    /// The one cone select. `humanRelease` resolves the drag through this and nothing
+    /// else, and `previewReceiver` calls the same function with the same config — which
+    /// is what makes the mid-drag preview a promise rather than a guess.
+    private func coneSelect(
+        dx: Double, dz: Double, thrower: HumanTargeting.Body, bodies: [HumanTargeting.Body]
+    ) -> Int? {
+        HumanTargeting.resolveConeSelect(
+            dx: dx, dz: dz, thrower: thrower, bodies: bodies, cone: config.selectCone)
+    }
+
+    /// Who the cone select would pick if the human released on this drag direction,
+    /// right now — so the HUD can show the pick *before* the disc is gone rather than
+    /// after, when the information is no longer actionable.
+    ///
+    /// Strictly read-only: it runs `coneSelect` — the exact computation `humanRelease`
+    /// runs at release, over the same `targetingBodies` and the same `config.selectCone`
+    /// — and mutates nothing, not even `selectedReceiver`, which stays the record of the
+    /// last *actual* release. The HUD may therefore call this every frame of a drag.
+    ///
+    /// Nil when the cone is empty, and nil whenever a release would be refused anyway
+    /// (the controlled player is not holding), because previewing a throw that cannot
+    /// happen is a lie.
+    public func previewReceiver(dx: Double, dz: Double) -> Int? {
+        guard let c = carrier, c == controlled else { return nil }
+        let bodies = targetingBodies()
+        guard let me = bodies.first(where: { $0.id == c }) else { return nil }
+        return coneSelect(dx: dx, dz: dz, thrower: me, bodies: bodies)
+    }
+
     /// What the last AI release was asked for, so a check can ask whether it was delivered.
     ///
     /// **This exists because no match-level statistic can express the throw solver's actual
@@ -1409,9 +1438,7 @@ public final class Engine {
         let bodies = targetingBodies()
         var yaw = atan2(aim.x, aim.z)
         if let me = bodies.first(where: { $0.id == c }) {
-            let picked = HumanTargeting.resolveConeSelect(
-                dx: aim.x, dz: aim.z, thrower: me, bodies: bodies,
-                cone: config.selectCone)
+            let picked = coneSelect(dx: aim.x, dz: aim.z, thrower: me, bodies: bodies)
             selectedReceiver = picked
             let assist = HumanTargeting.assistedYaw(
                 rawYaw: yaw, quality: quality, power: power, from: from,

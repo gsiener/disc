@@ -44,6 +44,7 @@ enum EngineTests {
         theCountRunsOut()
         aRefusedActionChangesNothing()
         theHumanCannotThrowADiscTheyDoNotHave()
+        thePreviewIsTheRelease()
         theDiscArrivesWhereItWasAimed()
         theAssistLeadsARunningReceiver()
         bidsReachTheBody()
@@ -976,6 +977,79 @@ enum EngineTests {
         Check.ok(e.refusals.isEmpty, "no engine call was refused: \(e.refusals.prefix(3))")
 
         aTapIsNotABomb()
+    }
+
+    /// **The bracket the HUD draws mid-drag and the receiver the release picks are the
+    /// same pick.** `Engine.previewReceiver` exists so the player can see who the cone
+    /// select means *before* the disc is gone; a preview that could ever disagree with
+    /// the release would be worse than none, because it would teach the player a select
+    /// that is not the one being played. Both paths funnel through the engine's one
+    /// `coneSelect`, and this is the check that fails if a second copy ever appears.
+    ///
+    /// Also asserted: previewing is read-only. `selectedReceiver` is the record of the
+    /// last actual release, and a HUD that polls every frame must not be able to write
+    /// history by looking at it.
+    private static func thePreviewIsTheRelease() {
+        // Straight downfield, both diagonals, a flat swing, and straight back — the
+        // last so the empty-cone case is exercised too: a preview of nobody and a
+        // release that selects nobody must also agree.
+        let drags: [(dx: Double, dz: Double)] = [
+            (0, 1), (0.6, 0.8), (-0.6, 0.8), (0.95, 0.2), (0, -1),
+        ]
+        var somebody = 0
+        for (i, d) in drags.enumerated() {
+            // A fresh engine per direction, same seed: a release consumes the held
+            // disc, so each direction gets its own copy of the identical situation.
+            let e = Engine(format: .minis, seed: 29)
+            e.autoTeams = []
+            var ticks = 0
+            while !(e.game.phase == .livePossession && e.carrier == e.controlled),
+                ticks < 120 * 240
+            {
+                e.step(dt: dt)
+                ticks += 1
+            }
+            guard e.carrier == e.controlled else {
+                Check.ok(false, "a live disc reached the controlled player")
+                return
+            }
+
+            // Downfield-relative, so the drag means the same thing whichever end the
+            // human attacks after the flip.
+            let aim = Vec3d(d.dx, 0, d.dz * Double(e.dirFor(0)))
+            let before = e.selectedReceiver
+            let preview = e.previewReceiver(dx: aim.x, dz: aim.z)
+            Check.eq(
+                e.previewReceiver(dx: aim.x, dz: aim.z), preview,
+                "drag \(i): the preview is a pure function of the state it reads")
+            Check.eq(
+                e.selectedReceiver, before,
+                "drag \(i): previewing wrote nothing — selectedReceiver still records "
+                    + "the last actual release")
+            Check.ok(
+                e.humanRelease(.backhand, aim: aim, power: 0.6),
+                "drag \(i): the same direction releases")
+            Check.eq(
+                e.selectedReceiver, preview,
+                "drag \(i): the release selected exactly who the preview showed "
+                    + "(\(String(describing: preview)))")
+            if preview != nil { somebody += 1 }
+        }
+        Check.ok(
+            somebody >= 1,
+            "at least one drag actually had a receiver in the cone (\(somebody) of "
+                + "\(drags.count)) — an all-nil sweep would assert nothing")
+
+        // And with no disc in hand there is nothing to preview: the HUD's highlight
+        // must clear the moment a release would be refused.
+        let flying = Engine(format: .minis, seed: 29)
+        flying.autoTeams = []
+        Check.ok(
+            flying.humanRelease(.backhand, aim: Vec3d(0, 0, Double(flying.dirFor(0))), power: 0.7),
+            "the pull releases")
+        Check.eq(
+            flying.previewReceiver(dx: 0, dz: Double(flying.dirFor(0))), nil,
+            "and with the disc out of the hand the preview is nobody")
     }
 
     /// **The player must be able to throw short.**

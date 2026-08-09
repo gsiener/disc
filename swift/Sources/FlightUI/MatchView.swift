@@ -317,6 +317,11 @@ public struct MatchView: View {
         arrow.isEnabled = false
         content.add(arrow)
 
+        let preview = Self.previewBracket()
+        preview.name = "preview"
+        preview.isEnabled = false
+        content.add(preview)
+
         for light in PitchScene.lights(f) { content.add(light) }
 
         // Behind-and-above the attacking direction, which for Ultimate is the view that
@@ -382,6 +387,39 @@ public struct MatchView: View {
             from: [lateral, length * 0.26, z - dir * length * 0.44],
             at: [lateral, 1.2, z + dir * length * 0.27]
         )
+    }
+
+    /// The teammate the cone select currently judges the drag to mean, if any.
+    ///
+    /// Computed fresh rather than stored: `Engine.previewReceiver` is strictly
+    /// read-only and runs the *same* cone select the release will run, so asking it
+    /// every frame keeps the highlight live as receivers run through the cone — and a
+    /// derived value cannot go stale the way a stored one can. No drag, no preview;
+    /// the highlight clears the instant the gesture ends, aborts, or the disc leaves
+    /// the hand, because all of those make `drag` nil or `previewReceiver` return nil.
+    private var previewedReceiver: Int? {
+        guard let d = drag else { return nil }
+        return match.previewReceiver(dx: d.aim.x, dz: d.aim.z)
+    }
+
+    /// The bracket drawn under the previewed receiver while you drag. Four corner
+    /// dashes rather than the control ring's twelve or the target ring's solid disc,
+    /// so all three markers stay tellable apart at a glance — and in the gesture's own
+    /// orange, so it reads as part of the throw you are lining up, not as a state of
+    /// the world. Built here rather than in `PitchScene` because it exists purely for
+    /// the drag, which this file owns.
+    private static func previewBracket() -> Entity {
+        let root = Entity()
+        let dash = MeshResource.generateBox(size: [0.34, 0.025, 0.08])
+        let material = UnlitMaterial(color: .orange)
+        for i in 0..<4 {
+            let theta = (Float(i) + 0.5) / 4 * 2 * .pi
+            let seg = ModelEntity(mesh: dash, materials: [material])
+            seg.position = [0.85 * sin(theta), 0, 0.85 * cos(theta)]
+            seg.orientation = simd_quatf(angle: theta, axis: [0, 1, 0])
+            root.addChild(seg)
+        }
+        return root
     }
 
     /// The teammate a live throw is heading for, if there is one.
@@ -525,6 +563,25 @@ public struct MatchView: View {
                 }
             } else {
                 arrow.isEnabled = false
+            }
+        }
+
+        // The cone-select preview. Enabled only while a drag names somebody, which is
+        // also the only time the disc is held — so this and the in-flight target ring
+        // can never draw at once: the release that starts the flight is the same event
+        // that ends the drag and clears this.
+        if let bracket = named["preview"] {
+            if let r = previewedReceiver, let p = match.players.first(where: { $0.id == r }) {
+                bracket.isEnabled = true
+                bracket.position = [Float(p.pos.x), 0.026, Float(p.pos.z)]
+                // A slow pulse and creep, phased by wall time like the chevron's bob,
+                // so it moves at the same speed at any refresh rate. Movement is what
+                // makes "the pick just changed" visible in peripheral vision while the
+                // eye is on the drag.
+                bracket.scale = .init(repeating: Float(1 + 0.08 * Foundation.sin(bobPhase * 2.4)))
+                bracket.orientation = simd_quatf(angle: Float(bobPhase * 0.45), axis: [0, 1, 0])
+            } else {
+                bracket.isEnabled = false
             }
         }
 
@@ -722,6 +779,16 @@ public struct MatchView: View {
             VStack(spacing: 3) {
                 Text("\(d.type.rawValue.uppercased())  \(Int(d.power * 100))%")
                     .font(.system(size: 13, design: .monospaced).bold())
+                // Who the cone select currently means — the same pick the bracket on
+                // the grass is standing under, named here because a jersey number is
+                // readable when the receiver themselves is a few pixels tall.
+                if let r = previewedReceiver,
+                    let idx = match.players.firstIndex(where: { $0.id == r })
+                {
+                    Text("TO #\(jersey(idx))")
+                        .font(.system(size: 11, design: .monospaced).bold())
+                        .foregroundStyle(.orange.opacity(0.85))
+                }
                 Capsule()
                     .fill(.orange.opacity(0.25))
                     .frame(width: 74, height: 4)
