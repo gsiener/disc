@@ -735,10 +735,15 @@ public final class Engine {
         case .turnoverDead:
             collectDeadDisc()
         case .check:
-            // Nobody is modelled tapping the disc in, so the defence taps it at once.
-            // A check that never happens is a possession that never restarts.
-            demand(game.check())
-            syncDisc()
+            // Nobody is modelled tapping the disc in, so the defence taps it — but after
+            // the reference's `CHECK_WAIT`, not on the same tick. Every other constant in
+            // that block was transcribed and this one was missed, which quietly removed
+            // two-thirds of a second of dead time from every single turnover. It is a
+            // pacing difference rather than a rules one, and the sport has that pause.
+            if game.phaseTimer >= Engine.checkWait {
+                demand(game.check())
+                syncDisc()
+            }
         default:
             break
         }
@@ -1135,6 +1140,9 @@ public final class Engine {
                 playerId: id, pos: from, vel: vel, spin: disc.state.spin, throwType: physType.rawValue))
     }
 
+    /// The pause before the defence taps a checked disc back in. `Game.ts:134`.
+    private static let checkWait = 0.65
+
     /// How close a player must be to a dead disc to pick it up, metres. `Game.ts:136`.
     private static let pickupRadius = 1.6
     /// …escalating to this after standing over it this long. See `collectDeadDisc`.
@@ -1187,6 +1195,15 @@ public final class Engine {
             demand(game.outOfBounds(format.field.clampToField(at)))
         }
         syncDisc()
+        // A landing the machine refused leaves the phase in flight with `flightSettled`
+        // already true, which means this branch never runs again and the disc is stepped
+        // forever with nothing reported. The reference ends its settle branch by forcing
+        // the disc to ground unconditionally; this says so first, because a refusal here is
+        // a wiring bug and `refusals` is asserted empty.
+        if game.phase == .discInFlight || game.phase == .pullInFlight {
+            note("a landing was refused in \(game.phase.rawValue)")
+            disc.settle(Vec3d(game.discPos.x, 0, game.discPos.z))
+        }
     }
 
     /// Catch resolution. A port of `Game.ts:tryCatch`.
@@ -1363,6 +1380,10 @@ public final class Engine {
         thrownBy = nil
         intendedReceiver = nil
         flightSettled = true
+        // The reference scuffs the disc on every turnover in the air, as the landing path
+        // already does here. Only the scuff map reads `wear` and nothing branches on it, so
+        // this is cosmetic — but the asymmetry was accidental rather than chosen.
+        disc.markScuff(0.5)
         syncDisc()
     }
 
