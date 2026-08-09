@@ -310,10 +310,38 @@ public final class Engine {
         // identical decisions and one point is not a rerun of the last. `Rng.fork` reads
         // the parent's state without advancing it, so without the point in the salt every
         // point would re-fork the same two streams from the same place.
+        // **The two sides do not play the same game**, and that is the reference's single
+        // biggest measured tempo lever — not `aggression`, which an earlier sweep here
+        // tried and correctly found did nothing across 0.8–2.0.
+        //
+        // Team 0 forces forehand: a fixed side for the whole point. Team 1 forces MIDDLE,
+        // which is positional — the mark stands between the thrower and the near sideline,
+        // so the open side swaps as the disc crosses the field. Across the reference's six
+        // sweep seeds that roughly *doubles* scoring, 6/5/8/5/1/9 against 3/1/2/1/6/3, with
+        // throws up from 53–77 to 66–87, "because a force that moves stops the offence
+        // settling into one lane and grinding the stall". Both configs were sitting in
+        // `Playbook` here, ported, with `.middle` and `.horizontal` never once selected.
+        //
+        // They also run different offences — a vertical stack against a horizontal — which
+        // are the two base looks of the sport and read nothing alike. The reference's A/B
+        // puts them at a dead heat on scoring, so this is chosen for legibility, not tempo.
+        //
+        // Both sides defend person. A zone renders as bodies with no visible relationship
+        // to each other, so the bias is pushed well negative rather than left at default.
+        let configs: [(Playbook.FormationName, Playbook.Force, Double, Double)] = [
+            (.vertical, .forehand, 1.05, -0.55),
+            (.horizontal, .middle, 0.95, -0.45),
+        ]
         ai = (0..<2).map { t in
             var cfg = DEFAULT_TEAM_CONFIG
             cfg.seed = 1 + t + 2 * game.point
-            cfg.aggression = aggression
+            cfg.formation = configs[t].0
+            cfg.force = configs[t].1
+            // `aggression` is the engine's exposed knob; the reference's per-side values
+            // are folded into it rather than overriding it, so setting it still means
+            // something and the two sides stay distinguishable.
+            cfg.aggression = aggression * configs[t].2
+            cfg.zoneBias = configs[t].3
             return TeamAI(
                 team: t, dir: dirFor(t), rng: rng, cfg: cfg, field: format.field)
         }

@@ -171,7 +171,14 @@ enum EngineTests {
     /// symptom that tells you nothing about where it started. Checking every tick is what
     /// makes the first bad frame the reported one.
     private static func playsWithoutBlowingUp() {
-        let e = Engine(format: .minis, seed: 7)
+        // Played to 25 rather than the minis 7 so that ten minutes of ticks is ten minutes
+        // of ticks. This loop asserts a dozen properties per player per tick and is most of
+        // the suite's assertion count, so a match that *finishes* early silently halves the
+        // coverage — which is exactly what happened the moment the offence started scoring:
+        // the engine reached 7-1 in 313 s and this test quietly stopped at half its budget.
+        // Reaching the target, halftime and game-over are covered by `aGameHasAHalfAndAnEnd`
+        // and `scoreOnlyMovesOnGoals`; what this one is for is the ten minutes in between.
+        let e = Engine(format: .minis, target: 25, seed: 7)
         e.autoTeams = [0, 1]
         var worstOut = 0.0
         var airborneSeen = false
