@@ -17,10 +17,11 @@ import Foundation
 /// before `AI.ts` and `Locomotion.ts` existed. They exist now. Its history is in git,
 /// which is the only archive a deleted file needs.
 ///
-/// One piece of it survives in `PlayTypes.swift` and is worth naming: `BID_EDGE`, the
-/// margin by which a defender must beat a receiver to the disc. That was predicted to go
-/// away with the AI port and did not, because the ported AI decides *where* a throw goes
-/// rather than who wins the disc when it arrives.
+/// `BID_EDGE`, the last piece of that file, is finally gone too. It was 0.55 m of assumed
+/// advantage to the receiver, and it turned out never to have decided anything: it only
+/// applied when two bodies were inside the grab radius at the same instant, which
+/// measured **zero times in seventy-five catches**. `Move/Contest.swift` does the
+/// deciding now, over a window wide enough for a contest to exist.
 ///
 /// The reference's equivalent is `src/sim/Game.ts`, which is **not** a port target: it
 /// imports three.js, the engine's `Ctx`/`System` types and the web input layer, and is
@@ -49,6 +50,15 @@ import Foundation
 ///   5. resolve any throw the AI released into a real flight, reported to the machine
 ///   6. step the disc, and report the catch, the block, the throwaway or the landing
 public final class Engine {
+    /// How close a second body must be to contest a catch, metres.
+    ///
+    /// Wider than `DISC_GRAB_R` deliberately — see `contestWinner`. `contestAir` applies
+    /// a 1.15 m per-metre penalty beyond a player's own catch radius, so a body at the
+    /// edge of this window loses to one standing on the disc unless its reach or its
+    /// position genuinely earns it.
+    public static let contestWindow = DISC_GRAB_R * 1.75
+
+
 
     // MARK: configuration
 
@@ -879,13 +889,24 @@ public final class Engine {
     private func contestWinner(offence: TeamId) -> Int? {
         let pos = disc.state.pos
         var bestOff = -1
-        var bestOffD = DISC_GRAB_R
+        var bestOffD = Engine.contestWindow
         var bestDef = -1
-        var bestDefD = DISC_GRAB_R
+        var bestDefD = Engine.contestWindow
         for p in players {
             if p.id == thrownBy && disc.state.t < 0.35 { continue }
             let d = distXZ(p.pos, pos)
-            guard d < DISC_GRAB_R else { continue }
+            // The window a body may be *considered* in is wider than the one it can
+            // catch from unaided, because a contest is decided by reach and not by
+            // proximity: a taller player, or one already in the air, comes down with a
+            // disc a shorter flat-footed one alongside them cannot touch.
+            //
+            // With the window at the bare grab radius, this loop measured **zero
+            // contested catches in seventy-five** over ten minutes — two bodies were
+            // never both inside 1.15 m at the same instant. So neither the contest model
+            // nor the `BID_EDGE` constant before it had ever once decided anything, and
+            // every block in this game was a defender arriving alone. `contestAir` does
+            // the deciding now, and this is the window that lets it.
+            guard d < Engine.contestWindow else { continue }
             if p.team == offence {
                 if d < bestOffD {
                     bestOffD = d
@@ -896,8 +917,49 @@ public final class Engine {
                 bestDef = p.id
             }
         }
-        if bestOff >= 0 && (bestDef < 0 || bestDefD > bestOffD - BID_EDGE) { return bestOff }
-        return bestDef >= 0 ? bestDef : nil
+        // Somebody has to be within actual grabbing distance, or this is not a catch at
+        // all — the wider window only decides WHO takes a disc that is already takeable.
+        //
+        // Tested after the loop rather than inside it. An earlier version skipped a
+        // distant body unless a near one had already been seen, which made the answer
+        // depend on the order `players` happens to be in — a defender listed before the
+        // receiver was silently dropped. Iteration order is not a rule of the sport.
+        let nearest = Swift.min(
+            bestOff >= 0 ? bestOffD : .infinity, bestDef >= 0 ? bestDefD : .infinity)
+        guard nearest < DISC_GRAB_R else { return nil }
+
+        if bestOff < 0 { return bestDef >= 0 ? bestDef : nil }
+        if bestDef < 0 { return bestOff }
+
+        // Two bodies on it: ask the ported contest model rather than a constant.
+        //
+        // `BID_EDGE` was 0.55 m of assumed advantage to the receiver, invented in the
+        // deleted interim engine because a defender trails on the side a throw arrives
+        // from and "nearest wins" handed the defence almost everything. It was a
+        // reasonable stand-in for a model that did not exist yet. `Move/Contest.swift`
+        // is that model — ported, validated, and until now with no caller — and it
+        // weighs the things a constant cannot: standing reach at the contest instant,
+        // inside position, whether one body is sealing the other off the disc, and
+        // strength once they are actually jostling.
+        //
+        // `jitter: 0` on purpose. The model takes a deterministic tie-breaker in [-1,1]
+        // and zero is its pure form; drawing one would put an RNG call on the catch path
+        // and every recorded replay would then depend on how many contests happened
+        // before it.
+        //
+        // `tContest: 0` because this is the catch instant, not a prediction of one. The
+        // disc is already within reach — the question is who comes down with it now.
+        guard let a = loco.get(bestOff), let b = loco.get(bestDef) else {
+            // No body for one of them: fall back to nearest, which is the only thing
+            // left that is meaningful.
+            return bestOffD <= bestDefD ? bestOff : bestDef
+        }
+        let contest = contestAir(a, b, discPos: pos, tContest: 0, jitter: 0)
+        switch contest.winner {
+        case .a: return bestOff
+        case .b: return bestDef
+        case .none: return nil
+        }
     }
 
     /// Put the physical disc where the machine now says it is.

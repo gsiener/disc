@@ -93,19 +93,3 @@ public struct MatchStats: Equatable, Sendable {
 }
 
 // MARK: - the contested catch
-
-/// How much closer than the receiver a defender must be to take the disc away.
-///
-/// This is the single number that decides whether the game is playable. At 0 the defence
-/// catches everything, because a marker trails on the side the throw comes from. Large
-/// enough and the defence never matters. It is a stand-in for everything the real contest
-/// involves — who saw it first, who is running onto it, who has position.
-///
-/// It was introduced in the interim engine and described there as a stand-in that the
-/// `AI.ts` and `Contest` ports would remove. That prediction was wrong, and the claim is
-/// corrected here rather than left standing: the AI is ported, the interim engine is
-/// gone, and `Engine.stepDisc` still resolves every contested catch with this margin. It
-/// survives because the ported AI decides *where* a throw goes, not who wins the disc
-/// once it arrives. `Move/Contest.swift` is the model that could replace it, and nothing
-/// calls it from the play layer yet.
-public let BID_EDGE = 0.55
