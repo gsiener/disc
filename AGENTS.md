@@ -72,6 +72,12 @@ node tools/test-anim.ts        # 83  — gait, foot contact
 node tools/test-camera.ts      # 67  — broadcast camera
 ```
 
+Regenerating goldens rewrites files other agents own, so **name the modules you
+own**: `node --experimental-strip-types tools/gen-goldens.ts rules gamestate`
+rewrites only those two. With no arguments it rewrites all sixteen — which has
+already landed stale fixtures on `main`. Then run the port's own suite:
+`cd swift && swift run -c release SimTests` must end `PASS` with 0 failures.
+
 `tools/test-camera.ts` has one known failure, `wasted yaw travel p99`. That
 metric is documented in the file as unstable under changes that are not the
 camera's — it scored 8.65, 11.49, 11.51, 12.48 and 14.25 across five successive

@@ -74,6 +74,30 @@ const GENERATORS: Record<string, () => unknown> = {
   'trycatch.json': tryCatchGoldens,
 };
 
-console.log('goldens →');
-for (const [name, gen] of Object.entries(GENERATORS)) write(name, gen());
+/**
+ * Optional module filter. `node tools/gen-goldens.ts rules gamestate` rewrites
+ * only `rules.json` and `gamestate.json`; no arguments rewrites all sixteen.
+ *
+ * This exists because several agents share the checkout and each owns a subset
+ * of the fixtures. An unfiltered run rewrites everyone's, which has already put
+ * stale goldens on main once and forced two agents to hand-stage their own JSON.
+ * Regenerate only what you own.
+ */
+const requested = process.argv.slice(2).map((a) => a.replace(/\.json$/, ''));
+
+const selected = requested.length
+  ? Object.entries(GENERATORS).filter(([name]) => requested.includes(name.replace(/\.json$/, '')))
+  : Object.entries(GENERATORS);
+
+const unknown = requested.filter(
+  (r) => !Object.keys(GENERATORS).some((name) => name.replace(/\.json$/, '') === r),
+);
+if (unknown.length) {
+  console.error(`unknown golden module(s): ${unknown.join(', ')}`);
+  console.error(`known: ${Object.keys(GENERATORS).map((n) => n.replace(/\.json$/, '')).join(' ')}`);
+  process.exit(1);
+}
+
+console.log(requested.length ? `goldens (${requested.join(' ')}) →` : 'goldens →');
+for (const [name, gen] of selected) write(name, gen());
 console.log('done');
