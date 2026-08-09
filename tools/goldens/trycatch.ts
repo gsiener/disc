@@ -30,8 +30,6 @@ import { catchProbability, type AIPlayer } from '../../src/sim/AI.ts';
 
 const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
-/** How close a passive defender must be to be in the catch at all. `Game.ts`. */
-const PASSIVE_DEFENDER_GAP = 0.55;
 const CATCH_REACH = 0.82;
 const LAYOUT_REACH = 1.55;
 /** What a full-extension bid costs, scaled across the reach band. `Game.ts`. */
@@ -82,7 +80,7 @@ function decide(
     const bot = b.groundY + (laidOut ? 0.02 : 0.20);
     if (disc.y > top || disc.y < bot) continue;
     if (b.team !== offence) {
-      if (!b.attacking && gap > PASSIVE_DEFENDER_GAP) continue;
+      if (!b.attacking && gap > 0.55) continue;
     }
     const high = clampNum((disc.y - (b.groundY + b.hipHeight + 0.35)) / 0.9, 0, 1);
     const score = gap + high * 0.4 + (b.team === offence ? 0 : 0.25);
@@ -93,20 +91,10 @@ function decide(
   if (!best) return null;
 
   const speed = Math.hypot(disc.vx, disc.vy, disc.vz);
-  /**
-   * The contest that prices DIFFICULTY applies the same gate the block does: a
-   * defender who is not playing the disc cannot take it, cannot deflect it and
-   * does nothing to the receiver's hands. See `Game.catchContest`, which is a
-   * different question from `contestCount` — that one asks whether the disc came
-   * down in a crowd, which is what decides whether a call is available.
-   */
   let contest = 0;
   for (const b of bodies) {
     if (b.team === best.team) continue;
-    const gap = Math.hypot(b.x - disc.x, b.z - disc.z);
-    if (gap >= 1.9) continue;
-    if (!b.attacking && gap > PASSIVE_DEFENDER_GAP) continue;
-    contest++;
+    if (Math.hypot(b.x - disc.x, b.z - disc.z) < 1.9) contest++;
   }
   contest = Math.min(2, contest) * 0.30;
   const stretch = bestLaidOut

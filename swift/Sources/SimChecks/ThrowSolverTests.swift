@@ -226,13 +226,6 @@ enum ThrowSolverTests {
     /// floor below is a physical one, not a tuning one: a disc released at a person's
     /// slowest throw still crosses a few metres before it can descend through the catch
     /// plane, which is the same floor the human's `MIN_THROW_SPEED` sets.
-    ///
-    /// **The plane the flight is measured against is the one the solver aims at**, which
-    /// is `ThrowSolver.catchDrop` under the release rather than the release height itself.
-    /// It has to be: `probeThrow` reports a DESCENDING crossing, and a disc released at
-    /// 1.35 m and never above it cannot descend through 1.35 m — measuring against that
-    /// height reports the ground contact instead, which on a 1 m ask is 4.8 m away and
-    /// looks exactly like the bomb this test exists to catch.
     private static func shortAsksStayShort() {
         let e = Engine(format: .sevens, seed: 3)
         let rt = DiscRuntime()
@@ -249,15 +242,12 @@ enum ThrowSolverTests {
                     continue
                 }
                 _ = rt.release(req)
-                let plane = from.y - ThrowSolver.catchDrop
                 var flown = 0.0
                 var prevY = rt.state.pos.y
                 for _ in 0..<(120 * 8) {
                     rt.step(dt: 1.0 / 120)
                     flown = distXZ(from, rt.state.pos)
-                    if (rt.state.pos.y <= plane && prevY > plane) || rt.state.touchedGround {
-                        break
-                    }
+                    if (rt.state.pos.y <= 1.35 && prevY > 1.35) || rt.state.touchedGround { break }
                     prevY = rt.state.pos.y
                 }
                 Check.ok(

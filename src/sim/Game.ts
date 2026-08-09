@@ -147,11 +147,6 @@ const PICKUP_RADIUS = 1.6;
 const PICKUP_DWELL = 1.4;
 const PICKUP_DWELL_RADIUS = 3.6;
 /** Horizontal reach for a standing catch (m). */
-/**
- * How close a defender who is NOT playing the disc has to be before he is in the
- * catch at all. Mirrors `CatchDecision.passiveDefenderGap` in the port.
- */
-const PASSIVE_DEFENDER_GAP = 0.55;
 const CATCH_REACH = 0.82;
 /** Horizontal reach with the body fully extended (m). */
 const LAYOUT_REACH = 1.55;
@@ -1832,7 +1827,7 @@ export class GameSystem implements System {
       if (e.team !== offense) {
         const act = this.actionOf.get(e.id);
         const attacking = act?.kind === 'bid' || act?.kind === 'jump' || act?.kind === 'catch';
-        if (!attacking && gap > PASSIVE_DEFENDER_GAP) continue;
+        if (!attacking && gap > 0.55) continue;
       }
       const high = clampNum((s.pos.y - (lp.groundY + lp.hipHeight + 0.35)) / 0.9, 0, 1);
       const score = gap + high * 0.4 + (e.team === offense ? 0 : 0.25);
@@ -1844,7 +1839,7 @@ export class GameSystem implements System {
     const lp = best.loco;
     const laidOut = lp.state === 'layout' || (lp.prone && lp.air.airborne);
     const speed = Math.hypot(s.vel.x, s.vel.y, s.vel.z);
-    const contest = this.catchContest(s.pos.x, s.pos.z, best.team) * 0.30;
+    const contest = this.contestCount(s.pos.x, s.pos.z, best.team) * 0.30;
     /**
      * HOW FAR PAST HIS FEET HE HAD TO GO, not merely THAT he left them.
      *
@@ -1923,41 +1918,6 @@ export class GameSystem implements System {
     for (const e of this.roster) {
       if (e.team === team) continue;
       if (Math.hypot(e.loco.pos.x - x, e.loco.pos.z - z) < 1.9) n++;
-    }
-    return Math.min(2, n);
-  }
-
-  /**
-   * How many opponents are actually CONTESTING this catch, as opposed to merely
-   * standing near it.
-   *
-   * `contestCount` above answers a different question — whether the disc came
-   * down in a crowd, which is what decides whether a call is available — and
-   * `tryCatch` used it to price catch difficulty as well. Those are not the same
-   * thing, and using one for both is what made the drop rate what it was.
-   *
-   * `tryCatch` will not let a defender so much as touch the disc unless he is
-   * bidding, jumping or catching, or is inside `PASSIVE_DEFENDER_GAP` of it. A
-   * man who fails that test is beaten: he cannot take the disc, cannot deflect
-   * it, and does nothing to the receiver's hands. He was still charged 0.30 of
-   * difficulty, and there is nearly always one of him — measured over four
-   * fifteen-minute matches, the MEDIAN drop was a 6 m dump to a stationary,
-   * standing receiver with exactly one defender inside 1.9 m and none of them
-   * laid out, completing 89% where the sport completes better than 98%.
-   *
-   * So the difficulty term now applies the same gate the block does: to contest
-   * a catch you have to be playing the disc.
-   */
-  private catchContest(x: number, z: number, team: TeamId): number {
-    let n = 0;
-    for (const e of this.roster) {
-      if (e.team === team) continue;
-      const gap = Math.hypot(e.loco.pos.x - x, e.loco.pos.z - z);
-      if (gap >= 1.9) continue;
-      const act = this.actionOf.get(e.id);
-      const playing = act?.kind === 'bid' || act?.kind === 'jump' || act?.kind === 'catch';
-      if (!playing && gap > PASSIVE_DEFENDER_GAP) continue;
-      n++;
     }
     return Math.min(2, n);
   }

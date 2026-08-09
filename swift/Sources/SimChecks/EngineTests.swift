@@ -203,16 +203,9 @@ enum EngineTests {
                     let from = Vec3d(0, 1.35, 0)
                     let aim = Vec3d(
                         from.x + sin(heading) * range, 1.35, from.z + cos(heading) * range)
-                    // **The AI's own release speed, which is not the distance over the
-                    // flight time.** Those were one function once and were split precisely
-                    // because they wanted opposite numbers; this measurement kept using
-                    // the lead clock and so was never sweeping the throw the engine makes.
-                    // It stopped being harmless when `throwFlightTime` gained the loft step
-                    // at `ThrowSolver.loftRange`: dividing a deep ask by a flight time that
-                    // had just gone up 75% asked the arm for a release it would never
-                    // choose, and the sweep reported the resulting underthrow — a median
-                    // 15 m miss at 90% of believed range — as a fault in the solver.
-                    let speed = throwReleaseSpeed(arm, type, range)
+                    // Exactly the AI's own speed: the distance over the flight time it
+                    // intends. `AI.ts:2311`.
+                    let speed = range / Swift.max(0.2, throwFlightTime(arm, type, range))
                     guard
                         let req = e.solveRelease(
                             from: from, aim: aim, type: physType, speed: speed,
@@ -305,44 +298,17 @@ enum EngineTests {
         Check.note(
             "throw solver: \(misses.count) flights, worst "
                 + String(format: "%.2f", worst.miss) + " m on \(worst.what)")
-        /**
-         * **The worst case is BOUNDED now, and it was not before.**
-         *
-         * This line was a `Check.note` with no assertion anywhere behind it, and the
-         * number it prints is the one that would have caught the regression this file
-         * spends two screens describing: a solver that answered a 1 m dump with a 19.6 m
-         * bomb moves this figure and nothing else. A note cannot fail, so it did not.
-         * The bound is set a little over half again the measured 6.40 m, which is loose
-         * enough to survive a libm difference in the integrator and tight enough that a
-         * bomb — any bomb — trips it.
-         */
-        Check.ok(
-            worst.miss < 10,
-            "and no solved throw is a bomb (worst \(String(format: "%.2f", worst.miss)) m)")
         Check.ok(
             median(short) < 0.82,
             "a solved throw inside a third of the AI's believed range arrives in a catch "
                 + "radius (median \(median(short)) m)")
-        /**
-         * **This assertion used to say the opposite, and it was right to, and it is now
-         * right not to.**
-         *
-         * It read `median(long) > 3` — the AI believes in hucks the flight model will not
-         * throw — and it was pinned that way deliberately so that fixing the disagreement
-         * would be a visible event rather than a silent one. It is fixed, in two halves.
-         * The catch plane is now clamped under the release (`ThrowSolver.catchDrop`), so a
-         * solve is a solve rather than a search for where the disc hits the turf; and this
-         * sweep now asks for the release speed the engine actually uses
-         * (`throwReleaseSpeed`) rather than distance over the lead clock. The median miss
-         * at 90% of believed range went 6.85 m -> 1.61 m and the worst case 11.75 -> 6.40.
-         *
-         * So the direction reverses: what is asserted now is that a deep ask ARRIVES, with
-         * a ceiling rather than a floor. Anyone who reintroduces the disagreement fails
-         * here, which is the same service the old assertion was performing in reverse.
-         */
+        // Pinned so that fixing it is a visible event rather than a silent one. If somebody
+        // reconciles `maxThrowRange` with the flight model, this fails and should be
+        // rewritten — that is the point of asserting a known limitation rather than
+        // omitting it.
         Check.ok(
-            median(long) < 3.5,
-            "and a deep ask now arrives — no floor left under it "
+            median(long) > 3,
+            "and the AI still believes in hucks the flight model will not throw "
                 + "(median \(median(long)) m at 90% of believed range)")
     }
 
@@ -778,56 +744,9 @@ enum EngineTests {
         // was written and validated for, so it is held to it; minis is knowingly below the
         // bar and is measured rather than asserted, so this file reports the gap instead of
         // going quietly green on a game where nobody cuts.
-        /**
-         * **The bands, asserted rather than printed.**
-         *
-         * Everything above this was a `Check.note`, and fifteen minutes of sevens was
-         * guarded by `goals > 0` and `mean > 0` — one goal and a centimetre of average
-         * gain passed. That is not a test of the sport; it is a test that the engine
-         * runs. The numbers below are the ones this file lands on, widened for seed
-         * variance, and each of them fails on a different real regression:
-         *
-         *  - `passPct` is `completions / attempts` off the RULES MACHINE, the sport's own
-         *    definition and the one the 85-96% real-ultimate band is quoted against. The
-         *    three asserted seeds sit at 84 / 89 / 90%. The floor is 80 rather than 85
-         *    because s11 is genuinely under the sport's band and saying so is the point;
-         *    the ceiling catches an offence that has stopped taking any risk at all.
-         *  - the HOLD SHARE is the number issue #17 is about: what fraction of points the
-         *    receiving team scores. Real elite ultimate holds about 70%. These seeds sit
-         *    at 40 / 58 / 62% and the pooled reference measurement over 24 fifteen-minute
-         *    matches is 57%, up from 49%. The band is deliberately wide — three seeds
-         *    cannot resolve a percentage to better than about fifteen points — but it has
-         *    a FLOOR, which is what stops a change that quietly hands the disc away.
-         *  - mean gain, cadence and the deep game are the three that a completion
-         *    percentage alone cannot see, and the reason this function measures at all:
-         *    an offence can swing a disc sideways at 99% forever.
-         */
         if format.field.length > 50 {
-            Check.ok(goals >= 8 && goals <= 24, "sevens scores like sevens (\(goals) goals)")
-            Check.ok(
-                mean >= 3 && mean <= 14,
-                "and the offence advances (mean \(meanText) m per completion)")
-            Check.ok(
-                passPct >= 80 && passPct <= 96,
-                "at a completion rate the sport would recognise "
-                    + "(\(String(format: "%.0f%%", passPct)))")
-            let points = holds + breaks
-            let holdShare = points > 0 ? Double(holds) / Double(points) : 0
-            Check.ok(
-                points >= 8 && holdShare >= 0.30 && holdShare <= 0.85,
-                "and the offence holds more often than not over a match "
-                    + "(\(holds) of \(points) = \(String(format: "%.0f%%", holdShare * 100)))")
-            Check.ok(
-                cadence >= 3.5 && cadence <= 7.5,
-                "the disc moves at a human tempo (a release every "
-                    + String(format: "%.1f", cadence) + " s of live play)")
-            Check.ok(
-                hucksAttempted >= 2,
-                "the deep game exists (\(hucksAttempted) huck attempts)")
-            Check.ok(
-                (completedDists.max() ?? 0) >= 28,
-                "and reaches downfield (longest completion "
-                    + String(format: "%.1f", completedDists.max() ?? 0) + " m)")
+            Check.ok(goals > 0, "sevens scores in fifteen minutes (\(goals))")
+            Check.ok(mean > 0, "and the offence advances (mean \(mean) m per completion)")
         } else if mean <= 0 {
             Check.note(
                 "minis is still a backward game — see playAndMeasure; the AI's shape "

@@ -150,7 +150,7 @@ public enum CatchDecision {
         guard let taker = best else { return nil }
 
         let speed = discVel.length
-        let contest = catchContest(discPos.x, discPos.z, taker.team, bodies) * 0.30
+        let contest = contestCount(discPos.x, discPos.z, taker.team, bodies) * 0.30
         let stretch =
             bestLaidOut
             ? layoutStretch * clamp((bestReach - catchReach) / (layoutReach - catchReach), 0, 1)
@@ -178,33 +178,6 @@ public enum CatchDecision {
         if r < p { return result(pull ? .pullCatch : .catchDisc) }
         if difficulty < dropThreshold { return result(pull ? .pullDrop : .drop) }
         return result(.none)
-    }
-
-    /// How many opponents are actually CONTESTING this catch, as opposed to merely
-    /// standing near it.
-    ///
-    /// `contestCount` below answers a different question — whether the disc came down in a
-    /// crowd, which is what decides whether a call is available — and `decide` used it to
-    /// price catch difficulty as well. Those are not the same thing, and using one for
-    /// both is what made the drop rate what it was: a defender who fails the
-    /// `passiveDefenderGap` gate above cannot take the disc, cannot deflect it and does
-    /// nothing to the receiver's hands, yet he was charged 0.30 of difficulty, and there
-    /// is nearly always one of him. Measured over four fifteen-minute matches, the MEDIAN
-    /// drop was a 6 m dump to a stationary, standing receiver with exactly one defender
-    /// inside 1.9 m and none of them laid out, completing 89% where the sport completes
-    /// better than 98%. So the difficulty term applies the same gate the block does: to
-    /// contest a catch you have to be playing the disc.
-    static func catchContest(_ x: Double, _ z: Double, _ team: TeamId, _ bodies: [Body])
-        -> Double
-    {
-        var n = 0.0
-        for b in bodies where b.team != team {
-            let gap = distXZ(b.pos, Vec3d(x, 0, z))
-            if gap >= 1.9 { continue }
-            if !b.attacking, gap > passiveDefenderGap { continue }
-            n += 1
-        }
-        return Swift.min(2, n)
     }
 
     /// How many opponents are close enough to make a catch a contest. `Game.ts:1885`.

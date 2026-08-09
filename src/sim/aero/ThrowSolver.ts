@@ -122,39 +122,6 @@ export const SOLVE_SPEED_DROPS = 2;
  * this was the whole correction and it was aiming hucks off the field.
  */
 export const SOLVE_HEADING_TRIM = 0.15;
-/**
- * **How far under the throwing hand the solved catch plane is forced to sit, m —
- * and the bug it exists to close.**
- *
- * `probeThrow` reports the distance at which a flight DESCENDS through the catch
- * plane (`pos.y <= catchY && prevY > catchY`) and falls through to the ground
- * contact when that crossing never happens. `AI.ts` asks for `aimY = 1.35` — a
- * chest — and `Game.releaseOrigin` puts the disc in a standing player's hand at
- * `hipHeight * 1.10`, about 1.05 m. A throw that is never above 1.35 m cannot
- * descend through 1.35 m, so on every flat throw in the game the crossing test
- * could not fire and the solver was silently solving for the disc to hit the
- * TURF at the receiver's feet.
- *
- * It reads back through the whole offence. `AI.predictCatchPoint` takes the
- * first sample at or under `CATCH_FLOOR` = 0.85 m as the rendezvous, and a disc
- * released at 1.05 m and aimed into the ground at 22 m falls through 0.85 m
- * after nine metres — so the intended receiver turned round and ran back to meet
- * a disc twelve metres short of where it was thrown. Median over 379
- * completions: aimed 9.9 m, caught at 6.8 m.
- *
- * Clamping the plane under the release makes the crossing test unconditional (a
- * disc released above the plane always descends through it before the ground),
- * which is what makes the elevation scan a well-posed search at all. Measured
- * after the clamp, the same backhand holds 0.9-1.3 m for the whole flight at
- * every distance from 6 m to 30 m, and grounded throwaways fell from 2.7% of
- * throws to 0.2%.
- */
-export const SOLVE_CATCH_DROP = 0.25;
-/**
- * At and beyond this ask, the solver throws the LOFTED root. See the note in
- * `solveElevation`.
- */
-export const SOLVE_LOFT_RANGE = 25;
 
 export interface ReleaseSolution {
   /** Launch elevation above the throw's own spec elevation, rad. */
@@ -175,7 +142,6 @@ const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? 
  */
 function solveElevation(
   probe: ThrowProbe, req: ThrowRequest, heading: number, want: number, catchY: number,
-  lofted = false,
 ): { angle: number; lat: number; reach: number; floor: number } {
   req.aim.set(Math.sin(heading), 0, Math.cos(heading));
   const step = (SOLVE_ELEV_HI - SOLVE_ELEV_LO) / SOLVE_ELEV_SCAN;
@@ -193,8 +159,6 @@ function solveElevation(
   let rising = true;
   let fallLoA = NaN;
   let fallHiA = NaN;
-  let riseLoA = NaN;
-  let riseHiA = NaN;
 
   for (let i = 0; i <= SOLVE_ELEV_SCAN; i++) {
     const a = SOLVE_ELEV_LO + step * i;
@@ -202,10 +166,7 @@ function solveElevation(
     const r = probe.probeThrow(req, catchY, 6);
     if (r.dist > peakD) { peakD = r.dist; peakA = a; peakLat = r.lat; }
     if (r.dist < minD) { minD = r.dist; minA = a; minLat = r.lat; }
-    if (i > 0 && r.dist >= want && prevD < want && !lofted) { loA = prevA; hiA = a; break; }
-    if (i > 0 && r.dist >= want && prevD < want && lofted && Number.isNaN(riseLoA)) {
-      riseLoA = prevA; riseHiA = a;
-    }
+    if (i > 0 && r.dist >= want && prevD < want) { loA = prevA; hiA = a; break; }
     /**
      * A FALLING CROSSING IS A ROOT TOO, and it is only ever the fallback.
      *
@@ -235,29 +196,7 @@ function solveElevation(
     prevD = r.dist;
   }
 
-  /**
-   * A HUCK IS A LOFTED DISC, and the flat root is the wrong one for it.
-   *
-   * The scan above prefers the flat root for the reasons in bug 1 of the header,
-   * and that is right for every throw a receiver catches in front of him. It is
-   * wrong for a deep shot. Measured off the real integrator through this solver
-   * (`tools/_lanearc.ts`), the flat root delivers a 30 m backhand at a constant
-   * 1.0-1.1 m above the grass for the whole flight — a laser through seven
-   * defenders at chest height. Once `AI.flightPath` was corrected to model that
-   * honestly, the AI could see the coverage and stopped throwing deep at all:
-   * hucks went from 4.8 a match to 0.3, because the model was right and the
-   * throw was bad. A real huck goes OVER the defence and comes down on a
-   * streaking receiver, which is the falling root — same distance, launched up.
-   *
-   * So a deep ask takes the falling root when one exists, and falls back to the
-   * flat one when it does not (near the arm's limit the two converge and only
-   * the flat one is bracketed).
-   */
-  if (lofted && !Number.isNaN(fallLoA)) {
-    loA = fallLoA; hiA = fallHiA; rising = false;
-  } else if (lofted && !Number.isNaN(riseLoA)) {
-    loA = riseLoA; hiA = riseHiA;
-  } else if (Number.isNaN(loA) && !Number.isNaN(fallLoA)) {
+  if (Number.isNaN(loA) && !Number.isNaN(fallLoA)) {
     loA = fallLoA; hiA = fallHiA; rising = false;
   }
 
@@ -315,18 +254,10 @@ function solveElevation(
  * `req` is a scratch request the caller owns: `type`, `from`, `power`, `spin` and
  * `hand` must be set, `aim` must be a writable vector, and `angle` and `bank` are
  * written by the solve. The returned solution is also left on `req`.
- *
- * `catchY0` is the height the caller would like the disc delivered at; the solve
- * uses it clamped under the release, which is the precondition `probeThrow`'s
- * crossing test needs. See `SOLVE_CATCH_DROP`.
  */
 export function solveRelease(
-  probe: ThrowProbe, req: ThrowRequest, heading0: number, want: number, catchY0: number,
+  probe: ThrowProbe, req: ThrowRequest, heading0: number, want: number, catchY: number,
 ): ReleaseSolution {
-  // Both of these are properties of the throw, not of the caller — see
-  // `SOLVE_CATCH_DROP` and the loft note in `solveElevation`.
-  const catchY = clampNum(catchY0, 0.20, req.from.y - SOLVE_CATCH_DROP);
-  const lofted = want >= SOLVE_LOFT_RANGE;
   let bank = 0;
   let angle = 0.02;
   let lat = 0;
@@ -335,7 +266,7 @@ export function solveRelease(
 
   for (let pass = 0; pass < SOLVE_PASSES; pass++) {
     req.bank = bank;
-    const e = solveElevation(probe, req, heading0, want, catchY, lofted);
+    const e = solveElevation(probe, req, heading0, want, catchY);
     angle = e.angle;
     lat = e.lat;
 

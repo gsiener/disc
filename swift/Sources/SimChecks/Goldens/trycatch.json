@@ -695,8 +695,8 @@
         }
       ],
       "taker": 9,
-      "difficulty": 0.12000000000000013,
-      "p": 0.5975386399999999,
+      "difficulty": 0.42000000000000015,
+      "p": 0.56696024,
       "outcomes": [
         "interception",
         "interception",
@@ -789,8 +789,8 @@
         }
       ],
       "taker": 1,
-      "difficulty": 0.18111111111111117,
-      "p": 0.9537253333333332,
+      "difficulty": 0.7811111111111111,
+      "p": 0.8550853333333333,
       "outcomes": [
         "catch",
         "catch",
@@ -803,8 +803,8 @@
         "catch",
         "catch",
         "catch",
-        "catch",
-        "catch",
+        "drop",
+        "drop",
         "drop"
       ]
     },

@@ -59,19 +59,6 @@ public enum ThrowSolver {
     public static let speedDrops = 2
     /// Clamp on the residual heading trim, rad.
     public static let headingTrim = 0.15
-    /// **How far under the throwing hand the solved catch plane is forced to sit, m.**
-    ///
-    /// `probeThrow` reports the distance at which a flight DESCENDS through the catch
-    /// plane and falls through to the ground contact when that crossing never happens.
-    /// `AI` asks for `aimY = 1.35` — a chest — and the release origin is a standing
-    /// player's hand at `hipHeight * 1.10`, about 1.05 m, so on every flat throw in the
-    /// game the crossing test could not fire and the solver was silently solving for the
-    /// disc to hit the TURF at the receiver's feet. `predictCatchPoint` then read that
-    /// flight back and sent the receiver to the first sample under 0.85 m, which on a
-    /// 22 m pass is nine metres out. See the reference note on `SOLVE_CATCH_DROP`.
-    public static let catchDrop = 0.25
-    /// At and beyond this ask the solver throws the LOFTED root — see `solveElevation`.
-    public static let loftRange = 25.0
 
     public struct Solution: Equatable, Sendable {
         /// Launch elevation above the throw's own spec elevation, rad.
@@ -87,7 +74,7 @@ public enum ThrowSolver {
     /// Leaves the solved angle and the probing aim on `req`, as the reference does.
     private static func solveElevation(
         _ probe: DiscRuntime, _ req: inout ThrowRequest,
-        heading: Double, want: Double, catchY: Double, lofted: Bool
+        heading: Double, want: Double, catchY: Double
     ) -> (angle: Double, lat: Double, reach: Double, floor: Double) {
         req.aim = Vec3d(sin(heading), 0, cos(heading))
         let step = (elevHi - elevLo) / Double(elevScan)
@@ -105,8 +92,6 @@ public enum ThrowSolver {
         var rising = true
         var fallLoA = Double.nan
         var fallHiA = Double.nan
-        var riseLoA = Double.nan
-        var riseHiA = Double.nan
 
         for i in 0...elevScan {
             let a = elevLo + step * Double(i)
@@ -122,14 +107,10 @@ public enum ThrowSolver {
                 minA = a
                 minLat = r.lat
             }
-            if i > 0, r.dist >= want, prevD < want, !lofted {
+            if i > 0, r.dist >= want, prevD < want {
                 loA = prevA
                 hiA = a
                 break
-            }
-            if i > 0, r.dist >= want, prevD < want, lofted, riseLoA.isNaN {
-                riseLoA = prevA
-                riseHiA = a
             }
             // A FALLING CROSSING IS A ROOT TOO, and it is only ever the fallback. The
             // rising crossing above still wins outright: for any carry curve that starts
@@ -144,20 +125,7 @@ public enum ThrowSolver {
             prevD = r.dist
         }
 
-        // A HUCK IS A LOFTED DISC, and the flat root is the wrong one for it. The flat
-        // root delivers a 30 m backhand at a constant 1.0-1.1 m above the grass — a laser
-        // through seven defenders at chest height — and once `flightPath` modelled that
-        // honestly the AI could see the coverage and stopped throwing deep at all. A real
-        // huck goes OVER the defence, which is the falling root: same distance, launched
-        // up. See the reference note in `solveElevation`.
-        if lofted, !fallLoA.isNaN {
-            loA = fallLoA
-            hiA = fallHiA
-            rising = false
-        } else if lofted, !riseLoA.isNaN {
-            loA = riseLoA
-            hiA = riseHiA
-        } else if loA.isNaN, !fallLoA.isNaN {
+        if loA.isNaN, !fallLoA.isNaN {
             loA = fallLoA
             hiA = fallHiA
             rising = false
@@ -204,12 +172,8 @@ public enum ThrowSolver {
     @discardableResult
     public static func solve(
         _ probe: DiscRuntime, _ req: inout ThrowRequest,
-        heading0: Double, want: Double, catchY catchY0: Double
+        heading0: Double, want: Double, catchY: Double
     ) -> Solution {
-        // Both of these are properties of the throw, not of the caller — see `catchDrop`
-        // and the loft note in `solveElevation`.
-        let catchY = clamp(catchY0, 0.20, req.from.y - catchDrop)
-        let lofted = want >= loftRange
         var bank = 0.0
         var angle = 0.02
         var lat = 0.0
@@ -219,8 +183,7 @@ public enum ThrowSolver {
         var pass = 0
         while pass < passes {
             req.bank = bank
-            let e = solveElevation(
-                probe, &req, heading: heading0, want: want, catchY: catchY, lofted: lofted)
+            let e = solveElevation(probe, &req, heading: heading0, want: want, catchY: catchY)
             angle = e.angle
             lat = e.lat
 
