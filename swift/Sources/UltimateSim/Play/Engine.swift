@@ -143,6 +143,18 @@ public final class Engine {
     /// `GameState`.
     public var isOver: Bool { game.phase == .gameOver }
 
+    /// How willing both offences are to let it go, 0.6 (conservative) to 1.6 (gunner).
+    ///
+    /// The reference's own knob, and the only honest lever on pacing. Shortening the
+    /// count looks like the obvious one and is not available — see the rules override in
+    /// `init` — because `TeamAI` hardcodes the ten it paces itself against. This scales
+    /// the *threshold a throw must clear*, so a higher value takes the same looks sooner
+    /// rather than inventing worse ones.
+    ///
+    /// Changing it after kickoff has no effect until the next point, since each point
+    /// builds fresh `TeamAI`s.
+    public var aggression = DEFAULT_TEAM_CONFIG.aggression
+
     /// Teams whose throws the computer makes. Defaults to the opponent only; set both and
     /// the game plays itself, which is how the checks run it headlessly.
     ///
@@ -272,6 +284,7 @@ public final class Engine {
         ai = (0..<2).map { t in
             var cfg = DEFAULT_TEAM_CONFIG
             cfg.seed = 1 + t + 2 * game.point
+            cfg.aggression = aggression
             return TeamAI(
                 team: t, dir: dirFor(t), rng: rng, cfg: cfg, field: format.field)
         }
