@@ -73,6 +73,14 @@ public struct MatchView: View {
     /// frame and a trail should sample the flight, not the frame rate.
     @State private var trail: [SIMD3<Float>] = []
 
+    /// Watches the box score for turnovers, one diff per tick. See `MatchOverlays.swift`
+    /// for why this is a diff and not a subscription: the engine's event emitter is
+    /// spoken for before any view exists.
+    @State private var turnoverWatch = TurnoverWatch()
+    /// The turnover being shouted about, while there is one. Its `timeLeft` is burned
+    /// down by wall time in `advance`, so the shout lasts 1.5 s at any refresh rate.
+    @State private var turnoverFlash: TurnoverFlash? = nil
+
     /// Bumped once per rendered frame purely so SwiftUI knows something happened.
     ///
     /// `Match` is a `final class` — deliberately, since passing a match around must not
@@ -158,6 +166,13 @@ public struct MatchView: View {
                 scoreboard
                 if let d = drag { aimOverlay(d, in: geo.size) }
                 callout
+
+                // Full time. Drawn over everything, including the callouts — once the
+                // game is over the only interesting fact left is the result, and the
+                // only interesting input left is the rematch button.
+                if match.isOver {
+                    ResultOverlay(match: match) { restart(match.fieldSpec) }
+                }
             }
         }
     }
@@ -194,6 +209,16 @@ public struct MatchView: View {
             match.step(dt: Self.tickDt)
             tickCount &+= 1
             recordTrail()
+            // At most one turnover fits in a tick, so checking per tick — rather than
+            // per frame — means a catch-up burst cannot swallow one.
+            if let flash = turnoverWatch.check(match) { turnoverFlash = flash }
+        }
+
+        // The callout clock runs on wall time, outside the simulation, like everything
+        // else that is display and not physics.
+        if var flash = turnoverFlash {
+            flash.timeLeft -= frameDt
+            turnoverFlash = flash.timeLeft > 0 ? flash : nil
         }
     }
 
@@ -527,6 +552,23 @@ public struct MatchView: View {
         }
     }
 
+    /// Tear the match down and start a new one on `spec`'s pitch. Both restarts — the
+    /// format switch and the rematch button — come through here, so neither can forget
+    /// a piece of per-match state.
+    ///
+    /// A restart is a new match, so it draws a new seed — otherwise restarting would be
+    /// the one path back to the compiled-in default and its identical wind and rosters.
+    private func restart(_ spec: FieldSpec) {
+        seed = Self.freshSeed()
+        match = Engine(format: spec.gameFormat, seed: seed)
+        drag = nil
+        trail.removeAll()
+        tickCount = 0
+        accumulator = 0
+        turnoverWatch = TurnoverWatch()
+        turnoverFlash = nil
+    }
+
     // MARK: hud
 
     /// Corner darkening. Cheap, and it does most of the work of making a flat green
@@ -575,15 +617,7 @@ public struct MatchView: View {
             ForEach([FieldSpec.minis, FieldSpec.full], id: \.teamSize) { spec in
                 Button {
                     guard spec.teamSize != match.fieldSpec.teamSize else { return }
-                    // A restart is a new match, so it draws a new seed — otherwise
-                    // switching format would be the one path back to the compiled-in
-                    // default and its identical wind and rosters.
-                    seed = Self.freshSeed()
-                    match = Engine(format: spec.gameFormat, seed: seed)
-                    drag = nil
-                    trail.removeAll()
-                    tickCount = 0
-                    accumulator = 0
+                    restart(spec)
                 } label: {
                     Text("\(spec.teamSize)v\(spec.teamSize)")
                         .font(.system(size: 12, design: .monospaced).bold())
@@ -615,31 +649,45 @@ public struct MatchView: View {
         .padding(.top, 12)
     }
 
-    /// The one thing worth interrupting the pitch for.
+    /// The two things worth interrupting the pitch for: a point, and the turnover that
+    /// prevented one. A goal outranks a turnover — a Callahan is both at once, and the
+    /// score is the half worth shouting.
     @ViewBuilder private var callout: some View {
         if let team = match.justScored {
-            VStack(spacing: 3) {
-                Text(team == 0 ? "GOAL" : "THEIR POINT")
-                    .font(.system(size: 30, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(team == 0 ? Color(red: 0.5, green: 1, blue: 0.62) : .orange)
-                Text("\(match.score[0]) — \(match.score[1])")
-                    .font(.system(size: 16, design: .monospaced).bold())
-                    .foregroundStyle(.white.opacity(0.75))
-            }
-            .padding(.horizontal, 22).padding(.vertical, 12)
-            // A plate rather than a drop shadow. The first version was 46pt of unbacked
-            // text across the middle of the pitch: it announced the goal and hid the
-            // players who had just scored it.
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(.black.opacity(0.5))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .allowsHitTesting(false)
-            .transition(.opacity)
+            calloutPlate(
+                title: team == 0 ? "GOAL" : "THEIR POINT",
+                tint: team == 0 ? Color(red: 0.5, green: 1, blue: 0.62) : .orange,
+                subtitle: "\(match.score[0]) — \(match.score[1])")
+        } else if let flash = turnoverFlash {
+            calloutPlate(
+                title: flash.text,
+                tint: flash.good ? Color(red: 0.5, green: 1, blue: 0.62) : .orange,
+                subtitle: flash.good ? "YOUR DISC" : "THEY HAVE IT")
         }
+    }
+
+    /// The shared shout. A plate rather than a drop shadow: the first version was 46pt
+    /// of unbacked text across the middle of the pitch — it announced the goal and hid
+    /// the players who had just scored it.
+    private func calloutPlate(title: String, tint: Color, subtitle: String) -> some View {
+        VStack(spacing: 3) {
+            Text(title)
+                .font(.system(size: 30, weight: .heavy, design: .monospaced))
+                .foregroundStyle(tint)
+            Text(subtitle)
+                .font(.system(size: 16, design: .monospaced).bold())
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .padding(.horizontal, 22).padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(.black.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 1)))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+        .transition(.opacity)
     }
 
     /// The aim line. Drawn in view space rather than in the scene because it is a
