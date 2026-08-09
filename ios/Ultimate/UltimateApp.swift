@@ -17,6 +17,9 @@ import UltimateSim
 /// tick, for the same reason: a benchmark taken on a laptop says nothing about a phone,
 /// and the plan carried "under 0.5 ms per tick" as an extrapolation from Node for months
 /// before anyone measured it anywhere.
+///
+/// They are also not the game, so they are compiled out of a release build — see
+/// `showsInstruments`. A shipped build is Play, and nothing else.
 @main
 struct UltimateApp: App {
     /// Which tab to open on, so a headless run can reach a specific screen.
@@ -35,18 +38,56 @@ struct UltimateApp: App {
         return args[i + 1] == "7v7" ? .full : .minis
     }()
 
-    @State private var tab: Int = {
+    /// The tab named on the command line, or `play` when none was.
+    static let requestedTab: Int = {
         let args = ProcessInfo.processInfo.arguments
         guard let i = args.firstIndex(of: "-tab"), i + 1 < args.count else { return 0 }
         return ["play": 0, "pitch": 1, "flight": 2, "checks": 3, "bench": 4][args[i + 1]] ?? 0
     }()
 
+    /// Whether the four engineering instruments are part of this run.
+    ///
+    /// They are the reason the sim can be trusted and they are not the game. A build
+    /// handed to somebody to *play* that opens onto a five-item tab bar, four of which
+    /// are a differential test runner, a benchmark and two plotters, is not a game — it
+    /// is a workbench with a game on it. So the shape of the app is decided at compile
+    /// time: a debug build is the workbench, a release build is Play and nothing else.
+    ///
+    /// With one door left open. The on-device check run is the single property this port
+    /// stakes itself on, and it has to be reachable in the configuration that ships —
+    /// `xcrun simctl launch` can pass arguments but cannot tap, so a release build that
+    /// *was asked for* an instrument builds the tab bar anyway:
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -tab checks
+    ///
+    /// That keeps automation working against the real artifact without putting a test
+    /// runner in front of a player, which is the whole point.
+    static let showsInstruments: Bool = {
+        #if DEBUG
+            return true
+        #else
+            return requestedTab != 0
+        #endif
+    }()
+
+    @State private var tab: Int = UltimateApp.requestedTab
+
     var body: some Scene {
         WindowGroup {
+            root.preferredColorScheme(.dark)
+        }
+    }
+
+    @ViewBuilder private var root: some View {
+        if Self.showsInstruments {
             TabView(selection: $tab) {
-                MatchView(format: Self.startFormat)
+                // `active:` is what stops a tab nobody is looking at from simulating.
+                // A `TabView` builds a tab on first selection and then keeps it alive,
+                // so without this the match and the flight loop both keep running behind
+                // whatever is on screen.
+                MatchView(format: Self.startFormat, active: tab == 0)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
-                PitchView()
+                PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
                 FlightView()
                     .tabItem { Label("Flight", systemImage: "arrow.up.right") }.tag(2)
@@ -55,7 +96,8 @@ struct UltimateApp: App {
                 BenchView()
                     .tabItem { Label("Speed", systemImage: "gauge.with.needle") }.tag(4)
             }
-            .preferredColorScheme(.dark)
+        } else {
+            MatchView(format: Self.startFormat)
         }
     }
 }

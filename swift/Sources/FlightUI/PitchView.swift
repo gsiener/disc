@@ -49,7 +49,19 @@ public struct PitchView: View {
         }
     }
 
-    public init() {}
+    /// Whether this view is the one on screen.
+    ///
+    /// The loop below used to run unconditionally, and a `TabView` keeps every tab it has
+    /// ever shown alive — so an instrument nobody was looking at kept integrating flights
+    /// forever behind the game. It defaults to true so the macOS scope and any direct
+    /// use are unaffected.
+    private let active: Bool
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    public init(active: Bool = true) {
+        self.active = active
+    }
 
     public var body: some View {
         ZStack(alignment: .topLeading) {
@@ -66,9 +78,14 @@ public struct PitchView: View {
         .task {
             // Step the sim on a display-paced loop. The sim itself is fixed at 1/120;
             // this only decides how often we look at it.
+            //
+            // It sleeps whether or not it is stepping, so a hidden or backgrounded
+            // instrument costs one wakeup per frame and nothing else. There is no
+            // accumulator here to poison — the loop steps a fixed two ticks per pass and
+            // never reads a clock — so a resume simply carries on from where it stopped.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(16))
-                guard playing else { continue }
+                guard playing, active, scenePhase == .active else { continue }
                 if state.atRest || state.t > 12 {
                     try? await Task.sleep(for: .milliseconds(700))
                     throwIt()

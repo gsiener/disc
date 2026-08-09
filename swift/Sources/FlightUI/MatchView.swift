@@ -27,6 +27,25 @@ public struct MatchView: View {
     /// only reachable by finger is something that stops being looked at.
     private let startFormat: FieldSpec
 
+    /// Whether this view is the one on screen.
+    ///
+    /// A `TabView` builds a tab when it is first selected and then keeps it alive
+    /// forever, so an unselected match kept ticking — burning a phone's battery to
+    /// simulate a game nobody was looking at, and, worse, running the *only* match
+    /// instance ahead of wherever the player left it. The tab bar knows which tab is
+    /// showing and nothing else does, so it passes the fact down. Defaults to true for
+    /// every other caller, including the macOS scope, where there are no tabs.
+    private let active: Bool
+
+    @Environment(\.scenePhase) private var scenePhase
+
+    /// Set whenever the app stops being frontmost, and cleared only by a tap.
+    ///
+    /// Auto-resuming on return would drop a player back into a live point they last saw
+    /// half a second before a phone call — the sim would be correct and the player would
+    /// be behind it. So coming back is a paused pitch and one tap.
+    @State private var paused = false
+
     @State private var match: Engine
     @State private var drag: DragState? = nil
 
@@ -81,6 +100,29 @@ public struct MatchView: View {
     /// down by wall time in `advance`, so the shout lasts 1.5 s at any refresh rate.
     @State private var turnoverFlash: TurnoverFlash? = nil
 
+    /// Watches the same box score for the things worth *feeling* rather than reading.
+    @State private var beatWatch = BeatWatch()
+    /// What the aim assist did to the last throw, while it is still worth saying.
+    @State private var assistToast: AssistToast? = nil
+    /// The control swap being announced, while there is one.
+    @State private var handoff: Handoff? = nil
+    /// Who had control at the end of the previous tick, so a change can be noticed.
+    /// `Engine.controlled` moves silently on every catch and every turnover.
+    @State private var lastControlled = 0
+
+    /// Entity handles, looked up once when the scene is built.
+    ///
+    /// `sync` used to rebuild a `[String: Entity]` from `content.entities` on every
+    /// frame — a dictionary allocation and a full walk of the scene roots, 120 times a
+    /// second, to find nine entities that never move between roots. The scene graph is
+    /// built exactly once per format, so the handles are taken exactly once per format.
+    @State private var refs = SceneRefs()
+
+    /// Which rung of the ground mark's opacity ramp is currently on the mark. Cached so
+    /// the material is only assigned when it actually changes, which for a disc sitting
+    /// in someone's hand is never.
+    @State private var markStep = -1
+
     /// Bumped once per rendered frame purely so SwiftUI knows something happened.
     ///
     /// `Match` is a `final class` — deliberately, since passing a match around must not
@@ -103,7 +145,32 @@ public struct MatchView: View {
         var aim: Vec3d
     }
 
-    public init(format: FieldSpec = .minis) {
+    /// The handful of entities `sync` writes to every frame, held by reference.
+    ///
+    /// A class, and `@State`, because the two halves of a `RealityView` are separate
+    /// closures: `build` makes the entities and `update` moves them, and there is no
+    /// value type that can carry a handle from one to the other without SwiftUI copying
+    /// it. Populated in `build` — including on a rebuild, when the format changes and
+    /// every field is overwritten with the new scene's entities.
+    @MainActor
+    final class SceneRefs {
+        var players: Entity?
+        var rings: Entity?
+        var targets: Entity?
+        var chevron: Entity?
+        var disc: Entity?
+        var mark: ModelEntity?
+        var post: Entity?
+        var trail: Entity?
+        var arrow: Entity?
+        var preview: Entity?
+        var pulse: ModelEntity?
+        var camera: PerspectiveCamera?
+        var focus: Entity?
+    }
+
+    public init(format: FieldSpec = .minis, active: Bool = true) {
+        self.active = active
         startFormat = format
         let s = Self.freshSeed()
         _seed = State(initialValue: s)
@@ -139,7 +206,16 @@ public struct MatchView: View {
                     advance(to: now)
                 }
         }
+        // Leaving the foreground pauses the match. Note what this does *not* do: resume
+        // it. See `paused`.
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { paused = true }
+        }
     }
+
+    /// Whether the simulation should be advancing at all: the tab is showing, the app is
+    /// frontmost, and nobody has paused it.
+    private var running: Bool { active && scenePhase == .active && !paused }
 
     private var matchContent: some View {
         GeometryReader { geo in
@@ -166,6 +242,7 @@ public struct MatchView: View {
                 scoreboard
                 if let d = drag { aimOverlay(d, in: geo.size) }
                 callout
+                assistReadout
 
                 // Full time. Drawn over everything, including the callouts — once the
                 // game is over the only interesting fact left is the result, and the
@@ -173,6 +250,11 @@ public struct MatchView: View {
                 if match.isOver {
                     ResultOverlay(match: match) { restart(match.fieldSpec) }
                 }
+
+                // Paused. Over even the result card, because a paused game that looks
+                // live is the bug this exists to fix. It takes the taps, which is also
+                // what stops a resume gesture being read as a throw.
+                if paused && active { pausedOverlay }
             }
         }
     }
@@ -183,6 +265,23 @@ public struct MatchView: View {
     /// before a full tick's worth of wall time has accrued — so frame rate changes
     /// what you see, never what happens.
     private func advance(to now: Date) {
+        // Paused, backgrounded, or on a tab nobody is looking at.
+        //
+        // The accumulator is emptied and the frame stamp is *dropped* rather than kept.
+        // Keeping it would mean the first frame after a resume measures the whole spell
+        // away — thirty seconds in someone's pocket — and the clamp on the accumulator
+        // would still hand the sim its full 0.25 s of catch-up, i.e. thirty ticks of
+        // game the player never saw, fired off in one frame. Dropping the stamp means
+        // the first frame back measures nothing at all and the second measures one
+        // frame, which is exactly the truth. Rendering still happens, so a paused pitch
+        // is a picture rather than a black screen.
+        guard running else {
+            lastFrame = nil
+            accumulator = 0
+            frame &+= 1
+            return
+        }
+
         defer {
             lastFrame = now
             // The redraw subscription: `sync` reads this, so bumping it once per frame
@@ -211,15 +310,44 @@ public struct MatchView: View {
             recordTrail()
             // At most one turnover fits in a tick, so checking per tick — rather than
             // per frame — means a catch-up burst cannot swallow one.
-            if let flash = turnoverWatch.check(match) { turnoverFlash = flash }
+            if let flash = turnoverWatch.check(match) {
+                turnoverFlash = flash
+                Feel.play(beat(for: flash))
+            }
+            for b in beatWatch.check(match) { Feel.play(b) }
+            // Control moves on catches and on turnovers, both of which happen inside a
+            // tick, so this is checked where they happen rather than once a frame.
+            if match.controlled != lastControlled {
+                lastControlled = match.controlled
+                handoff = Handoff(to: match.controlled, timeLeft: Handoff.duration)
+            }
         }
 
-        // The callout clock runs on wall time, outside the simulation, like everything
+        // The callout clocks run on wall time, outside the simulation, like everything
         // else that is display and not physics.
         if var flash = turnoverFlash {
             flash.timeLeft -= frameDt
             turnoverFlash = flash.timeLeft > 0 ? flash : nil
         }
+        if var toast = assistToast {
+            toast.timeLeft -= frameDt
+            assistToast = toast.timeLeft > 0 ? toast : nil
+        }
+        if var h = handoff {
+            h.timeLeft -= frameDt
+            handoff = h.timeLeft > 0 ? h : nil
+        }
+    }
+
+    /// What a turnover should feel like.
+    ///
+    /// The callout already worked out what happened and who gained; this only has to
+    /// pick the tap. A drop is deliberately silent either way — see `Feel.Beat.drop` —
+    /// and a D we won is the one event in the game allowed the heavy tap.
+    private func beat(for flash: TurnoverFlash) -> Feel.Beat {
+        if flash.text == "DROPPED!" { return .drop }
+        if flash.good, flash.text == "BLOCKED!" || flash.text == "INTERCEPTED!" { return .block }
+        return .turnover
     }
 
     private func recordTrail() {
@@ -245,10 +373,22 @@ public struct MatchView: View {
                 guard match.holder != nil else { return }
                 drag = interpret(from: g.startLocation, to: g.location, in: size)
             }
-            .onEnded { g in
+            .onEnded { _ in
                 guard match.holder != nil, let d = drag else { return }
-                match.humanRelease(d.type, aim: d.aim, power: d.power, loft: d.loft)
+                let thrown = match.humanRelease(
+                    d.type, aim: d.aim, power: d.power, loft: d.loft)
                 drag = nil
+                guard thrown else { return }
+                Feel.play(.release)
+                // Read after the release, not before: `humanRelease` is what runs the
+                // cone select and the assist, and `selectedReceiver` and `lastAssist`
+                // are its answer. Asking the preview instead would report what the drag
+                // meant a frame ago rather than what the throw actually did.
+                if let assist = match.lastAssist {
+                    let slot = match.selectedReceiver
+                        .flatMap { id in match.players.firstIndex { $0.id == id } }
+                    assistToast = AssistToast.make(assist, jersey: slot.map(jersey))
+                }
             }
     }
 
@@ -290,37 +430,46 @@ public struct MatchView: View {
         content.add(players)
         content.add(rings)
         content.add(targets)
+        refs.players = players
+        refs.rings = rings
+        refs.targets = targets
 
         let chevron = PitchScene.chevron()
-        chevron.name = "chevron"
         content.add(chevron)
+        refs.chevron = chevron
 
         let disc = PitchScene.disc()
-        disc.name = "disc"
         content.add(disc)
+        refs.disc = disc
 
         let mark = PitchScene.groundMark()
-        mark.name = "discMark"
         content.add(mark)
+        refs.mark = mark
+        markStep = -1
 
         let post = PitchScene.altitudePost()
-        post.name = "post"
         post.isEnabled = false
         content.add(post)
+        refs.post = post
 
         let trailRoot = PitchScene.trail()
-        trailRoot.name = "trail"
         content.add(trailRoot)
+        refs.trail = trailRoot
 
         let arrow = PitchScene.aimArrow()
-        arrow.name = "aim"
         arrow.isEnabled = false
         content.add(arrow)
+        refs.arrow = arrow
 
         let preview = Self.previewBracket()
-        preview.name = "preview"
         preview.isEnabled = false
         content.add(preview)
+        refs.preview = preview
+
+        let pulse = PitchScene.handoffPulse()
+        pulse.isEnabled = false
+        content.add(pulse)
+        refs.pulse = pulse
 
         for light in PitchScene.lights(f) { content.add(light) }
 
@@ -334,18 +483,18 @@ public struct MatchView: View {
         // over to grass nobody plays on. 38 was better still for the pitch and pushed the
         // horizon off the top, which threw away the sky; 44 keeps both.
         camera.camera.fieldOfViewInDegrees = 44
-        camera.name = "camera"
         content.add(camera)
+        refs.camera = camera
 
         // The eased look-at point, parked in the scene graph rather than in `@State`.
         // Rebuilding the scene has to reset the camera's easing along with everything
         // else, and scene-graph state resets for free; view state does not.
         let focus = Entity()
-        focus.name = "camFocus"
         let want = cameraTarget()
         focus.position = want.at
         camera.look(at: want.at, from: want.from, relativeTo: nil)
         content.add(focus)
+        refs.focus = focus
     }
 
     /// Squad numbers. Arbitrary, but stable and not sequential, because 1-2-3-4-5-6 reads
@@ -440,16 +589,17 @@ public struct MatchView: View {
             }
     }
 
+    /// Move everything the simulation moved.
+    ///
+    /// The entity handles come from `refs`, taken when the scene was built. They used to
+    /// come from a dictionary rebuilt out of `content.entities` on every frame; the
+    /// scene has one root per named thing and those roots are never replaced except by
+    /// a full rebuild, so the dictionary was an allocation and a scene walk per frame to
+    /// learn something that had not changed since launch.
     private func sync(_ content: RealityViewCameraContent) {
-        let named = Dictionary(
-            content.entities.compactMap { $0.name.isEmpty ? nil : ($0.name, $0) },
-            uniquingKeysWith: { a, _ in a })
-
         let receiver = incomingReceiver
 
-        if let players = named["players"], let rings = named["rings"],
-            let targets = named["targets"]
-        {
+        if let players = refs.players, let rings = refs.rings, let targets = refs.targets {
             for (i, p) in match.players.enumerated() where i < players.children.count {
                 let body = players.children[i]
                 body.position = [Float(p.pos.x), 0, Float(p.pos.z)]
@@ -481,7 +631,7 @@ public struct MatchView: View {
             }
         }
 
-        if let chevron = named["chevron"], match.controlled < match.players.count {
+        if let chevron = refs.chevron, match.controlled < match.players.count {
             let p = match.players[match.controlled]
             // A slow bob, so it is findable by movement as well as by colour. Phased by
             // wall time (advanced in `advance`), not by frame count, so it bobs at the
@@ -490,7 +640,7 @@ public struct MatchView: View {
             chevron.position = [Float(p.pos.x), Float(2.28 + bob), Float(p.pos.z)]
         }
 
-        if let disc = named["disc"] {
+        if let disc = refs.disc {
             let d = match.disc.state
             // A held disc sits at the holder's own position, which puts it inside their
             // torso and therefore invisible — you could not tell who had it. Offset it to
@@ -514,13 +664,38 @@ public struct MatchView: View {
             disc.orientation = sim * simd_quatf(angle: .pi / 2, axis: [1, 0, 0])
         }
 
-        if let mark = named["discMark"] as? ModelEntity {
+        if let mark = refs.mark {
             mark.position = [Float(match.disc.state.pos.x), 0.024, Float(match.disc.state.pos.z)]
-            let alpha = Swift.max(0.06, 0.4 - Float(match.disc.state.pos.y) * 0.03)
-            mark.model?.materials = [PitchScene.groundMarkMaterial(alpha)]
+            let alpha = Swift.max(
+                PitchScene.groundMarkFaintest,
+                PitchScene.groundMarkDarkest - Float(match.disc.state.pos.y) * 0.03)
+            // A rung off the pre-baked ramp, and only when the rung changed. This line
+            // used to allocate a fresh `UnlitMaterial` every frame — including the long
+            // stretches where the disc is in somebody's hand and the number it encodes
+            // has not moved at all.
+            let step = PitchScene.groundMarkStep(alpha)
+            if step != markStep {
+                markStep = step
+                mark.model?.materials = [PitchScene.groundMarkRamp[step]]
+            }
         }
 
-        if let post = named["post"] {
+        // The handoff pulse: one expanding ring on whoever just took control. Position
+        // is re-read every frame rather than frozen at the swap, because in the third of
+        // a second this lasts the player is running.
+        if let pulse = refs.pulse {
+            if let h = handoff, h.to < match.players.count {
+                let p = match.players[h.to]
+                pulse.isEnabled = true
+                pulse.position = [Float(p.pos.x), 0.02, Float(p.pos.z)]
+                pulse.scale = .init(repeating: Float(0.7 + 2.3 * h.progress))
+                pulse.model?.materials = [PitchScene.handoffRamp[PitchScene.handoffStep(h.progress)]]
+            } else {
+                pulse.isEnabled = false
+            }
+        }
+
+        if let post = refs.post {
             let inFlight = match.discInFlight
             let h = Float(match.disc.state.pos.y)
             post.isEnabled = inFlight && h > 0.6
@@ -528,7 +703,7 @@ public struct MatchView: View {
             post.scale = [1, Swift.max(h, 0.001), 1]
         }
 
-        if let trailRoot = named["trail"] {
+        if let trailRoot = refs.trail {
             // Slot 0 holds the oldest sample and has the faintest material, so the trail
             // is filled from the end of the array backwards.
             let n = trailRoot.children.count
@@ -543,7 +718,7 @@ public struct MatchView: View {
             }
         }
 
-        if let arrow = named["aim"] {
+        if let arrow = refs.arrow {
             if let d = drag, let h = match.holder {
                 let p = match.players[h]
                 // Roughly how far this power carries. An approximation on purpose — the
@@ -570,7 +745,7 @@ public struct MatchView: View {
         // also the only time the disc is held — so this and the in-flight target ring
         // can never draw at once: the release that starts the flight is the same event
         // that ends the drag and clears this.
-        if let bracket = named["preview"] {
+        if let bracket = refs.preview {
             if let r = previewedReceiver, let p = match.players.first(where: { $0.id == r }) {
                 bracket.isEnabled = true
                 bracket.position = [Float(p.pos.x), 0.026, Float(p.pos.z)]
@@ -585,7 +760,7 @@ public struct MatchView: View {
             }
         }
 
-        if let cam = named["camera"] as? PerspectiveCamera, let focus = named["camFocus"] {
+        if let cam = refs.camera, let focus = refs.focus {
             let want = cameraTarget()
             var from = cam.position
             var at = focus.position
@@ -624,6 +799,14 @@ public struct MatchView: View {
         accumulator = 0
         turnoverWatch = TurnoverWatch()
         turnoverFlash = nil
+        beatWatch = BeatWatch()
+        assistToast = nil
+        handoff = nil
+        lastControlled = match.controlled
+        markStep = -1
+        // A rematch is a resume: whatever paused the old match has been dealt with by
+        // the time somebody taps a button on the result card.
+        paused = false
     }
 
     // MARK: hud
@@ -651,6 +834,8 @@ public struct MatchView: View {
             Text("—").foregroundStyle(.white.opacity(0.35))
             Text("\(match.score[1]) THEM")
                 .foregroundStyle(Color(red: 1, green: 0.48, blue: 0.42))
+
+            windIndicator
 
             Spacer()
 
@@ -704,6 +889,84 @@ public struct MatchView: View {
         )
         .padding(.horizontal, 16)
         .padding(.top, 12)
+    }
+
+    /// Which way the wind is blowing, and how hard.
+    ///
+    /// Every match draws its own wind and every huck is bent by it, and until this it was
+    /// shown nowhere at all — so a throw that faded out of a receiver's hands read as the
+    /// flight model being capricious. It is a small thing on the scoreboard rather than a
+    /// banner because it is a standing condition, not an event: you want to be able to
+    /// find it, not to be told it.
+    ///
+    /// The arrow is oriented in the camera's frame, not the world's — see `WindReadout`
+    /// for the derivation. An arrow pointing up the screen means the wind is going the
+    /// way you are attacking; pointing down means you are throwing into it.
+    @ViewBuilder private var windIndicator: some View {
+        let speed = WindReadout.speed(match.wind)
+        // Under a tenth of a metre per second is not weather, and drawing an arrow for it
+        // would be a direction the player could act on that does not exist.
+        if speed > 0.1 {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 11, weight: .black))
+                    .rotationEffect(
+                        WindReadout.bearing(match.wind, attackDir: match.attackDirection(of: 0)))
+                Text(String(format: "%.1f", speed))
+            }
+            .font(.system(size: 12, design: .monospaced).bold())
+            .foregroundStyle(.white.opacity(0.55))
+            .padding(.leading, 4)
+            .accessibilityLabel("wind \(String(format: "%.1f", speed)) metres per second")
+        }
+    }
+
+    /// What the aim assist did, for about as long as it takes to see the disc leave.
+    ///
+    /// Deliberately not in the middle of the screen: the goal and turnover callouts live
+    /// there, and this fires on *every* throw. It sits under the scoreboard, on the same
+    /// plate treatment, small — it is a read-out you learn to glance at, not a shout.
+    @ViewBuilder private var assistReadout: some View {
+        if let toast = assistToast {
+            VStack(spacing: 1) {
+                Text(toast.title)
+                    .font(.system(size: 15, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(toast.color)
+                Text(toast.detail)
+                    .font(.system(size: 11, design: .monospaced).bold())
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(.black.opacity(0.5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(.white.opacity(0.10), lineWidth: 1)))
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 62)
+            .allowsHitTesting(false)
+            .transition(.opacity)
+        }
+    }
+
+    /// The paused state. One tap resumes, and until it comes the accumulator is not fed —
+    /// see `advance`.
+    private var pausedOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.55)
+            VStack(spacing: 6) {
+                Text("PAUSED")
+                    .font(.system(size: 26, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("TAP TO RESUME")
+                    .font(.system(size: 13, design: .monospaced).bold())
+                    .foregroundStyle(.orange)
+            }
+        }
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .onTapGesture { paused = false }
     }
 
     /// The two things worth interrupting the pitch for: a point, and the turnover that

@@ -479,16 +479,70 @@ enum PitchScene {
         return root
     }
 
-    /// The marker's material at a given strength. Rebuilt every frame by the view,
-    /// because how dark it is *is* the altitude readout.
+    /// The marker's material at a given strength.
+    ///
+    /// Kept for `PitchView`, which draws one disc and can afford one material. The match
+    /// view goes through `groundMarkRamp` instead — see below.
     static func groundMarkMaterial(_ opacity: Float) -> UnlitMaterial {
         unlit(Palette.rgb(0, 0, 0), opacity: opacity)
+    }
+
+    /// Darkest and lightest the ground mark is allowed to be. How dark it is *is* the
+    /// altitude readout, so the range is fixed here and the view only picks a rung.
+    static let groundMarkFaintest: Float = 0.06
+    static let groundMarkDarkest: Float = 0.40
+
+    /// The ground mark's opacity, pre-baked into rungs.
+    ///
+    /// This used to be one freshly allocated `UnlitMaterial` per frame — a `Material` is
+    /// not a value you hand to RealityKit for free, and at 120 Hz that is 120 of them a
+    /// second thrown away to express a number that only ever takes about a dozen visibly
+    /// distinct values. Sixteen rungs is finer than the eye can resolve on a shadow under
+    /// a disc, and the whole ramp is built once.
+    static let groundMarkRamp: [UnlitMaterial] = (0..<16).map { i in
+        let t = Float(i) / 15
+        return unlit(
+            Palette.rgb(0, 0, 0),
+            opacity: groundMarkFaintest + (groundMarkDarkest - groundMarkFaintest) * t)
+    }
+
+    /// Which rung of `groundMarkRamp` an opacity lands on.
+    static func groundMarkStep(_ opacity: Float) -> Int {
+        let t = (opacity - groundMarkFaintest) / (groundMarkDarkest - groundMarkFaintest)
+        return Swift.min(groundMarkRamp.count - 1, Swift.max(0, Int((t * 15).rounded())))
     }
 
     static func groundMark() -> ModelEntity {
         ModelEntity(
             mesh: .generateCylinder(height: 0.01, radius: Float(DiscBody.standard.radius * 1.1)),
-            materials: [groundMarkMaterial(0.35)])
+            materials: [groundMarkRamp[groundMarkStep(0.35)]])
+    }
+
+    /// The ring that expands out of whoever just took control.
+    ///
+    /// A filled disc rather than the control ring's dashes, because it is scaled to three
+    /// times its size in a third of a second and dashes at that speed read as debris. It
+    /// is one `ModelEntity` on purpose: the fade is a material swap per frame, and one
+    /// swap is affordable where twelve would not be.
+    static func handoffPulse() -> ModelEntity {
+        ModelEntity(
+            mesh: .generateCylinder(height: 0.012, radius: 1),
+            materials: [handoffRamp[handoffRamp.count - 1]])
+    }
+
+    /// The handoff pulse fading out, pre-baked for the same reason the ground mark's is.
+    /// Slot 0 is gone, the last slot is the flash at the moment of the swap.
+    static let handoffRamp: [UnlitMaterial] = (0..<12).map { i in
+        unlit(Palette.control, opacity: Float(i) / 11 * 0.5)
+    }
+
+    /// Which rung of `handoffRamp` a 0…1 progress through the pulse lands on. Squared, so
+    /// the ring is bright at the moment control moves and spends most of its life
+    /// vanishing — a linear fade reads as a ring that hangs around.
+    static func handoffStep(_ progress: Double) -> Int {
+        let fade = Swift.max(0, 1 - progress)
+        let t = Float(fade * fade)
+        return Swift.min(handoffRamp.count - 1, Swift.max(0, Int((t * 11).rounded())))
     }
 
     /// A one-metre post that gets scaled to the disc's height every frame.
