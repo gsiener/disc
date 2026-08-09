@@ -220,6 +220,59 @@ function pullOobScript(): Action[] {
   ];
 }
 
+/**
+ * A STRIP, and the pass it nullifies.
+ *
+ * The only call type with no scripted coverage until now, and the one whose remedy
+ * touches the box score twice: it hands the disc back AND voids the throw attempt,
+ * without which `attempts === completions + throwaways + throwsDropped` breaks.
+ * Both resolutions are scripted — uncontested (the receiver keeps it) and, on the
+ * next possession, contested (back to the thrower).
+ */
+function stripScript(): Action[] {
+  return [
+    { op: 'startGame' },
+    { op: 'pull', puller: A(0), from: [0, 1, -FIELD.END_LINE], vel: [0, 8, 20] },
+    { op: 'step', dt: 2.0 },
+    { op: 'pullCaught', player: H(0), at: [0, 1, -10] },
+    { op: 'check' },
+    { op: 'step', dt: 1.0 },
+
+    // A throw in the air, and a defender who went through the man to get to it.
+    { op: 'release', player: H(0), pos: [0, 1, -10], vel: [0, 2, 14] },
+    { op: 'makeCall', type: 'strip', caller: H(1), against: A(2), at: [0, 1, 2] },
+    { op: 'resolveCall', contested: false, receiver: H(1) },
+    { op: 'check' },
+    { op: 'step', dt: 1.0 },
+
+    // The same call, contested: the disc goes back to the thrower instead.
+    { op: 'release', player: H(1), pos: [0, 1, 2], vel: [0, 2, 10] },
+    { op: 'makeCall', type: 'strip', caller: H(2), against: A(3), at: [0, 1, 12] },
+    { op: 'resolveCall', contested: true, receiver: H(2) },
+    { op: 'check' },
+    { op: 'step', dt: 1.0 },
+  ];
+}
+
+/**
+ * THE MATCH CLOCK. Both caps land off `GameState.clock` alone, so the whole format
+ * is a script of `step`s with nothing else in it: soft at 4 s, hard at 7 s.
+ */
+function timedCapScript(): Action[] {
+  return [
+    { op: 'startGame' },
+    { op: 'step', dt: 1.0 },
+    { op: 'step', dt: 1.0 },
+    { op: 'step', dt: 1.0 },
+    // Crosses the soft cap inside this step.
+    { op: 'step', dt: 1.5 },
+    { op: 'step', dt: 1.0 },
+    // …and the hard cap inside this one.
+    { op: 'step', dt: 1.5 },
+    { op: 'step', dt: 1.0 },
+  ];
+}
+
 /** Caps and halftime — the game-length machinery. */
 function capScript(): Action[] {
   return [
@@ -288,12 +341,17 @@ function rejectionScript(): Action[] {
  * way available — as properties of the geometry itself, in `GameStateTests.minis()`.
  */
 
-function runScenario(label: string, format: 'sevens' | 'minis', actions: Action[]) {
+/** Per-scenario rules the Swift replay must apply too. Both default to "no clock". */
+interface ScenarioRules { softCapAt?: number; hardCapAt?: number }
+
+function runScenario(
+  label: string, format: 'sevens' | 'minis', actions: Action[], rules: ScenarioRules = {},
+) {
   const events: { name: string }[] = [];
   // `emitPhysicsEvents` on, because the physics events are exactly the ones the
   // renderer consumes and therefore the ones a rename would break silently.
   const g = new GameState({
-    rules: { emitPhysicsEvents: true },
+    rules: { emitPhysicsEvents: true, ...rules },
     emit: (evt: string) => {
       events.push({ name: evt });
     },
@@ -381,7 +439,12 @@ function runScenario(label: string, format: 'sevens' | 'minis', actions: Action[
     };
   });
 
-  return { label, format, actions, steps, teams, logLines: g.getLog().length };
+  return {
+    label, format,
+    softCapAt: rules.softCapAt ?? 0,
+    hardCapAt: rules.hardCapAt ?? 0,
+    actions, steps, teams, logLines: g.getLog().length,
+  };
 }
 
 export function gameStateGoldens() {
@@ -398,6 +461,9 @@ export function gameStateGoldens() {
       runScenario('the stall count to expiry', 'sevens', stallScript()),
       runScenario('calls and timeouts', 'sevens', callScript()),
       runScenario('a pull out of bounds', 'sevens', pullOobScript()),
+      runScenario('a strip, upheld and contested', 'sevens', stripScript()),
+      runScenario('the match clock brings both caps', 'sevens', timedCapScript(),
+        { softCapAt: 4, hardCapAt: 7 }),
       runScenario('soft cap, hard cap, halftime', 'sevens', capScript()),
       runScenario('actions that must be refused', 'sevens', rejectionScript()),
     ],

@@ -96,6 +96,10 @@ enum GameStateTests {
     struct Scenario: Decodable {
         let label: String
         let format: String
+        /// Per-scenario match clock. 0 for both is "no clock", which is every scenario
+        /// but the timed one.
+        let softCapAt: Double
+        let hardCapAt: Double
         let actions: [Action]
         let steps: [Step]
         let teams: [TeamTotals]
@@ -135,7 +139,11 @@ enum GameStateTests {
         var opts = GameStateOptions()
         // Physics events on, because those are precisely the ones a renderer consumes
         // and therefore the ones a rename would break silently.
-        opts.rules = { $0.emitPhysicsEvents = true }
+        opts.rules = {
+            $0.emitPhysicsEvents = true
+            $0.softCapAt = s.softCapAt
+            $0.hardCapAt = s.hardCapAt
+        }
         opts.emit = { events.append($0.name) }
         let game = GameState(opts)
 

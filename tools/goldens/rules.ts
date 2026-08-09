@@ -22,6 +22,19 @@ import {
   doubleTeamOffender,
   markerStatus,
   isTravel,
+  contactBetween,
+  markingFoulImpact,
+  pickIsWorthCalling,
+  obstructionOf,
+  catchContactCall,
+  callDoubt,
+  callContested,
+  MARK_FOUL_IMPACT,
+  PICK_SPEED_LOSS,
+  PICK_GAP_GAIN,
+  CATCH_FOUL_IMPACT,
+  CATCH_CONTACT_WINDOW,
+  CALL_SEVERITY_SPAN,
   effectiveTarget,
   isGameOver,
   flipDir,
@@ -417,6 +430,117 @@ export function rulesGoldens() {
     want: isGameOver(c.score, c.target, c.rules, c.cap),
   }));
 
+  /* ------------------------------------------------------- contact / calls */
+  /**
+   * The self-officiated calls. Every one of these is compare-and-arithmetic over
+   * two bodies, so the port is bit-exact and the cases are drawn from both sides
+   * of every threshold: exactly touching, exactly at the impact floor, the
+   * aggressor on either side, and a defender who is and is not playing the disc.
+   */
+  const body = (id: number, x: number, z: number, vx: number, vz: number, radius = 0.32) => ({
+    id, pos: p(x, 0, z), vel: p(vx, 0, vz), radius,
+  });
+
+  const contactCases = [
+    // Apart, closing hard: not touching however fast they are moving.
+    { a: body(1, 0, 0, 0, 4), b: body(2, 0, 3, 0, 0) },
+    // Exactly at the combined radii — the boundary itself, which must be "apart".
+    { a: body(1, 0, 0, 0, 0), b: body(2, 0.64, 0, 0, 0) },
+    // A hair inside it.
+    { a: body(1, 0, 0, 0, 0), b: body(2, 0.6399, 0, 0, 0) },
+    // A runs into a stationary B: the impact is A's speed and A is the aggressor.
+    { a: body(1, 0, 0, 0, 2.5), b: body(2, 0, 0.5, 0, 0) },
+    // B runs into a stationary A: the mirror, and the aggressor flips.
+    { a: body(1, 0, 0, 0, 0), b: body(2, 0, 0.5, 0, -2.5) },
+    // Both running the same way: nobody is closing, the impact is negative.
+    { a: body(1, 0, 0, 0, 3), b: body(2, 0, 0.5, 0, 3) },
+    // Exactly coincident — the degenerate branch.
+    { a: body(1, 4, 0, 1, 1), b: body(2, 4, 0, -1, -1) },
+    // Diagonal approach, so the normal is not axis aligned.
+    { a: body(1, 0, 0, 1.5, 1.5), b: body(2, 0.3, 0.3, -1.1, -0.7) },
+  ].map(({ a, b }) => ({ a, b, want: contactBetween(a, b) }));
+
+  const markingFoulCases = [
+    // Marker standing on a stationary thrower but not moving: contact, no call.
+    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 0) },
+    // Exactly at the impact floor.
+    { marker: body(1, 0, 0.4, 0, -MARK_FOUL_IMPACT), thrower: body(2, 0, 0, 0, 0) },
+    // A hair under it.
+    { marker: body(1, 0, 0.4, 0, -(MARK_FOUL_IMPACT - 1e-9)), thrower: body(2, 0, 0, 0, 0) },
+    // Well over it.
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0) },
+    // The thrower is the one closing: not the marker's foul.
+    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 2.6) },
+    // Out of contact entirely.
+    { marker: body(1, 0, 2.1, 0, -3), thrower: body(2, 0, 0, 0, 0) },
+  ].map(({ marker, thrower }) => ({
+    marker, thrower, want: markingFoulImpact(marker, thrower),
+  }));
+
+  const pickWorthCases = [
+    { lost: PICK_SPEED_LOSS, gained: PICK_GAP_GAIN },
+    { lost: PICK_SPEED_LOSS - 1e-9, gained: PICK_GAP_GAIN },
+    { lost: PICK_SPEED_LOSS, gained: PICK_GAP_GAIN - 1e-9 },
+    { lost: 3, gained: 0 },
+    { lost: 0, gained: 3 },
+    { lost: -1, gained: -1 },
+  ].map(({ lost, gained }) => ({ lost, gained, want: pickIsWorthCalling(lost, gained) }));
+
+  const obstructionOffence = [
+    body(10, 0, 0.4, 0, 0),   // the thrower, standing on the defender
+    body(11, 0.4, 0, 0, 0),   // the defender's own matchup, also on him
+    body(12, 0, -0.4, 0, 0),  // a third body, and the only legal offender
+    body(13, 9, 9, 0, 0),
+  ];
+  const obstructionCases = [
+    { thrower: 10, matchup: 11 },
+    { thrower: null as number | null, matchup: 11 },
+    { thrower: 10, matchup: null as number | null },
+    { thrower: 12, matchup: 11 },
+    { thrower: 10, matchup: 12 },
+  ].map(({ thrower, matchup }) => ({
+    defender: body(1, 0, 0, 0, 0),
+    offence: obstructionOffence,
+    thrower, matchup,
+    want: obstructionOf(body(1, 0, 0, 0, 0), obstructionOffence, thrower, matchup),
+  }));
+
+  const catchContactCases = [
+    // Playing the disc, hard contact, no possession yet: a receiving foul.
+    { impact: 2.4, played: true, established: false },
+    // Not playing the disc, and the receiver had it: a strip.
+    { impact: 2.4, played: false, established: true },
+    // Not playing the disc, no possession: still a foul.
+    { impact: 2.4, played: false, established: false },
+    // Playing the disc after possession: a foul, not a strip.
+    { impact: 2.4, played: true, established: true },
+    // Exactly at the impact floor.
+    { impact: CATCH_FOUL_IMPACT, played: false, established: true },
+    // A hair under it: nothing.
+    { impact: CATCH_FOUL_IMPACT - 1e-9, played: false, established: true },
+    // Nothing at all.
+    { impact: 0, played: false, established: true },
+  ].map(({ impact, played, established }) => ({
+    impact, played, established,
+    want: catchContactCall(impact, played, established),
+  }));
+
+  const callDoubtCases = [
+    { impact: 0.8, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 72 },
+    { impact: 0.8, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 28 },
+    { impact: 0.8, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 99 },
+    { impact: 4.0, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 28 },
+    { impact: 1.3, threshold: 1.0, playedDisc: true, plainToSee: false, decision: 73 },
+    { impact: 4.0, threshold: 1.0, playedDisc: true, plainToSee: false, decision: 66 },
+    { impact: 0, threshold: 0, playedDisc: false, plainToSee: true, decision: 63 },
+    { impact: 0, threshold: 0, playedDisc: false, plainToSee: true, decision: 99 },
+    // Severity saturates exactly at threshold + CALL_SEVERITY_SPAN and no further.
+    { impact: 0.8 + CALL_SEVERITY_SPAN, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 72 },
+    { impact: 40, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 72 },
+    // Below the threshold clamps to zero severity rather than going negative.
+    { impact: 0, threshold: 0.8, playedDisc: false, plainToSee: false, decision: 72 },
+  ].map((s) => ({ ...s, doubt: callDoubt(s), contested: callContested(s) }));
+
   /* ------------------------------------------------------------------ flipDir */
   const flipDirCases = ([1, -1] as Dir[]).map((d) => ({ d, want: flipDir(d) }));
 
@@ -468,6 +592,19 @@ export function rulesGoldens() {
     doubleTeamOffenderCases: doubleTeamOffenderOut,
     markerStatusCases: markerStatusOut,
     isTravelCases,
+
+    markFoulImpact: MARK_FOUL_IMPACT,
+    pickSpeedLoss: PICK_SPEED_LOSS,
+    pickGapGain: PICK_GAP_GAIN,
+    catchFoulImpact: CATCH_FOUL_IMPACT,
+    catchContactWindow: CATCH_CONTACT_WINDOW,
+    callSeveritySpan: CALL_SEVERITY_SPAN,
+    contactCases,
+    markingFoulCases,
+    pickWorthCases,
+    obstructionCases,
+    catchContactCases,
+    callDoubtCases,
 
     effectiveTargetCases: effectiveTargetOut,
     isGameOverCases: isGameOverOut,

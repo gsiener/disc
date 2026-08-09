@@ -65,6 +65,56 @@ enum RulesTests {
     struct IsGameOverCase: Decodable {
         let score: [Int]; let target: Int; let rules: RuleSet; let cap: String; let want: Bool
     }
+    /// A body as `Rules.ContactBody` needs it, straight out of the fixture.
+    struct BodyDTO: Decodable, ContactBody {
+        let id: Int
+        private let posDTO: PointDTO
+        private let velDTO: PointDTO
+        let radius: Double
+        var pos: Vec3d { posDTO.vec }
+        var vel: Vec3d { velDTO.vec }
+        enum CodingKeys: String, CodingKey {
+            case id
+            case posDTO = "pos"
+            case velDTO = "vel"
+            case radius
+        }
+    }
+    struct ContactWant: Decodable {
+        let dist: Double
+        let touching: Bool
+        let impact: Double
+        let aggressorId: Int
+    }
+    struct ContactCase: Decodable { let a: BodyDTO; let b: BodyDTO; let want: ContactWant }
+    struct MarkingFoulCase: Decodable {
+        let marker: BodyDTO; let thrower: BodyDTO; let want: Double
+    }
+    struct PickWorthCase: Decodable { let lost: Double; let gained: Double; let want: Bool }
+    struct ObstructionCase: Decodable {
+        let defender: BodyDTO
+        let offence: [BodyDTO]
+        let thrower: Int?
+        let matchup: Int?
+        let want: Int?
+    }
+    struct CatchContactWant: Decodable { let kind: String; let impact: Double }
+    struct CatchContactCase: Decodable {
+        let impact: Double
+        let played: Bool
+        let established: Bool
+        let want: CatchContactWant?
+    }
+    struct CallDoubtCase: Decodable {
+        let impact: Double
+        let threshold: Double
+        let playedDisc: Bool
+        let plainToSee: Bool
+        let decision: Double
+        let doubt: Double
+        let contested: Bool
+    }
+
     struct FlipDirCase: Decodable { let d: Int; let want: Int }
     struct OtherTeamCase: Decodable { let t: Int; let want: Int }
 
@@ -96,6 +146,19 @@ enum RulesTests {
         let doubleTeamOffenderCases: [DoubleTeamOffenderCase]
         let markerStatusCases: [MarkerStatusCase]
         let isTravelCases: [IsTravelCase]
+
+        let markFoulImpact: Double
+        let pickSpeedLoss: Double
+        let pickGapGain: Double
+        let catchFoulImpact: Double
+        let catchContactWindow: Double
+        let callSeveritySpan: Double
+        let contactCases: [ContactCase]
+        let markingFoulCases: [MarkingFoulCase]
+        let pickWorthCases: [PickWorthCase]
+        let obstructionCases: [ObstructionCase]
+        let catchContactCases: [CatchContactCase]
+        let callDoubtCases: [CallDoubtCase]
 
         let effectiveTargetCases: [EffectiveTargetCase]
         let isGameOverCases: [IsGameOverCase]
@@ -190,6 +253,53 @@ enum RulesTests {
         }
         for (i, c) in g.isTravelCases.enumerated() {
             Check.eq(isTravel(c.pivot.vec, c.foot.vec, c.rules), c.want, "isTravel case \(i)")
+        }
+
+        // --- contact and the self-officiated calls
+        //
+        // Every threshold below is sampled from both sides in the fixture, and every
+        // number is compare-and-arithmetic, so all of it is asserted bit-exact.
+        Check.bitEqViaJSON(MARK_FOUL_IMPACT, g.markFoulImpact, "MARK_FOUL_IMPACT")
+        Check.bitEqViaJSON(PICK_SPEED_LOSS, g.pickSpeedLoss, "PICK_SPEED_LOSS")
+        Check.bitEqViaJSON(PICK_GAP_GAIN, g.pickGapGain, "PICK_GAP_GAIN")
+        Check.bitEqViaJSON(CATCH_FOUL_IMPACT, g.catchFoulImpact, "CATCH_FOUL_IMPACT")
+        Check.bitEqViaJSON(CATCH_CONTACT_WINDOW, g.catchContactWindow, "CATCH_CONTACT_WINDOW")
+        Check.bitEqViaJSON(CALL_SEVERITY_SPAN, g.callSeveritySpan, "CALL_SEVERITY_SPAN")
+
+        for (i, c) in g.contactCases.enumerated() {
+            let got = contactBetween(c.a, c.b)
+            Check.bitEqViaJSON(got.dist, c.want.dist, "contactBetween case \(i) dist")
+            Check.eq(got.touching, c.want.touching, "contactBetween case \(i) touching")
+            Check.bitEqViaJSON(got.impact, c.want.impact, "contactBetween case \(i) impact")
+            Check.eq(got.aggressorId, c.want.aggressorId, "contactBetween case \(i) aggressor")
+        }
+        for (i, c) in g.markingFoulCases.enumerated() {
+            Check.bitEqViaJSON(
+                markingFoulImpact(c.marker, c.thrower), c.want, "markingFoulImpact case \(i)")
+        }
+        for (i, c) in g.pickWorthCases.enumerated() {
+            Check.eq(
+                pickIsWorthCalling(lostSpeed: c.lost, gainedGap: c.gained), c.want,
+                "pickIsWorthCalling case \(i)")
+        }
+        for (i, c) in g.obstructionCases.enumerated() {
+            let got = obstructionOf(c.defender, c.offence, c.thrower, c.matchup)
+            Check.eq(got, c.want, "obstructionOf case \(i)")
+        }
+        for (i, c) in g.catchContactCases.enumerated() {
+            let got = catchContactCall(
+                impact: c.impact, defenderPlayedDisc: c.played,
+                possessionEstablished: c.established)
+            Check.eq(got?.kind.rawValue, c.want?.kind, "catchContactCall case \(i) kind")
+            Check.bitEqViaJSON(
+                got?.impact ?? 0, c.want?.impact ?? 0, "catchContactCall case \(i) impact")
+        }
+        for (i, c) in g.callDoubtCases.enumerated() {
+            let s = CallSituation(
+                impact: c.impact, threshold: c.threshold, playedDisc: c.playedDisc,
+                plainToSee: c.plainToSee, decision: c.decision)
+            Check.bitEqViaJSON(callDoubt(s), c.doubt, "callDoubt case \(i)")
+            Check.eq(callContested(s), c.contested, "callContested case \(i)")
         }
 
         for (i, c) in g.effectiveTargetCases.enumerated() {

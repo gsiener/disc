@@ -13,7 +13,10 @@ import { laneOf, markPoint, PLAY, type CutRoute, type LaneKey, type Sign } from 
 import { Locomotion, type DesiredMove, type LocoPlayer } from './Locomotion.ts';
 import { createGameState, GameState, type Phase } from './GameState.ts';
 import {
-  FIELD, brickMark, clampToField, isInBounds, type Dir, type TeamId, type Vec3,
+  FIELD, brickMark, callContested, catchContactCall, clampToField, contactBetween, isInBounds,
+  markingFoulImpact, obstructionOf, pickIsWorthCalling,
+  CATCH_CONTACT_WINDOW, CATCH_FOUL_IMPACT, MARK_FOUL_IMPACT,
+  type ContactBody, type Dir, type TeamId, type Vec3,
 } from './Rules.ts';
 import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
 import {
@@ -409,6 +412,24 @@ export class GameSystem implements System {
 
     this.loco.autoResolve = false;
     this.loco.attach(ctx as unknown as { events?: Ctx['events']; rand?: Rng; sys?: Record<string, unknown> });
+    /**
+     * THE HIT, RECORDED WHERE IT HAPPENS.
+     *
+     * `Locomotion` measures a collision's closing speed BEFORE it spends it on an
+     * impulse, and it is the only place in the game where that number exists. By
+     * the time the disc is stepped and a catch fails, the impulse has already
+     * removed the velocity that caused it: measured over three matches, every
+     * defender still inside a receiver at the instant of a drop had a residual
+     * closing speed of 0.0-0.5 m/s. A receiving foul derived from the geometry at
+     * the catch is therefore a detector that can never fire.
+     *
+     * So the contact is caught at source and kept for `CATCH_CONTACT_WINDOW`. See
+     * `policeCatch`.
+     */
+    ctx.events.on('player:contact', (p: { a: number; b: number; impact: number }) => {
+      this.noteContact(p.a, p.b, p.impact);
+      this.noteContact(p.b, p.a, p.impact);
+    });
     if (!ctx.sys['locomotion']) ctx.sys['locomotion'] = this.loco;
 
     this.discRuntime.groundAt = ground;
@@ -1873,12 +1894,17 @@ export class GameSystem implements System {
         return false;
       }
       if (roll < p * 0.55) { this.gs.catchDisc(best.id, at); this.onCaught(best); return true; }
-      if (roll < p) { this.gs.block(best.id, at); this.afterTurnoverInAir(); return true; }
+      if (roll < p) {
+        // A block through the receiver's body is a foul, not a block.
+        if (this.policeCatch(offense, at, false, best.id)) return true;
+        this.gs.block(best.id, at); this.afterTurnoverInAir(); return true;
+      }
       return false;
     }
     if (roll < p) { this.gs.catchDisc(best.id, at); this.onCaught(best); return true; }
     if (difficulty < 0.85) {
-      // Routine, and he put it down.
+      // Routine, and he put it down — unless somebody put it down for him.
+      if (phase !== 'PULL_IN_FLIGHT' && this.policeCatch(offense, at, true, best.id)) return true;
       if (phase === 'PULL_IN_FLIGHT') this.gs.pullDropped(best.id, at);
       else this.gs.drop(best.id, at);
       this.afterTurnoverInAir();
@@ -1990,6 +2016,7 @@ export class GameSystem implements System {
       && gs.phase === 'LIVE_POSSESSION' && gs.thrower === thrower.id) {
       this.callTravel(thrower, pivotFoot, markerId);
     }
+    this.policeCalls();
   }
 
   /** Set once the machine has been told where this thrower's pivot is. */
@@ -2019,10 +2046,254 @@ export class GameSystem implements System {
     if (Math.hypot(foot.x - gs.pivot.x, foot.z - gs.pivot.z) <= gs.rules.travelTolerance) return;
     if (!gs.makeCall('travel', markerId, thrower.id, { x: foot.x, y: 0, z: foot.z }).ok) return;
     gs.resolveCall(false);
+    this.callTally.travel += 1;
     thrower.loco.pos.x = gs.pivot.x;
     thrower.loco.pos.z = gs.pivot.z;
     thrower.loco.vel.set(0, 0, 0);
     this.loco.rePivot(thrower.id, gs.pivot.x, gs.pivot.z);
+  }
+
+  /* ------------------------------------------------- self-officiated calls */
+
+  /**
+   * NOBODY IS WATCHING BUT THE FOURTEEN OF THEM.
+   *
+   * Ultimate has no referee: a foul exists when the player it happened to says
+   * so, and it goes away when the player it is said about disagrees. The rules
+   * machine has always known the consequences — `makeCall` / `resolveCall`
+   * handle contested and uncontested, marking fouls, receiving fouls, picks and
+   * strips — and until now the only thing that ever spoke to it was the travel
+   * police. This is the rest of the mouth.
+   *
+   * Two of the four live here, because both are things that are true of the
+   * frame rather than of an event: the mark leaning on a thrower who has nowhere
+   * to go, and a defender running into a body that was not his to worry about.
+   * The other two — the receiving foul and the strip — belong to the instant a
+   * catch fails and are made in `policeCatch`.
+   *
+   * ONE CALL PER EPISODE. Both detectors latch: a marking foul is not called
+   * again until the two bodies come apart, and a pick is not called again until
+   * the obstruction clears. Without that the first frame of contact is followed
+   * by a hundred and nineteen more of it, and a rule that is correct becomes a
+   * game that is unplayable.
+   */
+  private policeCalls(): void {
+    const gs = this.gs;
+    if (gs.phase !== 'LIVE_POSSESSION') return;
+    const throwerId = gs.thrower;
+    if (throwerId === null) return;
+    const thrower = this.byId.get(throwerId);
+    if (!thrower) return;
+
+    const markerId = gs.marker;
+    const marker = markerId !== null ? this.byId.get(markerId) : undefined;
+
+    /**
+     * THE MARK ON A MAN WHO CANNOT STEP AWAY.
+     *
+     * The thrower is `anchored` while he holds it, so the contact resolver gives
+     * him infinite mass and the marker takes the whole positional correction —
+     * which is the right physics and, in the rules, exactly the event that is
+     * being described. A defender who has to be pushed back out of the thrower
+     * every tick has fouled him.
+     */
+    if (marker) {
+      const touching = contactBetween(marker.loco, thrower.loco).touching;
+      if (!touching) this.markFoulHeld = false;
+      else if (!this.markFoulHeld) {
+        const impact = markingFoulImpact(marker.loco, thrower.loco);
+        if (impact > 0) {
+          this.markFoulHeld = true;
+          const at = { x: thrower.loco.pos.x, y: 0, z: thrower.loco.pos.z };
+          if (gs.makeCall('foul', thrower.id, marker.id, at).ok) {
+            this.resolveWith('foul', {
+              impact, threshold: MARK_FOUL_IMPACT, playedDisc: false, plainToSee: false,
+              decision: marker.ai.attr.decision,
+            });
+            return;
+          }
+        }
+      }
+    } else {
+      this.markFoulHeld = false;
+    }
+
+    /**
+     * THE PICK, and what makes one a call rather than a collision.
+     *
+     * Bodies brush past each other two hundred times a match and none of that is
+     * a pick. What a defender actually calls is an obstruction that COST him, so
+     * both halves of the cost are measured against what he was doing at the
+     * instant it started: the speed he has lost, and the ground his matchup has
+     * gained. See `pickIsWorthCalling`.
+     *
+     * A zone defender has no matchup and cannot be picked; the mark is guarding
+     * the disc rather than chasing anyone, and is left out for the same reason.
+     */
+    const offence = this.bodiesForContact(thrower.team);
+    for (const d of this.roster) {
+      if (d.team === thrower.team) continue;
+      if (d.id === markerId) continue;
+      if (!this.loco.isAvailable(d.loco)) { this.pickWatch.delete(d.id); continue; }
+      const matchupId = this.ai[d.team].matchupOf(d.id);
+      const matchup = matchupId !== null ? this.byId.get(matchupId) : undefined;
+      if (!matchup) { this.pickWatch.delete(d.id); continue; }
+
+      const obstructor = obstructionOf(d.loco, offence, throwerId, matchupId);
+      if (obstructor === null) { this.pickWatch.delete(d.id); continue; }
+
+      const speed = Math.hypot(d.loco.vel.x, d.loco.vel.z);
+      const gap = Math.hypot(
+        d.loco.pos.x - matchup.loco.pos.x, d.loco.pos.z - matchup.loco.pos.z);
+      const w = this.pickWatch.get(d.id);
+      if (!w) { this.pickWatch.set(d.id, { speed, gap, called: false }); continue; }
+      if (w.called) continue;
+      if (!pickIsWorthCalling(w.speed - speed, gap - w.gap)) continue;
+
+      w.called = true;
+      const against = this.byId.get(obstructor);
+      if (!against) continue;
+      if (!gs.makeCall('pick', d.id, obstructor).ok) continue;
+      this.resolveWith('pick', {
+        impact: 0, threshold: 0, playedDisc: false, plainToSee: true,
+        decision: against.ai.attr.decision,
+      });
+      return;
+    }
+  }
+
+  /**
+   * CONTACT AT THE CATCH — the receiving foul and the strip.
+   *
+   * Called from `tryCatch` at the instant the contest has decided the offence
+   * does not have it, and BEFORE that outcome is reported, because a foul means
+   * the pass never happened: the machine's receiving-foul remedy puts the disc
+   * in the receiver's hands at the spot, and it can only do that while the phase
+   * is still `DISC_IN_FLIGHT`.
+   *
+   * Returns true when a call was made, in which case the caller must not report
+   * the drop or the block — there is no turnover to report.
+   */
+  private policeCatch(
+    offense: TeamId | null, at: Vec3, established: boolean, takerId: number,
+  ): boolean {
+    const gs = this.gs;
+    if (offense === null || gs.phase !== 'DISC_IN_FLIGHT') return false;
+
+    // The offensive body the disc was arriving at. A little wider than a catch,
+    // because the man who was fouled is by definition the man who did not get
+    // his hands to it.
+    let receiver: RosterEntry | null = null;
+    let bestGap = CATCH_REACH * 1.5;
+    for (const e of this.roster) {
+      if (e.team !== offense) continue;
+      const g = Math.hypot(e.loco.pos.x - at.x, e.loco.pos.z - at.z);
+      if (g < bestGap) { bestGap = g; receiver = e; }
+    }
+    if (!receiver) return false;
+
+    // Whoever hit him, and how hard, from `Locomotion`'s own measurement of the
+    // collision rather than a re-derivation off the post-impulse velocities.
+    const hit = this.lastContact.get(receiver.id);
+    if (!hit || gs.clock - hit.t > CATCH_CONTACT_WINDOW) return false;
+    const defender = this.byId.get(hit.otherId);
+    if (!defender || defender.team === offense) return false;
+
+    const act = this.actionOf.get(defender.id);
+    // A man who got a hand on it played the disc whatever his intent said he was
+    // doing — the block is the evidence, and it is his whole defence.
+    const played = defender.id === takerId
+      || act?.kind === 'bid' || act?.kind === 'jump' || act?.kind === 'catch';
+    const call = catchContactCall(hit.impact, played, established);
+    // One hit is one call.
+    this.lastContact.delete(receiver.id);
+    if (!call) return false;
+
+    if (!gs.makeCall(call.kind, receiver.id, defender.id, { x: at.x, y: 0, z: at.z }).ok) {
+      return false;
+    }
+    this.resolveWith(call.kind, {
+      impact: call.impact, threshold: CATCH_FOUL_IMPACT, playedDisc: played,
+      plainToSee: false, decision: defender.ai.attr.decision,
+    }, receiver.id);
+    // The flight is over, but it did not end in a turnover: the machine has
+    // already put the disc in a hand, so the disc follows `syncDiscOwnership`
+    // rather than `afterTurnoverInAir`'s settle onto the turf.
+    this.thrownBy = -1;
+    this.intendedReceiver = -1;
+    this.flightSettled = true;
+    this.discRuntime.markScuff(0.5);
+    this.syncDiscOwnership();
+    return true;
+  }
+
+  /**
+   * Resolve the outstanding call and put the bodies where the machine now says
+   * play restarts from.
+   *
+   * The reposition is `callTravel`'s, for `callTravel`'s reason: a stoppage that
+   * leaves the thrower two metres from his own pivot is a stoppage that hands
+   * out free yardage, and one that leaves the fouling body inside him calls the
+   * same foul again on the next tick.
+   */
+  private resolveWith(
+    kind: 'foul' | 'pick' | 'strip',
+    situation: Parameters<typeof callContested>[0],
+    receiverId?: number,
+  ): void {
+    const gs = this.gs;
+    const contested = callContested(situation);
+    gs.resolveCall(contested, receiverId !== undefined ? { receiverId } : undefined);
+    this.callTally[kind] += 1;
+    if (contested) this.callTally.contested += 1;
+    const id = gs.thrower;
+    const e = id !== null ? this.byId.get(id) : undefined;
+    if (!e) return;
+    e.loco.pos.x = gs.pivot.x;
+    e.loco.pos.z = gs.pivot.z;
+    e.loco.vel.set(0, 0, 0);
+    this.loco.rePivot(e.id, gs.pivot.x, gs.pivot.z);
+  }
+
+  /**
+   * The last hit each body took from the other team, and when. Only opposing
+   * contact is kept: running into a team-mate is a pick against nobody and a
+   * foul on nobody.
+   */
+  private lastContact = new Map<number, { otherId: number; impact: number; t: number }>();
+  private noteContact(id: number, otherId: number, impact: number): void {
+    const me = this.byId.get(id);
+    const them = this.byId.get(otherId);
+    if (!me || !them || me.team === them.team) return;
+    const prev = this.lastContact.get(id);
+    // Within one window the hardest hit is the one that decided the play.
+    if (prev && this.gs.clock - prev.t <= CATCH_CONTACT_WINDOW && prev.impact >= impact) return;
+    this.lastContact.set(id, { otherId, impact, t: this.gs.clock });
+  }
+
+  /** Latched so one act of contact is one foul, not one per tick. */
+  private markFoulHeld = false;
+  /** Per defender: what he was doing when the obstruction on him began. */
+  private pickWatch = new Map<number, { speed: number; gap: number; called: boolean }>();
+
+  /**
+   * Calls made this match, by kind, plus how many of them were contested.
+   * Telemetry only — nothing in the sim reads it. A call rate is the one number
+   * that says whether the detection above is a rule or a nuisance.
+   */
+  readonly callTally = { foul: 0, pick: 0, strip: 0, travel: 0, contested: 0 };
+
+  /** Every available body on a team, as the contact model wants them. */
+  private contactScratch: [ContactBody[], ContactBody[]] = [[], []];
+  private bodiesForContact(team: TeamId): readonly ContactBody[] {
+    const out = this.contactScratch[team];
+    out.length = 0;
+    for (const e of this.roster) {
+      if (e.team !== team) continue;
+      if (!this.loco.isAvailable(e.loco)) continue;
+      out.push(e.loco);
+    }
+    return out;
   }
 
   /**

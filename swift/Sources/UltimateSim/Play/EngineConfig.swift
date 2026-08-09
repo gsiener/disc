@@ -67,6 +67,24 @@ public struct EngineConfig: Sendable {
     /// game to 7 a break at 4.
     public var halftimeAt: Int? = nil
 
+    /// THE MATCH CLOCK — seconds of game time at which each cap lands. `nil` for both
+    /// (the default) is an untimed game and is exactly today's behaviour.
+    ///
+    /// This is the switch for issue #22 and it is deliberately a switch rather than a
+    /// default: `applySoftCap` / `applyHardCap` have been correct and unreachable since
+    /// they were written, every golden in the suite was generated from an untimed game,
+    /// and a cap that fired by default would rewrite all of them for a format nobody
+    /// asked for. Set either and `GameState.tickCaps` does the rest off its own clock —
+    /// at the soft cap the target becomes the leader + 1 and play carries on, at the hard
+    /// cap the point in progress is the last one.
+    ///
+    /// A timed game is the sport's normal one: a WFDF-timed final is 100 minutes with a
+    /// soft cap on the horn and a hard cap fifteen minutes later. Scaled to the sim's
+    /// pace, `softCapSeconds: 480, hardCapSeconds: 600` gives a fifteen-minute match that
+    /// ends on time rather than whenever fifteen points happen.
+    public var softCapSeconds: Double? = nil
+    public var hardCapSeconds: Double? = nil
+
     /// Seconds of halftime.
     ///
     /// **A deliberate departure from `DEFAULT_RULES`, which says 300.** Five minutes is

@@ -66,6 +66,8 @@
     "halftimeAt": 8,
     "winBy": 1,
     "pointCap": 17,
+    "softCapAt": 0,
+    "hardCapAt": 0,
     "timeoutsPerHalf": 2,
     "timeoutDuration": 70,
     "defenseMayCallTimeout": false,
@@ -93,6 +95,8 @@
       "halftimeAt": 8,
       "winBy": 1,
       "pointCap": 17,
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "timeoutsPerHalf": 2,
       "timeoutDuration": 70,
       "defenseMayCallTimeout": false,
@@ -116,6 +120,8 @@
     "halftimeAt": 8,
     "winBy": 1,
     "pointCap": 17,
+    "softCapAt": 0,
+    "hardCapAt": 0,
     "timeoutsPerHalf": 2,
     "timeoutDuration": 70,
     "defenseMayCallTimeout": false,
@@ -906,6 +912,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -941,6 +949,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -976,6 +986,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1011,6 +1023,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1046,6 +1060,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1081,6 +1097,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1116,6 +1134,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1151,6 +1171,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1186,6 +1208,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1221,6 +1245,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1256,6 +1282,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1291,6 +1319,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1326,6 +1356,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1361,6 +1393,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1396,6 +1430,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1431,6 +1467,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1466,6 +1504,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1501,6 +1541,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1536,6 +1578,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1571,6 +1615,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1606,6 +1652,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1641,6 +1689,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1676,6 +1726,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1711,6 +1763,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1746,6 +1800,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1781,6 +1837,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1816,6 +1874,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1851,6 +1911,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1886,6 +1948,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1921,6 +1985,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1956,6 +2022,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -1991,6 +2059,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2026,6 +2096,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2061,6 +2133,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2096,6 +2170,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2131,6 +2207,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2166,6 +2244,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2201,6 +2281,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2236,6 +2318,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2271,6 +2355,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2306,6 +2392,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2341,6 +2429,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2376,6 +2466,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2411,6 +2503,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2446,6 +2540,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2481,6 +2577,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2516,6 +2614,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2551,6 +2651,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2586,6 +2688,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2621,6 +2725,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2656,6 +2762,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2691,6 +2799,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2726,6 +2836,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2761,6 +2873,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2796,6 +2910,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2831,6 +2947,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2866,6 +2984,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2901,6 +3021,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2933,6 +3055,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2959,6 +3083,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -2985,6 +3111,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3011,6 +3139,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3037,6 +3167,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3063,6 +3195,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3089,6 +3223,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3115,6 +3251,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3141,6 +3279,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3167,6 +3307,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3193,6 +3335,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3219,6 +3363,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3245,6 +3391,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3271,6 +3419,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3297,6 +3447,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3323,6 +3475,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3349,6 +3503,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3375,6 +3531,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3401,6 +3559,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3427,6 +3587,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3453,6 +3615,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3479,6 +3643,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3505,6 +3671,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3531,6 +3699,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3557,6 +3727,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3583,6 +3755,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3609,6 +3783,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3635,6 +3811,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3661,6 +3839,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3687,6 +3867,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3715,6 +3897,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3741,6 +3925,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3767,6 +3953,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3793,6 +3981,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3819,6 +4009,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3845,6 +4037,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3871,6 +4065,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3897,6 +4093,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3923,6 +4121,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3949,6 +4149,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -3977,6 +4179,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4003,6 +4207,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4029,6 +4235,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4055,6 +4263,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4081,6 +4291,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4107,6 +4319,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4133,6 +4347,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4159,6 +4375,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4185,6 +4403,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4211,6 +4431,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4274,6 +4496,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4327,6 +4551,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4396,6 +4622,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4457,6 +4685,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4510,6 +4740,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4563,6 +4795,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4624,6 +4858,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4685,6 +4921,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4746,6 +4984,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4799,6 +5039,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4832,6 +5074,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4867,6 +5111,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4902,6 +5148,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4937,6 +5185,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -4972,6 +5222,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5007,6 +5259,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5044,6 +5298,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5079,6 +5335,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5114,6 +5372,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5149,6 +5409,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5160,6 +5422,1069 @@
         "emitPhysicsEvents": true
       },
       "want": false
+    }
+  ],
+  "markFoulImpact": 0.8,
+  "pickSpeedLoss": 0.9,
+  "pickGapGain": 0.25,
+  "catchFoulImpact": 1,
+  "catchContactWindow": 0.2,
+  "callSeveritySpan": 2,
+  "contactCases": [
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 4
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 3
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 3,
+        "touching": false,
+        "impact": 4,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0.64,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.64,
+        "touching": false,
+        "impact": 0,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0.6399,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.6399,
+        "touching": true,
+        "impact": 0,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 2.5
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.5
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.5,
+        "touching": true,
+        "impact": 2.5,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.5
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": -2.5
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.5,
+        "touching": true,
+        "impact": 2.5,
+        "aggressorId": 2
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 3
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.5
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 3
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.5,
+        "touching": true,
+        "impact": 3,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 4,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 1,
+          "y": 0,
+          "z": 1
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 4,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": -1,
+          "y": 0,
+          "z": -1
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0,
+        "touching": true,
+        "impact": 0,
+        "aggressorId": 1
+      }
+    },
+    {
+      "a": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 1.5,
+          "y": 0,
+          "z": 1.5
+        },
+        "radius": 0.32
+      },
+      "b": {
+        "id": 2,
+        "pos": {
+          "x": 0.3,
+          "y": 0,
+          "z": 0.3
+        },
+        "vel": {
+          "x": -1.1,
+          "y": 0,
+          "z": -0.7
+        },
+        "radius": 0.32
+      },
+      "want": {
+        "dist": 0.4242640687119285,
+        "touching": true,
+        "impact": 2.1213203435596424,
+        "aggressorId": 1
+      }
+    }
+  ],
+  "markingFoulCases": [
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.4
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": 0
+    },
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.4
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": -0.8
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": 0.8
+    },
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.4
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": -0.7999999990000001
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": 0
+    },
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.4
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": -2.6
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": 2.6
+    },
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0.4
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 2.6
+        },
+        "radius": 0.32
+      },
+      "want": 0
+    },
+    {
+      "marker": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 2.1
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": -3
+        },
+        "radius": 0.32
+      },
+      "thrower": {
+        "id": 2,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "want": 0
+    }
+  ],
+  "pickWorthCases": [
+    {
+      "lost": 0.9,
+      "gained": 0.25,
+      "want": true
+    },
+    {
+      "lost": 0.899999999,
+      "gained": 0.25,
+      "want": false
+    },
+    {
+      "lost": 0.9,
+      "gained": 0.249999999,
+      "want": false
+    },
+    {
+      "lost": 3,
+      "gained": 0,
+      "want": false
+    },
+    {
+      "lost": 0,
+      "gained": 3,
+      "want": false
+    },
+    {
+      "lost": -1,
+      "gained": -1,
+      "want": false
+    }
+  ],
+  "obstructionCases": [
+    {
+      "defender": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "offence": [
+        {
+          "id": 10,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": 0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 11,
+          "pos": {
+            "x": 0.4,
+            "y": 0,
+            "z": 0
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 12,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": -0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 13,
+          "pos": {
+            "x": 9,
+            "y": 0,
+            "z": 9
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        }
+      ],
+      "thrower": 10,
+      "matchup": 11,
+      "want": 12
+    },
+    {
+      "defender": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "offence": [
+        {
+          "id": 10,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": 0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 11,
+          "pos": {
+            "x": 0.4,
+            "y": 0,
+            "z": 0
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 12,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": -0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 13,
+          "pos": {
+            "x": 9,
+            "y": 0,
+            "z": 9
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        }
+      ],
+      "thrower": null,
+      "matchup": 11,
+      "want": 10
+    },
+    {
+      "defender": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "offence": [
+        {
+          "id": 10,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": 0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 11,
+          "pos": {
+            "x": 0.4,
+            "y": 0,
+            "z": 0
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 12,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": -0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 13,
+          "pos": {
+            "x": 9,
+            "y": 0,
+            "z": 9
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        }
+      ],
+      "thrower": 10,
+      "matchup": null,
+      "want": 11
+    },
+    {
+      "defender": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "offence": [
+        {
+          "id": 10,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": 0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 11,
+          "pos": {
+            "x": 0.4,
+            "y": 0,
+            "z": 0
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 12,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": -0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 13,
+          "pos": {
+            "x": 9,
+            "y": 0,
+            "z": 9
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        }
+      ],
+      "thrower": 12,
+      "matchup": 11,
+      "want": 10
+    },
+    {
+      "defender": {
+        "id": 1,
+        "pos": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "vel": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        },
+        "radius": 0.32
+      },
+      "offence": [
+        {
+          "id": 10,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": 0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 11,
+          "pos": {
+            "x": 0.4,
+            "y": 0,
+            "z": 0
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 12,
+          "pos": {
+            "x": 0,
+            "y": 0,
+            "z": -0.4
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        },
+        {
+          "id": 13,
+          "pos": {
+            "x": 9,
+            "y": 0,
+            "z": 9
+          },
+          "vel": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "radius": 0.32
+        }
+      ],
+      "thrower": 10,
+      "matchup": 12,
+      "want": 11
+    }
+  ],
+  "catchContactCases": [
+    {
+      "impact": 2.4,
+      "played": true,
+      "established": false,
+      "want": {
+        "kind": "foul",
+        "impact": 2.4
+      }
+    },
+    {
+      "impact": 2.4,
+      "played": false,
+      "established": true,
+      "want": {
+        "kind": "strip",
+        "impact": 2.4
+      }
+    },
+    {
+      "impact": 2.4,
+      "played": false,
+      "established": false,
+      "want": {
+        "kind": "foul",
+        "impact": 2.4
+      }
+    },
+    {
+      "impact": 2.4,
+      "played": true,
+      "established": true,
+      "want": {
+        "kind": "foul",
+        "impact": 2.4
+      }
+    },
+    {
+      "impact": 1,
+      "played": false,
+      "established": true,
+      "want": {
+        "kind": "strip",
+        "impact": 1
+      }
+    },
+    {
+      "impact": 0.999999999,
+      "played": false,
+      "established": true,
+      "want": null
+    },
+    {
+      "impact": 0,
+      "played": false,
+      "established": true,
+      "want": null
+    }
+  ],
+  "callDoubtCases": [
+    {
+      "impact": 0.8,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 72,
+      "doubt": 0.6,
+      "contested": true
+    },
+    {
+      "impact": 0.8,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 28,
+      "doubt": 0.9079999999999999,
+      "contested": true
+    },
+    {
+      "impact": 0.8,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 99,
+      "doubt": 0.411,
+      "contested": false
+    },
+    {
+      "impact": 4,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 28,
+      "doubt": 0.35799999999999993,
+      "contested": false
+    },
+    {
+      "impact": 1.3,
+      "threshold": 1,
+      "playedDisc": true,
+      "plainToSee": false,
+      "decision": 73,
+      "doubt": 0.8104999999999999,
+      "contested": true
+    },
+    {
+      "impact": 4,
+      "threshold": 1,
+      "playedDisc": true,
+      "plainToSee": false,
+      "decision": 66,
+      "doubt": 0.3919999999999999,
+      "contested": false
+    },
+    {
+      "impact": 0,
+      "threshold": 0,
+      "playedDisc": false,
+      "plainToSee": true,
+      "decision": 63,
+      "doubt": 0.413,
+      "contested": false
+    },
+    {
+      "impact": 0,
+      "threshold": 0,
+      "playedDisc": false,
+      "plainToSee": true,
+      "decision": 99,
+      "doubt": 0.16099999999999998,
+      "contested": false
+    },
+    {
+      "impact": 2.8,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 72,
+      "doubt": 0.050000000000000044,
+      "contested": false
+    },
+    {
+      "impact": 40,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 72,
+      "doubt": 0.04999999999999993,
+      "contested": false
+    },
+    {
+      "impact": 0,
+      "threshold": 0.8,
+      "playedDisc": false,
+      "plainToSee": false,
+      "decision": 72,
+      "doubt": 0.6,
+      "contested": true
     }
   ],
   "effectiveTargetCases": [
@@ -5180,6 +6505,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5210,6 +6537,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5240,6 +6569,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5270,6 +6601,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5300,6 +6633,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5330,6 +6665,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5360,6 +6697,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5390,6 +6729,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5420,6 +6761,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5450,6 +6793,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5480,6 +6825,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5510,6 +6857,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5540,6 +6889,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5570,6 +6921,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5600,6 +6953,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5630,6 +6985,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5660,6 +7017,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5690,6 +7049,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5720,6 +7081,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5750,6 +7113,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5780,6 +7145,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5810,6 +7177,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5840,6 +7209,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5870,6 +7241,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5900,6 +7273,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5930,6 +7305,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5960,6 +7337,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -5990,6 +7369,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6020,6 +7401,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6050,6 +7433,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 12,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6083,6 +7468,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6114,6 +7501,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6145,6 +7534,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6176,6 +7567,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6207,6 +7600,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6238,6 +7633,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6269,6 +7666,8 @@
         "halftimeAt": 8,
         "winBy": 1,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6300,6 +7699,8 @@
         "halftimeAt": 8,
         "winBy": 2,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,
@@ -6331,6 +7732,8 @@
         "halftimeAt": 8,
         "winBy": 2,
         "pointCap": 17,
+        "softCapAt": 0,
+        "hardCapAt": 0,
         "timeoutsPerHalf": 2,
         "timeoutDuration": 70,
         "defenseMayCallTimeout": false,

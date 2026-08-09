@@ -4,6 +4,8 @@
     {
       "label": "a point from pull to goal",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -602,6 +604,8 @@
     {
       "label": "every way a possession ends badly",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -1424,6 +1428,8 @@
     {
       "label": "the stall count to expiry",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -2004,6 +2010,8 @@
     {
       "label": "calls and timeouts",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -2600,6 +2608,8 @@
     {
       "label": "a pull out of bounds",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -2865,8 +2875,883 @@
       "logLines": 5
     },
     {
+      "label": "a strip, upheld and contested",
+      "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
+      "actions": [
+        {
+          "op": "startGame"
+        },
+        {
+          "op": "pull",
+          "puller": 7,
+          "from": [
+            0,
+            1,
+            -50
+          ],
+          "vel": [
+            0,
+            8,
+            20
+          ]
+        },
+        {
+          "op": "step",
+          "dt": 2
+        },
+        {
+          "op": "pullCaught",
+          "player": 0,
+          "at": [
+            0,
+            1,
+            -10
+          ]
+        },
+        {
+          "op": "check"
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "release",
+          "player": 0,
+          "pos": [
+            0,
+            1,
+            -10
+          ],
+          "vel": [
+            0,
+            2,
+            14
+          ]
+        },
+        {
+          "op": "makeCall",
+          "type": "strip",
+          "caller": 1,
+          "against": 9,
+          "at": [
+            0,
+            1,
+            2
+          ]
+        },
+        {
+          "op": "resolveCall",
+          "contested": false,
+          "receiver": 1
+        },
+        {
+          "op": "check"
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "release",
+          "player": 1,
+          "pos": [
+            0,
+            1,
+            2
+          ],
+          "vel": [
+            0,
+            2,
+            10
+          ]
+        },
+        {
+          "op": "makeCall",
+          "type": "strip",
+          "caller": 2,
+          "against": 10,
+          "at": [
+            0,
+            1,
+            12
+          ]
+        },
+        {
+          "op": "resolveCall",
+          "contested": true,
+          "receiver": 2
+        },
+        {
+          "op": "check"
+        },
+        {
+          "op": "step",
+          "dt": 1
+        }
+      ],
+      "steps": [
+        {
+          "op": "startGame",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 0,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "pull",
+          "ok": true,
+          "events": [
+            "state:changed",
+            "pull",
+            "disc:released"
+          ],
+          "snap": {
+            "phase": "PULL_IN_FLIGHT",
+            "clock": 0,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PULL_IN_FLIGHT",
+            "clock": 2,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "pullCaught",
+          "ok": true,
+          "events": [
+            "disc:caught",
+            "state:changed"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 2,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 0,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "check",
+          "ok": false,
+          "events": [],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 2,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 0,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [
+            "stall:tick"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 0,
+            "stall": 1,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "release",
+          "ok": true,
+          "events": [
+            "state:changed",
+            "disc:released"
+          ],
+          "snap": {
+            "phase": "DISC_IN_FLIGHT",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 0,
+            "stall": 1,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "makeCall",
+          "ok": true,
+          "events": [
+            "state:changed",
+            "call"
+          ],
+          "snap": {
+            "phase": "CHECK",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 0,
+            "stall": 1,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "resolveCall",
+          "ok": true,
+          "events": [
+            "call:resolved"
+          ],
+          "snap": {
+            "phase": "CHECK",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "check",
+          "ok": true,
+          "events": [
+            "state:changed"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 2,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [
+            "stall:tick"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 4,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 3,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "release",
+          "ok": true,
+          "events": [
+            "state:changed",
+            "disc:released"
+          ],
+          "snap": {
+            "phase": "DISC_IN_FLIGHT",
+            "clock": 4,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 3,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "makeCall",
+          "ok": true,
+          "events": [
+            "state:changed",
+            "call"
+          ],
+          "snap": {
+            "phase": "CHECK",
+            "clock": 4,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 3,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "resolveCall",
+          "ok": true,
+          "events": [
+            "call:resolved"
+          ],
+          "snap": {
+            "phase": "CHECK",
+            "clock": 4,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 3,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "check",
+          "ok": true,
+          "events": [
+            "state:changed"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 4,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 4,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [
+            "stall:tick"
+          ],
+          "snap": {
+            "phase": "LIVE_POSSESSION",
+            "clock": 5,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": 0,
+            "thrower": 1,
+            "stall": 5,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        }
+      ],
+      "teams": [
+        {
+          "score": 0,
+          "goals": 0,
+          "assists": 0,
+          "blocks": 0,
+          "attempts": 0,
+          "completions": 0,
+          "throwaways": 0,
+          "drops": 0,
+          "stallOuts": 0,
+          "turnoversCommitted": 0,
+          "turnoversForced": 0,
+          "yardsThrown": 0,
+          "yardsReceived": 0,
+          "timeOfPossession": 3,
+          "possessions": 1
+        },
+        {
+          "score": 0,
+          "goals": 0,
+          "assists": 0,
+          "blocks": 0,
+          "attempts": 0,
+          "completions": 0,
+          "throwaways": 0,
+          "drops": 0,
+          "stallOuts": 0,
+          "turnoversCommitted": 0,
+          "turnoversForced": 0,
+          "yardsThrown": 0,
+          "yardsReceived": 0,
+          "timeOfPossession": 0,
+          "possessions": 0
+        }
+      ],
+      "logLines": 10
+    },
+    {
+      "label": "the match clock brings both caps",
+      "format": "sevens",
+      "softCapAt": 4,
+      "hardCapAt": 7,
+      "actions": [
+        {
+          "op": "startGame"
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "step",
+          "dt": 1.5
+        },
+        {
+          "op": "step",
+          "dt": 1
+        },
+        {
+          "op": "step",
+          "dt": 1.5
+        },
+        {
+          "op": "step",
+          "dt": 1
+        }
+      ],
+      "steps": [
+        {
+          "op": "startGame",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 0,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 1,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 2,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 3,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 15,
+            "cap": "none"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [
+            "cap"
+          ],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 4.5,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 1,
+            "cap": "soft"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 5.5,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 1,
+            "cap": "soft"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [
+            "cap"
+          ],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 7,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 1,
+            "cap": "hard"
+          }
+        },
+        {
+          "op": "step",
+          "ok": null,
+          "events": [],
+          "snap": {
+            "phase": "PRE_PULL",
+            "clock": 8,
+            "point": 1,
+            "half": 1,
+            "score": [
+              0,
+              0
+            ],
+            "possession": null,
+            "thrower": null,
+            "stall": 0,
+            "attackDir": [
+              1,
+              -1
+            ],
+            "pullingTeam": 1,
+            "target": 1,
+            "cap": "hard"
+          }
+        }
+      ],
+      "teams": [
+        {
+          "score": 0,
+          "goals": 0,
+          "assists": 0,
+          "blocks": 0,
+          "attempts": 0,
+          "completions": 0,
+          "throwaways": 0,
+          "drops": 0,
+          "stallOuts": 0,
+          "turnoversCommitted": 0,
+          "turnoversForced": 0,
+          "yardsThrown": 0,
+          "yardsReceived": 0,
+          "timeOfPossession": 0,
+          "possessions": 0
+        },
+        {
+          "score": 0,
+          "goals": 0,
+          "assists": 0,
+          "blocks": 0,
+          "attempts": 0,
+          "completions": 0,
+          "throwaways": 0,
+          "drops": 0,
+          "stallOuts": 0,
+          "turnoversCommitted": 0,
+          "turnoversForced": 0,
+          "yardsThrown": 0,
+          "yardsReceived": 0,
+          "timeOfPossession": 0,
+          "possessions": 0
+        }
+      ],
+      "logLines": 3
+    },
+    {
       "label": "soft cap, hard cap, halftime",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "startGame"
@@ -3086,6 +3971,8 @@
     {
       "label": "actions that must be refused",
       "format": "sevens",
+      "softCapAt": 0,
+      "hardCapAt": 0,
       "actions": [
         {
           "op": "release",

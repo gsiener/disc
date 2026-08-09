@@ -202,6 +202,7 @@ public final class GameState {
 
         clock += dt
         phaseTimer += dt
+        tickCaps()
 
         switch phase {
         case .livePossession:
@@ -1016,6 +1017,12 @@ public final class GameState {
                 }
             case .strip:
                 withPlayer(c.againstId) { $0.foulsCommitted += 1 }
+                // A strip called on a disc that was still in the air nullifies the pass
+                // the same way a receiving foul does. Without this the thrower is left
+                // charged with an attempt that has no completion, no throwaway and no
+                // drop against it, and the box score's own invariant
+                // `attempts == completions + throwaways + throwsDropped` breaks.
+                voidThrowAttempt(c)
                 let rid = receiverId ?? c.callerId
                 if let rp = playersById[rid] {
                     undoLastTurnoverTo(rp.team)
@@ -1086,6 +1093,23 @@ public final class GameState {
         target = effectiveTarget((score[0], score[1]), rules, cap)
         emit(.cap(kind: "hard", target: target))
         log("HARD CAP — this is the last point (game to \(target)).")
+    }
+
+    /// THE MATCH CLOCK, driving the caps that were built and never called.
+    ///
+    /// Both `softCapAt` and `hardCapAt` default to 0, which means "no clock", so this is
+    /// a no-op in every game the sim has played to date and every golden is untouched.
+    /// Give either of them a time and the sport's own timed format appears: at the soft
+    /// cap the target becomes the leader + 1 and play carries straight on, at the hard
+    /// cap the point in progress is the last one.
+    ///
+    /// Each fires once, and the hard cap subsumes the soft one — arriving at a hard cap
+    /// that was never softened still applies the soft cap's target first, which is what a
+    /// horn that both teams missed would leave behind anyway.
+    private func tickCaps() {
+        if phase == .gameOver || phase == .halftime { return }
+        if rules.softCapAt > 0, cap == .none, clock >= rules.softCapAt { applySoftCap() }
+        if rules.hardCapAt > 0, cap != .hard, clock >= rules.hardCapAt { applyHardCap() }
     }
 
     // MARK: - internal helpers

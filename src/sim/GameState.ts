@@ -421,6 +421,7 @@ export class GameState {
 
     this.clock += dt;
     this.phaseTimer += dt;
+    this.tickCaps();
 
     switch (this.phase) {
       case 'LIVE_POSSESSION': {
@@ -1154,6 +1155,12 @@ export class GameState {
         }
         case 'strip': {
           this.p(c.againstId).foulsCommitted++;
+          // A strip called on a disc that was still in the air nullifies the pass
+          // the same way a receiving foul does. Without this the thrower is left
+          // charged with an attempt that has no completion, no throwaway and no
+          // drop against it, and the box score's own invariant
+          // `attempts === completions + throwaways + throwsDropped` breaks.
+          this.voidThrowAttempt(c);
           const rid = opts?.receiverId ?? c.callerId;
           const rp = this.players.get(rid);
           if (rp) {
@@ -1216,6 +1223,26 @@ export class GameState {
   }
 
   /* ------------------------------------------------------------------ caps */
+
+  /**
+   * THE MATCH CLOCK, driving the caps that were built and never called.
+   *
+   * Both `softCapAt` and `hardCapAt` default to 0, which means "no clock", so
+   * this is a no-op in every game the sim has played to date and every golden is
+   * untouched. Give either of them a time and the sport's own timed format
+   * appears: at the soft cap the target becomes the leader + 1 and play carries
+   * straight on, at the hard cap the point in progress is the last one.
+   *
+   * Each fires once, and the hard cap subsumes the soft one — arriving at a hard
+   * cap that was never softened still applies the soft cap's target first, which
+   * is what a horn that both teams missed would leave behind anyway.
+   */
+  private tickCaps(): void {
+    const r = this.rules;
+    if (this.phase === 'GAME_OVER' || this.phase === 'HALFTIME') return;
+    if (r.softCapAt > 0 && this.cap === 'none' && this.clock >= r.softCapAt) this.applySoftCap();
+    if (r.hardCapAt > 0 && this.cap !== 'hard' && this.clock >= r.hardCapAt) this.applyHardCap();
+  }
 
   /** Time cap during a point: target becomes the leader's score + 1. */
   applySoftCap(): void {

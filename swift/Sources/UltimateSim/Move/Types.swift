@@ -349,3 +349,9 @@ public final class LocoPlayer {
         self.t = t
     }
 }
+
+/// A body is a body. `Rules.contactBetween` and the call detectors want an id, a
+/// position, a velocity and a shoulder radius, which is exactly what a `LocoPlayer`
+/// already is — the reference's `ContactBody` is structural and matches for free, and
+/// this is the one line that buys Swift the same thing.
+extension LocoPlayer: ContactBody {}

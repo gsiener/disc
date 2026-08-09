@@ -145,6 +145,21 @@ public struct RuleSet: Equatable, Decodable, Sendable {
     /// Absolute ceiling for a win-by-two game.
     public var pointCap: Int
 
+    /// THE MATCH CLOCK, and it is off by default.
+    ///
+    /// Timed play is the other half of the caps `applySoftCap` / `applyHardCap`
+    /// already implement and nothing ever called. Seconds of `GameState.clock` at
+    /// which each lands; 0 means that cap never fires, so a game with both at 0 —
+    /// every game the sim has ever played — is untimed and behaves exactly as it
+    /// always has.
+    ///
+    /// The two are independent, which is how the sport writes them: the soft cap
+    /// moves the target to the leader + 1 and play carries on, and the hard cap
+    /// makes the point in progress the last one. Setting only `hardCapAt` is a
+    /// legal (if brutal) format.
+    public var softCapAt: Double
+    public var hardCapAt: Double
+
     public var timeoutsPerHalf: Int
     /// Seconds a timeout lasts before play must restart.
     public var timeoutDuration: Double
@@ -177,6 +192,7 @@ public struct RuleSet: Equatable, Decodable, Sendable {
         stallMax: Int, stallInterval: Double, stallResumeCap: Int, markerRange: Double,
         discSpace: Double, doubleTeamRange: Double, travelTolerance: Double,
         gameTo: Int, halftimeAt: Int, winBy: Int, pointCap: Int,
+        softCapAt: Double = 0, hardCapAt: Double = 0,
         timeoutsPerHalf: Int, timeoutDuration: Double, defenseMayCallTimeout: Bool,
         postScoreDelay: Double, halftimeDuration: Double,
         swapEndsAtHalftime: Bool, walkToGoalLineFromAttackingEndzone: Bool,
@@ -193,6 +209,8 @@ public struct RuleSet: Equatable, Decodable, Sendable {
         self.halftimeAt = halftimeAt
         self.winBy = winBy
         self.pointCap = pointCap
+        self.softCapAt = softCapAt
+        self.hardCapAt = hardCapAt
         self.timeoutsPerHalf = timeoutsPerHalf
         self.timeoutDuration = timeoutDuration
         self.defenseMayCallTimeout = defenseMayCallTimeout
@@ -218,6 +236,8 @@ public let DEFAULT_RULES = RuleSet(
     halftimeAt: 8,
     winBy: 1,
     pointCap: 17,
+    softCapAt: 0,
+    hardCapAt: 0,
 
     timeoutsPerHalf: 2,
     timeoutDuration: 70,
@@ -438,6 +458,248 @@ public func markerStatus(_ markerPos: Vec3d?, _ throwerPos: Vec3d, _ rules: Rule
 public func isTravel(_ pivot: Vec3d, _ foot: Vec3d, _ rules: RuleSet) -> Bool {
     distXZ(pivot, foot) > rules.travelTolerance
 }
+
+// MARK: - contact and the calling
+
+/// SELF-OFFICIATION — the detection half.
+///
+/// `GameState.makeCall` / `resolveCall` have always known what to DO with a foul, a
+/// pick or a strip. Nothing ever made one, because nothing in the sim looked at two
+/// bodies and decided that what happened between them was worth stopping play for.
+/// These are that decision, and they are here rather than in the engine for the same
+/// reason `isTravel` is: they are pure geometry over two bodies, and the engine's job
+/// is only to supply the bodies and to live with the answer.
+///
+/// THE DESIGN CONSTRAINT IS RARITY, and it is not a threshold — it is what gets
+/// measured. A real 7v7 game has one to three calls in it, and the honest way to land
+/// there is to ask the question a player asks, which is never "did we touch" but "did
+/// that touch change what was about to happen". So:
+///
+///   - a marking foul is contact the MARKER drove into a thrower who is standing on
+///     his pivot and cannot move out of the way;
+///   - a pick is an obstruction that COST the defender — he lost speed and his matchup
+///     gained ground over the same moment;
+///   - a receiving foul / strip is contact at the instant a catch failed.
+///
+/// Measured over three fifteen-minute 7v7 matches, bare body contact between the mark
+/// and the thrower happens 4-8 times and a defender brushes a body that is not his
+/// matchup 200-280 times. Neither of those is a call. The predicates below cut them to
+/// roughly one and two respectively, which is the sport's own number rather than a
+/// tuned one.
+///
+/// Ported from `src/sim/Rules.ts`.
+
+/// A body as the contact model needs it.
+public protocol ContactBody {
+    var id: PlayerId { get }
+    var pos: Vec3d { get }
+    var vel: Vec3d { get }
+    /// Shoulder half-width, the same radius the hard contact tier separates on.
+    var radius: Double { get }
+}
+
+public struct Contact: Equatable, Sendable {
+    /// Centre-to-centre distance in XZ, metres.
+    public var dist: Double
+    /// True when the two bodies overlap.
+    public var touching: Bool
+    /// Closing speed of whichever body was closing harder, m/s. The same quantity
+    /// `Locomotion.contactReaction` calls `impact` — a body standing still while
+    /// somebody runs into it registers the runner's speed, not zero.
+    public var impact: Double
+    /// Who was closing harder: the one who ran into the other.
+    public var aggressorId: PlayerId
+}
+
+public func contactBetween(_ a: some ContactBody, _ b: some ContactBody) -> Contact {
+    let dx = b.pos.x - a.pos.x
+    let dz = b.pos.z - a.pos.z
+    let d = (dx * dx + dz * dz).squareRoot()
+    let touching = d < a.radius + b.radius
+    if d < 1e-6 {
+        return Contact(dist: d, touching: touching, impact: 0, aggressorId: a.id)
+    }
+    let nx = dx / d, nz = dz / d
+    let closeA = a.vel.x * nx + a.vel.z * nz
+    let closeB = -(b.vel.x * nx + b.vel.z * nz)
+    return Contact(
+        dist: d, touching: touching,
+        impact: Swift.max(closeA, closeB),
+        aggressorId: closeA >= closeB ? a.id : b.id)
+}
+
+/// Closing speed at which contact on the thrower stops being incidental, m/s.
+///
+/// The thrower on his pivot is immovable — see `Locomotion.invMass` — so a mark that
+/// walks into him is not resolved by physics at all; it is resolved by this. 0.8 m/s
+/// is a step taken into a stationary man rather than a lean.
+public let MARK_FOUL_IMPACT = 0.8
+
+/// Speed a defender must lose to an obstruction before it is worth calling (m/s), and
+/// the ground his matchup must gain over the same moment (m).
+///
+/// Both, not either. A defender who slows behind a body but stays with his man was not
+/// picked, and one whose man pulls away while he is running free was simply beaten.
+public let PICK_SPEED_LOSS = 0.9
+public let PICK_GAP_GAIN = 0.25
+
+/// Closing speed at which contact through a catch attempt is a foul, m/s.
+public let CATCH_FOUL_IMPACT = 1.0
+
+/// WFDF 17.1 / USAU 15.B — the marker may not make contact with the thrower.
+///
+/// Returns the impact when there is a call, 0 when there is not. Gated on the marker
+/// being the one closing: a thrower who backs into his mark has fouled nobody, and on
+/// his pivot he can hardly do even that.
+public func markingFoulImpact(_ marker: some ContactBody, _ thrower: some ContactBody) -> Double {
+    let c = contactBetween(marker, thrower)
+    if !c.touching { return 0 }
+    if c.aggressorId != marker.id { return 0 }
+    return c.impact >= MARK_FOUL_IMPACT ? c.impact : 0
+}
+
+/// THE PICK — "the game's most common call", and the one that needs a cost.
+///
+/// A defender is obstructed when an offensive body who is neither the thrower nor his
+/// own matchup is inside him. That alone is worth nothing: it happens two hundred times
+/// a match and almost none of it matters. What makes it a call is that the obstruction
+/// took something — `lostSpeed` is what he was doing when he ran into the body minus
+/// what he is doing now, `gainedGap` is how much further away his matchup is than when
+/// it started.
+public func pickIsWorthCalling(lostSpeed: Double, gainedGap: Double) -> Bool {
+    lostSpeed >= PICK_SPEED_LOSS && gainedGap >= PICK_GAP_GAIN
+}
+
+/// Who obstructed this defender, if anybody. `offence` should exclude nobody — the
+/// thrower and the defender's own matchup are filtered here so the caller cannot
+/// forget to.
+public func obstructionOf<D: ContactBody, O: ContactBody>(
+    _ defender: D,
+    _ offence: [O],
+    _ throwerId: PlayerId?,
+    _ matchupId: PlayerId?
+) -> PlayerId? {
+    for o in offence {
+        if o.id == throwerId || o.id == matchupId { continue }
+        if contactBetween(defender, o).touching { return o.id }
+    }
+    return nil
+}
+
+/// How long after a hit a failed catch can still be blamed on it, seconds.
+///
+/// The contact and the incompletion are not the same tick and cannot be. The hard
+/// contact resolver runs during locomotion and has already spent the closing velocity by
+/// the time the disc is stepped — measured over three matches, every defender still
+/// inside a receiver at the moment of a drop had a *post-impulse* closing speed of
+/// 0.0-0.5 m/s, because the impulse is exactly what removed it. Deriving the foul from
+/// the geometry at the catch therefore finds nothing, ever, and the honest reading of
+/// that is not "there are no receiving fouls" but "you are asking the wrong tick".
+///
+/// So the call is made from `Locomotion`'s own contact event, which carries the impact
+/// BEFORE the impulse and the id of whoever was closing harder, and this is how long
+/// that event stays live. A fifth of a second is the width of a catch.
+public let CATCH_CONTACT_WINDOW = 0.2
+
+/// What a defender's contact at the catch is.
+public enum CatchContactKind: String, Equatable, Sendable {
+    case foul
+    case strip
+}
+
+/// WHAT A DEFENDER'S CONTACT AT THE CATCH IS.
+///
+///   - he was playing the disc and hit the body anyway => a receiving foul, and the
+///     pass does not stand;
+///   - he was not playing the disc at all and the receiver put it down => a STRIP: he
+///     went through the man to get to a disc that was already caught.
+///
+/// Nil when the contact is too soft to have decided anything. `impact` is the closing
+/// speed `Locomotion` measured at the collision, not a re-derivation.
+public func catchContactCall(
+    impact: Double,
+    defenderPlayedDisc: Bool,
+    possessionEstablished: Bool
+) -> (kind: CatchContactKind, impact: Double)? {
+    if impact < CATCH_FOUL_IMPACT { return nil }
+    if !defenderPlayedDisc && possessionEstablished { return (.strip, impact) }
+    return (.foul, impact)
+}
+
+/// CONTESTED OR NOT, AND NOT A COIN FLIP.
+///
+/// The player a call is made against contests it when he has a basis to, and the basis
+/// is the situation: how much contact there actually was (a lot of it is undeniable and
+/// nobody argues), whether he had a hand on the disc (the "all disc" defence, which is
+/// the single most common reason a real foul call is contested), whether the call is a
+/// geometry both players can see — a pick is, a body foul is not — and his own
+/// `decision` rating, because reading the play correctly includes reading your own
+/// contact correctly.
+///
+/// Deterministic on purpose. No RNG is drawn here, which is also why adding the whole
+/// system shifts no other stream.
+public struct CallSituation: Equatable, Sendable {
+    /// Closing speed of the contact, m/s.
+    public var impact: Double
+    /// The impact at which this kind of contact became a call.
+    public var threshold: Double
+    /// The defender had a hand on the disc.
+    public var playedDisc: Bool
+    /// The call is a geometry, not a feeling.
+    public var plainToSee: Bool
+    /// `decision` rating of the player the call is made against, 0..100.
+    public var decision: Double
+
+    public init(
+        impact: Double, threshold: Double, playedDisc: Bool, plainToSee: Bool, decision: Double
+    ) {
+        self.impact = impact
+        self.threshold = threshold
+        self.playedDisc = playedDisc
+        self.plainToSee = plainToSee
+        self.decision = decision
+    }
+}
+
+/// How much basis the player called against has to contest. >0.5 and he does.
+///
+/// The numbers, and why they are where they are:
+///
+///   0.60 base            contact at exactly the threshold is arguable, and the
+///                        argument is settled by the terms below.
+///   -0.55 × severity     severity runs from 0 at the threshold to 1 at
+///                        `CALL_SEVERITY_SPAN` above it. A defender who ran through
+///                        somebody at speed knows he did, and says so. Measured across
+///                        three matches, marking contact lands between 1 and 4 m/s, so
+///                        this span is what actually separates a brush from a
+///                        collision — normalising by the threshold instead put every
+///                        real call at full severity and nothing was ever contested.
+///   +0.30 played disc    "all disc" — the commonest reason a real call is contested,
+///                        and the one the sport argues about most.
+///   -0.25 plain to see   a pick is a geometry both players can point at, which is why
+///                        picks are effectively never contested here, and why they are
+///                        effectively never contested on a field.
+///   ±(72 - decision)     judgement, centred on the roster's mean rating: a player who
+///                        reads the game well reads his own contact well, and a player
+///                        who does not, argues.
+///
+/// The spread of that last term over the roster (about ±0.19) is deliberately wide
+/// enough to decide a marginal call and narrow enough that it cannot overturn an
+/// obvious one.
+public let CALL_SEVERITY_SPAN = 2.0
+
+public func callDoubt(_ s: CallSituation) -> Double {
+    let severity = s.threshold > 0
+        ? Swift.min(1, Swift.max(0, (s.impact - s.threshold) / CALL_SEVERITY_SPAN))
+        : 0
+    var doubt = 0.60 - 0.55 * severity
+    if s.playedDisc { doubt += 0.30 }
+    if s.plainToSee { doubt -= 0.25 }
+    doubt += (72 - s.decision) * 0.007
+    return doubt
+}
+
+public func callContested(_ s: CallSituation) -> Bool { callDoubt(s) > 0.5 }
 
 // MARK: - score / caps
 
