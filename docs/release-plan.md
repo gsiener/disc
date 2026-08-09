@@ -127,18 +127,28 @@ Measured from headless 15-minute sevens matches unless noted:
 
 | Metric | At review | Now | Target |
 |---|---|---|---|
-| Completion rate | 72–79% | ~68% ⚠ | 85–92% |
-| Holds vs breaks | ~50% breaks | holds > breaks on all seeds | offence holds 65–75% |
+| Completion rate | 72–79% | 88.5% ✅ | 85–92% |
+| Drops | ~10% of passes | 2.9% ✅ | 2–4% (real sport) |
+| Holds vs breaks | ~50% breaks | 37–39% holds ⚠ | offence holds 65–75% |
 | Release cadence | ~9 s/throw | 5.1–5.5 s ✅ | 4–6 s/throw |
-| Hucks (≥30 m completions) | 0 | 1–4 ✅ | ≥2 per game, attempted more |
-| Huck OB rate | n/a | ~35% ⚠ | well under that |
+| Hucks (≥30 m completions) | 0 | 2.25/match ✅ | ≥2 per game |
+| Longest completion | 16.7 m | ~40 m ✅ | 40–60 m |
+| Huck OB rate | ~31% | 0% ✅ | well under that |
+| AI throws overshooting aim >3 m | 11.9% | 0.2% ✅ | — |
 | Thrower drift | 2.43 m | 0.77 m ✅ | one pivot radius |
-| Calls (foul/pick/travel) per game | 0 | 0 (machinery live, AI compliant) | ≥1, resolved through the check machine |
-| Point length | ~2.5 min | ~2.5 min | 2–3 min, with timeout/cap endgame |
+| Calls (foul/pick/strip) per game | 0 | 3.8 ✅ | 1–3, through the check machine |
 | Player-visible | freeze at game end | result screen + stats + rematch ✅ | — |
 | Loop | wall-clock dt | fixed 1/120, display-linked ✅ | — |
 | tryCatch | unguarded | differential golden ✅ | mutations die |
-| Throw execution skill | none (quality pinned to 1.0) | in progress | a charge with a perfect window |
+| Throw execution skill | none (quality pinned to 1.0) | charge with a perfect window ✅ | — |
+| Defensive input | none (opponent's possession was a cutscene) | tap to commit a defender ✅ | — |
+| Match survives being killed | no | seed + input log, 436 B ✅ | — |
+| Hand-verified by a person | no | **no** ⚠ | someone plays it |
+
+**Holds is the only gameplay target still missed, and the arithmetic says why.**
+At 88.5% completion over ~7 throws a point, `0.885⁷ = 42%` — which is what we
+measure. Elite ultimate completes ~95% over the same 7 throws and holds ~70%. The
+throws-per-point is already realistic; completion percentage is the whole deficit.
 
 ## The plan — four milestones
 
@@ -210,6 +220,46 @@ interleave — authenticity items are sim-side, UX items are app-side, so they
 parallelize cleanly. The two L-sized items (foul pipeline, off-disc controls) are the
 only things allowed to slip past the first TestFlight build; everything else above is
 in it. M3 lands last but CI (in M0) guards the whole run.
+
+## What this project actually learned
+
+Worth recording, because it changed how the work was run and it is the part that
+generalises.
+
+**Every serious bug found was at the integration layer, and none were found by
+the 2.2 M-assertion suite.** The solver answering a too-short ask with the
+maximum-distance angle (42% of short throws became bombs). `throwReleaseSpeed`
+unported — a Swift-only mutation of it survived the entire suite. A stale drag
+that permanently mis-graded every subsequent throw. The settings sheet silently
+rewriting the save. The contact stream severed at construction, so receiving
+fouls and strips were not rare in the port but *unreachable* since the day they
+landed. Every one was found by review, by mutation, or by instrumenting a funnel
+— never by an assertion.
+
+The pattern behind all of them: **the components agree and the integration does
+not, and no fixture looks at the integration.** Component goldens are necessary
+and they are not sufficient.
+
+Three habits came out of it and are now the house style:
+
+1. **Prove coverage is absent by mutation, not by argument.** "There's a test for
+   that" is a hypothesis. Break the code and watch the suite fail — or watch it
+   stay green, which is the finding.
+2. **A fixture is only evidence about the range it covers.** The throw-solver
+   fixture started at 6.93 m; the cliff was at ~5 m. Nothing was wrong with the
+   fixture except where it began.
+3. **Instrument the funnel before believing a diagnosis.** The strip divergence
+   had a plausible, confidently-stated cause that was wrong; counting how often
+   each stage was reached found the real one in minutes.
+
+And one structural lesson: **god-files produce seam bugs.** `MatchView` reached
+2,064 lines with three near-duplicate reset lists, and the reviewer found four
+bugs living in exactly that duplication. Splitting it (→ 951 lines, caches behind
+one `invalidate()`) did not just tidy it — it made a class of bug impossible.
+`Engine.swift` went the same way and got the same treatment. The clock is the
+sharpest example: as six loose variables inside a view, none of its invariants
+were testable, and four bugs lived there; extracted as a value type it carries 40
+assertions.
 
 ## Explicitly out of scope for v1
 
