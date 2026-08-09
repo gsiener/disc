@@ -533,6 +533,16 @@ public final class Engine {
         for intent in intents where intent.action != nil { actionOf[intent.id] = intent.action }
 
         // 4. Bodies move. Locomotion owns position and velocity from here.
+        //
+        // Anchor the thrower before anyone steps. The soft separation tier runs *after*
+        // locomotion, and without this a crowding marker walks the thrower off his own
+        // pivot — which is a foul in the rules and free yardage in the sim: possession
+        // advancing without a throw, the one thing the sport forbids. `anchored` is
+        // honoured by both `Separation` and the contact resolver, and was never set.
+        let anchorId = game.phase == .livePossession ? game.thrower : nil
+        for p in players {
+            loco.get(p.id)?.anchored = p.id == anchorId
+        }
         loco.apply(intents.map(Engine.locoIntent), dt: dt, world: &records)
 
         // 5. Write the bodies back onto the AI's records. `syncTo` has already updated
@@ -726,16 +736,25 @@ public final class Engine {
         guard let team = game.possession else { return }
         if game.awaitingPullChoice() { return }
         let spot = game.discPos
+        // **A dead disc on the line is unreachable by design.** `AI.ts` caps every player's
+        // speed by the room left to the perimeter, so nobody is ever steered over a
+        // sideline — and that parks the collector a metre short of a disc sitting on the
+        // chalk. With a single fixed radius he stands there forever and the match stops:
+        // the reference measured one seed sitting in `TURNOVER_DEAD` for 152 seconds. After
+        // long enough standing over it, he bends down and takes it.
+        let reach = game.phaseTimer > Engine.pickupDwell
+            ? Engine.pickupDwellRadius : Engine.pickupRadius
         var best = -1
-        var bestD = Double.infinity
+        var bestD = reach
         for p in players where p.team == team {
+            guard let lp = loco.get(p.id), loco.isAvailable(lp) else { continue }
             let d = distXZ(p.pos, spot)
             if d < bestD {
                 bestD = d
                 best = p.id
             }
         }
-        guard best >= 0, bestD <= DISC_GRAB_R else { return }
+        guard best >= 0 else { return }
         demand(game.pickUp(best))
         syncDisc()
     }
@@ -959,6 +978,12 @@ public final class Engine {
             game.release(
                 playerId: id, pos: from, vel: vel, spin: req.spin, throwType: physType.rawValue))
     }
+
+    /// How close a player must be to a dead disc to pick it up, metres. `Game.ts:136`.
+    private static let pickupRadius = 1.6
+    /// …escalating to this after standing over it this long. See `collectDeadDisc`.
+    private static let pickupDwell = 1.4
+    private static let pickupDwellRadius = 3.6
 
     /// How far a body can reach sideways for a disc, standing and laid out. `Game.ts:146`.
     private static let catchReach = 0.82
