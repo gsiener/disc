@@ -32,10 +32,26 @@ struct UltimateApp: App {
     ///
     /// Defaults to the game, which is what a person opening the app wants.
     /// `-format 7v7` starts the game on the regulation field. Same reasoning as `-tab`.
-    static let startFormat: FieldSpec = {
+    ///
+    /// Nil when the argument is absent, which is the normal case: the format is then the
+    /// one the player last chose on the pre-game sheet, and a launch argument is an
+    /// override rather than a default.
+    static let startFormat: FieldSpec? = {
         let args = ProcessInfo.processInfo.arguments
-        guard let i = args.firstIndex(of: "-format"), i + 1 < args.count else { return .minis }
+        guard let i = args.firstIndex(of: "-format"), i + 1 < args.count else { return nil }
         return args[i + 1] == "7v7" ? .full : .minis
+    }()
+
+    /// `-setup off` opens straight into a live match instead of the pre-game sheet.
+    ///
+    /// The sheet is the right first screen for a person and a wall for automation, which
+    /// can launch the app but cannot tap START. Same door, same reasoning, as `-tab`: the
+    /// screens behind a finger have to stay reachable without one, or they stop being
+    /// looked at.
+    static let skipsSetup: Bool = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-setup"), i + 1 < args.count else { return false }
+        return args[i + 1] == "off"
     }()
 
     /// The tab named on the command line, or `play` when none was.
@@ -85,7 +101,8 @@ struct UltimateApp: App {
                 // A `TabView` builds a tab on first selection and then keeps it alive,
                 // so without this the match and the flight loop both keep running behind
                 // whatever is on screen.
-                MatchView(format: Self.startFormat, active: tab == 0)
+                MatchView(
+                    format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -97,7 +114,7 @@ struct UltimateApp: App {
                     .tabItem { Label("Speed", systemImage: "gauge.with.needle") }.tag(4)
             }
         } else {
-            MatchView(format: Self.startFormat)
+            MatchView(format: Self.startFormat, skipsSetup: Self.skipsSetup)
         }
     }
 }

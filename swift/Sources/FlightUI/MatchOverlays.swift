@@ -102,7 +102,13 @@ struct TurnoverWatch {
 @available(macOS 15.0, iOS 18.0, *)
 struct ResultOverlay: View {
     let match: Engine
+    /// Play the same fixture again — same length, format and difficulty, new seed.
     let onRematch: () -> Void
+    /// Open the pre-game sheet instead. The rematch button is the right default and the
+    /// wrong only option: full time is exactly when a player knows that game was too
+    /// long, or too easy, and a result card with one button makes them go and find the
+    /// settings while the scoreboard is still up.
+    let onSetup: () -> Void
 
     private var won: Bool { match.score[0] > match.score[1] }
 
@@ -118,14 +124,28 @@ struct ResultOverlay: View {
 
             statSheet
 
-            Button(action: onRematch) {
-                Text("REMATCH")
-                    .font(.system(size: 15, design: .monospaced).bold())
-                    .padding(.horizontal, 26).padding(.vertical, 10)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange))
-                    .foregroundStyle(.black)
+            HStack(spacing: 12) {
+                Button(action: onSetup) {
+                    Text("CHANGE MATCH")
+                        .font(.system(size: 12, design: .monospaced).bold())
+                        .padding(.horizontal, 14).padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                        .foregroundStyle(.white.opacity(0.7))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onRematch) {
+                    Text("REMATCH")
+                        .font(.system(size: 15, design: .monospaced).bold())
+                        .padding(.horizontal, 26).padding(.vertical, 10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange))
+                        .foregroundStyle(.black)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
             .padding(.top, 4)
         }
         .padding(.horizontal, 28).padding(.vertical, 22)

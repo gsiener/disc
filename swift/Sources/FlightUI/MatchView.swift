@@ -22,10 +22,19 @@ import UltimateSim
 /// gesture, and the mapping from one to the other.
 @available(macOS 15.0, iOS 18.0, *)
 public struct MatchView: View {
-    /// Starting format. A parameter rather than a constant for the same reason the app's
-    /// initial tab is one: `simctl` can launch with arguments but cannot tap, so anything
-    /// only reachable by finger is something that stops being looked at.
-    private let startFormat: FieldSpec
+    /// A format forced from the command line, if one was. A parameter rather than a
+    /// constant for the same reason the app's initial tab is one: `simctl` can launch
+    /// with arguments but cannot tap, so anything only reachable by finger is something
+    /// that stops being looked at.
+    ///
+    /// Nil — the normal case — means the format is whatever the player last chose in the
+    /// pre-game sheet, which is the only place a person can set it.
+    private let formatOverride: FieldSpec?
+
+    /// Whether to open straight into a live match instead of the pre-game sheet. Same
+    /// argument as `formatOverride`: the sheet is a wall a launch argument cannot climb,
+    /// and everything behind it would stop being screenshot-able.
+    private let skipsSetup: Bool
 
     /// Whether this view is the one on screen.
     ///
@@ -48,6 +57,25 @@ public struct MatchView: View {
 
     @State private var match: Engine
     @State private var drag: DragState? = nil
+
+    /// The match settings, as last chosen — length, format, difficulty. Loaded from
+    /// `Prefs` at construction and written back whenever a match starts from them, so the
+    /// second launch opens on the game you were playing rather than on the defaults.
+    @State private var setup: MatchSetup
+
+    /// Whether the pre-game sheet is up. True at launch, because a game should be chosen
+    /// before it is played; true again whenever the sheet is reopened from the scoreboard
+    /// or from the result card.
+    @State private var showSetup: Bool
+
+    /// Whether the coach cards are up. Set once on the first launch that has never seen
+    /// them, and set again by the sheet's HOW TO PLAY button.
+    @State private var showCoach = false
+
+    /// Whether the sheet, if dismissed, has a match to fall back onto. False before the
+    /// first pull; true forever after, since a match — running, paused or finished —
+    /// exists from then on.
+    @State private var hasStarted = false
 
     /// The seed this match was built from. Freshly drawn from the clock for every new
     /// match — including the format-switch restart — so no two launches replay the same
@@ -143,7 +171,22 @@ public struct MatchView: View {
         /// so the scene's aim arrow and the eventual release are the same number, and so
         /// nothing downstream has to know about view coordinates.
         var aim: Vec3d
+        /// True while the thumb is back inside the cancel radius of where the drag
+        /// started. A drag in this state draws grey, names no receiver, and throws
+        /// nothing at all if it is released here.
+        var aborted: Bool
     }
+
+    /// How close to the drag's own starting point counts as calling it off, in points.
+    ///
+    /// `ThrowGesture.minimumDrag` is 8 and a drag only reaches this file once it has
+    /// passed that, so the sim's rule stands: any *release* it is asked about is a throw.
+    /// What the sim has no opinion on is whether to ask, and it should not be asked when
+    /// the thumb has come home — dragging back to where you started is the universal
+    /// "no", and before this it threw a minimum-power push at whatever was behind you.
+    /// Deliberately wider than the 8 pt floor: a cancel you have to hit precisely is a
+    /// cancel that fails exactly when you are panicking.
+    private static let cancelRadius = 26.0
 
     /// The handful of entities `sync` writes to every frame, held by reference.
     ///
@@ -169,12 +212,28 @@ public struct MatchView: View {
         var focus: Entity?
     }
 
-    public init(format: FieldSpec = .minis, active: Bool = true) {
+    public init(format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false) {
         self.active = active
-        startFormat = format
+        self.formatOverride = format
+        self.skipsSetup = skipsSetup
+
+        // The saved setup, with the launch argument — when there is one — overriding the
+        // format it names and nothing else.
+        var chosen = Prefs.loadSetup() ?? MatchSetup()
+        if let format { chosen.format = format.teamSize <= 3 ? .minis : .full }
+        _setup = State(initialValue: chosen)
+        _showSetup = State(initialValue: !skipsSetup)
+        _hasStarted = State(initialValue: skipsSetup)
+
         let s = Self.freshSeed()
         _seed = State(initialValue: s)
-        _match = State(initialValue: Engine(format: format.gameFormat, seed: s))
+        // A match exists from the first frame even while the sheet is up, because the
+        // sheet is drawn over a pitch and the pitch has to be something. It is the same
+        // match the START button keeps if nothing is changed — restart draws a new seed,
+        // so the only cost of touching a setting is a different wind.
+        _match = State(
+            initialValue: Engine(
+                format: chosen.fieldSpec.gameFormat, seed: s, config: chosen.engineConfig))
     }
 
     /// A seed for a new match, drawn from the clock. The engine stays fully
@@ -211,11 +270,24 @@ public struct MatchView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { paused = true }
         }
+        // The one path to the coach cards that does not go through the sheet: a first run
+        // launched straight into a match by `-setup off`. A player who has never been
+        // taught the gesture should be taught it however the app was started.
+        .onAppear {
+            if skipsSetup && !Prefs.coachSeen { showCoach = true }
+        }
     }
 
     /// Whether the simulation should be advancing at all: the tab is showing, the app is
-    /// frontmost, and nobody has paused it.
-    private var running: Bool { active && scenePhase == .active && !paused }
+    /// frontmost, nobody has paused it, and nothing is being read over the top of it.
+    ///
+    /// The sheet and the coach cards ride the pause path rather than inventing their own,
+    /// which is what makes reading them free: `advance` drops the frame stamp and empties
+    /// the accumulator while this is false, so a minute spent on the second coach card
+    /// costs the match nothing and buys it nothing.
+    private var running: Bool {
+        active && scenePhase == .active && !paused && !showSetup && !showCoach
+    }
 
     private var matchContent: some View {
         GeometryReader { geo in
@@ -248,13 +320,47 @@ public struct MatchView: View {
                 // game is over the only interesting fact left is the result, and the
                 // only interesting input left is the rematch button.
                 if match.isOver {
-                    ResultOverlay(match: match) { restart(match.fieldSpec) }
+                    ResultOverlay(match: match) {
+                        restart(setup)
+                    } onSetup: {
+                        showSetup = true
+                    }
                 }
 
                 // Paused. Over even the result card, because a paused game that looks
                 // live is the bug this exists to fix. It takes the taps, which is also
                 // what stops a resume gesture being read as a throw.
                 if paused && active { pausedOverlay }
+
+                // The pre-game sheet, over everything including the pause veil — it is
+                // the thing you asked for, and the match behind it is stopped either way.
+                if showSetup && active {
+                    PreGameSheet(
+                        setup: $setup, isRematch: hasStarted,
+                        onStart: {
+                            Prefs.save(setup)
+                            showSetup = false
+                            hasStarted = true
+                            restart(setup)
+                            // First run: teach the gesture before the first pull rather
+                            // than after the first five throws have gone nowhere.
+                            if !Prefs.coachSeen { showCoach = true }
+                        },
+                        // Replaying the lesson does not dismiss the sheet: the cards are
+                        // drawn over it and dismissing them puts you back on the choices
+                        // you were making, which is where you were.
+                        onCoach: { showCoach = true },
+                        // Nothing to go back to before the first pull.
+                        onDismiss: hasStarted ? { showSetup = false } : nil)
+                }
+
+                // The coach cards, over the sheet that can summon them.
+                if showCoach && active {
+                    CoachOverlay {
+                        Prefs.coachSeen = true
+                        showCoach = false
+                    }
+                }
             }
         }
     }
@@ -375,6 +481,14 @@ public struct MatchView: View {
             }
             .onEnded { _ in
                 guard match.holder != nil, let d = drag else { return }
+                // The abort. `ThrowGesture` has no say here on purpose: it is a pure
+                // function of a drag's numbers and it is right that *if* a release is
+                // made, an 8 pt drag is a throw. Whether to make one is this file's
+                // decision, and a thumb that came back to where it started has said no.
+                guard !d.aborted else {
+                    drag = nil
+                    return
+                }
                 let thrown = match.humanRelease(
                     d.type, aim: d.aim, power: d.power, loft: d.loft)
                 drag = nil
@@ -401,7 +515,8 @@ public struct MatchView: View {
             dx: dx, dy: dy, shortEdge: Double(Swift.min(size.width, size.height)))
         let aim = ThrowGesture.aim(dx: dx, dy: dy, attackDir: match.attackDirection(of: 0))
         return DragState(
-            start: start, current: current, type: g.type, power: g.power, loft: g.loft, aim: aim)
+            start: start, current: current, type: g.type, power: g.power, loft: g.loft, aim: aim,
+            aborted: Foundation.hypot(dx, dy) <= Self.cancelRadius)
     }
 
     // MARK: scene
@@ -547,7 +662,8 @@ public struct MatchView: View {
     /// the highlight clears the instant the gesture ends, aborts, or the disc leaves
     /// the hand, because all of those make `drag` nil or `previewReceiver` return nil.
     private var previewedReceiver: Int? {
-        guard let d = drag else { return nil }
+        // An aborted drag names nobody, because it is about to throw nobody the disc.
+        guard let d = drag, !d.aborted else { return nil }
         return match.previewReceiver(dx: d.aim.x, dz: d.aim.z)
     }
 
@@ -719,7 +835,10 @@ public struct MatchView: View {
         }
 
         if let arrow = refs.arrow {
-            if let d = drag, let h = match.holder {
+            // An aborted drag keeps its line on screen — greyed, and saying CANCEL — but
+            // takes its arrow off the grass. The arrow is a claim about where the disc is
+            // going, and it is going nowhere.
+            if let d = drag, !d.aborted, let h = match.holder {
                 let p = match.players[h]
                 // Roughly how far this power carries. An approximation on purpose — the
                 // exact range needs the aero solved, and a arrow that lies by a metre is
@@ -784,15 +903,16 @@ public struct MatchView: View {
         }
     }
 
-    /// Tear the match down and start a new one on `spec`'s pitch. Both restarts — the
-    /// format switch and the rematch button — come through here, so neither can forget
-    /// a piece of per-match state.
+    /// Tear the match down and start a new one on `setup`'s pitch, at its length and its
+    /// difficulty. Every restart — the sheet's START, the result card's REMATCH — comes
+    /// through here, so none of them can forget a piece of per-match state.
     ///
     /// A restart is a new match, so it draws a new seed — otherwise restarting would be
     /// the one path back to the compiled-in default and its identical wind and rosters.
-    private func restart(_ spec: FieldSpec) {
+    private func restart(_ setup: MatchSetup) {
         seed = Self.freshSeed()
-        match = Engine(format: spec.gameFormat, seed: seed)
+        match = Engine(
+            format: setup.fieldSpec.gameFormat, seed: seed, config: setup.engineConfig)
         drag = nil
         trail.removeAll()
         tickCount = 0
@@ -853,27 +973,23 @@ public struct MatchView: View {
             Text("first to \(match.fieldSpec.target)")
                 .foregroundStyle(.white.opacity(0.4))
 
-            // Both formats, because both were asked for. Switching restarts the match
-            // rather than resizing the pitch underneath a live point — a disc in flight
-            // towards an endzone that just moved is not a thing worth defining.
-            ForEach([FieldSpec.minis, FieldSpec.full], id: \.teamSize) { spec in
-                Button {
-                    guard spec.teamSize != match.fieldSpec.teamSize else { return }
-                    restart(spec)
-                } label: {
-                    Text("\(spec.teamSize)v\(spec.teamSize)")
-                        .font(.system(size: 12, design: .monospaced).bold())
-                        .padding(.horizontal, 9).padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5)
-                                .fill(
-                                    spec.teamSize == match.fieldSpec.teamSize
-                                        ? Color.orange : Color.white.opacity(0.12)))
-                        .foregroundStyle(
-                            spec.teamSize == match.fieldSpec.teamSize ? .black : .white.opacity(0.7))
-                }
-                .buttonStyle(.plain)
+            // Where the format buttons used to be. They were two of the three match
+            // settings, wedged into a scoreboard, and each tap silently binned the point
+            // being played; the third setting did not exist at all. All three now live on
+            // the pre-game sheet, and this is the door to it — it stops the match on the
+            // way in, so nothing is thrown away by looking.
+            Button {
+                showSetup = true
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13, weight: .bold))
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 5).fill(.white.opacity(0.12)))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("match settings")
         }
         .font(.system(.subheadline, design: .monospaced).bold())
         .padding(.horizontal, 16)
@@ -1015,7 +1131,12 @@ public struct MatchView: View {
     /// against turf at any camera distance. The world-space half of the answer, the arrow
     /// on the grass, is in `PitchScene`.
     private func aimOverlay(_ d: DragState, in size: CGSize) -> some View {
-        ZStack {
+        // Back inside the cancel radius: the whole gesture goes grey and the label stops
+        // describing a throw. The line stays drawn rather than vanishing, because the
+        // thumb is still down and a gesture that disappears under a finger reads as the
+        // game having lost the touch rather than as the throw being off.
+        let tint: Color = d.aborted ? .white.opacity(0.55) : .orange
+        return ZStack {
             Path { p in
                 p.move(to: d.start)
                 p.addLine(to: d.current)
@@ -1027,41 +1148,56 @@ public struct MatchView: View {
                 p.addLine(to: d.current)
             }
             .stroke(
-                LinearGradient(
-                    colors: [.orange.opacity(0.25), .orange],
-                    startPoint: .top, endPoint: .bottom),
-                style: StrokeStyle(lineWidth: 4, lineCap: .round))
+                d.aborted
+                    ? LinearGradient(colors: [tint, tint], startPoint: .top, endPoint: .bottom)
+                    : LinearGradient(
+                        colors: [.orange.opacity(0.25), .orange],
+                        startPoint: .top, endPoint: .bottom),
+                style: StrokeStyle(
+                    lineWidth: 4, lineCap: .round,
+                    dash: d.aborted ? [5, 5] : []))
 
             // The anchor, so it is obvious the throw comes from where you started and not
-            // from where your thumb happens to be.
+            // from where your thumb happens to be. It is also the cancel target, so while
+            // the drag is aborted it is filled rather than outlined — the one place the
+            // player is being told the gesture has a home.
             Circle()
-                .strokeBorder(.orange.opacity(0.7), lineWidth: 2)
+                .strokeBorder(tint.opacity(0.7), lineWidth: 2)
+                .background(Circle().fill(d.aborted ? .white.opacity(0.16) : .clear))
                 .frame(width: 22, height: 22)
                 .position(d.start)
 
             VStack(spacing: 3) {
-                Text("\(d.type.rawValue.uppercased())  \(Int(d.power * 100))%")
-                    .font(.system(size: 13, design: .monospaced).bold())
-                // Who the cone select currently means — the same pick the bracket on
-                // the grass is standing under, named here because a jersey number is
-                // readable when the receiver themselves is a few pixels tall.
-                if let r = previewedReceiver,
-                    let idx = match.players.firstIndex(where: { $0.id == r })
-                {
-                    Text("TO #\(jersey(idx))")
-                        .font(.system(size: 11, design: .monospaced).bold())
-                        .foregroundStyle(.orange.opacity(0.85))
-                }
-                Capsule()
-                    .fill(.orange.opacity(0.25))
-                    .frame(width: 74, height: 4)
-                    .overlay(alignment: .leading) {
-                        Capsule().fill(.orange).frame(width: 74 * d.power, height: 4)
+                if d.aborted {
+                    Text("CANCEL")
+                        .font(.system(size: 13, design: .monospaced).bold())
+                    Text("RELEASE TO KEEP IT")
+                        .font(.system(size: 10, design: .monospaced).bold())
+                        .foregroundStyle(.white.opacity(0.55))
+                } else {
+                    Text("\(d.type.rawValue.uppercased())  \(Int(d.power * 100))%")
+                        .font(.system(size: 13, design: .monospaced).bold())
+                    // Who the cone select currently means — the same pick the bracket on
+                    // the grass is standing under, named here because a jersey number is
+                    // readable when the receiver themselves is a few pixels tall.
+                    if let r = previewedReceiver,
+                        let idx = match.players.firstIndex(where: { $0.id == r })
+                    {
+                        Text("TO #\(jersey(idx))")
+                            .font(.system(size: 11, design: .monospaced).bold())
+                            .foregroundStyle(.orange.opacity(0.85))
                     }
+                    Capsule()
+                        .fill(.orange.opacity(0.25))
+                        .frame(width: 74, height: 4)
+                        .overlay(alignment: .leading) {
+                            Capsule().fill(.orange).frame(width: 74 * d.power, height: 4)
+                        }
+                }
             }
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 7).fill(.black.opacity(0.7)))
-            .foregroundStyle(.orange)
+            .foregroundStyle(tint)
             .position(x: d.current.x, y: d.current.y - 34)
         }
         .allowsHitTesting(false)
