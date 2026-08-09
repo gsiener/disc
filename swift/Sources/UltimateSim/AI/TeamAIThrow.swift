@@ -333,14 +333,10 @@ extension TeamAI {
                 if isMark ? s.t > 0.42 : (s.t > cut || s.t < 0.05) { continue }
                 if s.y > reach || s.y < 0.15 { continue }
                 let hd = Playbook.dist2(f.pos.x, f.pos.z, s.x, s.z)
-                // The closing term is capped: `v * (t - lag)` is seven and a half metres
-                // on a two-second flight, and a defender that far away is guarding
-                // somebody else. What the term is really asking is how far he will
-                // abandon his own assignment on a read.
-                let closing = Swift.min(
-                    v * Swift.max(0, s.t - (isMark ? 0.08 : 0.14)) * (isMark ? 0.32 : 0.72),
-                    lanePoachMax)
-                let reachable = (isMark ? 0.80 : 0.60) + closing
+                let reachable =
+                    isMark
+                    ? 0.80 + v * Swift.max(0, s.t - 0.08) * 0.32
+                    : 0.60 + v * Swift.max(0, s.t - 0.14) * 0.72
                 let w = clamp((reachable - hd) / 1.4, 0, 1) * awareness
                 if w > worst { worst = w }
             }
