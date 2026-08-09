@@ -131,12 +131,17 @@ public struct FrameClock: Equatable, Sendable {
         return true
     }
 
-    /// Keep at most one tick of the remaining debt and drop the rest.
+    /// Keep at most one tick of the remaining debt and **drop the rest**.
     ///
     /// "Starting at the catch frame": if a burst of catch-up ticks was owed and the third
     /// of them was the layout grab, the rest must not be spent before the screen has drawn
-    /// it. One tick of the debt is kept, so nothing is lost — only deferred to the next
-    /// frame, where it is paid at the slowed rate like everything else.
+    /// it. One tick is carried into the next frame; everything above that is discarded.
+    ///
+    /// This comment used to say "nothing is lost — only deferred", which is not what a
+    /// `min` does, and a reviewer caught it. Dropping is the right behaviour and worth
+    /// stating plainly: the discarded ticks belong to a hitch the player already lived
+    /// through, and paying them back at 0.35× would stretch a 0.2 s stall into most of a
+    /// second of slow motion — the debt would be visible precisely because it was repaid.
     public mutating func deferRemainingTicks() {
         accumulator = Swift.min(accumulator, Self.tickDt)
     }

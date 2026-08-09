@@ -109,3 +109,16 @@ while peers are running.
 This is not only hygiene. A simulator process once recycled a PID that a stale
 `~/.gnupg` lock file named, which blocked every commit in the repository until
 the daemons were killed.
+
+The same applies to the compiler. A killed or timed-out `swift build` can orphan
+`swift-frontend` processes, which are neither small nor short-lived — several
+agents building in parallel worktrees can leave gigabytes resident. Check before
+you finish, and only ever kill orphans:
+
+```sh
+pgrep -fl swift-frontend        # expect nothing when no build is running
+```
+
+Never blanket-kill while a peer may be building — a `swift-frontend` with a live
+parent is someone's compile, and killing it produces a confusing failure in
+their session rather than yours.
