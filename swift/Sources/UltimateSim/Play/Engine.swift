@@ -1150,8 +1150,6 @@ public final class Engine {
     private static let pickupDwellRadius = 3.6
 
     /// How far a body can reach sideways for a disc, standing and laid out. `Game.ts:146`.
-    private static let catchReach = 0.82
-    private static let layoutReach = 1.55
     /// Nobody may touch a disc for the first tenth of a second after it leaves the hand.
     /// Without it the mark is on top of the release point and takes it back off the
     /// thrower's fingertips. `Game.ts:150`.
@@ -1236,92 +1234,51 @@ public final class Engine {
         let s = disc.state
         let offence: TeamId? = phase == .pullInFlight ? game.receivingTeam : game.possession
 
-        var best: AIPlayer?
-        var bestScore = Double.infinity
-        var bestHigh = 0.0
-        var bestLaidOut = false
-
-        for p in players {
-            guard let lp = loco.get(p.id) else { continue }
-            if lp.state == .fall || lp.state == .recovery { continue }
-            let laidOut = lp.state == .layout || (lp.prone && lp.air.airborne)
-            let gap = distXZ(p.pos, s.pos)
-            guard gap <= (laidOut ? Engine.layoutReach : Engine.catchReach) else { continue }
-            let top = loco.reachAt(lp, t: 0) + 0.16
-            let bot = lp.groundY + (laidOut ? 0.02 : 0.20)
-            if s.pos.y > top || s.pos.y < bot { continue }
-            if p.team != offence {
-                let kind = actionOf[p.id]?.kind
-                let attacking = kind == "bid" || kind == "jump" || kind == "catch"
-                if !attacking, gap > 0.55 { continue }
-            }
-            let high = clamp((s.pos.y - (lp.groundY + lp.hipHeight + 0.35)) / 0.9, 0, 1)
-            let score = gap + high * 0.4 + (p.team == offence ? 0 : 0.25)
-            if score < bestScore {
-                bestScore = score
-                best = p
-                bestHigh = high
-                bestLaidOut = laidOut
-            }
-        }
-        guard let taker = best else { return false }
+        // The decision itself lives in `CatchDecision.decide` so it can be differed
+        // against the reference — see that file's header. This builds its inputs and
+        // applies its outcome; nothing here decides anything.
+        guard let d = CatchDecision.decide(
+            discPos: s.pos, discVel: s.vel, pull: phase == .pullInFlight,
+            offence: offence, bodies: catchBodies(), roll: { rng.next() })
+        else { return false }
 
         let at = s.pos
-        let speed = s.vel.length
-        let contest = contestCount(at.x, at.z, taker.team) * 0.30
-        let difficulty = clamp(
-            0.12 + bestHigh * 0.55 + (bestLaidOut ? 0.55 : 0) + contest
-                + clamp((speed - 17) / 22, 0, 0.45),
-            0, 1.7)
-        var p = catchProbability(taker, difficulty)
-        if taker.team != offence { p *= 0.62 }
-        let roll = rng.next()
-
-        if taker.team != offence {
-            // A pull cannot be stolen, but it can be touched: a member of the pulling team
-            // who touches their own pull before the receivers have hands it straight to
-            // them at that spot (WFDF 12.5). The machine does that inside `pullCaught`.
-            if phase == .pullInFlight {
-                guard roll < p else { return false }
-                demand(game.pullCaught(taker.id, at))
-                afterFlight()
-                return true
-            }
-            if roll < p * 0.55 {
-                demand(game.catchDisc(taker.id, at))
-                afterFlight()
-                return true
-            }
-            if roll < p {
-                demand(game.block(taker.id, at))
-                afterFlight()
-                return true
-            }
+        switch d.outcome {
+        case .none:
             return false
+        case .catchDisc, .interception:
+            demand(game.catchDisc(d.takerId, at))
+        case .block:
+            demand(game.block(d.takerId, at))
+        case .drop:
+            demand(game.drop(d.takerId, at))
+        // A pull cannot be stolen, but it can be touched: a member of the pulling team
+        // who touches their own pull before the receivers have hands it straight to
+        // them at that spot (WFDF 12.5). The machine does that inside `pullCaught`.
+        case .pullCatch, .pullTouch:
+            demand(game.pullCaught(d.takerId, at))
+        case .pullDrop:
+            demand(game.pullDropped(d.takerId, at))
         }
-
-        if roll < p {
-            demand(phase == .pullInFlight ? game.pullCaught(taker.id, at) : game.catchDisc(taker.id, at))
-            afterFlight()
-            return true
-        }
-        // Routine, and he put it down. Anything at full stretch is just a disc that keeps
-        // flying — a missed layout is not a drop.
-        if difficulty < 0.85 {
-            demand(phase == .pullInFlight ? game.pullDropped(taker.id, at) : game.drop(taker.id, at))
-            afterFlight()
-            return true
-        }
-        return false
+        afterFlight()
+        return true
     }
 
-    /// How many opponents are close enough to make a catch a contest. `Game.ts:1885`.
-    private func contestCount(_ x: Double, _ z: Double, _ team: TeamId) -> Double {
-        var n = 0.0
-        for p in players where p.team != team {
-            if distXZ(p.pos, Vec3d(x, 0, z)) < 1.9 { n += 1 }
+    /// The roster as `CatchDecision` needs it. Every body goes in — the eligibility
+    /// filtering is the decision's job, and bodies that cannot take the disc still count
+    /// toward the contest.
+    private func catchBodies() -> [CatchDecision.Body] {
+        players.compactMap { p in
+            guard let lp = loco.get(p.id) else { return nil }
+            let kind = actionOf[p.id]?.kind
+            return CatchDecision.Body(
+                id: p.id, team: p.team, pos: p.pos,
+                state: lp.state.rawValue, prone: lp.prone, airborne: lp.air.airborne,
+                groundY: lp.groundY, hipHeight: lp.hipHeight,
+                reachTop: loco.reachAt(lp, t: 0),
+                attacking: kind == "bid" || kind == "jump" || kind == "catch",
+                attr: p.attr, energy: p.energy)
         }
-        return Swift.min(2, n)
     }
 
     /// Nobody leaves the park. Locomotion caps speed; this is the hard backstop.
