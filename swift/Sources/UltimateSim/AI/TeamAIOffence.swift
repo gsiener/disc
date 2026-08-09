@@ -632,7 +632,10 @@ extension TeamAI {
             s -= 0.35 * Playbook.smoothstep(30, 12, pb.yardsToGoal(world.disc.pos.z, dir))
             s += 0.12 * (p.attr.speed / 100) + 0.08 * (p.attr.jumping / 100)
         } else {
-            s += 0.10 * Playbook.smoothstep(2, 6, stall)
+            // Part flat, part stall-ramped: a purely stall-gated under vanished from
+            // the game once the tempo meant the count never reached 2. The first look
+            // in real offence IS an under, at stall zero.
+            s += 0.03 + 0.09 * Playbook.smoothstep(2, 6, stall)
         }
         if cut.kind == .breakUnder { s -= 0.10 }
         if cut.kind == .strike { s += 0.22 }

@@ -186,6 +186,39 @@ public struct Quatd: Equatable, Sendable {
         return q
     }
 
+    /// `THREE.Matrix4.makeBasis(x, y, z)` fed to `THREE.Quaternion.setFromRotationMatrix`,
+    /// fused — the columns of the basis matrix are the three axes, so the matrix never
+    /// needs to exist.
+    ///
+    /// This exists because the two-`fromUnitVectors` shortcut it replaced was *almost*
+    /// equivalent: it agreed with the reference to 5e-15 everywhere except when the
+    /// rotated +X landed antiparallel to the target axis, where `fromUnitVectors` takes
+    /// its arbitrary-perpendicular fallback branch and returns a *different valid*
+    /// rotation. A huck aimed exactly down the -x axis hit that branch and released with
+    /// its nose/bank frame visibly wrong — metres of lateral drift the reference did not
+    /// have. Shepperd's method below is the reference's own, branch for branch.
+    public static func fromBasis(_ x: Vec3d, _ y: Vec3d, _ z: Vec3d) -> Quatd {
+        let m11 = x.x, m12 = y.x, m13 = z.x
+        let m21 = x.y, m22 = y.y, m23 = z.y
+        let m31 = x.z, m32 = y.z, m33 = z.z
+        let trace = m11 + m22 + m33
+        var q: Quatd
+        if trace > 0 {
+            let s = 0.5 / (trace + 1.0).squareRoot()
+            q = Quatd((m32 - m23) * s, (m13 - m31) * s, (m21 - m12) * s, 0.25 / s)
+        } else if m11 > m22 && m11 > m33 {
+            let s = 2.0 * (1.0 + m11 - m22 - m33).squareRoot()
+            q = Quatd(0.25 * s, (m12 + m21) / s, (m13 + m31) / s, (m32 - m23) / s)
+        } else if m22 > m33 {
+            let s = 2.0 * (1.0 + m22 - m11 - m33).squareRoot()
+            q = Quatd((m12 + m21) / s, 0.25 * s, (m23 + m32) / s, (m13 - m31) / s)
+        } else {
+            let s = 2.0 * (1.0 + m33 - m11 - m22).squareRoot()
+            q = Quatd((m13 + m31) / s, (m23 + m32) / s, 0.25 * s, (m21 - m12) / s)
+        }
+        return q
+    }
+
     /// `THREE.Quaternion.slerp(qb, t)`, including the shortest-arc flip and the
     /// lerp-then-normalise fast path below a `0.9995` dot.
     public func slerped(to qb: Quatd, _ t: Double) -> Quatd {

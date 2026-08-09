@@ -65,7 +65,7 @@ extension TeamAI {
         let hold =
             stall >= 8.5
             ? -1e9
-            : (-0.135 - 0.26 * Foundation.pow(clamp(stall, 0, 10) / 10, 2)) * cfg.aggression
+            : (-0.155 - 0.26 * Foundation.pow(clamp(stall, 0, 10) / 10, 2)) * cfg.aggression
         noGoodLook = best.ev < hold - 0.03
         choice = best.ev > hold ? best : nil
         if choice != nil && windup == 0 { windup = 1e-6 }
@@ -180,7 +180,7 @@ extension TeamAI {
                 let pLane = clamp(1 - blockage, 0.02, 1)
                 let contest = clamp(1.1 - separation * 0.45, 0, 1.1)
                 let pCatch = catchProbability(r, contest * 0.7 + powerRatio * 0.4)
-                let completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99)
+                var completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99)
 
                 // ---- expected-possession-value model.
                 let gain = Double(dir) * (aim.z - disc.pos.z)
@@ -191,7 +191,50 @@ extension TeamAI {
                 // A turnover here hands the opponent the disc facing the other way.
                 let loss = possessionValue(64 - clamp(newYards, 0, 64)) * risk
                 let value = gainValue
-                let ev = completion * gainValue - (1 - completion) * loss - holdValue
+
+                // ---- explicit deep-shot valuation — `src/sim/AI.ts` evaluateOptions.
+                //
+                // The multiplicative chain above cannot see a huck: `pSep` reads a
+                // receiver even with his man as a coin flip and `pCatch` taxes the same
+                // contest a second time, so a 30 m shot multiplied out near 0.2 and no
+                // huck was ever thrown. Real teams throw 55% hucks ON PURPOSE: a cutter
+                // with a step deep wins the contested disc with speed and hops, and even
+                // the miss pins the opponent on their own goal line. So a deep shot's
+                // completion IS the jump-ball model — not a `max` with the chain, which
+                // is a discrete switch that flips on the last ulp of a separation
+                // estimate — and its miss is priced as territory: half a turnover
+                // charge, plus credit for the pin.
+                let isDeepShot = gain >= 22 && d >= 25 && !isReset
+                let ev: Double
+                if isDeepShot {
+                    let def = nearestFoe(r.pos.x, r.pos.z)
+                    let speedEdge = def != nil ? (r.attr.speed - def!.attr.speed) / 100 : 0.10
+                    let jumpEdge = def != nil ? (r.attr.jumping - def!.attr.jumping) / 100 : 0.10
+                    let step = clamp(separation / 2.5, -0.5, 1)
+                    // No step, no huck: the base sits low and separation carries the
+                    // term, and a shot near the arm's limit is taxed for the underthrow
+                    // it will be. At a 0.52 base with a 0.20 step weight the AI spammed
+                    // marginal hucks — 17 attempts at 12% completion in fifteen minutes.
+                    let pJump = clamp(
+                        0.40 + 0.30 * step + 0.50 * speedEdge + 0.35 * jumpEdge, 0.10, 0.80)
+                        * (1 - 0.6 * Swift.max(0, powerRatio - 0.75))
+                    // A huck near a line is a huck out of bounds: the release scatter
+                    // at thirty metres is over a metre and the carry spread is more.
+                    // Measured before this term, nine of fourteen attempts sailed out.
+                    let room = Swift.min(
+                        pb.field.sideline - abs(aim.x),
+                        pb.field.endLine - abs(aim.z))
+                    let pStay = Playbook.smoothstep(0.2, 4.5, room)
+                    completion = clamp(
+                        pJump * pLane * pStay * (0.75 + 0.25 * pThrow), 0.01, 0.99)
+                    // The pin: how bad the opponent's field position is after the miss.
+                    let pin = 1 - possessionValue(64 - clamp(newYards, 0, 64))
+                    ev = completion * gainValue
+                        + (1 - completion) * (0.30 * pin - loss * 0.55)
+                        - holdValue
+                } else {
+                    ev = completion * gainValue - (1 - completion) * loss - holdValue
+                }
                 opts.append(
                     ThrowOption(
                         receiverId: r.id, type: type, aim: aim, dist: d,
@@ -212,8 +255,10 @@ extension TeamAI {
     {
         let n = 10
         var out: [FlightSample] = []
-        let arc =
-            type == .hammer ? 3.2 : 0.28 + 0.05 * Playbook.dist2(from.x, from.z, to.x, to.z)
+        // The arc follows the FLIGHT TIME, not the distance — the release-speed
+        // stretch made long throws fast and flat, and the old distance fit modelled a
+        // 30 m huck 1.8 m over the defenders the real disc crossed at head height.
+        let arc = type == .hammer ? 3.2 : 0.28 + 0.36 * tf * tf
         for i in 0...n {
             let s = Double(i) / Double(n)
             out.append(

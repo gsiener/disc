@@ -203,13 +203,14 @@ public func throwDisc(
     if bodyX.lengthSq < 1e-10 { bodyX = right }
     bodyX = bodyX.normalized
 
-    // Two `setFromUnitVectors` rather than a rotation matrix: take body +Z to the
-    // normal, then spin about it until body +X lands on the flight axis. Equivalent to
-    // the reference's `makeBasis` + `setFromRotationMatrix`, and it avoids porting
-    // Matrix4 for one call site.
-    let q1 = Quatd.fromUnitVectors(Vec3d(0, 0, 1), normal)
-    let q2 = Quatd.fromUnitVectors(Vec3d(1, 0, 0).applying(q1), bodyX)
-    s.orient = (q2 * q1).normalized
+    // The reference's `makeBasis` + `setFromRotationMatrix`, exactly. This was a
+    // two-`setFromUnitVectors` shortcut for most of the port's life — "equivalent",
+    // and it was, to 5e-15, except when the rotated +X landed antiparallel to `bodyX`:
+    // there `fromUnitVectors` takes its arbitrary-axis fallback and returns a different
+    // valid rotation, so a huck aimed straight down the -x axis released with a tilted
+    // frame and metres of lateral drift the reference did not have.
+    let bodyY = normal.cross(bodyX).normalized
+    s.orient = Quatd.fromBasis(bodyX, bodyY, normal).normalized
 
     s.pos = from
     s.vel = vdir.scaled(opts.speed ?? throwSpeed(type, power))

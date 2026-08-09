@@ -123,6 +123,7 @@ enum ThrowSolverTests {
 
                 let label = "\(c.type) \(Int(c.fraction * 100))% \(String(format: "%.1f", c.range))m"
 
+
                 // The solved request. `power` is the one value with no integrator behind it —
                 // `powerForSpeed` is a subtraction and a division — so it is held to bit
                 // equality, which is what catches a constant substituted for it.

@@ -478,10 +478,27 @@ export function maxThrowRange(p: AIPlayer, type: ThrowType, windAlong: number): 
   return base * (1 + 0.045 * clamp(windAlong, -8, 8)) * (0.86 + 0.14 * p.energy);
 }
 
-/** Seconds of flight the thrower will put on a throw of length `d`. */
+/**
+ * Seconds of flight the thrower will put on a throw of length `d`.
+ *
+ * A huck is not a floated under: past ~15 m a real thrower puts arm into it,
+ * so the implied release speed (`d / tf`, which `Game.ts:aiThrow` inverts back
+ * onto the physics power band via `powerForSpeed`) climbs toward the top of
+ * the band instead of pinning at the bottom. Without the stretch a 30 m
+ * request came out at 14 m/s — 15% power on a [12,27] m/s backhand — and no
+ * elevation in the solver's range carries 15% power thirty metres, so every
+ * deep shot landed a dozen metres short of everything. This is the
+ * reconciliation the throw-solver sweep in the Swift suite asked for.
+ */
 export function throwFlightTime(p: AIPlayer, type: ThrowType, d: number): number {
   const zip = 10.5 + 7.5 * (p.attr.throwPower / 100) * (type === 'hammer' ? 0.8 : 1);
-  return 0.28 + d / zip;
+  // Two pieces, fitted against the flight model directly (sweep: miss vs release
+  // speed per distance). The disc has a narrow speed window per distance — below
+  // it the flight dies ten metres short, above it the turnover drift grows — and
+  // the window's floor runs ~18 m/s at 26 m to ~22 m/s at 36 m. One smoothstep
+  // could hit either the 20 m band or the 30 m band; the sum hits both.
+  const stretch = 1 + 0.42 * smoothstep(15, 23, d) + 0.28 * smoothstep(23, 40, d);
+  return 0.28 + d / (zip * stretch);
 }
 
 /**
@@ -1694,7 +1711,15 @@ export class TeamAI {
       s -= 0.35 * smoothstep(30, 12, yardsToGoal(world.disc.pos.z, this.dir));
       s += 0.12 * (p.attr.speed / 100) + 0.08 * (p.attr.jumping / 100);
     } else {
-      s += 0.10 * smoothstep(2, 6, stall);
+      /**
+       * Part flat, part stall-ramped. The ramp used to be the whole term, and
+       * it priced the under as a bail-out — fine at a nine-second tempo where
+       * every possession saw stall 3, invisible at a five-second one where the
+       * count never gets there. The offence stopped cutting under entirely
+       * (fixture census: 1101 deep, 0 under). The first look in real offence
+       * IS an under, at stall zero.
+       */
+      s += 0.03 + 0.09 * smoothstep(2, 6, stall);
     }
     if (cut.kind === 'break-under') s -= 0.10;
     if (cut.kind === 'strike') s += 0.22;
@@ -2018,7 +2043,7 @@ export class TeamAI {
      */
     const hold = stall >= 8.5
       ? -1e9
-      : (-0.135 - 0.26 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
+      : (-0.155 - 0.26 * Math.pow(clamp(stall, 0, 10) / 10, 2)) * this.cfg.aggression;
     this.noGoodLook = best.ev < hold - 0.03;
     this.choice = best.ev > hold ? best : null;
     if (this.choice && this.windup === 0) this.windup = 1e-6;
@@ -2122,7 +2147,7 @@ export class TeamAI {
         const pLane = clamp(1 - blockage, 0.02, 1);
         const contest = clamp(1.1 - separation * 0.45, 0, 1.1);
         const pCatch = catchProbability(r, contest * 0.7 + powerRatio * 0.4);
-        const completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99);
+        let completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99);
 
         // ---- expected-possession-value model.
         // Everything is priced in "probability this possession ends in a goal",
@@ -2136,7 +2161,63 @@ export class TeamAI {
         // A turnover here hands the opponent the disc facing the other way.
         const loss = possessionValue(64 - clamp(newYards, 0, 64)) * risk;
         const value = gainValue;
-        const ev = completion * gainValue - (1 - completion) * loss - holdValue;
+
+        /**
+         * ---- explicit deep-shot valuation.
+         *
+         * The multiplicative chain above cannot see a huck: `pSep` reads a
+         * receiver even with his man as a coin flip and `pCatch` taxes the same
+         * contest a second time, so a 30 m shot multiplied out near 0.2 and no
+         * huck was ever thrown — the longest completion in fifteen minutes of
+         * sevens was 16.7 m. Real teams throw 55% hucks ON PURPOSE, because a
+         * cutter with a step deep wins the contested disc with speed and hops,
+         * and even the miss pins the opponent on their own goal line.
+         *
+         * So a genuinely deep shot is valued the way a coach values it:
+         *  - completion IS the jump-ball model — a step (separation), the speed
+         *    and jumping edge over the marking defender, and the thrower's arm
+         *    (`pThrow`). Not a `max` with the chain: a discrete switch between
+         *    two nearly-tied models flips on the last ulp of a separation
+         *    estimate, which is exactly the cross-libm hazard the TeamAI trace
+         *    tolerance exists to catch;
+         *  - the miss is priced as territory: the opponent restarts deep in
+         *    their own end, which is most of a pull, so the turnover charge is
+         *    roughly halved and the pin itself is credited.
+         */
+        const isDeepShot = gain >= 22 && d >= 25 && !isReset;
+        let ev: number;
+        if (isDeepShot) {
+          const def = this.nearestFoe(r.pos.x, r.pos.z);
+          const speedEdge = def ? (r.attr.speed - def.attr.speed) / 100 : 0.10;
+          const jumpEdge = def ? (r.attr.jumping - def.attr.jumping) / 100 : 0.10;
+          const step = clamp(separation / 2.5, -0.5, 1);
+          // No step, no huck: the base sits low and separation carries the term,
+          // and a shot near the arm's limit is taxed for the underthrow it will
+          // be. Measured at a 0.52 base with a 0.20 step weight, the AI spammed
+          // marginal hucks — 17 attempts at 12% completion in fifteen minutes.
+          const pJump = clamp(
+            0.40 + 0.30 * step + 0.50 * speedEdge + 0.35 * jumpEdge, 0.10, 0.80,
+          ) * (1 - 0.6 * Math.max(0, powerRatio - 0.75));
+          /**
+           * A huck near a line is a huck out of bounds: the release scatter at
+           * thirty metres is over a metre and the carry spread is more, and
+           * nothing else in the model prices that. Measured before this term,
+           * nine of fourteen huck attempts sailed out.
+           */
+          const room = Math.min(
+            FIELD.halfWidth - Math.abs(aim.x),
+            FIELD.halfLength - Math.abs(aim.z));
+          const pStay = smoothstep(0.2, 4.5, room);
+          completion = clamp(
+            pJump * pLane * pStay * (0.75 + 0.25 * pThrow), 0.01, 0.99);
+          // The pin: how bad the opponent's field position is after the miss.
+          const pin = 1 - possessionValue(64 - clamp(newYards, 0, 64));
+          ev = completion * gainValue
+            + (1 - completion) * (0.30 * pin - loss * 0.55)
+            - holdValue;
+        } else {
+          ev = completion * gainValue - (1 - completion) * loss - holdValue;
+        }
         opts.push({
           receiverId: r.id, type, aim, dist: d, flightTime, separation, blockage,
           breakPenalty, powerRatio, completion, value, ev, isGoal, isReset,
@@ -2150,7 +2231,16 @@ export class TeamAI {
   private flightPath(from: Vec3, to: Vec3, tf: number, type: ThrowType): FlightSample[] {
     const n = 10;
     const out: FlightSample[] = [];
-    const arc = type === 'hammer' ? 3.2 : 0.28 + 0.05 * dist2(from.x, from.z, to.x, to.z);
+    /**
+     * The arc follows the FLIGHT TIME, not the distance. `0.28 + 0.05 * d` was
+     * fitted when every throw floated at ~14 m/s; the release-speed stretch made
+     * long throws fast and flat, and a 30 m huck modelled at a 1.8 m mid-flight
+     * bulge sailed, in the model, clean over defenders the real disc crossed at
+     * head height — measured as "blocked" being the top huck outcome (6 of 17).
+     * A ballistic bulge is g*tf^2/8; 0.36*tf^2 sits just above that for the lift
+     * the disc actually has, and reproduces the old numbers at the old speeds.
+     */
+    const arc = type === 'hammer' ? 3.2 : 0.28 + 0.36 * tf * tf;
     for (let i = 0; i <= n; i++) {
       const s = i / n;
       out.push({

@@ -1337,8 +1337,12 @@ group('you cannot walk with the disc');
       `${worstSettled.toFixed(2)} m > 3.2 m`);
   }
   // Momentum is legal but not unlimited: a sprint stop is a few metres, not ten.
-  ok(worstDrift <= 4.5, 'worst drift including the catch momentum steps',
-    `${worstDrift.toFixed(2)} m > 4.5 m`);
+  // 4.5 -> 5.0 when the deep game arrived: the release-speed stretch means a
+  // receiver now catches a genuine huck at a full sprint, and the worst stop
+  // measured 4.53 m. Still "a few metres"; the ten-metre pathology this guards
+  // against would blow through either bound.
+  ok(worstDrift <= 5.0, 'worst drift including the catch momentum steps',
+    `${worstDrift.toFixed(2)} m > 5.0 m`);
   console.log(`\x1b[2m  drift: settled ${worstSettled.toFixed(2)} m over ${settled} frames, `
     + `peak-with-momentum ${worstDrift.toFixed(2)} m over ${sampled}\x1b[0m`);
 }

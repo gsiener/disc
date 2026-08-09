@@ -144,9 +144,20 @@ public func maxThrowRange(_ p: AIPlayer, _ type: AIThrowType, _ windAlong: Doubl
 }
 
 /// Seconds of flight the thrower will put on a throw of length `d`.
+///
+/// A huck is not a floated under: past ~15 m a real thrower puts arm into it, so the
+/// implied release speed (`d / tf`, which the engine inverts back onto the physics power
+/// band via `powerForSpeed`) climbs toward the top of the band instead of pinning at the
+/// bottom. Without the stretch a 30 m request came out at 14 m/s — 15% power on a
+/// [12,27] m/s backhand — and every deep shot landed a dozen metres short of everything.
 public func throwFlightTime(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> Double {
     let zip = 10.5 + 7.5 * (p.attr.throwPower / 100) * (type == .hammer ? 0.8 : 1)
-    return 0.28 + d / zip
+    // Two pieces, fitted against the flight model directly — see the reference for
+    // the sweep. The disc has a narrow speed window per distance; the sum of ramps
+    // tracks the window's floor from ~18 m/s at 26 m to ~22 m/s at 36 m.
+    let stretch =
+        1 + 0.42 * Playbook.smoothstep(15, 23, d) + 0.28 * Playbook.smoothstep(23, 40, d)
+    return 0.28 + d / (zip * stretch)
 }
 
 /// Probability a player completes the catch.

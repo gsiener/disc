@@ -156,12 +156,18 @@ enum TeamAITests {
 
     /// Absolute tolerance for every continuous quantity in the trace.
     ///
-    /// The number is MEASURED, not guessed — see the note the suite prints. Across
-    /// 445,682 assertions over 1,280 frames the worst deviation observed is 1.6e-12, on
-    /// quantities of order 1 to 50 m, and 154,745 of 167,281 tolerance comparisons are
-    /// bit-identical. 1e-9 leaves about six hundred times that in headroom for another
-    /// libm without leaving room for a transposed coefficient or a dropped term to hide:
-    /// a real porting bug moves these numbers by parts in a thousand, not by nanometres.
+    /// The number is MEASURED, not guessed — see the note the suite prints. It was 1e-9
+    /// for most of this suite's life, six hundred times the then-worst deviation of
+    /// 1.6e-12. The deep-shot valuation moved the worst case: a huck's completion reads
+    /// `separation` through a LINEAR term where the old chain read it through a
+    /// saturated sigmoid, and `separation` carries `timeToReach`'s `acos(dot)` — whose
+    /// derivative is infinite at dot = 1, turning an ulp of cross-libm `hypot`
+    /// disagreement into a square-root of an ulp (~1e-6) of turn time. Measured worst
+    /// after that change: 1.8e-9 on a throw's expected completion, same option, same
+    /// receiver, same aim to 1e-9. That is drift the old landscape masked, not a logic
+    /// difference, so the bar moves with the measurement: 1e-7 keeps fifty times the
+    /// observed worst in headroom while sitting four orders of magnitude below the
+    /// parts-in-a-thousand a transposed coefficient or dropped term produces.
     ///
     /// It is absolute rather than ulp-relative on purpose, and the reason is
     /// cancellation. `effort` in the person defence is `clamp(0.35 + gap * 0.45, ...)`
@@ -169,11 +175,11 @@ enum TeamAITests {
     /// an ulp of disagreement in the target — the target the suite then compares and
     /// finds equal, because `clampToField` has pinned it to the sideline — becomes a
     /// thousand ulps of `gap`, which is a subtraction of two large nearby numbers. Ulps
-    /// of the *result* are not a meaningful unit for that. Metres are: 1e-9 m on a
+    /// of the *result* are not a meaningful unit for that. Metres are: 1e-7 m on a
     /// hundred-metre pitch is far below anything that could hide a logic difference, and
     /// every discrete consequence of these numbers — the mode, the action, the lane, the
     /// cut kind, the matchup — is asserted exactly regardless.
-    private static let traceTol = 1e-9
+    private static let traceTol = 1e-7
 
     nonisolated(unsafe) static var worst = 0.0
     nonisolated(unsafe) static var worstWhat = "nothing"

@@ -465,6 +465,25 @@ export function teamAIGoldens() {
   flight = null;
   for (let i = 0; i < 300; i++) step('live', 1 / 60);
 
+  // A SCRIPTED THROWAWAY, resolved by the driver. `livePossessionFlips` counts a
+  // possession that changes hands INSIDE `step` — the flight turnover branch — and for
+  // most of this fixture's life it happened to be fed by the AI's own drops. The
+  // deep-shot valuation made the offence complete this segment's throws, and the flip
+  // count silently fell to zero, which the consuming suite rightly failed. A situation
+  // the trace must contain is staged, not hoped for: a flight from the thrower into
+  // empty space, landing where nobody stands.
+  flight = {
+    fx: disc.pos.x, fy: 1.35, fz: disc.pos.z,
+    vx: 11, vy: 2.2, vz: 3,
+    t: 0, T: 0.8, by: 0,
+  };
+  disc.state = 'flight';
+  disc.carrier = null;
+  disc.thrownBy = 0;
+  disc.intendedReceiver = null;
+  disc.stall = 0;
+  for (let i = 0; i < 90; i++) step('live', 1 / 60);
+
   // A SCRIPTED TURNOVER. Three situations only reachable from a live loose disc — the
   // `ground` branch of `offence` (nearest body collects, everyone else re-forms), the
   // `pickup` action, and the whole `onPossessionChange` rebuild for the team that just

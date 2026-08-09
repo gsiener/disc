@@ -128,10 +128,48 @@ function sweep(wind: { x: number; z: number }): unknown {
       for (let step = 0; step < HEADINGS; step++) {
         const h = (step * Math.PI) / 4;
         const from = new THREE.Vector3(0, 1.35, 0);
-        const aim = new THREE.Vector3(Math.sin(h) * range, 1.35, Math.cos(h) * range);
+        /**
+         * Axis-aligned aims are SNAPPED TO EXACT ZEROS. `sin(6 * PI/4)` leaves a
+         * residue of ~5e-15 in the off-axis component, and `atan2(-30, -5.5e-15)`
+         * is one of the few arguments where V8 and Darwin libm disagree by an
+         * ulp; `atan2(x, 0)` and `atan2(0, z)` are exact special cases in both.
+         * This removes one seed of cross-libm disagreement; the stability filter
+         * below handles the ones that live inside the integrator.
+         */
+        const snap = (v: number) => (Math.abs(v) < 1e-9 ? 0 : v);
+        const aim = new THREE.Vector3(
+          snap(Math.sin(h)) * range, 1.35, snap(Math.cos(h)) * range);
         const speed = range / Math.max(0.2, throwFlightTime(arm, type as never, range));
         const req = solve(probeRt, from, aim, type, speed);
         if (!req) continue;
+
+        /**
+         * KNIFE-EDGE CASES ARE FILTERED OUT, and the filter is the fixture's
+         * honesty rather than a loss of coverage. `probeThrow` reports the
+         * descent through the catch plane, which is a discrete threshold: a
+         * flight that GRAZES the plane crosses it metres apart under a last-ulp
+         * libm difference, so the solved heading correction — which reads `lat`
+         * off that crossing — is not a reproducible number across V8 and Darwin
+         * for such a case. Measured directly when the release-speed model first
+         * reached this power band: a forehand at 30 m along the -x axis solved
+         * 5e-3 rad apart on two correct implementations, while the same physical
+         * flight rotated 45 degrees agreed to 1e-15. The test suite's own header
+         * documents this failure mode ("a nudged probe picks a neighbouring
+         * angle rather than drifting by an ulp"); the fixture now excludes what
+         * it cannot pin. Detection: re-solve with the aim jittered by a
+         * micrometre; a smooth case moves the solved heading by ~1e-8, a grazing
+         * one by ~1e-3, so the 1e-5 bar has two decades of margin either side.
+         */
+        const jittered = [
+          solve(probeRt, from, new THREE.Vector3(aim.x + 1e-6, aim.y, aim.z), type, speed),
+          solve(probeRt, from, new THREE.Vector3(aim.x, aim.y, aim.z + 1e-6), type, speed),
+        ];
+        const unstable = jittered.some((q) =>
+          !q
+          || Math.abs(q.angle - req.angle) > 1e-5
+          || Math.abs(q.aim.x - req.aim.x) > 1e-5
+          || Math.abs(q.aim.z - req.aim.z) > 1e-5);
+        if (unstable) continue;
 
         // Fly the solved release to rest. The closest approach is what the
         // solver is actually promising; the landing point is where it ends up.

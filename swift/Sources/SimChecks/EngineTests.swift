@@ -553,7 +553,13 @@ enum EngineTests {
     /// formats, because they do not play the same game and only one of them is the one the
     /// AI was written for.
     private static func scoreOnlyMovesOnGoals() {
+        // Three sevens seeds, not one. The huck and tempo telemetry swings hard
+        // between matches — holds/breaks moved 3/9 to 6/6 between two tuning runs
+        // that differed by one constant — and a lever judged on a single seed is
+        // judged on noise.
         playAndMeasure(.sevens, seed: 11)
+        playAndMeasure(.sevens, seed: 23)
+        playAndMeasure(.sevens, seed: 37)
         playAndMeasure(.minis, seed: 11)
     }
 
@@ -583,7 +589,7 @@ enum EngineTests {
     @discardableResult
     private static func playAndMeasure(_ format: GameFormat, seed: UInt32) -> Int {
         let e = Engine(format: format, seed: seed)
-        let label = format.field.length > 50 ? "sevens" : "minis"
+        let label = (format.field.length > 50 ? "sevens" : "minis") + "/s\(seed)"
         e.autoTeams = [0, 1]
         var last = e.score
         var goals = 0
@@ -594,13 +600,61 @@ enum EngineTests {
         var gains: [Double] = []
         var closest = Double.infinity
 
+        // Huck and tempo telemetry: how far each throw actually travelled (release point
+        // to the completing catch), how far each attempt flew whether or not it was
+        // caught, and how many seconds of live possession sit between releases.
+        var throwsSeen = 0
+        var releasePos: Vec3d?
+        var flightMax = 0.0
+        var liveTicks = 0
+        var completedDists: [Double] = []
+        var attemptDists: [Double] = []
+        var statsAtRelease: (Int, Int, Int, Int)?
+        var stallAtRelease = 0.0
+        var huckStalls: [Double] = []
+        var huckOutcomes: [String: Int] = [:]
+
         for _ in 0..<(120 * 900) where !e.isOver {
             e.step(dt: dt)
+            if e.game.phase == .livePossession { liveTicks += 1 }
+
+            if e.stats.throwsMade > throwsSeen {
+                throwsSeen = e.stats.throwsMade
+                releasePos = e.disc.state.pos
+                flightMax = 0
+                statsAtRelease = (
+                    e.stats.completions, e.stats.blocks, e.stats.grounded, e.stats.outOfBounds
+                )
+                stallAtRelease = e.stall
+            }
+            if e.game.phase == .discInFlight, let rp = releasePos {
+                flightMax = Swift.max(flightMax, distXZ(rp, e.disc.state.pos))
+            } else if let _ = releasePos, flightMax > 0, e.game.phase != .discInFlight {
+                // The flight ended one way or another: record the attempt and how it died.
+                attemptDists.append(flightMax)
+                if flightMax >= 28, let s0 = statsAtRelease {
+                    huckStalls.append(stallAtRelease)
+                    if e.stats.completions > s0.0 {
+                        huckOutcomes["caught", default: 0] += 1
+                    } else if e.stats.blocks > s0.1 {
+                        huckOutcomes["blocked", default: 0] += 1
+                    } else if e.stats.grounded > s0.2 {
+                        huckOutcomes["grounded", default: 0] += 1
+                    } else if e.stats.outOfBounds > s0.3 {
+                        huckOutcomes["out", default: 0] += 1
+                    } else {
+                        huckOutcomes["other", default: 0] += 1
+                    }
+                }
+                releasePos = nil
+                flightMax = 0
+            }
 
             if e.stats.completions > completions, let from = heldPos, let team = heldTeam,
                 let to = e.carrier.flatMap({ id in e.players.first { $0.id == id } })?.pos
             {
                 gains.append(Double(e.dirFor(team)) * (to.z - from.z))
+                completedDists.append(distXZ(from, to))
             }
             completions = e.stats.completions
             if let id = e.carrier, let p = e.players.first(where: { $0.id == id }) {
@@ -638,6 +692,32 @@ enum EngineTests {
             "\(label): \(goals) goals in fifteen minutes, \(holds) holds / \(breaks) breaks, "
                 + "\(gains.count) completions, mean gain \(meanText) m "
                 + "(\(forward) forward / \(back) back), longest \(longestText) m")
+
+        // Authenticity telemetry: hucks and tempo. A huck is a throw that travelled 30 m
+        // or more; attempts are measured off the flight itself, so an underthrown bomb
+        // that dies 28 m out still counts as intent. Tempo is seconds of LIVE_POSSESSION
+        // per release — real throwers go every 3-6 s.
+        let hucksCompleted = completedDists.filter { $0 >= 30 }.count
+        let hucksAttempted = attemptDists.filter { $0 >= 28 }.count
+        let throwsTotal = e.stats.throwsMade
+        let compPct = throwsTotal > 0
+            ? 100.0 * Double(e.stats.completions) / Double(throwsTotal) : 0
+        let cadence = throwsTotal > 0
+            ? Double(liveTicks) * dt / Double(throwsTotal) : .infinity
+        Check.note(
+            "\(label) tempo/hucks: \(throwsTotal) throws, "
+                + String(format: "%.0f%%", compPct) + " completed, release every "
+                + String(format: "%.1f", cadence) + " s of live play, hucks "
+                + "\(hucksAttempted) attempted / \(hucksCompleted) completed >=30 m, "
+                + "longest throw " + String(format: "%.1f", completedDists.max() ?? 0) + " m")
+        if !huckOutcomes.isEmpty {
+            let lateHucks = huckStalls.filter { $0 >= 7 }.count
+            Check.note(
+                "\(label) huck outcomes: "
+                    + huckOutcomes.sorted { $0.value > $1.value }
+                    .map { "\($0.key) \($0.value)" }.joined(separator: "  ")
+                    + "  (\(lateHucks) of \(huckStalls.count) released at stall >= 7)")
+        }
 
         // The one assertion that says the sport is happening. Sevens is the shape the AI
         // was written and validated for, so it is held to it; minis is knowingly below the

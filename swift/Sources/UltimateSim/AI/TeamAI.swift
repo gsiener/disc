@@ -606,10 +606,17 @@ public final class TeamAI {
         // stable sort and Swift's unstable one agree by construction rather than by
         // luck. Every sort in this port has the same property; they are called out
         // individually.
+        // Broken into separate accumulations because one older-toolchain compiler
+        // (GitHub's macos-15 runner) could not type-check the single expression in
+        // reasonable time. The arithmetic and its evaluation order are unchanged.
         func score(_ p: AIPlayer) -> Double {
-            p.attr.decision * 1.0 + (p.attr.throwAccuracy[.backhand] ?? 0) * 0.5
-                + (p.attr.throwAccuracy[.forehand] ?? 0) * 0.5 + p.attr.throwPower * 0.25
-                + (p.archetype == .handler ? 60 : 0) - Double(p.id) * 1e-4
+            var s: Double = p.attr.decision * 1.0
+            s += (p.attr.throwAccuracy[.backhand] ?? 0) * 0.5
+            s += (p.attr.throwAccuracy[.forehand] ?? 0) * 0.5
+            s += p.attr.throwPower * 0.25
+            s += (p.archetype == .handler ? 60.0 : 0.0)
+            s -= Double(p.id) * 1e-4
+            return s
         }
         let ranked = mates.sorted { score($0) > score($1) }
         rankedIds = ranked.map(\.id)
