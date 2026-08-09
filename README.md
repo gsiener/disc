@@ -13,7 +13,7 @@ underneath; the simulation won. Today the repository is two things:
    allows and inside a stated envelope where libm differs by an ulp.**
 
 The Three.js build still deploys as a renderer preview
-([gsiener.github.io/ultimate-threejs](https://gsiener.github.io/ultimate-threejs/)),
+([gsiener.github.io/disc](https://gsiener.github.io/disc/)),
 but it is not where the game lives anymore.
 
 > **Status: the first playable version exists.** Full matches run on an iPhone —
