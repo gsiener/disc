@@ -241,10 +241,19 @@ extension TeamAI {
                     let pStay = Playbook.smoothstep(0.2, 4.5, room)
                     completion = clamp(
                         pJump * pLane * pStay * (0.75 + 0.25 * pThrow), 0.01, 0.99)
-                    // The pin: how bad the opponent's field position is after the miss.
+                    /// The pin: how bad the opponent's field position is after the miss.
+                    ///
+                    /// 0.30 was set when a huck never completed — with the catch point
+                    /// mispredicted, deep throws went 3-for-25 — so the term was carrying the
+                    /// whole deep game on the value of the MISS, and the AI was pulling the
+                    /// trigger on shots it priced at 11%. With the chase fixed the same throws
+                    /// go 21-for-57, and a credit sized to make bad hucks worth taking now buys
+                    /// bad hucks on top of good ones: at 0.30 completion falls to 84.4%, outside
+                    /// the sport's band, for a deep game that 0.24 delivers anyway. The pin is
+                    /// real and it stays; it is no longer the reason to throw.
                     let pin = 1 - possessionValue(64 - clamp(newYards, 0, 64))
                     ev = completion * gainValue
-                        + (1 - completion) * (0.30 * pin - loss * 0.55)
+                        + (1 - completion) * (0.24 * pin - loss * 0.55)
                         - holdValue
                 } else {
                     ev = completion * gainValue - (1 - completion) * loss - holdValue

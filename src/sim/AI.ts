@@ -269,7 +269,25 @@ function validFlightSamples(v: unknown): v is FlightSample[] {
 }
 
 function discPeer(sys: Record<string, unknown> | undefined): DiscPeer | null {
-  const s = sys?.['disc'] as DiscPeer | undefined;
+  /**
+   * `ctx.sys['disc']` is the RENDER system, and it does not exist in a headless
+   * match — so this reference sim ran its whole deep game on the fallback glide
+   * integrator below, while the Swift port wires the disc's own integrator in
+   * (`w.discPeer = disc`, `Engine.swift`) and does not. The two were reasoning
+   * about different discs.
+   *
+   * It shows up as a receiver who cannot chase a huck. Measured over 182 deep
+   * flights: the disc landed within 1.0 m of where it was aimed, the intended
+   * receiver was the man chasing it, and he still finished 10 m away, because
+   * the point he was running at moved 0.165 m per FRAME — a target travelling
+   * at 20 m/s. Nothing about the throw was wrong; the catch point was fiction.
+   *
+   * `GameSystem.discRuntime` is the same object the render system wraps and
+   * exposes the same `predictPath`, so prefer it — `src/sim/move/Separation.ts`
+   * already reaches the disc this way, for the same reason.
+   */
+  const game = sys?.['game'] as { discRuntime?: DiscPeer } | undefined;
+  const s = (game?.discRuntime ?? sys?.['disc']) as DiscPeer | undefined;
   if (!s || typeof s.predictPath !== 'function') return null;
   const known = DISC_PEER_OK.get(s as object);
   if (known === false) return null;
@@ -2283,10 +2301,22 @@ export class TeamAI {
           const pStay = smoothstep(0.2, 4.5, room);
           completion = clamp(
             pJump * pLane * pStay * (0.75 + 0.25 * pThrow), 0.01, 0.99);
-          // The pin: how bad the opponent's field position is after the miss.
+          /**
+           * The pin: how bad the opponent's field position is after the miss.
+           *
+           * 0.30 was set when a huck never completed — with the catch point
+           * mispredicted, deep throws went 3-for-25 — so the term was carrying
+           * the whole deep game on the value of the MISS, and the AI was
+           * pulling the trigger on shots it priced at 11%. With the chase
+           * fixed the same throws go 21-for-57, and a credit sized to make bad
+           * hucks worth taking now buys bad hucks on top of good ones: at 0.30
+           * completion falls to 84.4%, outside the sport's band, for a deep
+           * game that 0.24 delivers anyway. The pin is real and it stays; it
+           * is no longer the reason to throw.
+           */
           const pin = 1 - possessionValue(64 - clamp(newYards, 0, 64));
           ev = completion * gainValue
-            + (1 - completion) * (0.30 * pin - loss * 0.55)
+            + (1 - completion) * (0.24 * pin - loss * 0.55)
             - holdValue;
         } else {
           ev = completion * gainValue - (1 - completion) * loss - holdValue;
