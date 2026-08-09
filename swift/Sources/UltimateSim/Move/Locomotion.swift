@@ -101,6 +101,77 @@ public final class Locomotion {
 
     public static let DEFAULT_RADIUS = 0.32
 
+    // MARK: - the pivot
+    //
+    // THE ONE CONSTRAINT THE SPORT IS BUILT ON: possession may not advance except
+    // through the air. A thrower has one foot he may not move.
+    //
+    // Ultimate does not freeze a receiver the instant the disc touches his hands —
+    // WFDF 18.2 / USAU 12.3 give him the steps he needs to stop. So this is two
+    // regimes, not one:
+    //
+    //   GRACE   From the moment he is anchored until he is walking pace (or until
+    //           the allowance runs out), his feet are his own. This is the momentum
+    //           he arrived with, and the rules pay for it. The pivot is established
+    //           where he ENDS this, not where he caught it, which is also how the
+    //           yardage works in the real game.
+    //   LOCKED  One foot is now a fixed point and the leg from it to the body is
+    //           inextensible at PIVOT_R. Inside that disc he is free — he may turn,
+    //           lean, step the free foot anywhere it reaches. At full stretch the
+    //           leg pushes back, and the push is finite: PIVOT_ARREST is what a
+    //           planted leg can take out of a moving body. Under that, the body is
+    //           held and the foot does not move at all. Over it — a man who tries to
+    //           run out of his own pivot, or one shoved hard — the foot is dragged,
+    //           and the metres it is dragged are exactly what `isTravel` measures
+    //           against `travelTolerance`.
+    //
+    // The arithmetic that ties the two constants to the rule: a body arriving at full
+    // stretch with outward speed v drags the foot about v²/(2·PIVOT_ARREST) before the
+    // leg wins. PIVOT_ARREST is set from the one case that has to stay legal — a
+    // handler lunging out to a break-side throw. He can cover the 0.75 m from the
+    // middle of his own stance at about 3.2 m/s while still driving, and at 30 m/s² the
+    // leg takes that off him inside 0.21 m, comfortably under the 0.35 m tolerance.
+    // Clearing the tolerance needs better than 4 m/s at full stretch, which no body
+    // reaches inside the pivot disc — only one that was already running when the foot
+    // went down. That is the intended shape: pivoting hard is free, carrying is a
+    // travel.
+
+    /// How far the body centre may sit from the established pivot foot (m).
+    public static let PIVOT_R = 0.75
+    /// Deceleration a planted leg can take out of the body it is holding (m/s^2).
+    public static let PIVOT_ARREST = 30.0
+    /// At or below this ground speed the receiver has stopped and the pivot locks.
+    public static let PIVOT_STOP_SPEED = 1.2
+    /// Longest momentum-arresting window after gaining possession (s).
+    public static let PIVOT_GRACE = 1.5
+    /// One long step of slack on top of a maximal stop, before it is carrying (m).
+    public static let PIVOT_STOP_SLACK = 0.6
+    /// And no receiver is owed more than this, whatever he caught it at (m).
+    ///
+    /// A full-speed catch genuinely needs three metres or so of grass to stop in, and
+    /// the rules pay for them. Nothing pays for more: past that a man is not stopping,
+    /// he is running, and the budget has to end somewhere the offence cannot lean on.
+    /// The exact figure is set by the reference harness, which holds the worst momentum
+    /// excursion measured from the catch under 4.5 m — this cap plus the pivot radius
+    /// plus a landing is what fits inside that.
+    public static let PIVOT_CARRY_MAX = 3.2
+
+    /// Live state of one holder's pivot. A struct in a dictionary, matching the
+    /// reference's `Map<number, PivotState>`.
+    struct PivotState {
+        /// Sim time (this player's own clock) the grace window opened.
+        var t0: Double
+        /// True once the foot is established and may no longer be picked up.
+        var locked: Bool
+        /// World XZ of the established foot. Slips only when the leg is overpowered.
+        var x: Double
+        var z: Double
+        /// Where the grace window opened, and how far it is allowed to run from there.
+        var gx: Double
+        var gz: Double
+        var budget: Double
+    }
+
     // MARK: - identity as a system
 
     public let name = "locomotion"
@@ -124,6 +195,7 @@ public final class Locomotion {
     var rng = Rng(seed: 0x10c0_5eed)
     var byId: [Int: LocoPlayer] = [:]
     var lastCutEnd: [Int: Double] = [:]
+    var pivots: [Int: PivotState] = [:]
     let discProbe = DiscProbe()
     var discFocus = DiscFocus(x: 0, z: 0, live: false)
 
@@ -209,6 +281,7 @@ public final class Locomotion {
     public func remove(_ id: Int) {
         guard let p = byId[id] else { return }
         byId.removeValue(forKey: id)
+        pivots.removeValue(forKey: id)
         // `indexOf` is identity comparison in JS; `LocoPlayer` is a class, so `===` is
         // the faithful translation and not `==`.
         if let i = players.firstIndex(where: { $0 === p }) { players.remove(at: i) }
@@ -449,8 +522,150 @@ public final class Locomotion {
             stepGround(p, desired, dt)
         }
 
+        stepPivot(p, dt)
         stepStamina(p, dt)
         return p
+    }
+
+    // MARK: - pivot
+
+    /// The disc holder's pivot foot. Runs after the solve, because it is a constraint
+    /// on where the body ended up rather than a force in the budget: the friction
+    /// ellipse decides how the man moves, and then his own planted leg decides how far
+    /// that is allowed to take him.
+    ///
+    /// Engaged by `anchored`, which the play layer already sets for exactly one body —
+    /// the thrower in LIVE_POSSESSION — and clears the moment he releases. See the
+    /// note on `PIVOT_R` for the model.
+    private func stepPivot(_ p: LocoPlayer, _ dt: Double) {
+        if !p.anchored {
+            pivots.removeValue(forKey: p.id)
+            return
+        }
+
+        var s = pivots[p.id] ?? openGrace(p)
+
+        // A body off its feet has no pivot foot to stand on. A sky catch or a knock-down
+        // suspends the pivot and gives him the time back — but NOT the ground. The
+        // budget is measured from where he gained the disc and is never refilled,
+        // because a man who lands, jogs three metres, stumbles and jogs three more has
+        // still walked six metres up the pitch with it.
+        if p.air.airborne || p.prone {
+            s.locked = false
+            s.t0 = p.t
+            s.x = p.foot.pos.x
+            s.z = p.foot.pos.z
+            pivots[p.id] = s
+            return
+        }
+
+        let speed = Foundation.hypot(p.vel.x, p.vel.z)
+        if !s.locked {
+            let run = Foundation.hypot(p.pos.x - s.gx, p.pos.z - s.gz)
+            if speed > Locomotion.PIVOT_STOP_SPEED && p.t - s.t0 < Locomotion.PIVOT_GRACE
+                && run < s.budget
+            {
+                // Still arresting. His feet are his own; track them so the lock lands on
+                // the foot he is actually standing on.
+                s.x = p.foot.pos.x
+                s.z = p.foot.pos.z
+                pivots[p.id] = s
+                return
+            }
+            s.locked = true
+            s.x = p.foot.pos.x
+            s.z = p.foot.pos.z
+        }
+
+        // Locked. The foot is a fixed point in the world; the gait no longer owns it, so
+        // write it back over whatever the stride solver did with it.
+        p.foot.pos.x = s.x
+        p.foot.pos.z = s.z
+        p.foot.pos.y = p.groundY
+        p.foot.contact = true
+
+        let dx = p.pos.x - s.x
+        let dz = p.pos.z - s.z
+        let r = Foundation.hypot(dx, dz)
+        if r <= Locomotion.PIVOT_R {
+            pivots[p.id] = s
+            return
+        }
+
+        let nx = dx / r
+        let nz = dz / r
+        let vOut = p.vel.x * nx + p.vel.z * nz
+        let allow = Locomotion.PIVOT_ARREST * dt
+        if vOut > 0 {
+            let cut = Swift.min(vOut, allow)
+            p.vel.x -= nx * cut
+            p.vel.z -= nz * cut
+        }
+
+        if vOut <= allow {
+            // The leg wins: the body stops at full stretch and the foot stays put.
+            p.pos.x = s.x + nx * Locomotion.PIVOT_R
+            p.pos.z = s.z + nz * Locomotion.PIVOT_R
+        } else {
+            // The leg loses. He is dragging his pivot foot, which is the offence.
+            s.x = p.pos.x - nx * Locomotion.PIVOT_R
+            s.z = p.pos.z - nz * Locomotion.PIVOT_R
+            p.foot.pos.x = s.x
+            p.foot.pos.z = s.z
+        }
+        pivots[p.id] = s
+    }
+
+    /// Open the momentum allowance for a body that has just gained the disc.
+    ///
+    /// The distance budget is the rule itself, not a fudge factor: WFDF 18.2.2 says a
+    /// receiver in motion must reduce speed *as quickly as possible*, so what he is
+    /// owed is the ground a maximal stop from his catching speed needs — v0²/2a — plus
+    /// one long step of slack. Stop that hard and the pivot is established wherever you
+    /// came to rest, however far downfield that is. Coast instead, and the budget runs
+    /// out underneath a body that is still moving: the foot locks under a man at speed,
+    /// his own leg cannot check him, and it drags. Which is the call, and is why this is
+    /// measured rather than timed.
+    private func openGrace(_ p: LocoPlayer) -> PivotState {
+        let v = Foundation.hypot(p.vel.x, p.vel.z)
+        let brake = Swift.max(1, p.derived.brakeMax)
+        return PivotState(
+            t0: p.t,
+            locked: false,
+            x: p.foot.pos.x,
+            z: p.foot.pos.z,
+            gx: p.pos.x,
+            gz: p.pos.z,
+            budget: Swift.min(
+                (v * v) / (2 * brake) + Locomotion.PIVOT_STOP_SLACK, Locomotion.PIVOT_CARRY_MAX)
+        )
+    }
+
+    /// Where this player's pivot foot is established, or nil if he has none — he is not
+    /// the thrower, or he is still inside the momentum allowance.
+    ///
+    /// The rules layer compares this against the pivot it recorded; the gap is a travel.
+    /// Reporting nothing during the grace window is deliberate: a receiver who is still
+    /// stopping has no established foot to have moved.
+    public func pivotOf(_ id: Int) -> Vec2d? {
+        guard let s = pivots[id], s.locked else { return nil }
+        return Vec2d(s.x, s.z)
+    }
+
+    /// Re-establish the pivot under a body that has been put back on its spot — the
+    /// remedy after an accepted travel. Without this the foot is still off its mark and
+    /// the same call fires again on the next step, forever.
+    public func rePivot(_ id: Int, _ x: Double, _ z: Double) {
+        let p = byId[id]
+        pivots[id] = PivotState(
+            t0: p?.t ?? 0, locked: true, x: x, z: z, gx: x, gz: z,
+            budget: Locomotion.PIVOT_STOP_SLACK)
+        if let p {
+            p.foot.pos.x = x
+            p.foot.pos.z = z
+            p.foot.pos.y = p.groundY
+            p.foot.contact = true
+        }
     }
 
     // MARK: - airborne

@@ -604,6 +604,8 @@ public final class Engine {
         //    post-score delay, a timeout or halftime expires.
         game.step(dt, observation())
         if isOver { return }
+        // The machine has flagged any travel; somebody still has to call it.
+        policeTravel()
 
         // 2. Whatever the resulting phase demands of the play layer.
         servicePhase()
@@ -685,9 +687,15 @@ public final class Engine {
     /// marking. The marker itself is the defending `TeamAI`'s own read, which is the same
     /// player it is drawing the mark for.
     ///
-    /// `pivotFoot` is deliberately **not** reported; see the note on `travels` in the
-    /// engine's report. Locomotion has no pivot constraint, so a thrower drifts a metre
-    /// while he looks the field off and every held frame would read as a travel.
+    /// `pivotFoot` IS reported now, and only when there is one to report.
+    ///
+    /// It used to be left out with a note that locomotion had no pivot constraint, so a
+    /// thrower drifted a metre while he looked the field off and every held frame would
+    /// have read as a travel. `Locomotion.stepPivot` is that constraint: it gives a
+    /// receiver the steps the rules owe him, establishes a foot where he stops, and
+    /// holds him to `PIVOT_R` of it thereafter. `pivotOf` reports the foot only once it
+    /// is established — during the momentum allowance there is no pivot yet, and a
+    /// receiver who is still stopping has no foot that could have moved.
     private func observation() -> FrameObservation {
         var obs = FrameObservation()
 
@@ -738,7 +746,56 @@ public final class Engine {
         }
         obs.defenders = players.filter { $0.team == defence }.map { Observed(id: $0.id, pos: $0.pos) }
         obs.offence = players.filter { $0.team == holder.team }.map { Observed(id: $0.id, pos: $0.pos) }
+
+        // THE PIVOT IS ESTABLISHED WHERE HE STOPS, not where he caught it — which is
+        // also why a receiver keeps the yards his momentum earned him. So the machine's
+        // pivot is moved once, at the moment locomotion locks the foot, and every travel
+        // after that is measured from there.
+        if game.phase == .livePossession, let foot = loco.pivotOf(holder.id) {
+            if pivotOwner != holder.id {
+                pivotOwner = holder.id
+                game.setPivot(Vec3d(foot.x, 0, foot.z))
+            }
+            obs.pivotFoot = Vec3d(foot.x, 0, foot.z)
+        } else {
+            pivotOwner = nil
+        }
         return obs
+    }
+
+    /// Whose established pivot the machine has already been told about.
+    private var pivotOwner: Int?
+
+    /// A travel, called and resolved.
+    ///
+    /// `GameState.observe` has already flagged it and written the play-by-play line; a
+    /// flag is not a call. In a self-officiated sport somebody has to say it, and the
+    /// only body close enough to see the foot is the mark — so a travel nobody is
+    /// marking is a travel nobody calls, which is both the rule and the reason this is
+    /// gated on there being a marker.
+    ///
+    /// The remedy is WFDF 18.2.4: the thrower returns to his pivot and the count backs
+    /// up one. `resolveCall` owns both halves of that; all this does is put the body
+    /// back on the spot the machine kept for it and re-establish the foot there, without
+    /// which the same call fires again on the very next step.
+    private func policeTravel() {
+        guard game.phase == .livePossession,
+            let id = game.thrower, let thrower = player(id),
+            let marker = game.marker,
+            let foot = loco.pivotOf(id),
+            isTravel(game.pivot, Vec3d(foot.x, 0, foot.z), game.rules)
+        else { return }
+        guard game.makeCall(.travel, marker, id, Vec3d(foot.x, 0, foot.z)).ok else { return }
+        game.resolveCall(false)
+        thrower.pos.x = game.pivot.x
+        thrower.pos.z = game.pivot.z
+        thrower.vel = .zero
+        if let body = loco.get(id) {
+            body.pos.x = game.pivot.x
+            body.pos.z = game.pivot.z
+            body.vel = .zero
+        }
+        loco.rePivot(id, game.pivot.x, game.pivot.z)
     }
 
     /// The duties a phase puts on the play layer, before anybody decides anything.

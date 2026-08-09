@@ -963,6 +963,15 @@ export class GameSystem implements System {
      * side, and inward motion is untouched so he can always recover. The result
      * is a disc of radius PIVOT_R he can move freely inside and cannot leave —
      * which is what a pivot foot actually is.
+     *
+     * SINCE THE PIVOT MOVED INTO THE BODY, this is stick shaping and nothing
+     * more. `Locomotion.stepPivot` now holds the same radius against the man's
+     * own legs — for the AI's throwers as well as the human's — and the limit
+     * cycle described below was hard contact splitting its positional
+     * correction by inverse mass, which `invMass` has since fixed. What is left
+     * here matters in one window only: during the momentum allowance after a
+     * catch, when locomotion has not established a foot yet and the stick can
+     * still ask for more ground than the rules will pay for.
      */
     if (this.gs.thrower === e.id && this.gs.phase === 'LIVE_POSSESSION') {
       d.effort = Math.min(d.effort ?? 1, 0.34);
@@ -1946,27 +1955,78 @@ export class GameSystem implements System {
     // of bounds where nobody can legally reach it.
     const liveDisc = gs.phase !== 'TURNOVER_DEAD' && gs.phase !== 'PRE_PULL';
 
+    /**
+     * THE PIVOT FOOT, AND THE ONE THING THE RULES LAYER MAY BE TOLD ABOUT IT.
+     *
+     * `Locomotion` establishes the foot — see `stepPivot` there — and reports it
+     * only once it is established. During the momentum allowance after a catch
+     * there is no pivot yet and this is `null`, which is exactly right: a
+     * receiver still stopping has no foot that could have moved. Reporting his
+     * running feet instead (which this used to do) made every catch on the move
+     * read as a travel the instant he was 0.35 m past where he caught it.
+     *
+     * The other half of the same rule is that the pivot is established WHERE HE
+     * STOPS, not where he caught it — that is why a receiver keeps the yards his
+     * momentum earned him. So the machine's pivot is moved once, at the moment
+     * locomotion locks the foot, and every travel after that is measured from
+     * there.
+     */
+    const pivotFoot = thrower && gs.phase === 'LIVE_POSSESSION'
+      ? this.loco.pivotOf(thrower.id) : null;
+    if (!pivotFoot) {
+      this.pivotOwner = -1;
+    } else if (this.pivotOwner !== thrower!.id) {
+      this.pivotOwner = thrower!.id;
+      gs.setPivot({ x: pivotFoot.x, y: 0, z: pivotFoot.z });
+    }
+
     gs.step(dt, {
       discPos: liveDisc ? { x: s.pos.x, y: s.pos.y, z: s.pos.z } : undefined,
       throwerPos: thrower ? { x: thrower.loco.pos.x, y: 0, z: thrower.loco.pos.z } : undefined,
-      /**
-       * ALWAYS supply the pivot foot while someone is holding the disc.
-       *
-       * This used to be gated on the thrower moving slower than 0.6 m/s, which
-       * switched travel detection OFF in exactly the case it exists to catch:
-       * run with the disc and `pivotFoot` went undefined, `isTravel` was never
-       * called, and nothing was flagged. The guard was presumably meant to
-       * avoid crediting a travel to a body still decelerating from a catch —
-       * but that belongs in the rules layer, which owns the momentum
-       * allowance, not in whether the observation is reported at all.
-       */
-      pivotFoot: thrower
-        ? { x: thrower.loco.foot.pos.x, y: 0, z: thrower.loco.foot.pos.z } : undefined,
+      pivotFoot: pivotFoot ? { x: pivotFoot.x, y: 0, z: pivotFoot.z } : undefined,
       markerId,
       markerPos,
       defenders: thrower ? this.bodiesOf(1 - thrower.team as TeamId) : undefined,
       offence: thrower ? this.bodiesOf(thrower.team) : undefined,
     });
+
+    if (thrower && pivotFoot && markerId !== null
+      && gs.phase === 'LIVE_POSSESSION' && gs.thrower === thrower.id) {
+      this.callTravel(thrower, pivotFoot, markerId);
+    }
+  }
+
+  /** Set once the machine has been told where this thrower's pivot is. */
+  private pivotOwner = -1;
+
+  /**
+   * A travel, called and resolved.
+   *
+   * `GameState.observe` has already flagged it and written the play-by-play
+   * line; a flag is not a call. In a self-officiated sport somebody has to say
+   * it, and the only bodies close enough to see the foot are the mark — so a
+   * travel nobody is marking is a travel nobody calls, which is both the rule
+   * and the reason this is gated on `markerId`.
+   *
+   * The remedy is WFDF 18.2.4: the thrower returns to his pivot and the count
+   * backs up one. `resolveCall` owns both halves of that; all this does is put
+   * the body back on the spot the machine kept for it and re-establish the foot
+   * there, without which the same call fires again on the very next step.
+   *
+   * Called only while the phase is still LIVE_POSSESSION and the thrower is
+   * still the same man `stepRules` observed. `gs.step` can flip both inside the
+   * tick — a stall-out, a release, a team-mate catching — and `gs.pivot` moves
+   * with them, which turns last frame's foot into a metre of imaginary travel.
+   */
+  private callTravel(thrower: RosterEntry, foot: { x: number; z: number }, markerId: number): void {
+    const gs = this.gs;
+    if (Math.hypot(foot.x - gs.pivot.x, foot.z - gs.pivot.z) <= gs.rules.travelTolerance) return;
+    if (!gs.makeCall('travel', markerId, thrower.id, { x: foot.x, y: 0, z: foot.z }).ok) return;
+    gs.resolveCall(false);
+    thrower.loco.pos.x = gs.pivot.x;
+    thrower.loco.pos.z = gs.pivot.z;
+    thrower.loco.vel.set(0, 0, 0);
+    this.loco.rePivot(thrower.id, gs.pivot.x, gs.pivot.z);
   }
 
   /**

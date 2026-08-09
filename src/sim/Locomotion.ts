@@ -114,6 +114,79 @@ const COLLIDE_Y_SPAN = 1.0;
 
 const DEFAULT_RADIUS = 0.32;
 
+/* --------------------------------------------------------------- the pivot
+ *
+ * THE ONE CONSTRAINT THE SPORT IS BUILT ON: possession may not advance except
+ * through the air. A thrower has one foot he may not move.
+ *
+ * Ultimate does not freeze a receiver the instant the disc touches his hands —
+ * WFDF 18.2 / USAU 12.3 give him the steps he needs to stop. So this is two
+ * regimes, not one:
+ *
+ *   GRACE   From the moment he is anchored until he is walking pace (or until
+ *           the window expires), his feet are his own. This is the momentum he
+ *           arrived with, and the rules pay for it. The pivot is established
+ *           where he ENDS this, not where he caught it, which is also how the
+ *           yardage works in the real game.
+ *   LOCKED  One foot is now a fixed point and the leg from it to the body is
+ *           inextensible at PIVOT_R. Inside that disc he is free — he may turn,
+ *           lean, step the free foot anywhere it reaches. At full stretch the
+ *           leg pushes back, and the push is finite: PIVOT_ARREST is what a
+ *           planted leg can take out of a moving body. Under that, the body is
+ *           held and the foot does not move at all. Over it — a man who tries
+ *           to run out of his own pivot, or one shoved hard — the foot is
+ *           dragged, and the metres it is dragged are exactly what
+ *           `Rules.isTravel` measures against `travelTolerance`.
+ *
+ * The arithmetic that ties the two constants to the rule: a body arriving at
+ * full stretch with outward speed v drags the foot about v^2/(2*PIVOT_ARREST)
+ * before the leg wins. PIVOT_ARREST is set from the one case that has to stay
+ * legal — a handler lunging out to a break-side throw. He can cover the 0.75 m
+ * from the middle of his own stance at about 3.2 m/s while still driving, and
+ * at 30 m/s^2 the leg takes that off him inside 0.21 m, comfortably under the
+ * 0.35 m tolerance. Clearing the tolerance needs better than 4 m/s at full
+ * stretch, which no body reaches inside the pivot disc — only one that was
+ * already running when the foot went down. That is the intended shape:
+ * pivoting hard is free, carrying is a travel.
+ */
+
+/** How far the body centre may sit from the established pivot foot (m). */
+const PIVOT_R = 0.75;
+/** Deceleration a planted leg can take out of the body it is holding (m/s^2). */
+const PIVOT_ARREST = 30;
+/** At or below this ground speed the receiver has stopped and the pivot locks. */
+const PIVOT_STOP_SPEED = 1.2;
+/** Longest momentum-arresting window after gaining possession (s). */
+const PIVOT_GRACE = 1.5;
+
+/** One long step of slack on top of a maximal stop, before it is carrying (m). */
+const PIVOT_STOP_SLACK = 0.6;
+/**
+ * And no receiver is owed more than this, whatever he caught it at (m).
+ *
+ * A full-speed catch genuinely needs three metres or so of grass to stop in, and
+ * the rules pay for them. Nothing pays for more: past that a man is not
+ * stopping, he is running, and the budget has to end somewhere the offence
+ * cannot lean on. The exact figure is set by the reference harness, which holds
+ * the worst momentum excursion measured from the catch under 4.5 m — this cap
+ * plus the pivot radius plus a landing is what fits inside that.
+ */
+const PIVOT_CARRY_MAX = 3.2;
+
+interface PivotState {
+  /** Sim time (this player's own clock) the grace window opened. */
+  t0: number;
+  /** True once the foot is established and may no longer be picked up. */
+  locked: boolean;
+  /** World XZ of the established foot. Slips only when the leg is overpowered. */
+  x: number;
+  z: number;
+  /** Where the grace window opened, and how far it is allowed to run from there. */
+  gx: number;
+  gz: number;
+  budget: number;
+}
+
 /* --------------------------------------------------------------- scratch */
 
 const SURF: Surface = { y: 0, n: new THREE.Vector3(0, 1, 0) };
@@ -225,6 +298,7 @@ export class Locomotion implements System {
   private rng = new Rng(0x10c0_5eed);
   private byId = new Map<number, LocoPlayer>();
   private lastCutEnd = new Map<number, number>();
+  private pivots = new Map<number, PivotState>();
   private sepX = new Float64Array(16);
   private sepZ = new Float64Array(16);
   private sepR = new Float64Array(16);
@@ -309,6 +383,7 @@ export class Locomotion implements System {
     const p = this.byId.get(id);
     if (!p) return;
     this.byId.delete(id);
+    this.pivots.delete(id);
     const i = this.players.indexOf(p);
     if (i >= 0) this.players.splice(i, 1);
   }
@@ -515,8 +590,150 @@ export class Locomotion implements System {
     if (p.air.airborne) this.stepAir(p, desired, dt);
     else this.stepGround(p, desired, dt);
 
+    this.stepPivot(p, dt);
     this.stepStamina(p, dt);
     return p;
+  }
+
+  /* --------------------------------------------------------------- pivot */
+
+  /**
+   * The disc holder's pivot foot. Runs after the solve, because it is a
+   * constraint on where the body ended up rather than a force in the budget:
+   * the friction ellipse decides how the man moves, and then his own planted
+   * leg decides how far that is allowed to take him.
+   *
+   * Engaged by `anchored`, which the game layer already sets for exactly one
+   * body — the thrower in LIVE_POSSESSION — and clears the moment he releases.
+   * See the block comment on PIVOT_R for the model.
+   */
+  private stepPivot(p: LocoPlayer, dt: number): void {
+    if (!p.anchored) { this.pivots.delete(p.id); return; }
+
+    let s = this.pivots.get(p.id);
+    if (!s) {
+      s = this.openGrace(p);
+      this.pivots.set(p.id, s);
+    }
+
+    // A body off its feet has no pivot foot to stand on. A sky catch or a
+    // knock-down suspends the pivot and gives him the time back — but NOT the
+    // ground. The budget is measured from where he gained the disc and is never
+    // refilled, because a man who lands, jogs three metres, stumbles and jogs
+    // three more has still walked six metres up the pitch with it.
+    if (p.air.airborne || p.prone) {
+      s.locked = false;
+      s.t0 = p.t;
+      s.x = p.foot.pos.x;
+      s.z = p.foot.pos.z;
+      return;
+    }
+
+    const speed = Math.hypot(p.vel.x, p.vel.z);
+    if (!s.locked) {
+      const run = Math.hypot(p.pos.x - s.gx, p.pos.z - s.gz);
+      if (speed > PIVOT_STOP_SPEED && p.t - s.t0 < PIVOT_GRACE && run < s.budget) {
+        // Still arresting. His feet are his own; track them so the lock lands
+        // on the foot he is actually standing on.
+        s.x = p.foot.pos.x;
+        s.z = p.foot.pos.z;
+        return;
+      }
+      s.locked = true;
+      s.x = p.foot.pos.x;
+      s.z = p.foot.pos.z;
+    }
+
+    // Locked. The foot is a fixed point in the world; the gait no longer owns
+    // it, so write it back over whatever the stride solver did with it.
+    p.foot.pos.x = s.x;
+    p.foot.pos.z = s.z;
+    p.foot.pos.y = p.groundY;
+    p.foot.contact = true;
+
+    const dx = p.pos.x - s.x;
+    const dz = p.pos.z - s.z;
+    const r = Math.hypot(dx, dz);
+    if (r <= PIVOT_R) return;
+
+    const nx = dx / r, nz = dz / r;
+    const vOut = p.vel.x * nx + p.vel.z * nz;
+    const allow = PIVOT_ARREST * dt;
+    if (vOut > 0) {
+      const cut = Math.min(vOut, allow);
+      p.vel.x -= nx * cut;
+      p.vel.z -= nz * cut;
+    }
+
+    if (vOut <= allow) {
+      // The leg wins: the body stops at full stretch and the foot stays put.
+      p.pos.x = s.x + nx * PIVOT_R;
+      p.pos.z = s.z + nz * PIVOT_R;
+      return;
+    }
+
+    // The leg loses. He is dragging his pivot foot, which is the offence.
+    s.x = p.pos.x - nx * PIVOT_R;
+    s.z = p.pos.z - nz * PIVOT_R;
+    p.foot.pos.x = s.x;
+    p.foot.pos.z = s.z;
+  }
+
+  /**
+   * Open the momentum allowance for a body that has just gained the disc.
+   *
+   * The distance budget is the rule itself, not a fudge factor: WFDF 18.2.2
+   * says a receiver in motion must reduce speed *as quickly as possible*, so
+   * what he is owed is the ground a maximal stop from his catching speed needs
+   * — v0^2 / 2a — plus one long step of slack. Stop that hard and the pivot is
+   * established wherever you came to rest, however far downfield that is. Coast
+   * instead, and the budget runs out underneath a body that is still moving:
+   * the foot locks under a man at speed, his own leg cannot check him, and it
+   * drags. Which is the call, and is why this is measured rather than timed.
+   */
+  private openGrace(p: LocoPlayer): PivotState {
+    const v = Math.hypot(p.vel.x, p.vel.z);
+    const brake = Math.max(1, p.derived.brakeMax);
+    return {
+      t0: p.t,
+      locked: false,
+      x: p.foot.pos.x,
+      z: p.foot.pos.z,
+      gx: p.pos.x,
+      gz: p.pos.z,
+      budget: Math.min((v * v) / (2 * brake) + PIVOT_STOP_SLACK, PIVOT_CARRY_MAX),
+    };
+  }
+
+  /**
+   * Where this player's pivot foot is established, or null if he has none —
+   * he is not the thrower, or he is still inside the momentum allowance.
+   *
+   * The rules layer compares this against the pivot it recorded; the gap is a
+   * travel. Reporting nothing during the grace window is deliberate: a
+   * receiver who is still stopping has no established foot to have moved.
+   */
+  pivotOf(id: number): { x: number; z: number } | null {
+    const s = this.pivots.get(id);
+    return s && s.locked ? { x: s.x, z: s.z } : null;
+  }
+
+  /**
+   * Re-establish the pivot under a body that has been put back on its spot —
+   * the remedy after an accepted travel. Without this the foot is still off
+   * its mark and the same call fires again on the next step, forever.
+   */
+  rePivot(id: number, x: number, z: number): void {
+    const p = this.byId.get(id);
+    this.pivots.set(id, {
+      t0: p ? p.t : 0, locked: true, x, z, gx: x, gz: z, budget: PIVOT_STOP_SLACK,
+    });
+    if (p) {
+      p.foot.pos.x = x;
+      p.foot.pos.z = z;
+      p.foot.pos.y = p.groundY;
+      p.foot.contact = true;
+    }
   }
 
   /* ------------------------------------------------------------ airborne */
