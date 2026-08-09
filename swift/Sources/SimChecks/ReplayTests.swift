@@ -577,6 +577,10 @@ enum ReplayTests {
         switch input {
         case .drag(let dx, let dy, let shortEdge): [dx, dy, shortEdge]
         case .release(_, let ax, let ay, let az, let power, let loft): [ax, ay, az, power, loft]
+        case .charged(_, let ax, let ay, let az, let power, let loft, let quality):
+            [ax, ay, az, power, loft, quality]
+        // A tap carries no numbers at all — see `ReplayInput.defend`.
+        case .defend: []
         }
     }
 }

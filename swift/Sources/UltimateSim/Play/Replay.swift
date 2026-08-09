@@ -103,9 +103,23 @@ public struct RecordedField: Codable, Equatable, Sendable {
 /// check, a tutorial, an attract mode. `throwType` is the raw string rather than
 /// `ThrowType` because `ThrowType` does not declare `Codable`, and a recording should not
 /// be the reason it starts to.
+///
+/// `charged` is `release` plus the release *quality* the charge meter produced. It is a
+/// separate case rather than a defaulted parameter on `release` because an enum case has
+/// no defaults: widening `release` would rewrite the meaning of every recording already
+/// written, which is the one thing the version field exists to prevent. Adding a case is
+/// the compatible move — an old recording still decodes, and a recording that uses the
+/// new case simply will not load on a build that predates it.
+///
+/// `defend` is the whole of the defensive control: a tap is a *call*, carrying no
+/// coordinates (see `Engine.humanDefend`), so there is nothing to store but the tick.
 public enum ReplayInput: Codable, Equatable, Sendable {
     case drag(dx: Double, dy: Double, shortEdge: Double)
     case release(throwType: String, aimX: Double, aimY: Double, aimZ: Double, power: Double, loft: Double)
+    case charged(
+        throwType: String, aimX: Double, aimY: Double, aimZ: Double, power: Double, loft: Double,
+        quality: Double)
+    case defend
 }
 
 /// An input and the tick it is consumed by. See the file comment for why this is an
@@ -228,6 +242,15 @@ public struct Recording: Codable, Equatable, Sendable {
                 guard ax.isFinite, ay.isFinite, az.isFinite, power.isFinite, loft.isFinite else {
                     throw ReplayError.nonFiniteInput(i)
                 }
+            case .charged(let type, let ax, let ay, let az, let power, let loft, let quality):
+                guard ThrowType(rawValue: type) != nil else { throw ReplayError.unknownThrow(type) }
+                guard ax.isFinite, ay.isFinite, az.isFinite, power.isFinite, loft.isFinite,
+                    quality.isFinite
+                else {
+                    throw ReplayError.nonFiniteInput(i)
+                }
+            case .defend:
+                break
             }
         }
     }
@@ -318,6 +341,17 @@ func applyReplayInput(_ input: ReplayInput, to match: Engine) {
         // is one nobody validated, and dropping the throw beats trapping in a game.
         guard let throwType = ThrowType(rawValue: type) else { return }
         match.humanRelease(throwType, aim: Vec3d(ax, ay, az), power: power, loft: loft)
+
+    case .charged(let type, let ax, let ay, let az, let power, let loft, let quality):
+        guard let throwType = ThrowType(rawValue: type) else { return }
+        match.humanRelease(
+            throwType, aim: Vec3d(ax, ay, az), power: power, loft: loft, quality: quality)
+
+    case .defend:
+        // Refused taps are dropped identically on both paths — `humanDefend` returns nil
+        // and touches nothing when there is nothing to commit to — so a recorded tap that
+        // no longer applies costs the replay exactly what it cost the live match.
+        match.humanDefend()
     }
 }
 
@@ -431,12 +465,33 @@ public final class ReplayPlayer {
 
     /// - Throws: `ReplayError` if the recording could not produce a match. Nothing here
     ///   guesses at a missing or impossible value.
-    public init(_ recording: Recording) throws {
+    public convenience init(_ recording: Recording) throws {
+        try recording.validate()
+        try self.init(recording, match: engineForRecording(recording.field.spec, seed: recording.seed))
+    }
+
+    /// Replay into an engine the caller built.
+    ///
+    /// `engineForRecording` builds an engine from `EngineConfig.default`, which is right
+    /// for a fixture and wrong for a saved game: the shipped app builds its engine from a
+    /// difficulty the player chose, and an assist cone that differs by a degree is a
+    /// different match from the first throw. A recording does not store `EngineConfig` —
+    /// it is thirty fields of pacing constants and storing them would make every recording
+    /// a snapshot of the tuning it was made under — so the caller that knows how the match
+    /// was built is the caller that rebuilds it. Handing the engine in is how the same
+    /// playback path serves both.
+    ///
+    /// The engine must be freshly constructed and unstepped. Nothing here can check that,
+    /// which is why this is the door the app uses and `init(_:)` stays the one a fixture
+    /// uses.
+    ///
+    /// - Throws: `ReplayError` if the recording could not produce a match.
+    public init(_ recording: Recording, match: Engine) throws {
         try recording.validate()
         self.recording = recording
         self.script = recording.ordered
         self.clock = FixedClock(tickHz: recording.tickHz)
-        self.match = engineForRecording(recording.field.spec, seed: recording.seed)
+        self.match = match
         self.match.autoTeams = Set(recording.autoTeams)
         // Inputs stamped before the first tick are consumed by tick 0, not dropped.
         // `validate` has already rejected negative stamps.
@@ -643,5 +698,263 @@ extension MatchSnapshot: Equatable {
     /// — the two ways a diverged replay could report itself identical.
     public static func == (a: MatchSnapshot, b: MatchSnapshot) -> Bool {
         a.firstDifference(from: b) == nil
+    }
+}
+
+// MARK: - a match you can put down and pick up
+
+/// What a build's simulation *does*, as one short string.
+///
+/// A saved game is a seed and a list of inputs, so restoring it means running the
+/// simulation again — and a simulation that has been tuned since the save was written
+/// will run it somewhere else. Every number in this repo is under active gameplay
+/// tuning: a catch radius, a stall curve, an aggression scale, the aero table. Any of
+/// them moves the third throw of a restored game a metre, and from there the restored
+/// match is a *different* match wearing the old score. That is worse than losing the
+/// save, because nothing on screen says it happened.
+///
+/// The honest defence is to notice. A hand-maintained version constant does not: it is a
+/// number somebody has to remember to bump in the same commit that changed a coefficient,
+/// and the commit that forgets is exactly the commit that needed it. So the stamp is
+/// *measured* instead — a fixed-seed match is run for a fixed number of ticks and its
+/// `MatchSnapshot` is hashed. Change anything the simulation reads and the hash changes
+/// by itself; change nothing and it cannot change at all.
+///
+/// It is a fingerprint, not a checksum of the source: two builds agree exactly when they
+/// produce the same numbers, which is the only property a replay cares about.
+public enum SimFingerprint {
+    /// How long the canary match runs. Two seconds of 3v3 with both sides on the machine,
+    /// which is long enough to have moved twelve bodies through locomotion, run both
+    /// `TeamAI`s several times, pulled, and put the disc in somebody's hands — i.e. long
+    /// enough that most tuning lands in it — and short enough to run on the launch path.
+    /// Measured in `MatchSaveTests`, and noted there, so a canary that gets slow is a
+    /// number in the report rather than a hitch on somebody's phone.
+    public static let canaryTicks = 240
+
+    /// The one seed the canary is run at. Arbitrary, fixed forever, and *not* the engine's
+    /// default: a fingerprint that shared a seed with the checks would go quiet the day
+    /// somebody decided that particular match was the interesting one to special-case.
+    static let canarySeed: UInt32 = 0x51_5a_9d_01
+
+    /// The stamp for this build.
+    ///
+    /// `salt` folds in anything the *caller* contributes to how the engine was built — the
+    /// difficulty mapping in the app's own setup, say — which the canary cannot see because
+    /// the canary is deliberately a plain engine. A caller that passes nothing is stamping
+    /// the simulation alone, which is a true statement about a smaller thing.
+    public static func stamp(salt: String = "") -> String {
+        let m = Engine(format: .minis, target: 7, seed: canarySeed)
+        m.autoTeams = [0, 1]
+        let dt = 1.0 / 120.0
+        for _ in 0..<canaryTicks { m.step(dt: dt) }
+
+        // FNV-1a over the bit patterns. Not a cryptographic hash and not trying to be:
+        // this defends against drift, not against forgery, and the file it stamps is one
+        // the player's own device wrote.
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        func mix(_ x: UInt64) {
+            h = (h ^ x) &* 0x100_0000_01b3
+        }
+        let snap = MatchSnapshot(m)
+        for r in snap.reals { mix(r.bitPattern) }
+        for k in snap.discrete { mix(UInt64(bitPattern: Int64(k))) }
+        for b in salt.utf8 { mix(UInt64(b)) }
+        // The formats themselves are part of the promise: a recording that decodes into
+        // different meaning is a divergence a re-run of the sim cannot show.
+        mix(UInt64(Recording.currentVersion))
+        mix(UInt64(SavedMatch.currentVersion))
+        mix(UInt64(canaryTicks))
+        return String(h, radix: 16)
+    }
+}
+
+/// The handful of facts a restored match must still agree about.
+///
+/// Deliberately *not* a `MatchSnapshot`: that is 100 doubles and integers, it is the right
+/// tool for asking whether a replay is bit-exact, and it is the wrong thing to write into
+/// a save file — storing it would mean shipping a state dump beside the recording that
+/// exists precisely so no state dump is needed. This is the small, discrete, load-bearing
+/// half: the numbers a player would notice were wrong.
+///
+/// The fingerprint should already have caught a build whose simulation moved. This catches
+/// what the fingerprint cannot: a save truncated mid-write, a recording edited by hand, a
+/// change in the *app's* input path that the canary's plain engine never exercises. It is
+/// the second lock, and its answer is always to discard.
+public struct MatchChecksum: Codable, Equatable, Sendable {
+    public var tick: Int
+    public var score: [Int]
+    public var phase: String
+    public var possession: Int
+    public var carrier: Int
+    public var controlled: Int
+
+    public init(_ m: Engine, tick: Int) {
+        self.tick = tick
+        self.score = [m.score[0], m.score[1]]
+        self.phase = m.phase.rawValue
+        self.possession = m.possession
+        self.carrier = m.carrier ?? -1
+        self.controlled = m.controlled
+    }
+
+    /// A one-line description, for the failure message that says why a save was thrown
+    /// away. "It diverged" is not a bug report; "it diverged, and the score was 2-1 rather
+    /// than 2-2" is.
+    public var summary: String {
+        "tick \(tick), \(score[0])-\(score[1]), \(phase), possession \(possession)"
+    }
+}
+
+/// A match in progress, on disk.
+///
+/// A seed and a list of inputs — the same thing `Recording` has always been — plus the
+/// three things a *save* needs and a fixture does not: a stamp of the simulation that
+/// wrote it, a checksum of where it should end up, and an opaque blob of whatever the
+/// caller needs to rebuild the engine.
+///
+/// `setup` is `Data` and stays `Data` all the way through this file. The sim does not know
+/// what a difficulty setting is and should not learn: the layer that chose the engine's
+/// configuration is the layer that can encode it, and every attempt to put it here ends
+/// with `UltimateSim` importing a preference.
+public struct SavedMatch: Codable, Equatable, Sendable {
+    /// Bumped when the meaning of any field here changes. A save that does not understand
+    /// itself is discarded, exactly like a recording from the future.
+    public static let currentVersion = 1
+
+    public var version: Int
+    /// `SimFingerprint.stamp` as of the build that wrote this.
+    public var fingerprint: String
+    public var recording: Recording
+    /// Where replaying `recording` in full must arrive.
+    public var checksum: MatchChecksum
+    /// The caller's own encoding of how the engine was built. Never interpreted here.
+    public var setup: Data?
+    /// When it was written. Shown to the player — "resume" is a different offer for a game
+    /// abandoned four seconds ago and one abandoned in March — and read by nothing else.
+    public var savedAt: Date
+
+    public init(
+        version: Int = SavedMatch.currentVersion,
+        fingerprint: String,
+        recording: Recording,
+        checksum: MatchChecksum,
+        setup: Data?,
+        savedAt: Date = Date()
+    ) {
+        self.version = version
+        self.fingerprint = fingerprint
+        self.recording = recording
+        self.checksum = checksum
+        self.setup = setup
+        self.savedAt = savedAt
+    }
+
+    /// Seconds of match this save covers. What a resume prompt should say, because "a
+    /// recording of 41,000 ticks" is not a thing a player has any feeling about.
+    public var seconds: Double { recording.seconds }
+}
+
+public enum RestoreError: Error, Equatable, CustomStringConvertible {
+    /// Written by a build whose save format this one does not read.
+    case unsupportedSave(Int)
+    /// Written by a build whose simulation this one no longer reproduces.
+    case staleSim(saved: String, current: String)
+    /// Replayed to the end and arrived somewhere else. The save is discarded.
+    case diverged(want: String, got: String)
+
+    public var description: String {
+        switch self {
+        case .unsupportedSave(let v):
+            "save is version \(v), this build reads version \(SavedMatch.currentVersion)"
+        case .staleSim(let saved, let current):
+            "save was written by simulation \(saved), this build is \(current)"
+        case .diverged(let want, let got):
+            "replay arrived at \(got) but the save says \(want)"
+        }
+    }
+}
+
+/// Replays a saved match back to where it was left, in pieces.
+///
+/// In pieces because a restore is not instant and is not allowed to look like a hang. A
+/// point of 3v3 is a couple of thousand ticks and a full game to five is a couple of
+/// hundred thousand; the fast path runs them far quicker than real time — that is the
+/// whole point of a recording — but "far quicker than twenty minutes" is still long enough
+/// to owe the player a progress bar. `advance(ticks:)` runs a bounded chunk and returns, so
+/// the caller keeps its frame loop and can draw one.
+///
+/// The two checks sit at the two ends. The fingerprint is checked in `init`, before a
+/// single tick is spent on a save that cannot possibly land; the checksum is checked in
+/// `finish`, after the last one. **Neither ever repairs anything.** A save that fails
+/// either is thrown away, because resuming into a match that quietly differs from the one
+/// the player left is the failure this whole mechanism exists to avoid.
+public final class MatchRestore {
+    public let saved: SavedMatch
+    private let player: ReplayPlayer
+
+    /// - Parameters:
+    ///   - engine: a freshly built, unstepped engine, configured the way the saved match
+    ///     was. See `ReplayPlayer.init(_:match:)`.
+    ///   - fingerprint: this build's `SimFingerprint.stamp`, with the same salt the save
+    ///     was written with.
+    /// - Throws: `RestoreError` for a save this build must not resume, `ReplayError` for
+    ///   one that is not a recording at all.
+    public init(_ saved: SavedMatch, fingerprint: String, engine: Engine) throws {
+        guard saved.version == SavedMatch.currentVersion else {
+            throw RestoreError.unsupportedSave(saved.version)
+        }
+        guard saved.fingerprint == fingerprint else {
+            throw RestoreError.staleSim(saved: saved.fingerprint, current: fingerprint)
+        }
+        self.saved = saved
+        self.player = try ReplayPlayer(saved.recording, match: engine)
+    }
+
+    /// The match being rebuilt. Not finished until `finish` has said so.
+    public var match: Engine { player.match }
+    public var tick: Int { player.tick }
+    public var totalTicks: Int { saved.recording.durationTicks }
+    public var isFinished: Bool { player.isFinished }
+    /// 0…1, for a progress bar.
+    public var progress: Double {
+        totalTicks <= 0 ? 1 : Swift.min(1, Double(player.tick) / Double(totalTicks))
+    }
+
+    /// Replay at most `ticks` more ticks. Returns how many ran.
+    @discardableResult
+    public func advance(ticks: Int) -> Int {
+        var ran = 0
+        while ran < ticks && !player.isFinished {
+            player.step()
+            ran += 1
+        }
+        return ran
+    }
+
+    /// The restored match, if the replay landed where the save said it would.
+    ///
+    /// - Throws: `RestoreError.diverged`, and the caller's only correct response is to
+    ///   discard the save.
+    public func finish() throws -> Engine {
+        let got = MatchChecksum(player.match, tick: player.tick)
+        guard got == saved.checksum else {
+            throw RestoreError.diverged(want: saved.checksum.summary, got: got.summary)
+        }
+        // The events of a whole match have been piling up in a buffer nobody drained. They
+        // are real events that really happened — several minutes ago, to a player who was
+        // not watching — and handing them to a renderer would open the restored match with
+        // a burst of callouts and haptics for goals that are already on the scoreboard.
+        _ = player.match.drainEvents()
+        return player.match
+    }
+
+    /// Replay the lot in one go. For a check, or for a save short enough that chunking it
+    /// would only be ceremony.
+    public static func restore(
+        _ saved: SavedMatch, fingerprint: String, engine: Engine
+    ) throws -> Engine {
+        let r = try MatchRestore(saved, fingerprint: fingerprint, engine: engine)
+        r.advance(ticks: r.totalTicks)
+        return try r.finish()
     }
 }

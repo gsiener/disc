@@ -63,6 +63,23 @@ public struct MatchView: View {
     /// screenshot shows is the real path and not a mock of it. Off in every normal run.
     private let autoDefend: Bool
 
+    /// Seconds of play after which to save the match, throw the engine away, and restore
+    /// it from the save — the whole round trip, without a finger.
+    ///
+    /// Same door as `-charge` and `-defend on`, and the reason is sharper here than for
+    /// either of them: the save path is driven by *backgrounding the app*, and the restore
+    /// path by a button on a sheet, so between them they need a home button and a tap —
+    /// neither of which this environment can synthesise. Without this argument the entire
+    /// feature is unreachable on the Simulator, which is how a feature stops being looked
+    /// at, and worse, stops being verified.
+    ///
+    /// It runs the real functions: the same `saveMatch()` the scene phase calls, and the
+    /// same `resume(_:)` the sheet's button calls, on the same file on disk. What a
+    /// screenshot shows is the restore, not a mock of it.
+    ///
+    /// Nil in every normal run.
+    private let saveCycle: Double?
+
     /// Whether this view is the one on screen.
     ///
     /// A `TabView` builds a tab when it is first selected and then keeps it alive
@@ -112,6 +129,44 @@ public struct MatchView: View {
     /// enters the engine through this one number.
     @State private var seed: UInt32
 
+    // MARK: the match, written down
+    //
+    // A saved game here is not a state dump. It is the seed above plus the list below,
+    // which is exactly what `Replay.swift` proves is enough to rebuild a match bit for
+    // bit — see `MatchSave` for why that is the format and not merely a format.
+
+    /// Every human input this match has taken, stamped with the tick it was consumed by.
+    ///
+    /// Appended by the two places a human can touch the simulation, `throwGesture` and
+    /// `defend()`, and by nothing else. Cleared by `restart`, and adopted wholesale from
+    /// the recording when a save is resumed, so a restored match can be saved again.
+    @State private var inputs: [RecordedInput] = []
+
+    /// The saved match found on disk at launch, while it is still on offer. Cleared the
+    /// moment it is resumed, discarded, or superseded by a new match.
+    ///
+    /// Note what this is *not*: proof that the save can be restored. That costs a canary
+    /// simulation to establish and is paid in `resume`, off the launch path — see
+    /// `SimFingerprint`. This is the offer; the check is what happens when it is accepted.
+    @State private var resumable: SavedMatch?
+
+    /// How far a restore has got, 0…1, while one is running. Non-nil is what draws the
+    /// veil, so a replay of twenty minutes of match is a progress bar rather than a
+    /// freeze.
+    @State private var restoring: Double?
+
+    /// Why the last save was thrown away, if it was. Shown on the sheet, because a
+    /// RESUME button that silently does nothing is worse than no button.
+    @State private var restoreNote: String?
+
+    /// Whether the save has already been cleared for this finished match, so the result
+    /// overlay's arrival does not try to delete a file once per tick.
+    @State private var clearedAtEnd = false
+
+    /// Whether `-savecycle` has already fired. It is a one-shot: a demo that saved and
+    /// restored every ten seconds would never be playable.
+    @State private var cycled = false
+
     // MARK: fixed-tick clock state
     //
     // The sim is advanced only in whole 1/120 s ticks; see the long comment on `body`'s
@@ -136,7 +191,8 @@ public struct MatchView: View {
     /// The one and only step the simulation is advanced by. 1/120 is the regime the
     /// entire validation suite runs at (see `Replay.swift`), so it is the regime the
     /// shipped game runs at.
-    private static let tickDt = 1.0 / 120.0
+    private static let tickHz = 120
+    private static let tickDt = 1.0 / Double(tickHz)
     /// The most wall time the accumulator will hold — 0.25 s, i.e. 30 ticks of catch-up
     /// per frame at most. Anything beyond it (backgrounding, a debugger pause, a long
     /// hitch) is dropped rather than replayed, so a stall can never spiral.
@@ -351,13 +407,20 @@ public struct MatchView: View {
 
     public init(
         format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false,
-        demoCharge: Double? = nil, autoDefend: Bool = false
+        demoCharge: Double? = nil, autoDefend: Bool = false, saveCycle: Double? = nil
     ) {
         self.active = active
         self.autoDefend = autoDefend
         self.formatOverride = format
         self.skipsSetup = skipsSetup
         self.demoCharge = demoCharge
+        self.saveCycle = saveCycle
+
+        // The saved game, read off disk before anything is drawn. A file read of a few
+        // kilobytes, and deliberately *only* a file read: whether it can actually be
+        // restored is a question that costs a simulation to answer, and the launch path
+        // is not where that is paid. See `resumable`.
+        _resumable = State(initialValue: MatchSave.load())
 
         // The saved setup, with the launch argument — when there is one — overriding the
         // format it names and nothing else.
@@ -407,10 +470,26 @@ public struct MatchView: View {
                     advance(to: now)
                 }
         }
-        // Leaving the foreground pauses the match. Note what this does *not* do: resume
-        // it. See `paused`.
+        // Leaving the foreground pauses the match and writes it down. Note what this does
+        // *not* do: resume it. See `paused`.
+        //
+        // This is the save that matters. Everything that ends a session on a phone —
+        // a call, the home gesture, the system reclaiming memory an hour later — passes
+        // through here first, and it is the only moment the system promises to give the
+        // app time to do anything at all.
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { paused = true }
+            if phase != .active {
+                paused = true
+                saveMatch()
+            }
+        }
+        // The swipe out of the app switcher, which on some paths terminates without a
+        // background first. Same call, later moment, and cheap enough to do twice.
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: MatchSave.willTerminate ?? Notification.Name("flightui.never"))
+        ) { _ in
+            saveMatch()
         }
         // The one path to the coach cards that does not go through the sheet: a first run
         // launched straight into a match by `-setup off`. A player who has never been
@@ -429,6 +508,7 @@ public struct MatchView: View {
     /// costs the match nothing and buys it nothing.
     private var running: Bool {
         active && scenePhase == .active && !paused && !showSetup && !showCoach
+            && restoring == nil
     }
 
     private var matchContent: some View {
@@ -493,6 +573,21 @@ public struct MatchView: View {
                 if showSetup && active {
                     PreGameSheet(
                         setup: $setup, isRematch: hasStarted,
+                        // The saved game, offered rather than forced. A player who opens
+                        // the app wanting a fresh match should not have to finish an old
+                        // one first, and a player who was three points up should not have
+                        // to be asked twice.
+                        resume: resumable.map { saved in
+                            PreGameSheet.Resume(
+                                summary: Self.resumeSummary(saved),
+                                action: { resume(saved) },
+                                discard: {
+                                    MatchSave.clear()
+                                    resumable = nil
+                                    restoreNote = nil
+                                })
+                        },
+                        note: restoreNote,
                         onStart: {
                             Prefs.save(setup)
                             showSetup = false
@@ -509,6 +604,11 @@ public struct MatchView: View {
                         // Nothing to go back to before the first pull.
                         onDismiss: hasStarted ? { showSetup = false } : nil)
                 }
+
+                // The restore, over everything including the sheet it was started from.
+                // A match being rebuilt is not a match that can be played or configured,
+                // and the veil is what says so.
+                if let progress = restoring, active { restoringOverlay(progress) }
 
                 // The coach cards, over the sheet that can summon them.
                 if showCoach && active {
@@ -567,6 +667,17 @@ public struct MatchView: View {
         // The finger a headless run does not have. See `autoDefend`.
         if autoDefend, match.defensiveCommit == nil { defend() }
 
+        // The home button and the sheet tap a headless run does not have either. See
+        // `saveCycle`.
+        if let after = saveCycle, !cycled,
+            Double(tickCount) * Self.tickDt >= after
+        {
+            cycled = true
+            saveMatch()
+            if let saved = MatchSave.load() { resume(saved) }
+            return
+        }
+
         // Clamp the *accumulated* debt, not just this frame's: a hitch or a spell in
         // the background yields at most 0.25 s (30 ticks) of catch-up, and the rest is
         // dropped. The game slows down for a moment instead of fast-forwarding, and a
@@ -616,6 +727,14 @@ public struct MatchView: View {
                 accumulator = Swift.min(accumulator, Self.tickDt)
                 break
             }
+        }
+
+        // Full time. There is nothing left to come back to, so the file that says
+        // otherwise goes — once, not once per tick.
+        if match.isOver, !clearedAtEnd {
+            clearedAtEnd = true
+            MatchSave.clear()
+            resumable = nil
         }
 
         // The callout clocks run on wall time, outside the simulation, like everything
@@ -694,6 +813,17 @@ public struct MatchView: View {
                 drag = nil
                 hold = 0
                 guard thrown else { return }
+                // Written down at the tick that has not run yet, which is where a replay
+                // will apply it — see `Replay.swift` on why the two are the same state
+                // transition. Only a throw the engine accepted is recorded, so the tape
+                // holds what happened rather than what was attempted.
+                inputs.append(
+                    RecordedInput(
+                        tick: tickCount,
+                        input: .charged(
+                            throwType: d.type.rawValue,
+                            aimX: d.aim.x, aimY: d.aim.y, aimZ: d.aim.z,
+                            power: d.power, loft: d.loft, quality: quality)))
                 Feel.play(.release(grade))
                 // Read after the release, not before: `humanRelease` is what runs the
                 // cone select and the assist, and `selectedReceiver` and `lastAssist`
@@ -727,6 +857,11 @@ public struct MatchView: View {
     /// the game telling the player off for holding the phone.
     private func defend() {
         guard running, let commit = match.humanDefend() else { return }
+        // A tap that committed somebody is an input; a tap that was refused changed
+        // nothing and is not one. `humanDefend` refuses identically on replay, so either
+        // choice would restore correctly — recording only the taps that did something
+        // keeps the tape a list of what happened.
+        inputs.append(RecordedInput(tick: tickCount, input: .defend))
         Prefs.defenceUsed = true
         let slot = match.players.firstIndex { $0.id == commit.defender }
         defenceCall = DefenceCall(
@@ -1211,6 +1346,17 @@ public struct MatchView: View {
     /// A restart is a new match, so it draws a new seed — otherwise restarting would be
     /// the one path back to the compiled-in default and its identical wind and rosters.
     private func restart(_ setup: MatchSetup) {
+        // Starting a game throws the old one away, and that includes the copy of it on
+        // disk. A saved match that outlived the decision to start a new one would be
+        // offered again on the next launch, which is the app arguing with the last thing
+        // the player told it.
+        MatchSave.clear()
+        resumable = nil
+        restoreNote = nil
+        inputs.removeAll()
+        clearedAtEnd = false
+        restoring = nil
+
         seed = Self.freshSeed()
         match = Engine(
             format: setup.fieldSpec.gameFormat, seed: seed, config: setup.engineConfig)
@@ -1230,6 +1376,190 @@ public struct MatchView: View {
         // A rematch is a resume: whatever paused the old match has been dealt with by
         // the time somebody taps a button on the result card.
         paused = false
+    }
+
+    // MARK: putting the match down and picking it up
+
+    /// Write the match down, so killing the app does not end it.
+    ///
+    /// The recording is the seed and the inputs and nothing else; see `MatchSave` and
+    /// `Replay.swift`. Three things are true of this function and worth stating:
+    ///
+    /// **It refuses to save a match there is no point saving.** A game that has not
+    /// started, or that has already finished, is cleared rather than written — the file
+    /// exists to answer "is there a game to come back to", and a file that says yes when
+    /// the answer is no costs the player a tap and a lie.
+    ///
+    /// **It settles the tick first.** An input is stamped with the tick that has not run
+    /// yet, so a throw released between two ticks is stamped at `tickCount` while the
+    /// live match has already applied it. A recording that stopped at `tickCount` would
+    /// strand that input — the restore would replay a match in which the throw never
+    /// happened, land somewhere else, and be discarded by its own checksum. Stepping the
+    /// pending ticks costs the player 1/120 s of a match they have just left, and buys the
+    /// recording and the live match the same length.
+    ///
+    /// **It writes what it can and complains about nothing.** See `MatchSave.write`.
+    private func saveMatch() {
+        guard hasStarted, !match.isOver, restoring == nil else {
+            MatchSave.clear()
+            return
+        }
+        // Consume anything stamped at or past the current tick. At most one tick's worth
+        // in practice, because inputs arrive between frames and a frame is at least one
+        // tick — the loop is written as a loop so it cannot be wrong if that changes.
+        while let last = inputs.last?.tick, last >= tickCount {
+            match.step(dt: Self.tickDt)
+            tickCount &+= 1
+        }
+        guard tickCount > 0 else {
+            MatchSave.clear()
+            return
+        }
+
+        let recording = Recording(
+            seed: seed,
+            field: RecordedField(match.fieldSpec),
+            tickHz: Self.tickHz,
+            autoTeams: match.autoTeams.sorted(),
+            durationTicks: tickCount,
+            inputs: inputs)
+        let saved = SavedMatch(
+            fingerprint: MatchSave.fingerprint(for: setup),
+            recording: recording,
+            checksum: MatchChecksum(match, tick: tickCount),
+            setup: MatchSave.encode(setup))
+        MatchSave.write(saved)
+    }
+
+    /// Rebuild a saved match and hand it back to the player.
+    ///
+    /// Restoring means *replaying*: the engine is built again from the seed and the setup,
+    /// and the recorded inputs are fed back through the same `humanRelease` and
+    /// `humanDefend` the thumb drove, tick by tick, until the tape runs out. There is no
+    /// shortcut, because there is no state dump to load — and that is the trade this whole
+    /// design makes, a few kilobytes on disk against some seconds of arithmetic.
+    ///
+    /// Measured, in `MatchSaveTests` and therefore also on the device's own Checks tab:
+    /// a release build replays 3v3 at about 17,000 ticks per second, so half a minute of
+    /// match comes back in a quarter of a second and a full twenty-minute game takes
+    /// single-digit seconds. The `SimFingerprint` canary that decides whether the save is
+    /// even ours costs another 48 ms on top, once.
+    ///
+    /// So it is done in chunks with the screen alive between them. The work is bounded by
+    /// wall time rather than by a tick count, so a slow device draws the same progress bar
+    /// as a fast one instead of a longer freeze.
+    ///
+    /// **Every failure discards the save.** A stale fingerprint, a checksum that does not
+    /// match, a recording that will not validate: all three mean this build cannot
+    /// faithfully reproduce the match the player left, and the only honest options are to
+    /// say so and start fresh. Resuming into a match that has quietly diverged — the same
+    /// score, a disc somewhere else — is the outcome this refuses to produce.
+    private func resume(_ saved: SavedMatch) {
+        guard restoring == nil else { return }
+        restoreNote = nil
+        restoring = 0
+        showSetup = false
+        showCoach = false
+
+        // The setup the match was played under outranks the one on the sheet. Resuming a
+        // 7v7 game to seven into a 3v3 engine would not be a restore.
+        let played = MatchSave.decodeSetup(saved.setup) ?? setup
+        setup = played
+
+        Task { @MainActor in
+            let engine = Engine(
+                format: played.fieldSpec.gameFormat, seed: saved.recording.seed,
+                config: played.engineConfig)
+            do {
+                let restore = try MatchRestore(
+                    saved, fingerprint: MatchSave.fingerprint(for: played), engine: engine)
+                while !restore.isFinished {
+                    // A slice of work, then the screen. 24 ms is under two frames at 60 Hz
+                    // and under three at 120, so the bar moves smoothly and the replay is
+                    // never interrupted for longer than it takes to draw it.
+                    let until = DispatchTime.now().uptimeNanoseconds + 24_000_000
+                    while !restore.isFinished, DispatchTime.now().uptimeNanoseconds < until {
+                        restore.advance(ticks: 256)
+                    }
+                    restoring = restore.progress
+                    // A real suspension, not a `yield`: SwiftUI has to get a turn to draw
+                    // the number that just changed, and a yield hands control back to a
+                    // task queue rather than to a frame.
+                    try? await Task.sleep(nanoseconds: 4_000_000)
+                }
+                adopt(try restore.finish(), from: saved, setup: played)
+            } catch {
+                MatchSave.clear()
+                resumable = nil
+                restoring = nil
+                restoreNote = Self.restoreNote(for: error)
+                showSetup = true
+            }
+        }
+    }
+
+    /// Take a restored match as the live one.
+    ///
+    /// Everything `restart` resets is reset here too, for the same reason: per-match state
+    /// that survives a match change is state that lies. What is *not* reset is the pair
+    /// that makes the restored match saveable again — the tick count and the input list
+    /// come from the recording, so putting the game down a second time writes a tape that
+    /// continues the first rather than starting from the middle.
+    private func adopt(_ restored: Engine, from saved: SavedMatch, setup played: MatchSetup) {
+        match = restored
+        seed = saved.recording.seed
+        inputs = saved.recording.inputs
+        tickCount = saved.recording.durationTicks
+
+        drag = nil
+        trail.removeAll()
+        accumulator = 0
+        turnoverFlash = nil
+        slowMo = nil
+        hold = 0
+        assistToast = nil
+        handoff = nil
+        defenceCall = nil
+        sinceSlowMo = 999
+        lastControlled = restored.controlled
+        markStep = -1
+        clearedAtEnd = false
+
+        hasStarted = true
+        resumable = nil
+        restoring = nil
+        // Landing paused, exactly as returning from the background does. A player who has
+        // just watched a progress bar is not looking at the pitch yet, and dropping them
+        // into a live point mid-stall is how a restore gets blamed for a turnover. One
+        // tap, and it is their game again.
+        paused = true
+    }
+
+    /// What to tell the player about a save that could not be restored.
+    ///
+    /// Short, and specific enough to be a bug report. "The game has changed" is the
+    /// common case and the one worth naming plainly: it is nobody's fault, it will happen
+    /// on any update that touches the simulation, and a player who is told the truth about
+    /// it once will not wonder whether the app lost their game.
+    private static func restoreNote(for error: Error) -> String {
+        switch error {
+        case RestoreError.staleSim:
+            "SAVED GAME WAS PLAYED ON AN OLDER BUILD — IT CANNOT BE REPLAYED EXACTLY"
+        case RestoreError.diverged:
+            "SAVED GAME DID NOT REPLAY TO WHERE IT WAS LEFT — DISCARDED"
+        case RestoreError.unsupportedSave:
+            "SAVED GAME IS IN A FORMAT THIS BUILD DOES NOT READ"
+        default:
+            "SAVED GAME COULD NOT BE READ — DISCARDED"
+        }
+    }
+
+    /// The one line the RESUME button says about what is being resumed.
+    private static func resumeSummary(_ saved: SavedMatch) -> String {
+        let s = saved.checksum.score
+        let minutes = Int(saved.seconds / 60)
+        let clock = minutes >= 1 ? "\(minutes) MIN IN" : "JUST STARTED"
+        return "\(s[0])–\(s[1]) · \(clock)"
     }
 
     // MARK: hud
@@ -1472,6 +1802,41 @@ public struct MatchView: View {
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture { paused = false }
+    }
+
+    /// The match being rebuilt.
+    ///
+    /// A restore replays the whole game from its first tick, which is fast but not
+    /// instant — a long match is a few seconds of arithmetic — and a few seconds of
+    /// nothing is indistinguishable from a hang. So it says what it is doing and shows how
+    /// far it has got, on the same plate treatment as the pause veil, because it is the
+    /// same kind of thing: the pitch, stopped, with a reason.
+    ///
+    /// The bar is honest. It is `ticks replayed / ticks recorded`, not a timer dressed up
+    /// as progress, so it slows down where the simulation does.
+    private func restoringOverlay(_ progress: Double) -> some View {
+        ZStack {
+            Color.black.opacity(0.72)
+            VStack(spacing: 10) {
+                Text("RESTORING MATCH")
+                    .font(.system(size: 20, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.9))
+                Text("REPLAYING \(Int(progress * 100))%")
+                    .font(.system(size: 12, design: .monospaced).bold())
+                    .foregroundStyle(.orange)
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.white.opacity(0.16)).frame(width: 180, height: 6)
+                    Capsule().fill(Color.orange)
+                        .frame(width: Swift.max(2, 180 * progress), height: 6)
+                }
+                .frame(width: 180, height: 6)
+            }
+        }
+        .ignoresSafeArea()
+        // It takes the taps, so a thumb waiting on the bar cannot throw the disc of the
+        // match being rebuilt underneath it.
+        .contentShape(Rectangle())
+        .onTapGesture {}
     }
 
     /// The two things worth interrupting the pitch for: a point, and the turnover that

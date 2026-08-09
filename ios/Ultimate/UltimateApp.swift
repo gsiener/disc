@@ -83,6 +83,22 @@ struct UltimateApp: App {
         return args[i + 1] == "on"
     }()
 
+    /// `-savecycle 20` plays for twenty seconds, saves the match, throws the engine away
+    /// and restores it from the save — the whole persistence round trip, in one launch.
+    ///
+    /// The save is triggered by backgrounding the app and the restore by a button on the
+    /// pre-game sheet, so between them the feature needs a home gesture and a tap, and
+    /// this environment can synthesise neither. Same door as `-charge` and `-defend on`,
+    /// and the same reasoning, sharpened: a feature that cannot be reached without a
+    /// finger is a feature that cannot be *verified* without one.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -savecycle 20
+    static let saveCycle: Double? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-savecycle"), i + 1 < args.count else { return nil }
+        return Double(args[i + 1])
+    }()
+
     /// The tab named on the command line, or `play` when none was.
     static let requestedTab: Int = {
         let args = ProcessInfo.processInfo.arguments
@@ -132,7 +148,8 @@ struct UltimateApp: App {
                 // whatever is on screen.
                 MatchView(
                     format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup,
-                    demoCharge: Self.demoCharge, autoDefend: Self.autoDefend)
+                    demoCharge: Self.demoCharge, autoDefend: Self.autoDefend,
+                    saveCycle: Self.saveCycle)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -146,7 +163,8 @@ struct UltimateApp: App {
         } else {
             MatchView(
                 format: Self.startFormat, skipsSetup: Self.skipsSetup,
-                demoCharge: Self.demoCharge, autoDefend: Self.autoDefend)
+                demoCharge: Self.demoCharge, autoDefend: Self.autoDefend,
+                saveCycle: Self.saveCycle)
         }
     }
 }

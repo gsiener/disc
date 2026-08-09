@@ -17,10 +17,35 @@ import UltimateSim
 /// running behind it to go back to.
 @available(macOS 15.0, iOS 18.0, *)
 struct PreGameSheet: View {
+    /// A match found on disk, and the two things that can be done about it.
+    ///
+    /// The sheet is the natural home for this and not merely a convenient one: it is
+    /// already the screen that asks "what game do you want to play", and "the one you were
+    /// playing" is an answer to that question. It is an offer rather than an interruption
+    /// — no modal on launch, no dialog to dismiss before a new game — because a player who
+    /// opens the app wanting a fresh match should not have to finish an old one first.
+    struct Resume {
+        /// The score and how far in, so the offer is about a game rather than about a file.
+        let summary: String
+        let action: () -> Void
+        let discard: () -> Void
+    }
+
     @Binding var setup: MatchSetup
 
     /// The word on the start button, and whether there is anything to go back to.
     let isRematch: Bool
+
+    /// The saved match on offer, if there is one.
+    let resume: Resume?
+
+    /// Why the last saved match was thrown away, if one was.
+    ///
+    /// Separate from `resume` rather than a field on it, and the separation is the whole
+    /// point: a save that failed to restore is *gone*, so there is no offer left to hang
+    /// the explanation on, and hanging it there would mean the one message the player
+    /// needs disappears at exactly the moment it becomes true.
+    let note: String?
     /// Start a match on the current setup.
     let onStart: () -> Void
     /// Show the coach cards again. The one way back to them once the first run is spent.
@@ -35,6 +60,8 @@ struct PreGameSheet: View {
 
             VStack(alignment: .leading, spacing: 16) {
                 header
+
+                if resume != nil || note != nil { resumeRow }
 
                 group("LENGTH", note: lengthNote) {
                     ForEach(MatchSetup.lengths, id: \.self) { n in
@@ -96,6 +123,61 @@ struct PreGameSheet: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+            }
+        }
+    }
+
+    /// The saved match, offered.
+    ///
+    /// At the top, above the settings, because it is the one control on this card that
+    /// makes the settings irrelevant — a resumed match is played on the setup it was
+    /// started with, and quietly changing FORMAT underneath a RESUME button would be the
+    /// sheet lying about what it does. Green rather than the START button's orange, so the
+    /// two primary actions on one card are never mistaken for each other.
+    ///
+    /// DISCARD is beside it and is not a confirmation dialog. The thing being thrown away
+    /// is a game the player already walked out of, and asking twice about it would be
+    /// heavier than the thing deserves.
+    @ViewBuilder private var resumeRow: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            if let note {
+                Text(note)
+                    .font(.system(size: 10, design: .monospaced).bold())
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let resume {
+                HStack(spacing: 8) {
+                    Button(action: resume.action) {
+                        VStack(spacing: 2) {
+                            Text("RESUME MATCH")
+                                .font(.system(size: 14, design: .monospaced).bold())
+                            Text(resume.summary)
+                                .font(.system(size: 9, design: .monospaced))
+                                .opacity(0.75)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(Color(red: 0.5, green: 1, blue: 0.62)))
+                        .foregroundStyle(.black)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: resume.discard) {
+                        Text("DISCARD")
+                            .font(.system(size: 11, design: .monospaced).bold())
+                            .foregroundStyle(.white.opacity(0.55))
+                            .padding(.horizontal, 12).padding(.vertical, 14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
     }
