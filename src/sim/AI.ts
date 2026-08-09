@@ -381,6 +381,12 @@ const CATCH_CEILING = 1.45;
 const HAND_HEIGHT = 1.05;
 
 /**
+ * Most ground a defender is credited with covering to get into a throwing lane,
+ * m. See `laneBlockage`.
+ */
+const LANE_POACH_MAX = 99;
+
+/**
  * How much longer a lofted deep throw hangs than the line drive the flat model
  * describes, and how high above the release line it peaks, m. Both measured off
  * the solver's own flights — see `throwFlightTime` and `flightPath`.
@@ -2429,9 +2435,28 @@ export class TeamAI {
         if (isMark ? s.t > 0.42 : (s.t > cut || s.t < 0.05)) continue;
         if (s.y > reach || s.y < 0.15) continue;
         const hd = dist2(f.pos.x, f.pos.z, s.x, s.z);
-        const reachable = isMark
-          ? 0.80 + v * Math.max(0, s.t - 0.08) * 0.32
-          : 0.60 + v * Math.max(0, s.t - 0.14) * 0.72;
+        /**
+         * **The closing term needs a ceiling, and it never had one because
+         * nothing ever reached it.**
+         *
+         * `v * (t - lag) * 0.72` is how far a defender could run, and on a
+         * two-second huck that is seven and a half metres — so every defender
+         * within six metres of the lane scored a full block and no deep throw
+         * was ever worth taking. It went unnoticed only because the old
+         * ballistic `flightPath` lofted long throws above `reachHeight` and the
+         * samples were discarded before they got here; flattening the arc to
+         * the flight the disc actually makes took hucks from 4.8 a match to 0.3.
+         *
+         * A defender who is seven metres away is guarding somebody else. What
+         * this term is really asking is how far he will abandon his own
+         * assignment on a read, and that is a couple of strides — not a
+         * sixty-metre-a-minute sprint across the field on a disc he has no
+         * reason to expect. `LANE_POACH_MAX` is that budget.
+         */
+        const closing = Math.min(
+          v * Math.max(0, s.t - (isMark ? 0.08 : 0.14)) * (isMark ? 0.32 : 0.72),
+          LANE_POACH_MAX);
+        const reachable = (isMark ? 0.80 : 0.60) + closing;
         const w = clamp((reachable - hd) / 1.4, 0, 1) * awareness;
         if (w > worst) worst = w;
       }

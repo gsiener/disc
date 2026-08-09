@@ -203,6 +203,9 @@ public let loftArc = 6.4
 /// own `pos.y` is his feet.
 public let handHeight = 1.05
 
+/// Most ground a defender is credited with covering to get into a throwing lane, m.
+/// See `TeamAI.laneBlockage`.
+public let lanePoachMax = 99.0
 
 /// How much difficulty costs a catcher. See `catchProbability`.
 ///
