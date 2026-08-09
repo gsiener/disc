@@ -326,12 +326,32 @@ public final class Engine {
         // when nothing was attached at all, so this changes no behaviour on its own.
         let contacts = ContactSink()
         self.contacts = contacts
-        loco.attach(LocoHost(events: { [contacts] event in contacts.absorb(event) }))
+        attachContacts()
         game.startGame()
         stagePoint()
     }
 
     // MARK: setup
+
+    /// Wire locomotion's event stream into the `ContactSink` that `policeCatch` reads.
+    ///
+    /// **This must be re-run every time `loco` is replaced, and `stagePoint` replaces it
+    /// once a point.** `LocoHost` is a value held by the `Locomotion` instance, so a fresh
+    /// instance has no host and emits into nothing. That is the whole of #55: the attach
+    /// happened once in `init`, `stagePoint()` ran on the very next line to open the first
+    /// point, and the stream was severed before a single tick of a single match had been
+    /// simulated. Measured after the fact, `lastContact` was empty on every one of the
+    /// twenty-one contests `policeCatch` reached across three full matches — so the
+    /// receiving foul and the strip were not rare in the port, they were **unreachable**,
+    /// and had been since the feature landed.
+    ///
+    /// Only `events` is set. `rand` would fork locomotion's RNG off this engine's and shift
+    /// every stream in the game, and `field` / `disc` are nil here exactly as they were
+    /// when nothing was attached at all.
+    private func attachContacts() {
+        guard let contacts else { return }
+        loco.attach(LocoHost(events: { [contacts] event in contacts.absorb(event) }))
+    }
 
     /// Deal both rosters. Called once.
     ///
@@ -382,6 +402,13 @@ public final class Engine {
             })
         restBetweenPoints(players, seconds: 40)
         loco = Locomotion()
+        // A new `Locomotion` has no host, and without one it emits contact into nothing.
+        // See `attachContacts` — forgetting this line is #55.
+        attachContacts()
+        // Nothing from the last point is still in flight: a buffered hit whose bodies were
+        // rebuilt underneath it would be blamed on whoever inherited the id.
+        _ = contacts?.drain()
+        lastContact.removeAll(keepingCapacity: true)
         records = []
 
         // Both teams line up on their own goal lines, facing each other. Positions are
@@ -2009,6 +2036,7 @@ public final class Engine {
     /// resolver has to push back out every tick, and in the rules it is a foul rather than
     /// good defence — the pressure a close buys comes from being a metre away when the
     /// disc goes up, not from standing in someone.
+    ///
     private func holdPoint() -> Vec3d? {
         guard let c = carrier, let holder = player(c) else { return nil }
         return Vec3d(holder.pos.x, 0, holder.pos.z)
@@ -2070,6 +2098,7 @@ public final class Engine {
         intent.faceX = commit.at.x - p.pos.x
         intent.faceZ = commit.at.z - p.pos.z
         intent.effort = 1
+
         intent.desiredSpeed = intent.maxSpeed
 
         switch commit.kind {

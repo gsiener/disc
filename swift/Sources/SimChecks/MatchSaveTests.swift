@@ -92,13 +92,32 @@ enum MatchSaveTests {
     /// the count has reached three, and send a defender whenever they have it and nothing
     /// is committed. That is a plausible bad player, and it produces both kinds of input
     /// in useful numbers.
+    ///
+    /// **`ticks` is a floor, not a length.** The two assertions below need one input of
+    /// each kind in the recording, and both are produced by the *match* — a throw needs us
+    /// holding at stall 3, a tap needs them holding — so whether thirty seconds contains
+    /// one is a property of how that seed's point happens to run. Any change anywhere in
+    /// the sim can move it, and when it does the failure reads as "the save format broke"
+    /// rather than "the script did not get a turn". (It did: fixing #55 gave the contact
+    /// events back to `policeCatch`, which moved this match enough that no possession of
+    /// ours reached stall 3 inside 3600 ticks.) So the harness plays on until it has both,
+    /// up to a cap, and everything downstream is already written in terms of
+    /// `played.ticks`.
     private static func play(ticks: Int) -> Played {
         let match = freshEngine()
         var inputs: [RecordedInput] = []
         var events: [String] = []
         var tick = 0
 
-        while tick < ticks {
+        let cap = ticks * 4
+        func haveBoth() -> Bool {
+            inputs.contains { $0.input == .defend }
+                && inputs.contains {
+                    if case .charged = $0.input { return true } else { return false }
+                }
+        }
+
+        while tick < ticks || (!haveBoth() && tick < cap) {
             // Offence: a throw down the field we are attacking, slightly off-axis so the
             // cone select has a decision to make.
             if match.holder != nil, match.stall >= 3, match.carrier == match.controlled {
