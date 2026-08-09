@@ -264,15 +264,67 @@ enum EngineTests {
         Check.ok(e.game.getLog().count > 10, "the machine wrote a play-by-play")
     }
 
-    /// The score may only ever rise, by exactly one, and only on a goal.
+    /// The score may only ever rise, by exactly one, and only on a goal — checked on both
+    /// formats, because they do not play the same game and only one of them is the one the
+    /// AI was written for.
     private static func scoreOnlyMovesOnGoals() {
-        let e = Engine(format: .minis, seed: 11)
+        playAndMeasure(.sevens, seed: 11)
+        playAndMeasure(.minis, seed: 11)
+    }
+
+    /// Fifteen simulated minutes, asserted and measured.
+    ///
+    /// **The measurement half of this is not decoration.** For most of this project the
+    /// only number anyone looked at was the completion rate, and it hid the exact opposite
+    /// of what it appeared to show: one version of the throw solver reached 89% completion
+    /// and scored nothing at all in fifteen minutes, because players can swing a disc side
+    /// to side all afternoon without ever facing the endzone. So the gain is measured
+    /// directly — metres downfield, signed toward the throwing team's attacking end.
+    ///
+    /// Running it on **both** formats is what finally located a bug that had been read as
+    /// an engine fault for weeks. At sevens on the regulation pitch the same code scores
+    /// like the sport; at 3v3 on the minis pitch it scores nothing and throws backwards.
+    /// That gap is the finding: `AI.ts` and `Playbook.ts` are ported faithfully, but their
+    /// *shape* constants assume seven players on a hundred metres. `chooseFormation`
+    /// switches to the endzone set inside 13 m of the goal, which on a 12.5 m minis
+    /// half is the entire pitch; the endzone set makes every player a handler, so the
+    /// cutter stack is empty and nobody ever cuts; and every endzone handler station is
+    /// five to six metres *behind* the disc, so a backward throw is the only option the
+    /// scorer is ever offered. `PLAY.stackHold` blocks cuts at a three-player roster in
+    /// the other formation too.
+    ///
+    /// The reference's own headless harness (`node tools/test-game.ts`) is the outside
+    /// number to hold this against: 8 points, 109 throws, 86 completions in 600 s of 7v7.
+    @discardableResult
+    private static func playAndMeasure(_ format: GameFormat, seed: UInt32) -> Int {
+        let e = Engine(format: format, seed: seed)
+        let label = format.field.length > 50 ? "sevens" : "minis"
         e.autoTeams = [0, 1]
         var last = e.score
         var goals = 0
 
+        var completions = 0
+        var heldPos: Vec3d?
+        var heldTeam: TeamId?
+        var gains: [Double] = []
+        var closest = Double.infinity
+
         for _ in 0..<(120 * 900) where !e.isOver {
             e.step(dt: dt)
+
+            if e.stats.completions > completions, let from = heldPos, let team = heldTeam,
+                let to = e.carrier.flatMap({ id in e.players.first { $0.id == id } })?.pos
+            {
+                gains.append(Double(e.dirFor(team)) * (to.z - from.z))
+            }
+            completions = e.stats.completions
+            if let id = e.carrier, let p = e.players.first(where: { $0.id == id }) {
+                heldPos = p.pos
+                heldTeam = p.team
+                closest = min(
+                    closest, abs(e.format.field.goalLine * Double(e.dirFor(p.team)) - p.pos.z))
+            }
+
             if e.score != last {
                 let delta = (e.score[0] - last[0]) + (e.score[1] - last[1])
                 Check.eq(delta, 1, "the score moves by exactly one")
@@ -289,10 +341,32 @@ enum EngineTests {
         }
         Check.eq(
             e.score[0] + e.score[1], e.stats.goals, "every point on the board is a goal in the box")
+
+        let forward = gains.filter { $0 > 0.5 }.count
+        let back = gains.filter { $0 < -0.5 }.count
+        let mean = gains.reduce(0, +) / Double(max(1, gains.count))
+        let holds = e.game.teamStats(0).holds + e.game.teamStats(1).holds
+        let breaks = e.game.teamStats(0).breaks + e.game.teamStats(1).breaks
+        let meanText = String(format: "%+.2f", mean)
+        let longestText = String(format: "%+.1f", gains.max() ?? 0)
         Check.note(
-            "engine: \(goals) goals in fifteen simulated minutes, "
-                + "\(e.game.teamStats(0).holds + e.game.teamStats(1).holds) holds and "
-                + "\(e.game.teamStats(0).breaks + e.game.teamStats(1).breaks) breaks")
+            "\(label): \(goals) goals in fifteen minutes, \(holds) holds / \(breaks) breaks, "
+                + "\(gains.count) completions, mean gain \(meanText) m "
+                + "(\(forward) forward / \(back) back), longest \(longestText) m")
+
+        // The one assertion that says the sport is happening. Sevens is the shape the AI
+        // was written and validated for, so it is held to it; minis is knowingly below the
+        // bar and is measured rather than asserted, so this file reports the gap instead of
+        // going quietly green on a game where nobody cuts.
+        if format.field.length > 50 {
+            Check.ok(goals > 0, "sevens scores in fifteen minutes (\(goals))")
+            Check.ok(mean > 0, "and the offence advances (mean \(mean) m per completion)")
+        } else if mean <= 0 {
+            Check.note(
+                "minis is still a backward game — see playAndMeasure; the AI's shape "
+                    + "constants are seven-a-side constants")
+        }
+        return goals
     }
 
     /// A match reaches halftime, comes back from it, and ends.

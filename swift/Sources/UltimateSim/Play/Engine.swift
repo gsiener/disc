@@ -17,25 +17,33 @@ import Foundation
 /// before `AI.ts` and `Locomotion.ts` existed. They exist now. Its history is in git,
 /// which is the only archive a deleted file needs.
 ///
-/// `BID_EDGE`, the last piece of that file, is finally gone too. It was 0.55 m of assumed
-/// advantage to the receiver, and it turned out never to have decided anything: it only
-/// applied when two bodies were inside the grab radius at the same instant, which
-/// measured **zero times in seventy-five catches**. `Move/Contest.swift` does the
-/// deciding now, over a window wide enough for a contest to exist.
+/// **This file's header used to say `src/sim/Game.ts` was "not a port target: it imports
+/// three.js … integration glue rather than simulation". That sentence was wrong, and it
+/// cost the project months.** Nobody read the file, and so the throw solver, the catch
+/// resolution and the out-of-bounds rule were all *invented* here — each of them sitting a
+/// few hundred lines away from a measured reference answer, and each of them wrong in a
+/// way that made the offence stop attacking. `Game.ts` is 3,400 lines and much of it
+/// genuinely is glue: renderers, cameras, the input layer, the attract-mode tableaux. The
+/// simulation inside it is not, and the parts of this file that correspond to it are now
+/// translated rather than guessed — `aiThrow`, `tryCatch`, `stepDisc`, `releaseOrigin`,
+/// `contestCount` — with the divergences that remain marked as scope rather than left
+/// silent.
 ///
-/// The reference's equivalent is `src/sim/Game.ts`, which is **not** a port target: it
-/// imports three.js, the engine's `Ctx`/`System` types and the web input layer, and is
-/// integration glue rather than simulation. So this file is written against the ported
-/// pieces rather than translated from that one, and it is the only file in the sim that
-/// is not differentially validated — because there is nothing to differ against.
+/// `BID_EDGE` and the `contestWinner`/`contestAir` catch that replaced it are both gone.
+/// Neither was the reference's answer: `contestAir` is `Locomotion`'s own API, which the
+/// AI uses to *predict* a contest, and the reference resolves an actual catch with a
+/// probability roll against `catchProbability`. See `tryCatch`.
 ///
 /// What that means for trust, stated plainly: every *component* here is validated to
 /// bit-exactness or near it against the TypeScript, and `GameState` is 3,098 assertions
-/// against a scripted trace. The wiring is not. So the checks in `EngineTests` are
-/// property assertions — a pull is thrown, the count only runs while a marker is legally
-/// on the thrower, no reported action is ever refused, nobody leaves the pitch, one seed
-/// is one match — rather than golden comparisons, and that is a weaker bar honestly
-/// labelled.
+/// against a scripted trace. The wiring is still not differentially validated — there are
+/// no goldens for `Game.ts` — so the checks in `EngineTests` remain property assertions: a
+/// pull is thrown, the count only runs while a marker is legally on the thrower, no
+/// reported action is ever refused, nobody leaves the pitch, one seed is one match. That
+/// is a weaker bar, honestly labelled. What it now has alongside it is a *behavioural*
+/// comparison: `tools/test-game.ts` runs the reference headless, and the numbers it prints
+/// — points, throws, completions per ten minutes — are the target this engine is measured
+/// against.
 ///
 /// The loop, once per fixed tick:
 ///
@@ -50,16 +58,6 @@ import Foundation
 ///   5. resolve any throw the AI released into a real flight, reported to the machine
 ///   6. step the disc, and report the catch, the block, the throwaway or the landing
 public final class Engine {
-    /// How close a second body must be to contest a catch, metres.
-    ///
-    /// Wider than `DISC_GRAB_R` deliberately — see `contestWinner`. `contestAir` applies
-    /// a 1.15 m per-metre penalty beyond a player's own catch radius, so a body at the
-    /// edge of this window loses to one standing on the disc unless its reach or its
-    /// position genuinely earns it.
-    public static let contestWindow = DISC_GRAB_R * 1.75
-
-
-
     // MARK: configuration
 
     public let format: GameFormat
@@ -101,6 +99,27 @@ public final class Engine {
     /// lives here and is cleared the moment the disc is in somebody's hand again.
     private var thrownBy: Int?
     private var intendedReceiver: Int?
+
+    /// Flight bookkeeping, ported from `Game.ts`.
+    ///
+    /// A disc is only in or out **where it comes to ground**. Testing it every tick of the
+    /// flight, which is what this file used to do, makes any throw that bows over the
+    /// sideline and back an instant turnover — and on the minis pitch, whose sideline is
+    /// nine metres from the middle, that is most of the curving throws in the sport. So
+    /// the last in-bounds point is remembered instead, and the judgement is made once, at
+    /// the moment the disc actually lands.
+    private var lastInBounds = Vec3d.zero
+    private var hadInBounds = false
+    private var flightSettled = false
+
+    /// What each player's AI asked for this frame.
+    ///
+    /// The catch needs it: a defender may only play a disc they have actually *attacked*.
+    /// Without this, a marker standing at the rules' 2.15 m mark distance intercepted any
+    /// throw that passed within arm's reach of him, on the release tick, without ever
+    /// bidding for it — which is a large part of why the offence had stopped throwing
+    /// downfield at all.
+    private var actionOf: [Int: PlayerAction] = [:]
     /// The point number the bodies were last stood up for. See `stagePoint`.
     private var stagedPoint = -1
 
@@ -482,6 +501,9 @@ public final class Engine {
         var intents: [PlayerIntent] = []
         for team in ai { intents.append(contentsOf: updateTeam(team, world, dt)) }
 
+        actionOf.removeAll(keepingCapacity: true)
+        for intent in intents where intent.action != nil { actionOf[intent.id] = intent.action }
+
         // 4. Bodies move. Locomotion owns position and velocity from here.
         loco.apply(intents.map(Engine.locoIntent), dt: dt, world: &records)
 
@@ -492,8 +514,13 @@ public final class Engine {
             if let pos = r.pos { p.pos = pos }
             if let vel = r.vel { p.vel = vel }
             p.airborne = r.airborne
-            tickStamina(p, dt)
         }
+        // `tickStamina` is deliberately NOT called here. `TeamAI.update` already runs it
+        // over its own side's `AIPlayer` objects, and `AIPlayer` is a class — so a second
+        // pass over the same references drained every player at twice the validated rate.
+        // Fatigue feeds `effectiveMaxSpeed`, so that was two-for-one on every cut, every
+        // close-out and every separation estimate the AI made. The reference's `update`
+        // does not call it either; it is `updateTeam`'s job alone.
 
         // 6. Any throw the AI released becomes a real flight — but only for a team the
         //    computer is playing. `autoTeams` was declared and never consulted in the
@@ -501,10 +528,10 @@ public final class Engine {
         //    the player never got to make a decision. The checks caught it by asserting
         //    that with the computer switched off entirely, somebody is still holding.
         for intent in intents {
-            guard case .throw(let type, let aim, _, _, let spin, let receiver, _) = intent.action
+            guard case .throw(let type, let aim, let speed, _, _, let receiver, _) = intent.action
             else { continue }
             guard let p = player(intent.id), autoTeams.contains(p.team) else { continue }
-            releaseThrow(by: intent.id, type: type, aim: aim, spin: spin, receiver: receiver)
+            releaseThrow(by: intent.id, type: type, aim: aim, speed: speed, receiver: receiver)
             break  // one disc
         }
 
@@ -586,6 +613,7 @@ public final class Engine {
         let vel = disc.release(req)
         thrownBy = puller
         intendedReceiver = nil
+        beginFlight(req.from)
         return demand(game.pull(puller, req.from, vel))
     }
 
@@ -638,37 +666,6 @@ public final class Engine {
         return (lo + hi) * 0.5
     }
 
-    /// A pull in the air: caught, landed, or out.
-    private func resolvePull(from previous: Vec3d) {
-        let pos = disc.state.pos
-        if !format.field.isInBounds(pos) {
-            let crossing =
-                format.field.boundaryCrossing(previous, pos)?.point
-                ?? format.field.clampToField(pos)
-            // Choose the brick immediately: there is no interface for a captain to pick,
-            // and leaving the choice pending would park the machine in TURNOVER_DEAD with
-            // `pickUp` refusing until somebody answered.
-            demand(game.pullOutOfBounds(crossing, .brick))
-            syncDisc()
-            return
-        }
-
-        // The receiving team is the offence for the purpose of the contest. A pulling
-        // player who gets to it first is handled by the machine: touching your own pull
-        // hands it to the receivers where it was touched.
-        if pos.y < 2.3, pos.y > 0.15, let taker = contestWinner(offence: game.receivingTeam) {
-            guard let p = player(taker) else { return }
-            demand(game.pullCaught(taker, Vec3d(p.pos.x, 0, p.pos.z)))
-            syncDisc()
-            return
-        }
-
-        if disc.state.atRest {
-            demand(game.pullLanded(Vec3d(pos.x, 0, pos.z)))
-            syncDisc()
-        }
-    }
-
     // MARK: dead discs
 
     /// Somebody has to walk over and pick it up.
@@ -690,7 +687,11 @@ public final class Engine {
         // It went unnoticed because the AI never stalled — it releases well inside a
         // ten-count — so the path only opened when the count was shortened and the AI
         // began running out of time. A legal, reachable outcome that no play had reached.
-        if disc.holderId != nil, game.thrower == nil {
+        // `holderId` is an `Int` with a `-1` sentinel, not an optional, so the `!= nil`
+        // this used to say was always true and the whole guard collapsed to its second
+        // clause — settling the disc on every tick of a dead phase whether anyone was
+        // holding it or not. The compiler had been saying so.
+        if disc.holderId >= 0, game.thrower == nil {
             disc.settle(game.discPos)
         }
 
@@ -738,6 +739,15 @@ public final class Engine {
             stall: Double(game.stallCount),
             spin: disc.state.spin,
             throwType: aiThrowType(disc.state.throwType))
+        // The two peers `AI.ts` reaches through `ctx.sys`, which this file had left nil.
+        //
+        // Both are declared on `AIWorld`, both are read — `TeamAI` caches `locoRef`, and
+        // `predictCatchPoint` wants the disc's own integrator — and both implementations
+        // were sitting here ported and unused. Without them the AI falls back to its
+        // internal kinematic estimate for every separation and every catch point, which is
+        // to say it reasons about bodies that move differently from the ones on the pitch.
+        w.locomotion = self
+        w.discPeer = disc
         return w
     }
 
@@ -802,37 +812,133 @@ public final class Engine {
 
     // MARK: the disc
 
+    /// Where the disc leaves: the throwing hand, not the middle of the chest.
+    ///
+    /// A third of a metre to the side of the sternum sounds like set dressing, and for a
+    /// throw down an open lane it is. It is not set dressing around a mark, which is the
+    /// only situation in this sport where a throw is contested at the moment it leaves —
+    /// the whole point of a break is that the hand is on the far side of the defender
+    /// from where they are shading, and a release modelled at the body's centre gives the
+    /// mark a block it should not have.
+    ///
+    /// Ported from `Game.ts:releaseOrigin`. The airborne-grip branch there has no
+    /// counterpart here, because nothing in this engine throws mid-layout.
+    private func releaseOrigin(_ p: AIPlayer) -> Vec3d {
+        guard let lp = loco.get(p.id) else { return Vec3d(p.pos.x, 1.25, p.pos.z) }
+        let right: Double = p.handed == .left ? -1 : 1
+        let f = lp.facing
+        let fx = sin(f)
+        let fz = cos(f)
+        return Vec3d(
+            lp.pos.x + fz * right * 0.34 + fx * 0.16,
+            lp.groundY + lp.hipHeight * 1.10,
+            lp.pos.z - fx * right * 0.34 + fz * 0.16)
+    }
+
+    /// Solve the release for an AI throw. A port of `Game.ts:aiThrow`.
+    ///
+    /// **This was invented for most of the project's life, and the invention was wrong in
+    /// three separate ways.** The file's own header used to claim `Game.ts` was "not a
+    /// port target… integration glue rather than simulation", and on the strength of that
+    /// sentence nobody read it. It is glue in places. This function is not: it is the
+    /// solver that turns what the AI asked for into a disc, and every line of it is a
+    /// measured answer to a question this file had been guessing at.
+    ///
+    /// What the old code did, and what the reference does:
+    ///
+    ///   - **Power.** Was `clamp01((range - 4) / 26)` — a lerp with no derivation. The AI
+    ///     hands over an explicit release speed (`dist / flightTime`, `AI.ts:2311`) and
+    ///     `powerForSpeed` inverts the throw table onto it. The old code took `speed` as
+    ///     `_` and discarded it, so a floated 8 m dump and a flat 8 m strike left the hand
+    ///     identically, and the AI's whole notion of pace did nothing.
+    ///   - **Elevation.** Was `range > 18 ? 0.10 : 0`, a step. Power is fixed by the speed
+    ///     the AI asked for, so *elevation* is the free variable, and it is bisected
+    ///     against the real integrator — seven halvings over [-0.34, 0.62].
+    ///   - **Heading.** Was aimed straight at the target. A disc is not a projectile; it
+    ///     banks and it fades, and `probeThrow` reports that as `lat`. The reference flies
+    ///     the throw, reads how far off the line it finished, and aims off by
+    ///     `atan2(lat, want)` to put it back. Aiming straight at a receiver means missing
+    ///     them sideways by however much the disc curves, every single time.
+    ///
+    /// Two outer passes: the corrected heading changes the flight, so the elevation is
+    /// re-bisected against the heading that will actually be thrown.
+    ///
+    /// `catchY` is the aim's own height — `AI.ts` sets `aimY: 1.35`, chest height on a
+    /// running receiver. Solving to the ground instead makes every pass fall short, since
+    /// a disc arriving at the receiver's feet crossed their chest metres earlier.
     private func releaseThrow(
-        by id: Int, type: AIThrowType, aim: Vec3d, spin: Double, receiver: Int
+        by id: Int, type: AIThrowType, aim: Vec3d, speed: Double, receiver: Int
     ) {
         guard game.phase == .livePossession, carrier == id, let thrower = player(id) else { return }
         guard let physType = ThrowType(rawValue: type.rawValue) else { return }
 
-        // Aim carries the AI's intended landing point; the throw table turns a direction
-        // and a power into a release. Power is solved from the range the AI wants rather
-        // than passed through, because `maxThrowRange` and `throwSpeed` are two different
-        // curves and the AI reasons in the first.
-        let flat = Vec3d(aim.x - thrower.pos.x, 0, aim.z - thrower.pos.z)
-        let range = flat.length
-        let dir = flat.lengthSq < 1e-9 ? Vec3d(0, 0, Double(dirFor(thrower.team))) : flat.normalized
+        let from = releaseOrigin(thrower)
+        let tx = aim.x - from.x
+        let tz = aim.z - from.z
+        let want = (tx * tx + tz * tz).squareRoot()
+        // Nothing to solve, and `atan2` of a point you are standing on is noise.
+        guard want >= 0.4 else { return }
 
-        let from = Vec3d(thrower.pos.x, 1.25, thrower.pos.z)
-        let req = ThrowRequest(
+        // The reference derives spin from the arm rather than passing the AI's through.
+        let spin = clamp(0.45 + 0.55 * (thrower.attr.throwPower / 100), 0, 1)
+        let power = clamp(powerForSpeed(physType, speed) * 1.02, 0.12, 1)
+        let catchY = max(0.35, aim.y)
+
+        var heading = atan2(tx, tz)
+        var angle = 0.02
+        var req = ThrowRequest(
             type: physType,
             from: from,
-            aim: dir,
-            power: clamp01((range - 4) / 26),
-            angle: range > 18 ? 0.10 : 0,
-            spin: clamp01(spin),
+            aim: Vec3d(sin(heading), 0, cos(heading)),
+            power: power,
+            angle: angle,
+            spin: spin,
             hand: thrower.handed == .left ? .left : .right)
+
+        for pass in 0..<2 {
+            var lo = -0.34
+            var hi = 0.62
+            var best = angle
+            var bestErr = Double.infinity
+            var lat = 0.0
+            for _ in 0..<7 {
+                let mid = (lo + hi) * 0.5
+                req.angle = mid
+                req.aim = Vec3d(sin(heading), 0, cos(heading))
+                let r = disc.probeThrow(req, catchY: catchY, maxT: 6)
+                let err = r.dist - want
+                if abs(err) < abs(bestErr) {
+                    bestErr = err
+                    best = mid
+                    lat = r.lat
+                }
+                if err < 0 { lo = mid } else { hi = mid }
+            }
+            angle = best
+            req.angle = best
+            if abs(lat) > 0.25, want > 1 { heading -= atan2(lat, want) }
+            if pass == 1 || abs(lat) <= 0.25 { break }
+        }
+
+        req.aim = Vec3d(sin(heading), 0, cos(heading))
+        req.angle = angle
         let vel = disc.release(req)
 
         thrownBy = id
         intendedReceiver = receiver
+        beginFlight(from)
         demand(
             game.release(
                 playerId: id, pos: from, vel: vel, spin: req.spin, throwType: physType.rawValue))
     }
+
+    /// How far a body can reach sideways for a disc, standing and laid out. `Game.ts:146`.
+    private static let catchReach = 0.82
+    private static let layoutReach = 1.55
+    /// Nobody may touch a disc for the first tenth of a second after it leaves the hand.
+    /// Without it the mark is on top of the release point and takes it back off the
+    /// thrower's fingertips. `Game.ts:150`.
+    private static let releaseDeadtime = 0.10
 
     private func stepDisc(dt: Double) {
         // Held: the disc rides with the holder's hand.
@@ -842,124 +948,183 @@ public final class Engine {
         }
         guard disc.mode == .flight else { return }
 
-        let previous = disc.state.pos
         disc.step(dt: dt)
+        let s = disc.state
+        if format.field.isInBounds(Vec3d(s.pos.x, 0, s.pos.z)) {
+            lastInBounds = s.pos
+            hadInBounds = true
+        }
 
-        switch game.phase {
-        case .pullInFlight: resolvePull(from: previous)
-        case .discInFlight: resolveFlight(from: previous)
-        default:
+        guard game.phase == .discInFlight || game.phase == .pullInFlight else {
             // A disc in the air with no flight phase to report it into is a desync, and a
             // desync that is left alone is a match that never restarts. Park it, and say
             // so loudly enough that the checks can fail on it.
             note("a disc was in flight during \(game.phase.rawValue)")
             syncDisc()
-        }
-    }
-
-    /// A thrown disc in the air: caught, blocked, thrown away, or out.
-    private func resolveFlight(from previous: Vec3d) {
-        let pos = disc.state.pos
-        if !format.field.isInBounds(pos) {
-            demand(game.outOfBoundsSegment(previous, pos))
-            syncDisc()
             return
         }
 
-        // A catch. The receiver attacks the disc, so an offensive player wins a contest
-        // unless a defender is clearly closer — the same rule the interim engine landed
-        // on, and for the same measured reason: a defender trails on the side a throw
-        // arrives from, so "nearest" alone hands the defence almost everything.
-        if pos.y < 2.3, pos.y > 0.15, let taker = contestWinner(offence: possession) {
-            guard let p = player(taker) else { return }
-            // Everything a catch can be — completion, goal, interception, caught out of
-            // bounds — is the machine's decision, not this file's.
-            demand(game.catchDisc(taker, Vec3d(p.pos.x, 0, p.pos.z)))
-            syncDisc()
-            return
-        }
+        if disc.sinceRelease > Engine.releaseDeadtime, tryCatch() { return }
 
-        if disc.state.atRest {
-            demand(game.ground(Vec3d(pos.x, 0, pos.z)))
-            syncDisc()
+        guard s.touchedGround, !flightSettled else { return }
+        flightSettled = true
+        let at = Vec3d(s.pos.x, 0, s.pos.z)
+        disc.markScuff(clamp(Vec3d(s.vel.x, 0, s.vel.z).length / 14 + 0.35, 0.3, 1))
+        if format.field.isInBounds(at) {
+            demand(game.phase == .pullInFlight ? game.pullLanded(at) : game.ground(at))
+        } else if game.phase == .pullInFlight {
+            // Choose the brick immediately: there is no interface for a captain to pick,
+            // and leaving the choice pending would park the machine in TURNOVER_DEAD with
+            // `pickUp` refusing until somebody answered.
+            let crossing =
+                hadInBounds
+                ? (format.field.boundaryCrossing(lastInBounds, at)?.point
+                    ?? format.field.clampToField(at))
+                : format.field.clampToField(at)
+            demand(game.pullOutOfBounds(crossing, .brick))
+        } else if hadInBounds {
+            demand(game.outOfBoundsSegment(Vec3d(lastInBounds.x, 0, lastInBounds.z), at))
+        } else {
+            demand(game.outOfBounds(format.field.clampToField(at)))
         }
+        syncDisc()
     }
 
-    /// Who comes down with it, or nil if nobody is close enough.
-    private func contestWinner(offence: TeamId) -> Int? {
-        let pos = disc.state.pos
-        var bestOff = -1
-        var bestOffD = Engine.contestWindow
-        var bestDef = -1
-        var bestDefD = Engine.contestWindow
+    /// Catch resolution. A port of `Game.ts:tryCatch`.
+    ///
+    /// **A catch is a roll, not a geometry test.** What stood here before was the latter:
+    /// whoever was inside a fixed radius took the disc, every time, and `contestAir`
+    /// picked between two of them. That made the entire ratings sheet inert at the one
+    /// moment it should matter — nobody ever dropped a disc, nobody ever got a fingertip
+    /// to one, and every defensive play in the game was a clean interception. `drop`,
+    /// `block` and `pullDropped` were ported, validated, and had no caller in the package.
+    ///
+    /// Three things the geometry test got wrong, all of which pushed the offence into
+    /// throwing backwards:
+    ///
+    ///   - **Defenders got the disc for standing near it.** The reference lets a defender
+    ///     play a disc only if they bid, jumped or went for the catch — otherwise they
+    ///     must be within 0.55 m, which is a body's width, not an arm's reach plus a
+    ///     window. A mark at the rules' 2.15 m took every throw released past him.
+    ///   - **Reach was a constant.** It is `loco.reachAt` now: a taller player, or one
+    ///     already in the air, genuinely covers more sky, and a layout reaches 1.55 m
+    ///     rather than 0.82 m.
+    ///   - **The roll did not exist.** `catchProbability` was ported and consulted only by
+    ///     the AI, to score its own throws — the AI has always believed in drops that the
+    ///     engine could not produce.
+    ///
+    /// A defence's roll is scaled by 0.62, because a D is harder than a catch, and an
+    /// interception is the harder half of that again (`p * 0.55`).
+    private func tryCatch() -> Bool {
+        let phase = game.phase
+        let s = disc.state
+        let offence: TeamId? = phase == .pullInFlight ? game.receivingTeam : game.possession
+
+        var best: AIPlayer?
+        var bestScore = Double.infinity
+        var bestHigh = 0.0
+        var bestLaidOut = false
+
         for p in players {
-            if p.id == thrownBy && disc.state.t < 0.35 { continue }
-            let d = distXZ(p.pos, pos)
-            // The window a body may be *considered* in is wider than the one it can
-            // catch from unaided, because a contest is decided by reach and not by
-            // proximity: a taller player, or one already in the air, comes down with a
-            // disc a shorter flat-footed one alongside them cannot touch.
-            //
-            // With the window at the bare grab radius, this loop measured **zero
-            // contested catches in seventy-five** over ten minutes — two bodies were
-            // never both inside 1.15 m at the same instant. So neither the contest model
-            // nor the `BID_EDGE` constant before it had ever once decided anything, and
-            // every block in this game was a defender arriving alone. `contestAir` does
-            // the deciding now, and this is the window that lets it.
-            guard d < Engine.contestWindow else { continue }
-            if p.team == offence {
-                if d < bestOffD {
-                    bestOffD = d
-                    bestOff = p.id
-                }
-            } else if d < bestDefD {
-                bestDefD = d
-                bestDef = p.id
+            guard let lp = loco.get(p.id) else { continue }
+            if lp.state == .fall || lp.state == .recovery { continue }
+            let laidOut = lp.state == .layout || (lp.prone && lp.air.airborne)
+            let gap = distXZ(p.pos, s.pos)
+            guard gap <= (laidOut ? Engine.layoutReach : Engine.catchReach) else { continue }
+            let top = loco.reachAt(lp, t: 0) + 0.16
+            let bot = lp.groundY + (laidOut ? 0.02 : 0.20)
+            if s.pos.y > top || s.pos.y < bot { continue }
+            if p.team != offence {
+                let kind = actionOf[p.id]?.kind
+                let attacking = kind == "bid" || kind == "jump" || kind == "catch"
+                if !attacking, gap > 0.55 { continue }
+            }
+            let high = clamp((s.pos.y - (lp.groundY + lp.hipHeight + 0.35)) / 0.9, 0, 1)
+            let score = gap + high * 0.4 + (p.team == offence ? 0 : 0.25)
+            if score < bestScore {
+                bestScore = score
+                best = p
+                bestHigh = high
+                bestLaidOut = laidOut
             }
         }
-        // Somebody has to be within actual grabbing distance, or this is not a catch at
-        // all — the wider window only decides WHO takes a disc that is already takeable.
-        //
-        // Tested after the loop rather than inside it. An earlier version skipped a
-        // distant body unless a near one had already been seen, which made the answer
-        // depend on the order `players` happens to be in — a defender listed before the
-        // receiver was silently dropped. Iteration order is not a rule of the sport.
-        let nearest = Swift.min(
-            bestOff >= 0 ? bestOffD : .infinity, bestDef >= 0 ? bestDefD : .infinity)
-        guard nearest < DISC_GRAB_R else { return nil }
+        guard let taker = best else { return false }
 
-        if bestOff < 0 { return bestDef >= 0 ? bestDef : nil }
-        if bestDef < 0 { return bestOff }
+        let at = s.pos
+        let speed = s.vel.length
+        let contest = contestCount(at.x, at.z, taker.team) * 0.30
+        let difficulty = clamp(
+            0.12 + bestHigh * 0.55 + (bestLaidOut ? 0.55 : 0) + contest
+                + clamp((speed - 17) / 22, 0, 0.45),
+            0, 1.7)
+        var p = catchProbability(taker, difficulty)
+        if taker.team != offence { p *= 0.62 }
+        let roll = rng.next()
 
-        // Two bodies on it: ask the ported contest model rather than a constant.
-        //
-        // `BID_EDGE` was 0.55 m of assumed advantage to the receiver, invented in the
-        // deleted interim engine because a defender trails on the side a throw arrives
-        // from and "nearest wins" handed the defence almost everything. It was a
-        // reasonable stand-in for a model that did not exist yet. `Move/Contest.swift`
-        // is that model — ported, validated, and until now with no caller — and it
-        // weighs the things a constant cannot: standing reach at the contest instant,
-        // inside position, whether one body is sealing the other off the disc, and
-        // strength once they are actually jostling.
-        //
-        // `jitter: 0` on purpose. The model takes a deterministic tie-breaker in [-1,1]
-        // and zero is its pure form; drawing one would put an RNG call on the catch path
-        // and every recorded replay would then depend on how many contests happened
-        // before it.
-        //
-        // `tContest: 0` because this is the catch instant, not a prediction of one. The
-        // disc is already within reach — the question is who comes down with it now.
-        guard let a = loco.get(bestOff), let b = loco.get(bestDef) else {
-            // No body for one of them: fall back to nearest, which is the only thing
-            // left that is meaningful.
-            return bestOffD <= bestDefD ? bestOff : bestDef
+        if taker.team != offence {
+            // A pull cannot be stolen, but it can be touched: a member of the pulling team
+            // who touches their own pull before the receivers have hands it straight to
+            // them at that spot (WFDF 12.5). The machine does that inside `pullCaught`.
+            if phase == .pullInFlight {
+                guard roll < p else { return false }
+                demand(game.pullCaught(taker.id, at))
+                afterFlight()
+                return true
+            }
+            if roll < p * 0.55 {
+                demand(game.catchDisc(taker.id, at))
+                afterFlight()
+                return true
+            }
+            if roll < p {
+                demand(game.block(taker.id, at))
+                afterFlight()
+                return true
+            }
+            return false
         }
-        let contest = contestAir(a, b, discPos: pos, tContest: 0, jitter: 0)
-        switch contest.winner {
-        case .a: return bestOff
-        case .b: return bestDef
-        case .none: return nil
+
+        if roll < p {
+            demand(phase == .pullInFlight ? game.pullCaught(taker.id, at) : game.catchDisc(taker.id, at))
+            afterFlight()
+            return true
         }
+        // Routine, and he put it down. Anything at full stretch is just a disc that keeps
+        // flying — a missed layout is not a drop.
+        if difficulty < 0.85 {
+            demand(phase == .pullInFlight ? game.pullDropped(taker.id, at) : game.drop(taker.id, at))
+            afterFlight()
+            return true
+        }
+        return false
+    }
+
+    /// How many opponents are close enough to make a catch a contest. `Game.ts:1885`.
+    private func contestCount(_ x: Double, _ z: Double, _ team: TeamId) -> Double {
+        var n = 0.0
+        for p in players where p.team != team {
+            if distXZ(p.pos, Vec3d(x, 0, z)) < 1.9 { n += 1 }
+        }
+        return Swift.min(2, n)
+    }
+
+    /// A new flight starts. The release point is in bounds by construction — a thrower
+    /// standing off the pitch is a rules event, not a disc event — so it seeds
+    /// `lastInBounds`, which is what a disc that leaves the sideline and never comes back
+    /// is measured against.
+    private func beginFlight(_ from: Vec3d) {
+        flightSettled = false
+        hadInBounds = format.field.isInBounds(Vec3d(from.x, 0, from.z))
+        lastInBounds = from
+    }
+
+    /// The flight is over, however it ended. Clears the bookkeeping and puts the physical
+    /// disc where the machine now says it is.
+    private func afterFlight() {
+        thrownBy = nil
+        intendedReceiver = nil
+        flightSettled = true
+        syncDisc()
     }
 
     /// Put the physical disc where the machine now says it is.
@@ -1118,4 +1283,20 @@ extension FieldSpec {
                 brickZ: (length - 2 * endzoneDepth) / 2 - endzoneDepth),
             playersPerSide: teamSize)
     }
+}
+
+/// The locomotion peer the AI asks about bodies.
+///
+/// `AI.ts` reaches this through `ctx.sys.locomotion`; here it is the engine itself, which
+/// is the object that owns the `Locomotion` instance actually moving the players. The
+/// alternative — conforming `Locomotion` directly — would still need the engine to hand it
+/// over, and this way the AI cannot be given a locomotion that is not the live one.
+extension Engine: LocomotionPeer {
+    public func timeToReach(_ p: AIPlayer, _ x: Double, _ z: Double) -> Double {
+        loco.timeToReach(
+            AthleteLike(id: p.id, posX: p.pos.x, posZ: p.pos.z, velX: p.vel.x, velZ: p.vel.z),
+            x: x, z: z)
+    }
+
+    public func isAirborne(_ p: AIPlayer) -> Bool { loco.isAirborne(id: p.id) }
 }

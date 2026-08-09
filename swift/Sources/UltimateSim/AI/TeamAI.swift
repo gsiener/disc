@@ -630,7 +630,8 @@ public final class TeamAI {
     func applyRoleSplit(_ world: AIWorld, rebuild: Bool) {
         let ranked = rankedIds.filter { byId[$0] != nil }
         if ranked.isEmpty { return }
-        let want = Swift.min(Playbook.handlerCount(formation), ranked.count)
+        let want = Swift.min(
+            Playbook.handlerCount(formation, playersPerSide: ranked.count), ranked.count)
         let ring = Array(ranked.prefix(want))
         let cutters = Array(ranked.dropFirst(want))
         let same = ring.count == handlerRing.count

@@ -1069,9 +1069,29 @@ enum PlaybookTests {
         }
 
         // The endzone call fires at a pitch-relative distance, not an absolute one.
+        //
+        // **This check used to assert the bug.** Its comment said "pitch-relative" and the
+        // assertion under it said `chooseFormation` at the centre of the minis pitch
+        // returns `.endzone` — which is exactly the symptom, not the property. 13 m is a
+        // fifth of a regulation half and the whole of a minis one, so the minis game was
+        // in its endzone set from the pull onwards; and since that set makes every player
+        // a handler, nobody cut and the offence threw backwards for fifteen minutes. A
+        // check that pins the broken behaviour is worse than no check, because it turns
+        // the fix into a failure.
+        let regulation = Playbook(field: .standard)
         Check.eq(
-            minis.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1), .endzone,
-            "on minis the whole pitch is inside endzone range")
+            regulation.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1), .vertical,
+            "at the centre of a regulation pitch the offence runs its base look")
+        Check.eq(
+            regulation.chooseFormation(Vec2d(0, 26), 1, .vertical, 0, 1), .endzone,
+            "and calls the endzone set six metres out")
+        Check.eq(
+            minis.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1), .vertical,
+            "at the centre of a minis pitch it runs its base look too")
+        Check.eq(
+            minis.chooseFormation(Vec2d(0, 10), 1, .vertical, 0, 1), .endzone,
+            "and calls the endzone set two and a half metres out — the same fraction "
+                + "of a shorter pitch")
     }
 
     // MARK: - helpers

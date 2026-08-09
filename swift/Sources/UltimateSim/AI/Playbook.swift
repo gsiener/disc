@@ -588,8 +588,41 @@ public struct Playbook: Sendable {
         return out
     }
 
-    public static func handlerCount(_ name: FormationName) -> Int {
-        name == .horizontal || name == .endzone ? 3 : 2
+    /// The reference's roster: everything shaped in this file was measured at seven.
+    public static let referenceRoster = 7
+
+    /// How many of a side stand behind the disc as handlers.
+    ///
+    /// **The reference's answer is a constant because the reference only ever played
+    /// seven-a-side.** Ported literally it is a bug at any other roster size, and at three
+    /// it is a total one: `handlerCount(.endzone)` is 3, which at 3v3 makes *every* player
+    /// a handler, empties the cutter stack, and leaves `tickCutters` with nobody to run.
+    /// Measured over fifteen simulated minutes of minis, the offence launched **zero**
+    /// downfield cuts, threw backwards on 59 of 77 completions and scored nothing — while
+    /// the identical code at sevens scored seven goals and gained seven metres a throw.
+    ///
+    /// So the count is proportional to the roster, and at least one body is always left
+    /// out of the ring, because a set with no cutters is not a set. At seven this returns
+    /// the reference's 2 and 3 exactly, which is what keeps the goldens bit-identical.
+    public static func handlerCount(_ name: FormationName, playersPerSide: Int = referenceRoster)
+        -> Int
+    {
+        let base = name == .horizontal || name == .endzone ? 3 : 2
+        guard playersPerSide != referenceRoster else { return base }
+        let scaled = (Double(base * playersPerSide) / Double(referenceRoster)).rounded()
+        return Swift.max(1, Swift.min(Int(scaled), playersPerSide - 1))
+    }
+
+    /// How many cutters must still be standing in the column before another may go.
+    ///
+    /// `PLAY.stackHold` is 3, which is a fifth of a seven-a-side stack and the whole of a
+    /// three-a-side one — so at 3v3 the gate `stackedCount() - 1 < hold` could never pass
+    /// at any stall count, and no cut was ever initiated even in the vertical set. Scaled
+    /// down, it still does its job: with two cutters, one may go and the other holds.
+    public static func stackHold(playersPerSide: Int = referenceRoster) -> Int {
+        guard playersPerSide != referenceRoster else { return PLAY.stackHold }
+        return Swift.max(
+            0, Int(Double(PLAY.stackHold * playersPerSide) / Double(referenceRoster)))
     }
 
     /// Does this set stand its cutters in a COLUMN, or spread them in a ROW?
@@ -612,7 +645,13 @@ public struct Playbook: Sendable {
         // for it only when it is genuinely an endzone situation. At 22 m it was firing
         // from a third of the way up the field. 13, not 17: the row is disc-relative
         // now, and firing the call later keeps the set connected.
-        if yardsToGoal(disc.z, dir) <= 13 { return .endzone }
+        //
+        // Scaled off the goal line rather than left absolute, because 13 m is a fifth of
+        // a regulation half and the WHOLE of a minis one — `yardsToGoal <= 13` is true
+        // everywhere on a pitch whose goal line is at 12.5 m, so the minis game was
+        // permanently in its endzone set, from the pull onwards. At regulation this is
+        // 13 exactly.
+        if yardsToGoal(disc.z, dir) <= 13 * (field.goalLine / 32) { return .endzone }
         // The side stack is called when the disc is genuinely trapped on a line. At
         // 11.5 m it was firing on a third of possessions, and every call moved the whole
         // column across the field.

@@ -444,10 +444,11 @@ extension TeamAI {
         // The stack has to survive the cut. At stall 8 the shape stops mattering and
         // getting rid of the disc starts to; before then, a cutter who would leave fewer
         // than `stackHold` bodies in the column stays where he is.
+        let stackHold = Playbook.stackHold(playersPerSide: rankedIds.count)
         let hold =
             stallRead >= 8
-            ? Playbook.PLAY.stackHold - 2
-            : (stallRead >= 6 ? Playbook.PLAY.stackHold - 1 : Playbook.PLAY.stackHold)
+            ? stackHold - 2
+            : (stallRead >= 6 ? stackHold - 1 : stackHold)
         if stackedCount() - 1 < hold { return }
 
         let openSign = self.openSign
