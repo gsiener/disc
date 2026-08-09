@@ -1394,17 +1394,8 @@ group('you cannot walk with the disc');
   // receiver now catches a genuine huck at a full sprint, and the worst stop
   // measured 4.53 m. Still "a few metres"; the ten-metre pathology this guards
   // against would blow through either bound.
-  //
-  // 5.0 -> 5.5 for the same reason a second time, and it is the same throw. The
-  // catch plane fix (`ThrowSolver.SOLVE_CATCH_DROP`) means the disc now arrives
-  // where it was aimed instead of dying on the turf a third of the way there, so
-  // a receiver runs the whole route at full speed and stops from it; past
-  // `SOLVE_LOFT_RANGE` he is also running under a huck that hangs 75% longer.
-  // Measured after: 5.03 m, against 4.53 before. This is an OUTLIER GUARD on one
-  // frame in twenty thousand — the three percentile bounds above are the ones
-  // that would catch a thrower who carries, and none of them moved.
-  ok(worstDrift <= 5.5, 'worst drift including the catch momentum steps',
-    `${worstDrift.toFixed(2)} m > 5.5 m`);
+  ok(worstDrift <= 5.0, 'worst drift including the catch momentum steps',
+    `${worstDrift.toFixed(2)} m > 5.0 m`);
   console.log(`\x1b[2m  drift: settled ${worstSettled.toFixed(2)} m over ${settled} frames, `
     + `peak-with-momentum ${worstDrift.toFixed(2)} m over ${sampled}\x1b[0m`);
 }
