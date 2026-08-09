@@ -42,6 +42,24 @@ struct UltimateApp: App {
         return args[i + 1] == "7v7" ? .full : .minis
     }()
 
+    /// `-points 1` plays the match to one goal instead of the length last chosen.
+    ///
+    /// The sheet's shortest game is to 3, and the sheet needs a finger. Everything that
+    /// only exists at full time — the result card and its box score, the save being
+    /// cleared, REMATCH — therefore cost about ten minutes of Simulator per look, which is
+    /// the sort of price that stops a screen being looked at. Same door as `-format`, and
+    /// it composes with it:
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -points 1
+    ///
+    /// Nil when the argument is absent, which is the normal case. It overrides the length
+    /// for this launch only and is never written back to the player's saved setup.
+    static let startPoints: Int? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-points"), i + 1 < args.count else { return nil }
+        return Int(args[i + 1])
+    }()
+
     /// `-setup off` opens straight into a live match instead of the pre-game sheet.
     ///
     /// The sheet is the right first screen for a person and a wall for automation, which
@@ -147,9 +165,9 @@ struct UltimateApp: App {
                 // so without this the match and the flight loop both keep running behind
                 // whatever is on screen.
                 MatchView(
-                    format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup,
-                    demoCharge: Self.demoCharge, autoDefend: Self.autoDefend,
-                    saveCycle: Self.saveCycle)
+                    format: Self.startFormat, points: Self.startPoints, active: tab == 0,
+                    skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
+                    autoDefend: Self.autoDefend, saveCycle: Self.saveCycle)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -162,9 +180,9 @@ struct UltimateApp: App {
             }
         } else {
             MatchView(
-                format: Self.startFormat, skipsSetup: Self.skipsSetup,
-                demoCharge: Self.demoCharge, autoDefend: Self.autoDefend,
-                saveCycle: Self.saveCycle)
+                format: Self.startFormat, points: Self.startPoints,
+                skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
+                autoDefend: Self.autoDefend, saveCycle: Self.saveCycle)
         }
     }
 }

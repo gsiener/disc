@@ -53,6 +53,16 @@ enum PitchScene {
         static let disc = rgb(0.97, 0.97, 0.95)
         static let discTop = rgb(1.0, 0.62, 0.16)
         static let control = rgb(1.0, 0.78, 0.20)
+        /// Defence. The one blue on the pitch that is not a jersey, and it belongs to
+        /// exactly one idea: *you sent somebody*. The bid marker on the grass wears it and
+        /// so does the `DefenceCall` plate's title, which is the point — the mark and the
+        /// plate are one sentence about one decision, and a reader should not have to work
+        /// that out from their positions.
+        ///
+        /// The same numbers as the plate's `Color(red: 0.45, green: 0.72, blue: 1)`, and
+        /// lighter than the team blue on purpose: `team(0)` is worn by six running bodies
+        /// and this has to stay tellable apart from all of them at arm's length.
+        static let defence = rgb(0.45, 0.72, 1.0)
 
         static func team(_ t: Int) -> UIOrNSColor {
             t == 0 ? rgb(0.16, 0.50, 0.96) : rgb(0.93, 0.27, 0.22)
@@ -491,14 +501,6 @@ enum PitchScene {
         top.position = [0, Float(spec.halfHeight * 0.8), 0]
         root.addChild(top)
         return root
-    }
-
-    /// The marker's material at a given strength.
-    ///
-    /// Kept for `PitchView`, which draws one disc and can afford one material. The match
-    /// view goes through `groundMarkRamp` instead — see below.
-    static func groundMarkMaterial(_ opacity: Float) -> UnlitMaterial {
-        unlit(Palette.rgb(0, 0, 0), opacity: opacity)
     }
 
     /// Darkest and lightest the ground mark is allowed to be. How dark it is *is* the

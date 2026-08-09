@@ -63,12 +63,17 @@ extension MatchView {
             // The stall count is the clock that matters, so it is the one that is shown.
             // It only exists while someone is holding, which is also the only time it
             // means anything.
+            //
+            // A goal is *not* shown here, and used to be. The condition was
+            // `match.justScored`, which is the identical condition `callout` draws on —
+            // so every goal was announced twice at the same instant, in the same two
+            // words, thirty points apart on the screen. Two announcements of one event
+            // do not read as emphasis; they read as two events, and the eye spends the
+            // moment checking whether the small one and the big one agree. The callout
+            // is the shout, and this stays the readout.
             if match.holder != nil {
                 Text("STALL \(Int(match.stall))")
                     .foregroundStyle(match.stall > 6 ? .orange : .white.opacity(0.7))
-            } else if let team = match.justScored {
-                Text(team == 0 ? "GOAL" : "THEIR POINT")
-                    .foregroundStyle(team == 0 ? .green : .orange)
             }
 
             Text("first to \(match.fieldSpec.target)")
@@ -237,10 +242,19 @@ extension MatchView {
     /// caption on half of every point. The coach cards teach the tap properly; this is the
     /// prompt at the moment it is usable, which is the only moment a prompt is worth
     /// anything.
+    ///
+    /// **It also stands down whenever `defenceReadout` is drawing**, because the two
+    /// occupy the identical rectangle: same 96 pt above the same bottom edge, same
+    /// bottom-aligned infinite frame. It already excluded itself for the readout's
+    /// `defenceCall` branch and not for its "DOWN / BACK UP IN x.xs" branch — and that
+    /// branch is reachable before the player has ever tapped anything, because our
+    /// controlled receiver lays out on their own. A player who had never used defence
+    /// could therefore get the prompt printed over the recovery countdown, which is one
+    /// plate telling them to tap while another explains why they cannot.
     @ViewBuilder var defenceHint: some View {
         if match.possession != 0, match.holder != nil || match.discInFlight,
-            defenceCall == nil, match.defensiveCommit == nil, !Prefs.defenceUsed,
-            !match.isOver
+            defenceCall == nil, match.recovery(of: match.controlled) == nil,
+            match.defensiveCommit == nil, !Prefs.defenceUsed, !match.isOver
         {
             Text("TAP TO ATTACK THE DISC")
                 .font(.system(size: 11, design: .monospaced).bold())

@@ -188,6 +188,7 @@ let allSuites: [Suite] = [
     Suite(name: "replay", run: ReplayTests.run),
     Suite(name: "matchsave", run: MatchSaveTests.run),
     Suite(name: "clock", run: ClockTests.run),
+    Suite(name: "boxscore", run: BoxScoreTests.run),
 ]
 
 public var checkSuiteNames: [String] { allSuites.map(\.name) }

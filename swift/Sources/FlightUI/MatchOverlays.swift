@@ -147,15 +147,21 @@ struct ResultOverlay: View {
             .font(.system(size: 11, design: .monospaced))
             .foregroundStyle(.white.opacity(0.45))
             ForEach(players, id: \.id) { p in
+                // `p.plusMinus`, not `computePlusMinus(p)`. `GameState` maintains the
+                // field on every event that can move it, so recomputing here is a second
+                // source for one quantity — and it was being computed twice per row, once
+                // for the text and once for the colour, to answer the same question about
+                // the same player.
+                let pm = p.plusMinus
                 HStack {
                     Text(p.name).frame(width: 76, alignment: .leading)
                         .foregroundStyle(.white.opacity(0.85))
                     Text("\(p.goals)").frame(width: 26)
                     Text("\(p.assists)").frame(width: 26)
                     Text("\(p.completions)/\(p.attempts)").frame(width: 50)
-                    Text(plusMinus(computePlusMinus(p))).frame(width: 36)
+                    Text(plusMinus(pm)).frame(width: 36)
                         .foregroundStyle(
-                            computePlusMinus(p) >= 0
+                            pm >= 0
                                 ? Color(red: 0.5, green: 1, blue: 0.62).opacity(0.9)
                                 : Color.orange.opacity(0.9))
                 }

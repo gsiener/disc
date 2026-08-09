@@ -31,6 +31,18 @@ public struct MatchView: View {
     /// pre-game sheet, which is the only place a person can set it.
     private let formatOverride: FieldSpec?
 
+    /// How many goals the match is played to, if the command line said. Overrides the
+    /// length the player last chose and nothing else about their setup.
+    ///
+    /// Same door as `formatOverride`, and it buys something specific: **observing anything
+    /// that only happens near full time cost about ten minutes of Simulator per look**,
+    /// because the shortest game the sheet offers is to 3 and the sheet needs a finger.
+    /// `-points 1` makes the result card, the save-at-full-time clear and the REMATCH path
+    /// reachable in one point.
+    ///
+    /// Nil — the normal case — means the length is whatever the player last chose.
+    private let pointsOverride: Int?
+
     /// Whether to open straight into a live match instead of the pre-game sheet. Same
     /// argument as `formatOverride`: the sheet is a wall a launch argument cannot climb,
     /// and everything behind it would stop being screenshot-able.
@@ -367,12 +379,14 @@ public struct MatchView: View {
     private static let cancelRadius = 26.0
 
     public init(
-        format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false,
-        demoCharge: Double? = nil, autoDefend: Bool = false, saveCycle: Double? = nil
+        format: FieldSpec? = nil, points: Int? = nil, active: Bool = true,
+        skipsSetup: Bool = false, demoCharge: Double? = nil, autoDefend: Bool = false,
+        saveCycle: Double? = nil
     ) {
         self.active = active
         self.autoDefend = autoDefend
         self.formatOverride = format
+        self.pointsOverride = points
         self.skipsSetup = skipsSetup
         self.demoCharge = demoCharge
         self.saveCycle = saveCycle
@@ -383,10 +397,16 @@ public struct MatchView: View {
         // is not where that is paid. See `resumable`.
         _resumable = State(initialValue: MatchSave.load())
 
-        // The saved setup, with the launch argument — when there is one — overriding the
-        // format it names and nothing else.
+        // The saved setup, with the launch arguments — when there are any — overriding
+        // the two things they name and nothing else. Neither is written back to `Prefs`:
+        // an override is for this launch, and a screenshot run must not quietly become the
+        // game the player finds next time they open the app.
         var chosen = Prefs.loadSetup() ?? MatchSetup()
         if let format { chosen.format = format.teamSize <= 3 ? .minis : .full }
+        // Clamped rather than trusted. The target is the engine's win condition and the
+        // scoreboard's "first to N", and a zero or a negative would be a game that is over
+        // before the pull.
+        if let points { chosen.pointsToWin = Swift.max(1, Swift.min(99, points)) }
         _setup = State(initialValue: chosen)
         // The match built below is played under `chosen`, and `-setup off` starts it
         // without anybody pressing START — so the two agree from the first frame.
@@ -702,9 +722,12 @@ public struct MatchView: View {
 
             // "Starting at the catch frame". If a burst of catch-up ticks was owed and
             // the third of them was the layout grab, the remaining ticks must not be
-            // spent before the screen has drawn it. The debt is kept — one tick of it,
-            // anyway — so nothing is lost, only deferred to the next frame, where it
-            // will be paid at the slowed rate like everything else.
+            // spent before the screen has drawn it. At most one tick of the debt is
+            // carried to the next frame and **the rest is dropped** — see
+            // `FrameClock.deferRemainingTicks`, which is a `min` and not a subtraction.
+            // Dropping is the right half of the trade: the ticks in question are ones the
+            // player was never going to see anyway, and paying them out would fast-forward
+            // through the very moment the hitstop exists to hold on.
             if slowed {
                 clock.deferRemainingTicks()
                 break
@@ -875,9 +898,14 @@ public struct MatchView: View {
 
     /// Squad numbers. Arbitrary, but stable and not sequential, because 1-2-3-4-5-6 reads
     /// as a diagram and 4-7-11-23 reads as a team.
+    /// A `static let`, because this is called once per player when the scene is built and
+    /// then once per drawn frame for the jersey number beside a drag — and an array
+    /// literal in the body is a fresh fourteen-element allocation every time it is
+    /// evaluated.
+    static let jerseyNumbers = [4, 7, 11, 23, 2, 18, 9, 31, 5, 14, 8, 21, 3, 27]
+
     func jersey(_ index: Int) -> Int {
-        let numbers = [4, 7, 11, 23, 2, 18, 9, 31, 5, 14, 8, 21, 3, 27]
-        return numbers[index % numbers.count]
+        Self.jerseyNumbers[index % Self.jerseyNumbers.count]
     }
 
     /// Tear the match down and start a new one on `setup`'s pitch, at its length and its

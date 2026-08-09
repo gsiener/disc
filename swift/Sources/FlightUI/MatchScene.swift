@@ -312,10 +312,16 @@ extension MatchView {
     /// bid is the difference between a defender who is about to arrive and one who has
     /// been sent at a disc they will never touch.
     ///
+    /// The blue is `Palette.defence`, the same numbers the `DefenceCall` plate's title is
+    /// drawn in, and that is the whole argument: the mark and the plate are one sentence
+    /// about one decision. It spent its first release in `Palette.control` — the gold worn
+    /// by the control ring, the chevron and the handoff pulse — which is to say it shipped
+    /// as the fourth gold thing on a pitch the paragraph above says must not have a
+    /// fourth, and as the only half of the defensive call that was not blue.
     static func bidMarker() -> Entity {
         let root = Entity()
         let bar = MeshResource.generateBox(size: [1.5, 0.02, 0.10])
-        let material = PitchScene.unlit(PitchScene.Palette.control, opacity: 0.8)
+        let material = PitchScene.unlit(PitchScene.Palette.defence, opacity: 0.8)
         for i in 0..<2 {
             let seg = ModelEntity(mesh: bar, materials: [material])
             seg.orientation = simd_quatf(angle: Float(i) * .pi / 2, axis: [0, 1, 0])
