@@ -316,6 +316,24 @@ public final class Engine {
     /// whole point backwards.
     private func stagePoint() {
         stagedPoint = game.point
+
+        // **A point is a rest, not a reset.**
+        //
+        // Both fatigue pools used to be wiped clean here — `energy` set to 1, and
+        // locomotion's `stamina` implicitly restored by rebuilding the whole `Locomotion`
+        // from scratch. So no player was ever tired in the fourteenth point of a match,
+        // which removes the whole reason `stamina` and the `endurance` rating exist: a
+        // game to 15 was fifteen opening points played by fresh legs.
+        //
+        // The reference rests forty seconds' worth through `restBetweenPoints` — ported,
+        // and until now with no caller — and hands locomotion a flat +32. Both are partial
+        // on purpose, and both are attribute-weighted, so a high-stamina handler comes back
+        // fuller than a deep who just ran four sprints.
+        let carried = Dictionary(
+            uniqueKeysWithValues: players.compactMap { p in
+                loco.get(p.id).map { (p.id, $0.stamina) }
+            })
+        restBetweenPoints(players, seconds: 40)
         loco = Locomotion()
         records = []
 
@@ -329,12 +347,14 @@ public final class Engine {
             let lateral = (slot / span - 0.5) * format.field.width * 0.6
             p.pos = Vec3d(lateral, 0.9, -dir * format.field.goalLine * 0.95)
             p.vel = .zero
-            p.energy = 1
             p.airborne = false
-            _ = loco.create(
+            let body = loco.create(
                 CreateOpts(
                     id: p.id, team: p.team, attr: fromAIAttributes(ratings(p.attr)),
                     pos: p.pos, facing: dir > 0 ? 0 : .pi))
+            // A fresh `Locomotion` starts everyone at full; carry the last point's legs
+            // across and give them the reference's forty-second top-up.
+            if let was = carried[p.id] { body.stamina = Swift.min(100, was + 32) }
             records.append(WorldPlayerRecord(id: p.id, pos: p.pos, vel: .zero))
         }
 
@@ -627,7 +647,18 @@ public final class Engine {
     /// while he looks the field off and every held frame would read as a travel.
     private func observation() -> FrameObservation {
         var obs = FrameObservation()
-        obs.discPos = disc.state.pos
+
+        // **The physics owns the disc while it is live; the RULES own it while it is dead.**
+        //
+        // This used to report the physical position unconditionally. `deadDisc()` has
+        // already walked the disc to a legal spot on the line, and reporting where it
+        // physically came to rest puts it back out of bounds where nobody can legally
+        // reach it — so the machine was being told, every tick of a dead phase, that its
+        // own considered decision was wrong. In `PRE_PULL` it was worse than that: the
+        // machine's `discPos` was being continuously overwritten with the puller's hand.
+        if game.phase != .turnoverDead, game.phase != .prePull {
+            obs.discPos = disc.state.pos
+        }
 
         guard let c = carrier, let holder = player(c) else {
             // Nobody is holding, so there is nobody to mark and the count may not run.
@@ -638,8 +669,24 @@ public final class Engine {
         }
         obs.throwerPos = holder.pos
 
+        // **Whoever is actually on the thrower, not whoever was assigned to them.**
+        //
+        // This used to report the defending `TeamAI`'s own `marker` — the matchup it drew
+        // the mark for. Those are different players the moment the assigned marker is
+        // beaten or the defence switches, and `GameState`'s own port note calls out this
+        // exact disagreement as a source of spurious double-team flags. Worse for the
+        // game: when the assigned marker is beaten, the count stops even though somebody
+        // is standing on the thrower, and the offence gets free time it did not earn.
         let defence = otherTeam(holder.team)
-        let markerId = ai.count > defence ? ai[defence].marker : -1
+        var bd = rules.markerRange + 0.6
+        var markerId = -1
+        for p in players where p.team == defence {
+            let d = distXZ(p.pos, holder.pos)
+            if d < bd {
+                bd = d
+                markerId = p.id
+            }
+        }
         if markerId >= 0, let marker = player(markerId) {
             obs.markerId = .value(markerId)
             obs.markerPos = .value(marker.pos)
