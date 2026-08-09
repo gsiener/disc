@@ -42,6 +42,7 @@
  */
 
 import type { ThrowRequest } from '../../entities/Disc.ts';
+import { throwSpeed } from './Throws.ts';
 
 /** The one thing the solver needs from a disc runtime. */
 export interface ThrowProbe {
@@ -87,6 +88,18 @@ export const SOLVE_REACH_TOL = 0.5;
 /** How many times one solve may lift the power. See `solveRelease`. */
 export const SOLVE_POWER_LIFTS = 2;
 /**
+ * Slowest release the solver will ask an arm for, m/s, and how many times one
+ * solve may reach for it. See `solveRelease`'s THROW SOFTER note.
+ *
+ * This is the same 9 m/s as `MIN_THROW_SPEED` in `Game.ts`, and it is the same
+ * number for the same reason: every throw spec's own speed floor is a twenty
+ * metre throw, so a solver that can only move within the spec's band cannot make
+ * a dump at all. The human path was given an absolute release speed for exactly
+ * this and the AI path was not; below, it is.
+ */
+export const SOLVE_SPEED_MIN = 9;
+export const SOLVE_SPEED_DROPS = 2;
+/**
  * Residual drift is still worth a heading trim — but a CLAMPED one. Unclamped,
  * this was the whole correction and it was aiming hucks off the field.
  */
@@ -111,7 +124,7 @@ const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? 
  */
 function solveElevation(
   probe: ThrowProbe, req: ThrowRequest, heading: number, want: number, catchY: number,
-): { angle: number; lat: number; reach: number } {
+): { angle: number; lat: number; reach: number; floor: number } {
   req.aim.set(Math.sin(heading), 0, Math.cos(heading));
   const step = (SOLVE_ELEV_HI - SOLVE_ELEV_LO) / SOLVE_ELEV_SCAN;
 
@@ -120,26 +133,85 @@ function solveElevation(
   let peakA = SOLVE_ELEV_LO;
   let peakD = -Infinity;
   let peakLat = 0;
+  let minA = SOLVE_ELEV_LO;
+  let minD = Infinity;
+  let minLat = 0;
   let loA = NaN;
   let hiA = NaN;
+  let rising = true;
+  let fallLoA = NaN;
+  let fallHiA = NaN;
 
   for (let i = 0; i <= SOLVE_ELEV_SCAN; i++) {
     const a = SOLVE_ELEV_LO + step * i;
     req.angle = a;
     const r = probe.probeThrow(req, catchY, 6);
     if (r.dist > peakD) { peakD = r.dist; peakA = a; peakLat = r.lat; }
+    if (r.dist < minD) { minD = r.dist; minA = a; minLat = r.lat; }
     if (i > 0 && r.dist >= want && prevD < want) { loA = prevA; hiA = a; break; }
+    /**
+     * A FALLING CROSSING IS A ROOT TOO, and it is only ever the fallback.
+     *
+     * The rising crossing above is the flat root of a normal throw and it still
+     * wins outright: for any carry curve that starts BELOW the ask — every throw
+     * long enough to need a peak — no falling crossing can exist before it, so
+     * this records nothing and the scan is bit-for-bit what it was.
+     *
+     * It exists for an INVERTED disc, whose carry falls across the whole bracket
+     * rather than peaking inside it. A hammer at the power floor carries 11.1 m
+     * flat and 7 m lofted, so an 8 m hammer has a root at 0.6 rad and the
+     * rising-only scan walked past it into the out-of-range branch and threw the
+     * 11.5 m peak instead. Measured: `hammer want=8 -> flew 11.47`.
+     *
+     * Only the FIRST one is kept, and the scan keeps going, because a rising root
+     * further up the bracket is the better answer where both exist: under about
+     * 10 m/s the carry curve has a step in it — below some elevation the disc
+     * lands on the ground without ever climbing back through the catch plane —
+     * and the falling "crossing" over that step is a bisection across a
+     * discontinuity, which lands anywhere. The rising root above the step is a
+     * real one.
+     */
+    if (i > 0 && r.dist <= want && prevD > want && Number.isNaN(fallLoA)) {
+      fallLoA = prevA; fallHiA = a;
+    }
     prevA = a;
     prevD = r.dist;
   }
 
-  // Out of range: throw it as far as it goes. The AI's own range model is more
-  // optimistic than the flight model above about a third of `maxThrowRange`, so
-  // this branch is taken on purpose and often, and it is what a player does with
-  // an ask they cannot meet.
+  if (Number.isNaN(loA) && !Number.isNaN(fallLoA)) {
+    loA = fallLoA; hiA = fallHiA; rising = false;
+  }
+
+  /**
+   * NO CROSSING. There are two ways to fail to bracket a root, they are opposite
+   * failures, and this used to answer both of them with the peak.
+   *
+   * The scan brackets on a RISING crossing, so it records nothing when the ask is
+   * shorter than ANYTHING this release can throw — and a too-short ask then fell
+   * through to `peakA`, the maximum-distance angle. Measured, at the power floor:
+   * a 1 m dump was answered with a 19.6 m bomb, a 3 m reset with the same one, and
+   * 42% of the AI's asks under 6 m overshot their aim by more than three metres. A
+   * too-short ask is not a too-long one and must not be answered as one.
+   *
+   * So the trough is tracked alongside the peak, and the two cases are told apart
+   * by it: below the trough, throw it as SHORT as it goes; above the peak, as FAR
+   * as it goes. Both are what a player does with an ask they cannot meet, and only
+   * the second one was ever implemented. (Note the trough is not always at
+   * `SOLVE_ELEV_LO`: under about 10 m/s the flattest launches fall out of the sky
+   * onto the ground rather than descending back through the catch plane, and the
+   * shortest flight is a small floater a few hundredths of a radian off flat.)
+   *
+   * The caller then does the real work — it drops the release SPEED and solves
+   * again, because an angle alone cannot make a five metre throw out of an arm
+   * released at fourteen metres a second.
+   */
   if (Number.isNaN(loA)) {
+    if (minD >= want) {
+      req.angle = minA;
+      return { angle: minA, lat: minLat, reach: peakD, floor: minD };
+    }
     req.angle = peakA;
-    return { angle: peakA, lat: peakLat, reach: peakD };
+    return { angle: peakA, lat: peakLat, reach: peakD, floor: minD };
   }
 
   let bestA = loA;
@@ -151,10 +223,11 @@ function solveElevation(
     const r = probe.probeThrow(req, catchY, 6);
     const err = r.dist - want;
     if (Math.abs(err) < Math.abs(bestErr)) { bestErr = err; bestA = mid; bestLat = r.lat; }
-    if (err < 0) loA = mid; else hiA = mid;
+    // Which half to keep depends on which way the carry runs across the cell.
+    if ((err < 0) === rising) loA = mid; else hiA = mid;
   }
   req.angle = bestA;
-  return { angle: bestA, lat: bestLat, reach: peakD };
+  return { angle: bestA, lat: bestLat, reach: peakD, floor: minD };
 }
 
 /**
@@ -171,12 +244,49 @@ export function solveRelease(
   let angle = 0.02;
   let lat = 0;
   let lifts = 0;
+  let drops = 0;
 
   for (let pass = 0; pass < SOLVE_PASSES; pass++) {
     req.bank = bank;
     const e = solveElevation(probe, req, heading0, want, catchY);
     angle = e.angle;
     lat = e.lat;
+
+    /**
+     * THROW SOFTER RATHER THAN LONGER — the mirror of the lift below, and the
+     * half of the problem that the lift could never have reached.
+     *
+     * `powerForSpeed` is clamped to a floor of 0.12 in `aiThrow`, and 12% power on
+     * a backhand is still 13.8 m/s, which carries about 19 m at the best angle and
+     * never less than 4.8 m at the worst. The AI asks for dumps and resets of one
+     * to four metres — to a NAMED receiver standing there — and no launch elevation
+     * in a human wrist's range can make that throw at that speed. Measured in live
+     * play before this: 9.4% of all AI throws overshot their aim by more than three
+     * metres, and among asks under 6 m it was 42%, the worst of them a 0.8 m reset
+     * released as a 20.7 m bomb.
+     *
+     * The human path solved exactly this and the AI path never got the fix: a human
+     * release drives an ABSOLUTE speed from `MIN_THROW_SPEED` rather than a power
+     * across the throw's own band (`Game.ts:humanReleaseParams`), which is what puts
+     * a tap at a few metres instead of twenty. `ThrowRequest.speed` is that same
+     * override, so the solver reaches for it here — measuring the shortest carry the
+     * scan could find and scaling the speed toward the ask, carry going roughly as
+     * speed squared. It floors at `SOLVE_SPEED_MIN`, which is a person's slowest
+     * throw and therefore the shortest pass the game has.
+     *
+     * It is deliberately a SOLVED speed rather than the speed the AI asked for.
+     * `throwReleaseSpeed` is a model of pace fitted at throwing distances; below the
+     * spec floor it is extrapolating into a band it was never fitted in. The carry
+     * the probe measures is not.
+     */
+    const cur = req.speed ?? throwSpeed(req.type, req.power);
+    if (e.floor > want + SOLVE_REACH_TOL && cur > SOLVE_SPEED_MIN && drops < SOLVE_SPEED_DROPS) {
+      drops++;
+      req.speed = clampNum(
+        cur * Math.sqrt(want / Math.max(0.5, e.floor)), SOLVE_SPEED_MIN, cur);
+      pass--;
+      continue;
+    }
 
     /**
      * THROW HARDER RATHER THAN SHORTER.
@@ -193,8 +303,13 @@ export function solveRelease(
      * enough to close any gap `maxThrowRange` will ever open; a throw that is still
      * short at full power is genuinely beyond the arm and flies at the peak angle,
      * which is what a player does with a shot they cannot quite make.
+     *
+     * `drops === 0` because the two are opposite corrections and the lift acts on
+     * `power`, which an absolute `speed` has already overridden: after a drop the
+     * lift could only be a no-op spent against the pass budget.
      */
-    if (e.reach < want - SOLVE_REACH_TOL && req.power < 1 && lifts < SOLVE_POWER_LIFTS) {
+    if (drops === 0 && e.reach < want - SOLVE_REACH_TOL
+      && req.power < 1 && lifts < SOLVE_POWER_LIFTS) {
       lifts++;
       req.power = clampNum(
         req.power * Math.sqrt(want / Math.max(1, e.reach)), req.power, 1);

@@ -697,10 +697,16 @@ export class DiscRuntime {
   /**
    * Where a released disc first descends through `catchY`, and how far that is
    * from the release point. Used by the throw solver in Game.ts.
+   *
+   * `speed` is forwarded, and it has to be: it is the one release parameter that
+   * `release` honoured and this did not, so a request carrying an absolute
+   * release speed probed as though it were being thrown at its `power` speed and
+   * flew at a completely different one. The solver's whole job is to compare the
+   * probe against the flight.
    */
   probeThrow(req: ThrowRequest, catchY: number, maxT = 6): { dist: number; lat: number; t: number; x: number; z: number } {
     const opts: ThrowOptions = {
-      hand: req.hand ?? 'R', bank: req.bank, nose: req.nose,
+      hand: req.hand ?? 'R', bank: req.bank, nose: req.nose, speed: req.speed,
       groundY: this.groundAt(req.from.x, req.from.z), out: this.probe,
     };
     const p = throwDisc(req.type, req.from, req.aim, req.power, req.angle, req.spin, opts);

@@ -87,6 +87,40 @@ construction, so the antiparallel fallback fired on hucks aimed down −x and ti
 frame by metres). It was invisible until something finally threw far enough to trip
 it — an argument for the golden covering ranges the AI could not previously reach.
 
+### What the reviews found (2026-08-09, second pass)
+
+An independent review of shipped `main`, read from a worktree pinned to `origin/main`
+so it saw what was released rather than the churning tree, found a **live gameplay
+regression that had already shipped** — and the fact that every agent's own checks were
+green when it landed is the point.
+
+**The solver bombs every short throw.** Its peak scan brackets a root only via a
+*rising* crossing, so when the flattest legal launch already carries further than the
+ask, no crossing is recorded and control falls through to the "out of range: throw it as
+far as it goes" branch — returning the *maximum-distance* angle. A too-short ask is
+misclassified as a too-long one. Measured live: 9.4% of all AI throws overshoot their
+aim by more than 3 m; among asks under 6 m it is 42%. Dumps to a receiver a metre away
+are released as 21 m bombs. The deeper cause was already solved on the *human* path
+(drive an absolute release speed; the comment there describes this exact symptom —
+"there was no dump, no reset, no five-metre swing, only bombs") and the AI path never
+got that fix.
+
+Two lessons worth keeping:
+
+1. **The failure sat below the bottom of every sweep.** The throw-solver fixture's
+   smallest case is 6.93 m; the cliff is at ~5 m. A fixture is only evidence about the
+   range it covers.
+2. **Coverage was proven absent by mutation, not argued about.** `throwReleaseSpeed`
+   was changed in Swift only — altering how hard every throw over 15 m is released —
+   and 2,240,645 assertions stayed green, because the function appears in no golden.
+   Ports drift silently exactly where no fixture looks.
+
+A third finding, from the deep-cut work: the TypeScript reference had been running its
+deep game on a *fallback glide integrator*, because the catch predictor reaches the disc
+through the render system, which does not exist headless. The two ports were reasoning
+about different discs, and no golden could see it because the trace deliberately sets
+that system to `undefined`.
+
 ## Success metrics (the definition of "great and accurate")
 
 Measured from headless 15-minute sevens matches unless noted:
