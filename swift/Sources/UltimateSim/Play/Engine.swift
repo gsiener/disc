@@ -100,6 +100,24 @@ public final class Engine {
     private var thrownBy: Int?
     private var intendedReceiver: Int?
 
+    /// What the last AI release was asked for, so a check can ask whether it was delivered.
+    ///
+    /// **This exists because no match-level statistic can express the throw solver's actual
+    /// property.** Mutation testing of `releaseThrow` found that deleting the lateral-drift
+    /// correction, discarding the elevation bisection entirely, replacing `powerForSpeed`
+    /// with a constant, and solving to the ground instead of to chest height *all* left the
+    /// suite green — because a game where every throw misses can still score, just
+    /// differently. The question "did the disc arrive where the AI aimed" has to be asked
+    /// directly, and asking it needs the aim.
+    public struct ThrowAim: Sendable {
+        public let from: Vec3d
+        /// The point the AI wanted the disc to arrive at, its own error already included.
+        public let aim: Vec3d
+        /// The release speed the AI asked for, m/s.
+        public let speed: Double
+    }
+    public private(set) var lastThrowAim: ThrowAim?
+
     /// Flight bookkeeping, ported from `Game.ts`.
     ///
     /// A disc is only in or out **where it comes to ground**. Testing it every tick of the
@@ -913,34 +931,41 @@ public final class Engine {
     /// `catchY` is the aim's own height — `AI.ts` sets `aimY: 1.35`, chest height on a
     /// running receiver. Solving to the ground instead makes every pass fall short, since
     /// a disc arriving at the receiver's feet crossed their chest metres earlier.
-    private func releaseThrow(
-        by id: Int, type: AIThrowType, aim: Vec3d, speed: Double, receiver: Int
-    ) {
-        guard game.phase == .livePossession, carrier == id, let thrower = player(id) else { return }
-        guard let physType = ThrowType(rawValue: type.rawValue) else { return }
-
-        let from = releaseOrigin(thrower)
+    /// Solve a release without throwing it.
+    ///
+    /// Public, and split out from `releaseThrow`, so the checks can measure the solver on
+    /// its own. That is not a convenience: in a live match the disc is caught by a receiver
+    /// running *onto* the lead, a metre or two before the aim point, so a match-level
+    /// measurement of "did it arrive" is measuring the offence and not the solver — it read
+    /// 2.59 m median either way, with the solver working and with it deliberately broken.
+    /// Flown against nobody, the answer is the solver's alone.
+    ///
+    /// Returns nil when the aim is close enough to be nothing to solve — `atan2` of a point
+    /// you are standing on is noise.
+    public func solveRelease(
+        from: Vec3d, aim: Vec3d, type: ThrowType, speed: Double, throwPower: Double,
+        hand: ThrowOptions.Hand
+    ) -> ThrowRequest? {
         let tx = aim.x - from.x
         let tz = aim.z - from.z
         let want = (tx * tx + tz * tz).squareRoot()
-        // Nothing to solve, and `atan2` of a point you are standing on is noise.
-        guard want >= 0.4 else { return }
+        guard want >= 0.4 else { return nil }
 
         // The reference derives spin from the arm rather than passing the AI's through.
-        let spin = clamp(0.45 + 0.55 * (thrower.attr.throwPower / 100), 0, 1)
-        let power = clamp(powerForSpeed(physType, speed) * 1.02, 0.12, 1)
+        let spin = clamp(0.45 + 0.55 * (throwPower / 100), 0, 1)
+        let power = clamp(powerForSpeed(type, speed) * 1.02, 0.12, 1)
         let catchY = max(0.35, aim.y)
 
         var heading = atan2(tx, tz)
         var angle = 0.02
         var req = ThrowRequest(
-            type: physType,
+            type: type,
             from: from,
             aim: Vec3d(sin(heading), 0, cos(heading)),
             power: power,
             angle: angle,
             spin: spin,
-            hand: thrower.handed == .left ? .left : .right)
+            hand: hand)
 
         for pass in 0..<2 {
             var lo = -0.34
@@ -969,10 +994,27 @@ public final class Engine {
 
         req.aim = Vec3d(sin(heading), 0, cos(heading))
         req.angle = angle
+        return req
+    }
+
+    private func releaseThrow(
+        by id: Int, type: AIThrowType, aim: Vec3d, speed: Double, receiver: Int
+    ) {
+        guard game.phase == .livePossession, carrier == id, let thrower = player(id) else { return }
+        guard let physType = ThrowType(rawValue: type.rawValue) else { return }
+
+        let from = releaseOrigin(thrower)
+        guard
+            let req = solveRelease(
+                from: from, aim: aim, type: physType, speed: speed,
+                throwPower: thrower.attr.throwPower,
+                hand: thrower.handed == .left ? .left : .right)
+        else { return }
         let vel = disc.release(req)
 
         thrownBy = id
         intendedReceiver = receiver
+        lastThrowAim = ThrowAim(from: from, aim: aim, speed: speed)
         beginFlight(from)
         demand(
             game.release(

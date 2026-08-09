@@ -44,8 +44,169 @@ enum EngineTests {
         theCountRunsOut()
         aRefusedActionChangesNothing()
         theHumanCannotThrowADiscTheyDoNotHave()
+        theDiscArrivesWhereItWasAimed()
         bidsReachTheBody()
         deterministic()
+    }
+
+    /// **The throw solver's actual property, asked directly.**
+    ///
+    /// This check exists because mutation testing found the suite could not see the solver
+    /// at all. Deleting the lateral-drift heading correction, throwing away the elevation
+    /// bisection, replacing `powerForSpeed` with a constant `0.5`, and solving to the
+    /// ground instead of to chest height were each applied in turn — and every one of them
+    /// left 2.2 million assertions green. A game in which every throw misses still scores;
+    /// it just scores differently, and no aggregate of goals or completions distinguishes
+    /// "the disc went where it was aimed" from "the disc went somewhere and somebody was
+    /// standing there".
+    ///
+    /// So: solve a release, fly it against nobody, and see where it goes.
+    ///
+    /// **Measured in isolation, not in a match.** In a live game the disc is caught by a
+    /// receiver running *onto* the lead, a metre or two short of the aim point, so a
+    /// match-level "did it arrive" reads about 2.6 m whether the solver is working or
+    /// deliberately broken — it is measuring the offence. Flown against nobody, the answer
+    /// is the solver's alone, and the reference's claim is specific: two outer passes are
+    /// enough to land inside a receiver's catch radius.
+    ///
+    /// The sweep is deliberately wide — every throw type, ranges from a five-metre dump to
+    /// a huck, and headings all round the clock — because the two things most likely to be
+    /// wrong are direction-dependent. A disc banks, so the lateral error changes sign with
+    /// the heading, and a forehand and a backhand curve opposite ways.
+    private static func theDiscArrivesWhereItWasAimed() {
+        let e = Engine(format: .sevens, seed: 23)
+        let rt = DiscRuntime()
+        var misses: [Double] = []
+        var byFraction: [Double: [Double]] = [:]
+        var latByFraction: [Double: [Double]] = [:]
+        var worst = (miss: 0.0, what: "")
+
+        // A stand-in thrower, so the sweep asks for exactly what the AI would ask for.
+        let arm = AIPlayer(
+            id: 0, team: 0, attr: e.players[0].attr, archetype: .handler)
+        arm.energy = 1
+
+        for type in [AIThrowType.backhand, .forehand, .hammer] {
+            guard let physType = ThrowType(rawValue: type.rawValue) else { continue }
+            // Only ranges this throw can actually make. The AI never asks for more — it
+            // skips any option whose `powerRatio` exceeds 1.05 — so a sweep that does is
+            // testing the bisection's saturation behaviour rather than the solver, which
+            // is how a hammer at 40 m came to be the "worst" case at 28 m of error.
+            let reach = maxThrowRange(arm, type, 0)
+            for fraction in [0.15, 0.3, 0.35, 0.4, 0.45, 0.5, 0.7, 0.9] {
+                let range = reach * fraction
+                for step in 0..<8 {
+                    let heading = Double(step) * .pi / 4
+                    let from = Vec3d(0, 1.35, 0)
+                    let aim = Vec3d(
+                        from.x + sin(heading) * range, 1.35, from.z + cos(heading) * range)
+                    // Exactly the AI's own speed: the distance over the flight time it
+                    // intends. `AI.ts:2311`.
+                    let speed = range / Swift.max(0.2, throwFlightTime(arm, type, range))
+                    guard
+                        let req = e.solveRelease(
+                            from: from, aim: aim, type: physType, speed: speed,
+                            throwPower: arm.attr.throwPower, hand: .right)
+                    else { continue }
+
+                    // Fly it to rest, and take the closest the disc ever came to the aim.
+                    //
+                    // The whole flight, not just the part above catch height. `probeThrow`
+                    // reports whichever comes first, a descent through the catch plane or
+                    // the ground — so a flat short throw is solved to where it LANDS, and
+                    // it genuinely arrives there at ankle height. An earlier version of
+                    // this measurement stopped tracking below 0.35 m and reported those
+                    // correct throws as 1.8 m misses.
+                    rt.release(req)
+                    var closest = Double.infinity
+                    for _ in 0..<(120 * 8) {
+                        rt.step(dt: dt)
+                        closest = Swift.min(closest, distXZ(aim, rt.state.pos))
+                        if rt.state.atRest { break }
+                    }
+                    guard closest.isFinite else { continue }
+                    misses.append(closest)
+                    byFraction[fraction, default: []].append(closest)
+                    // The lateral half, on its own. The heading correction's entire job is
+                    // to drive this to zero, and total miss cannot see it: at short range
+                    // the drift is small enough to hide inside a catch radius, so deleting
+                    // the correction left every other assertion green.
+                    latByFraction[fraction, default: []].append(
+                        abs(e.disc.probeThrow(req, catchY: 1.35, maxT: 6).lat))
+                    if closest > worst.miss {
+                        worst = (closest, "\(type.rawValue) \(Int(range)) m at \(step * 45) deg")
+                    }
+                }
+            }
+        }
+
+        Check.ok(misses.count > 80, "there were throws to measure (\(misses.count))")
+        guard misses.count > 80 else { return }
+
+        func median(_ xs: [Double]) -> Double {
+            xs.isEmpty ? .infinity : xs.sorted()[xs.count / 2]
+        }
+        for (fraction, xs) in byFraction.sorted(by: { $0.key < $1.key }) {
+            Check.note(
+                "throw solver at \(Int(fraction * 100))% of the AI's believed range: "
+                    + "median miss " + String(format: "%.2f", median(xs)) + " m, median "
+                    + "lateral " + String(format: "%.2f", median(latByFraction[fraction] ?? []))
+                    + " m")
+        }
+
+        // **Where the two models part company, stated rather than hidden.**
+        //
+        // The AI decides what it can throw with `maxThrowRange` and derives a release speed
+        // from `throwFlightTime`; the disc is then flown by the aerodynamic model. Those are
+        // two different models, and they agree only up to about half of what the first one
+        // believes. A backhand at 90% of `maxThrowRange` works out at about 14 m/s, which
+        // `powerForSpeed` maps to 15% power — and no elevation in the bisection's range
+        // carries 15% of a backhand forty metres. So the AI asks for hucks it cannot throw
+        // and they land short.
+        //
+        // Both halves are faithful ports, so the reference has this too, and it is the
+        // likely reason a huck is rare in either game. It is a real limitation of the
+        // reference's design, not a porting error, and it is asserted at the range where
+        // throws actually happen rather than papered over with a loose global bound.
+        // **What this sweep found about the heading correction, recorded because it is not
+        // what the commit that added it claimed.**
+        //
+        // `heading -= atan2(lat, want)` is inert below about a third of the AI's believed
+        // range — `lat` never reaches its own 0.25 m gate — and above that it makes the
+        // total miss *worse*, not better: at 35% it takes the median from 0.79 m to 2.32 m,
+        // and at 50% from 4.81 m to 7.27 m. The reason is the shortfall above. Once the
+        // disc cannot reach `want`, the elevation bisection saturates and the disc lands
+        // short; rotating the heading by an angle computed for the full distance then
+        // swings that short landing point sideways, away from the aim.
+        //
+        // Note also that `ThrowProbe.lat` is measured relative to the request's OWN aim
+        // line, so it is unchanged by rotating that line — the median lateral figures above
+        // are identical with the correction and without it. Anyone re-checking this should
+        // measure the world-space offset from `from → aim`, not `lat`.
+        //
+        // The correction is kept because it is what the reference does and this port's rule
+        // is that the reference wins over local judgement. But it is not earning anything
+        // here, and the thing to fix is the disagreement below, not this line. A match-level
+        // A/B is no use for deciding it: any change to the solver reshuffles the whole match
+        // through the RNG, and removing this line moved sevens 7 → 3 goals while moving
+        // minis 10 → 13. That is chaos, not evidence.
+        let short = byFraction.filter { $0.key <= 0.3 }.flatMap(\.value)
+        let long = byFraction.filter { $0.key >= 0.9 }.flatMap(\.value)
+        Check.note(
+            "throw solver: \(misses.count) flights, worst "
+                + String(format: "%.2f", worst.miss) + " m on \(worst.what)")
+        Check.ok(
+            median(short) < 0.82,
+            "a solved throw inside a third of the AI's believed range arrives in a catch "
+                + "radius (median \(median(short)) m)")
+        // Pinned so that fixing it is a visible event rather than a silent one. If somebody
+        // reconciles `maxThrowRange` with the flight model, this fails and should be
+        // rewritten — that is the point of asserting a known limitation rather than
+        // omitting it.
+        Check.ok(
+            median(long) > 3,
+            "and the AI still believes in hucks the flight model will not throw "
+                + "(median \(median(long)) m at 90% of believed range)")
     }
 
     /// A minis engine is three a side on the minis pitch; a sevens engine is seven on the
