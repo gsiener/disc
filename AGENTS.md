@@ -4,6 +4,40 @@
 repository — file ownership, the zero-binary-assets rule, determinism, the
 quality tiers, and which capture rig to use for what. Nothing here replaces it.
 
+## Working alongside other agents
+
+Several agents usually share this checkout at once, each owning a named set of
+files. Two rules keep that from corrupting the history, and both were learned by
+breaking it:
+
+**1. Never run a whole-tree git command in the shared checkout.** `git add -A`,
+`git commit` with no pathspec, `git stash`, `git checkout .` and `git reset` all
+operate on everyone's work, and none of them has a notion of "mine". A plain
+`git add X && git commit` commits **the whole index**, including whatever a peer
+staged a second ago — that has put a half-finished refactor on `main` twice,
+once referencing a file its author had not committed yet, which broke the build
+for everyone. `git stash` is worse: it stashed three files belonging to two other
+agents and then refused to pop.
+
+Commit with an explicit pathspec instead, which ignores the rest of the index:
+
+```sh
+git commit -- path/one path/two      # or: git commit --only <paths>
+```
+
+**2. Verify a commit is self-contained before you stop.** Your working tree
+contains other people's changes, so a green build there proves nothing about what
+you committed. Check the commit in isolation:
+
+```sh
+git worktree add --detach /tmp/verify HEAD
+cd /tmp/verify/swift && swift build -c release && .build/release/SimTests
+git worktree remove --force /tmp/verify
+```
+
+A detached worktree is also the right way to measure a baseline — check out the
+commit you want to compare against, rather than reaching for `git stash`.
+
 ## Friction log
 
 Managed by [Frog](https://github.com/wevm/frog). Entries live in
