@@ -439,6 +439,20 @@ enum PitchScene {
         return ring
     }
 
+    /// The control ring's two treatments: in the play, and on the floor.
+    ///
+    /// `docs/gameplay-design.md` §4 asks for "ring at 40% opacity while your body is
+    /// unavailable — the 2.04 s layout cost must be legible, not mysterious". Two
+    /// materials built once rather than one built per frame, for the same reason the
+    /// ground mark has a ramp: this is a value that changes twice a layout and was
+    /// otherwise a fresh `UnlitMaterial` allocation 120 times a second.
+    ///
+    /// Index 0 is available, 1 is recovering. Kept as an array so the call site indexes
+    /// with a `Bool` and cannot get the two the wrong way round.
+    static let controlRingRamp: [UnlitMaterial] = [
+        unlit(Palette.control), unlit(Palette.control, opacity: 0.4),
+    ]
+
     /// A soft disc under whoever a throw is heading for.
     static func targetRing(team: Int) -> Entity {
         let e = ModelEntity(

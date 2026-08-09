@@ -164,6 +164,7 @@ struct MatchSetup: Equatable, Codable {
 enum Prefs {
     private static let setupKey = "match.setup.v1"
     private static let coachKey = "coach.seen.v1"
+    private static let defenceKey = "defence.used.v1"
 
     private static var store: UserDefaults { .standard }
 
@@ -181,5 +182,16 @@ enum Prefs {
     static var coachSeen: Bool {
         get { store.bool(forKey: coachKey) }
         set { store.set(newValue, forKey: coachKey) }
+    }
+
+    /// Whether the player has ever sent a defender at the disc.
+    ///
+    /// The one prompt that says defence exists is drawn on every defensive possession
+    /// until this is true, and never again after. A hint that keeps appearing once you
+    /// have learned the thing it teaches is not a hint, it is a caption — and it would be
+    /// on screen for half of every point for the life of the install.
+    static var defenceUsed: Bool {
+        get { store.bool(forKey: defenceKey) }
+        set { store.set(newValue, forKey: defenceKey) }
     }
 }

@@ -67,6 +67,22 @@ struct UltimateApp: App {
         return Double(args[i + 1])
     }()
 
+    /// `-defend on` issues the defensive tap automatically, whenever there is one to
+    /// issue.
+    ///
+    /// The defensive control is a tap, and a tap is the one input this environment cannot
+    /// synthesise — `simctl` passes arguments and CGEvent posting never reaches the
+    /// Simulator. Everything the tap puts on screen (the call plate, the marker on the
+    /// grass where the defender was sent, the layout recovery countdown) is therefore
+    /// unphotographable without this. Same door as `-charge`, same reasoning.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -defend on
+    static let autoDefend: Bool = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-defend"), i + 1 < args.count else { return false }
+        return args[i + 1] == "on"
+    }()
+
     /// The tab named on the command line, or `play` when none was.
     static let requestedTab: Int = {
         let args = ProcessInfo.processInfo.arguments
@@ -116,7 +132,7 @@ struct UltimateApp: App {
                 // whatever is on screen.
                 MatchView(
                     format: Self.startFormat, active: tab == 0, skipsSetup: Self.skipsSetup,
-                    demoCharge: Self.demoCharge)
+                    demoCharge: Self.demoCharge, autoDefend: Self.autoDefend)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -130,7 +146,7 @@ struct UltimateApp: App {
         } else {
             MatchView(
                 format: Self.startFormat, skipsSetup: Self.skipsSetup,
-                demoCharge: Self.demoCharge)
+                demoCharge: Self.demoCharge, autoDefend: Self.autoDefend)
         }
     }
 }

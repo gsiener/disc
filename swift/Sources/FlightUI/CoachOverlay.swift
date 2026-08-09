@@ -1,7 +1,7 @@
 import SwiftUI
 import UltimateSim
 
-/// The four sentences the game cannot be played without.
+/// The five sentences the game cannot be played without.
 ///
 /// Everything else here is discoverable — you find out what a stall count is by watching
 /// one run out — but the control scheme is not: it is one drag that encodes direction,
@@ -9,8 +9,10 @@ import UltimateSim
 /// says so. A player who is never told reads their first five throws as the game
 /// misunderstanding them.
 ///
-/// So: four cards, in the order you need them, shown once and replayable from the
-/// pre-game sheet. Nothing is animated in from the side and nothing is timed, because the
+/// So: five cards, in the order you need them, shown once and replayable from the
+/// pre-game sheet. The fifth is the newest and it is the one that changes the *shape* of
+/// the game rather than the shape of a throw: without it a player has no reason to touch
+/// the screen while the other team has the disc, which is roughly half of every point. Nothing is animated in from the side and nothing is timed, because the
 /// match behind this is paused (see `MatchView.running`) and the only cost of reading is
 /// reading.
 ///
@@ -36,7 +38,7 @@ struct CoachOverlay: View {
 
     @State private var page = 0
 
-    private static let pages = 4
+    private static let pages = 5
 
     var body: some View {
         ZStack {
@@ -95,7 +97,8 @@ struct CoachOverlay: View {
         case 0: lesson(title: "DRAG TO THROW", body: dragLesson)
         case 1: lesson(title: "TIME THE RELEASE", body: chargeLesson)
         case 2: lesson(title: "FINISH HIGH OR LOW", body: typeLesson)
-        default: lesson(title: "AIM AT A TEAM-MATE", body: coneLesson)
+        case 3: lesson(title: "AIM AT A TEAM-MATE", body: coneLesson)
+        default: lesson(title: "TAP ON DEFENCE", body: defenceLesson)
         }
     }
 
@@ -174,6 +177,17 @@ struct CoachOverlay: View {
             .frame(height: 96)
             .padding(.vertical, 2)
         note("Point at nobody and it is an open throw — the disc goes exactly where you aimed.")
+    }
+
+    @ViewBuilder private func defenceLesson() -> some View {
+        line("When they have the disc, tap anywhere. Your best defender goes and attacks it.")
+        DefenceDiagram()
+            .frame(height: 96)
+            .padding(.vertical, 2)
+        line(
+            "In the air, that is a bid — a full-stretch dive at where the disc is coming down. In a hand, it is a hard close on the thrower."
+        )
+        note("A dive costs two seconds on the grass. The ring under your player dims and the screen counts it down, because that is the price you paid.")
     }
 
     // MARK: pieces
@@ -358,5 +372,66 @@ private struct ConeDiagram: View {
             }
         }
         .position(point)
+    }
+}
+
+/// The defensive tap, as the thing it does: a disc in the air, a defender leaving the
+/// ground for it, and the spot on the grass they were sent to.
+///
+/// Drawn in the control colour rather than the gesture's orange for the same reason the
+/// marker on the pitch is — every other card on this deck is about a throw, and this one
+/// is about the half of the game where you do not have the disc. The colour is the fastest
+/// way to say so.
+@available(macOS 15.0, iOS 18.0, *)
+private struct DefenceDiagram: View {
+    private static let control = Color(red: 0.45, green: 0.72, blue: 1)
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            let disc = CGPoint(x: w * 0.60, y: h * 0.36)
+            let defender = CGPoint(x: w * 0.24, y: h * 0.66)
+            ZStack {
+                // The flight, coming down.
+                Path { p in
+                    p.move(to: CGPoint(x: w * 0.86, y: h * 0.14))
+                    p.addQuadCurve(
+                        to: CGPoint(x: w * 0.52, y: h * 0.62),
+                        control: CGPoint(x: w * 0.70, y: h * 0.24))
+                }
+                .stroke(
+                    .white.opacity(0.28),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [4, 5]))
+
+                // Where it comes down, and the cross that marks it in the game.
+                ZStack {
+                    Capsule().fill(Self.control.opacity(0.85)).frame(width: 26, height: 3)
+                    Capsule().fill(Self.control.opacity(0.85)).frame(width: 3, height: 26)
+                }
+                .position(x: w * 0.52, y: h * 0.66)
+
+                // The bid: a body leaving its feet toward the mark.
+                Path { p in
+                    p.move(to: defender)
+                    p.addLine(to: CGPoint(x: w * 0.48, y: h * 0.62))
+                }
+                .stroke(Self.control, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+
+                Circle()
+                    .fill(Self.control)
+                    .frame(width: 11, height: 11)
+                    .position(defender)
+                Text("YOURS")
+                    .font(.system(size: 9, design: .monospaced).bold())
+                    .foregroundStyle(.white.opacity(0.5))
+                    .position(x: defender.x, y: defender.y + 15)
+
+                Circle()
+                    .fill(.white.opacity(0.9))
+                    .frame(width: 7, height: 7)
+                    .position(disc)
+            }
+        }
     }
 }

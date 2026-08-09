@@ -629,6 +629,12 @@ public final class Engine {
         var intents: [PlayerIntent] = []
         for team in ai { intents.append(contentsOf: updateTeam(team, world, dt)) }
 
+        // 3b. The human's defensive commitment, over the top of the AI's intent for that
+        //     one body. Before `actionOf` on purpose — see `applyDefensiveCommit`, and
+        //     `catchBodies`, which reads `actionOf` for the flag that decides whether a
+        //     defender may play the disc at all.
+        applyDefensiveCommit(&intents, dt: dt)
+
         actionOf.removeAll(keepingCapacity: true)
         for intent in intents where intent.action != nil { actionOf[intent.id] = intent.action }
 
@@ -1336,6 +1342,23 @@ public final class Engine {
         return CatchDecision.contestCount(at.x, at.z, b.team, bodies) > 0 ? .contested : .routine
     }
 
+    /// What this tick's intent asked of one body, by the reference's own discriminator —
+    /// `"bid"`, `"jump"`, `"catch"`, `"throw"`, `"stall"`, `"pickup"`, `"fake"` — or nil
+    /// when it asked for nothing discrete.
+    ///
+    /// Public purely so the checks can see `actionOf`, which is otherwise invisible from
+    /// outside and is the single fact `catchBodies` turns into the `attacking` flag. A
+    /// human bid that does not appear here cannot be played by `CatchDecision` at all, so
+    /// "the input reached the intent path" is exactly the assertion this read enables.
+    public func reportedAction(of id: PlayerId) -> String? { actionOf[id]?.kind }
+
+    /// The roster as `CatchDecision` sees it, right now.
+    ///
+    /// A read of the same builder `tryCatch` uses, so a check can ask what the contest
+    /// would be handed without re-deriving it from `players` and `loco` — a second copy
+    /// of that derivation is a check that passes while the real one is wrong.
+    public func contestBodies() -> [CatchDecision.Body] { catchBodies() }
+
     /// The roster as `CatchDecision` needs it. Every body goes in — the eligibility
     /// filtering is the decision's job, and bodies that cannot take the disc still count
     /// toward the contest.
@@ -1548,6 +1571,243 @@ public final class Engine {
             // does this, rather than putting a second disc into the sky to find out.
             return false
         }
+    }
+
+    // MARK: the human, on defence
+
+    /// A defender the human has sent at the disc, and for how much longer.
+    ///
+    /// **The player's whole defensive possession used to be a cutscene.** Offence has a
+    /// gesture; defence had nothing at all, which is roughly 80% of a point spent
+    /// watching. This is the seam that fixes it, and it is deliberately the *same* seam
+    /// `humanRelease` uses: the human does not get a private code path into the
+    /// simulation, they get to author one of the intents the AI would otherwise have
+    /// authored.
+    ///
+    /// That matters more than it sounds. `tryCatch` will not let a defender play a disc
+    /// at all unless their **current intent** is an attacking one — `catchBodies` sets
+    /// `attacking: kind == "bid" || "jump" || "catch"`, and everyone else has to be
+    /// within 0.55 m of the disc to touch it. So a human bid that did not travel through
+    /// `actionOf` would be a body sprinting through the disc, and the fix would have been
+    /// to weaken the gate for humans — i.e. to give the player a different physics. The
+    /// commitment is instead written into the intent stream in `applyDefensiveCommit`,
+    /// one tick at a time, and from there everything downstream is unchanged.
+    public struct DefensiveCommit: Equatable, Sendable {
+        /// What the tap meant, which is decided by where the disc is.
+        public enum Kind: String, Equatable, Sendable {
+            /// The disc is in the air: go and take it.
+            case bid
+            /// The disc is in a hand: close it down.
+            case close
+        }
+        public let defender: PlayerId
+        public let kind: Kind
+        /// Where the commitment is aimed — the predicted catch point for a bid, the
+        /// thrower for a close. Refreshed every tick while the commitment lives.
+        public var at: Vec3d
+        /// Seconds of *simulation* time left on it.
+        public var timeLeft: Double
+        /// True on the ticks where the body is actually laid out or being scraped off the
+        /// grass. The HUD draws the 2.04 s recovery from this rather than guessing.
+        public var committed: Bool
+    }
+
+    /// The commitment in force, if any. Read by the HUD; written only by `humanDefend`
+    /// and by the tick that expires it.
+    public private(set) var defensiveCommit: DefensiveCommit?
+
+    /// How long a commitment lives before the AI has its defender back, in seconds.
+    ///
+    /// Long enough to cover a bid and its landing, short enough that a tap is a *play*
+    /// rather than a mode. A commitment is also dropped the moment the situation it was
+    /// made in ends — see `applyDefensiveCommit`.
+    public static let defensiveCommitTime = 1.6
+
+    /// Send the best defender at the disc. The whole of the human's defensive input.
+    ///
+    /// **Which body: the best defender on the disc, not the controlled one.** Control
+    /// follows the disc (see `syncDisc`), and on defence the disc is in the *opponent's*
+    /// hand — so `controlled` is whoever last had it for us, which during a defensive
+    /// possession is a stale, arbitrary body that may be forty metres from the play. A
+    /// tap that committed that player would be a tap whose effect the player cannot
+    /// predict, which is worse than no input. So the tap picks by time-to-reach the point
+    /// that matters, exactly as `TeamAIDefence` picks its own man on the play, and then
+    /// *moves control to them* — so the chevron, the ring and the camera all say who you
+    /// just sent, and the next tap picks afresh.
+    ///
+    /// Returns the commitment, or nil when there was nothing to commit to: we have the
+    /// disc, the point is dead, or every defender is already on the floor.
+    @discardableResult
+    public func humanDefend() -> DefensiveCommit? {
+        // Only while the other lot have it. Attacking is what the drag is for.
+        guard !isOver else { return nil }
+        let live = game.phase == .livePossession || game.phase == .discInFlight
+        guard live, possession != 0 else { return nil }
+
+        let kind: DefensiveCommit.Kind = discInFlight ? .bid : .close
+        guard let aim = kind == .bid ? bidPoint() : holdPoint() else { return nil }
+
+        // Available only: a body mid-layout or being peeled off the turf cannot be sent
+        // anywhere, and pretending otherwise is how an input stops meaning anything.
+        var best: PlayerId?
+        var bestT = Double.infinity
+        for p in players where p.team == 0 {
+            guard let lp = loco.get(p.id), loco.isAvailable(lp) else { continue }
+            let t = timeToReach(p, aim.x, aim.z)
+            if t < bestT {
+                bestT = t
+                best = p.id
+            }
+        }
+        guard let defender = best else { return nil }
+
+        let commit = DefensiveCommit(
+            defender: defender, kind: kind, at: aim,
+            timeLeft: Engine.defensiveCommitTime, committed: false)
+        defensiveCommit = commit
+        // The commitment is the decision, so the commitment is what you are watching.
+        controlled = defender
+        return commit
+    }
+
+    /// How long until a body is back in the point, in seconds, or nil while it is already
+    /// available.
+    ///
+    /// `docs/gameplay-design.md` §4: "the 2.04 s layout cost must be legible, not
+    /// mysterious". A player who dives and then spends two seconds unable to move, with
+    /// nothing on screen saying why, reads it as the controls having stopped working —
+    /// which is the worst possible lesson to draw from the most expensive decision the
+    /// game lets you make. So the cost is a number the HUD can draw, taken from the same
+    /// `stateDur`/`stateT` pair locomotion is actually counting down.
+    ///
+    /// Committed states only (`layout`, `fall`, `recovery`); a body that is merely
+    /// running is not recovering from anything.
+    public func recovery(of id: PlayerId) -> Double? {
+        guard let lp = loco.get(id), !loco.isAvailable(lp) else { return nil }
+        return Swift.max(0, lp.stateDur - lp.stateT)
+    }
+
+    /// Where a bid should be aimed: the first point the flight comes down into the band a
+    /// body can actually take it in, or the landing point if it never does.
+    ///
+    /// Deliberately a re-read of `DiscRuntime.predictPath` — the same integrator the disc
+    /// itself is stepped by, and the same one the AI's own `predictCatchPoint` probes
+    /// through the disc peer — rather than a second flight model. A renderer-side or
+    /// input-side copy of the flight is the one thing this project refuses to have.
+    private func bidPoint() -> Vec3d? {
+        guard discInFlight else { return nil }
+        let path = disc.predictPath(horizon: 4, step: 1.0 / 60)
+        guard let last = path.last else { return nil }
+        // `1.9` is `CatchDecision`'s standing band, near enough: below it the disc is
+        // takeable by somebody on their feet, and above it this is a jump, not a dive.
+        for s in path where s.t > 0.05 && s.y <= 1.9 {
+            return Vec3d(s.x, s.y, s.z)
+        }
+        return Vec3d(last.x, last.y, last.z)
+    }
+
+    /// Where a hard close should be aimed: the thrower, less a stride.
+    ///
+    /// Not the thrower's own spot. A body steered *into* the pivot is a body the contact
+    /// resolver has to push back out every tick, and in the rules it is a foul rather than
+    /// good defence — the pressure a close buys comes from being a metre away when the
+    /// disc goes up, not from standing in someone.
+    private func holdPoint() -> Vec3d? {
+        guard let c = carrier, let holder = player(c) else { return nil }
+        return Vec3d(holder.pos.x, 0, holder.pos.z)
+    }
+
+    /// Write the human's commitment into this tick's intents, over the AI's.
+    ///
+    /// Called from `step` after both `TeamAI`s have decided and **before** `actionOf` is
+    /// filled, which is the whole point: `actionOf` is what `catchBodies` reads for the
+    /// `attacking` flag, so a bid authored here is a bid the catch contest sees.
+    ///
+    /// The AI's intent for that body is *edited* rather than replaced. Everything on a
+    /// `PlayerIntent` except the target, the mode and the action is the locomotion
+    /// contract — `maxSpeed`, `maxAccel`, `maxDecel`, `turnRate`, and the boundary and
+    /// arrival speed caps `TeamAI.intent` solved for this body on this tick. Rebuilding
+    /// those here would be a second copy of the one function that keeps players on the
+    /// pitch, and it would be the copy that is wrong.
+    private func applyDefensiveCommit(_ intents: inout [PlayerIntent], dt: Double) {
+        guard var commit = defensiveCommit else { return }
+
+        commit.timeLeft -= dt
+        // The situation that justified the tap is over: they no longer have it, the disc
+        // has landed, the point is dead, or the clock ran out on the commitment.
+        let live = game.phase == .livePossession || game.phase == .discInFlight
+        let stillOn = commit.kind == .bid ? discInFlight : (carrier != nil)
+        guard commit.timeLeft > 0, live, possession != 0, stillOn else {
+            defensiveCommit = nil
+            return
+        }
+        guard let idx = intents.firstIndex(where: { $0.id == commit.defender }),
+            let p = player(commit.defender), let lp = loco.get(commit.defender)
+        else {
+            defensiveCommit = nil
+            return
+        }
+
+        // Re-aim every tick. A bid at where the disc was going a fifth of a second ago is
+        // a bid a body's length behind it.
+        commit.at = (commit.kind == .bid ? bidPoint() : holdPoint()) ?? commit.at
+        commit.committed = !loco.isAvailable(lp)
+
+        // A body already on the floor — fallen or being scraped up — is not taking new
+        // orders. The intent is left exactly as the AI wrote it, and the recovery plays
+        // out undecorated: that is the 2.04 s the player is being asked to feel.
+        //
+        // A body *mid-dive* is a different case and the distinction is load-bearing. It
+        // is unavailable too, but it is still attacking the disc, and `catchBodies` reads
+        // the flag off this tick's intent — so dropping the override the instant the feet
+        // leave the ground would author a bid that is cancelled by its own take-off. The
+        // AI re-issues `.bid` on every tick of its dive for exactly this reason.
+        if !loco.isAvailable(lp) && lp.state != .layout {
+            defensiveCommit = commit
+            return
+        }
+
+        var intent = intents[idx]
+        intent.targetX = commit.at.x
+        intent.targetZ = commit.at.z
+        intent.faceX = commit.at.x - p.pos.x
+        intent.faceZ = commit.at.z - p.pos.z
+        intent.effort = 1
+        intent.desiredSpeed = intent.maxSpeed
+
+        switch commit.kind {
+        case .bid:
+            // The gap the body would still have at the rendezvous, in metres. This is
+            // `TeamAIDefence`'s own `canPlay` expression and it is the honest gate: a dive
+            // from ten metres away is not a bid, it is two seconds of the point thrown
+            // away for nothing. Outside it the tap is still a full-effort run at the disc
+            // — the commitment stands, it just is not yet a dive.
+            let t = timeToReach(p, commit.at.x, commit.at.z)
+            let reach = layoutExtend(p)
+            let gap = Foundation.hypot(commit.at.x - p.pos.x, commit.at.z - p.pos.z)
+            if lp.state == .layout {
+                // Already in the air. Hold the bid so the flag survives the dive.
+                intent.mode = .layout
+                intent.action = .bid(x: commit.at.x, z: commit.at.z, extend: reach)
+            } else if commit.at.y > 1.85 && commit.at.y < loco.reachAt(lp, t: 0) + 0.4 && gap < 2.2 {
+                intent.mode = .jump
+                intent.action = .jump(height: commit.at.y)
+            } else if gap < reach + 1.4 || t < 0.45 {
+                intent.mode = .layout
+                intent.action = .bid(x: commit.at.x, z: commit.at.z, extend: reach)
+            } else {
+                intent.mode = .sprint
+                intent.action = nil
+            }
+        case .close:
+            // No action: a close is a position, not an act. `catch`/`bid` here would be a
+            // claim on a disc that is in somebody's hand, which the contest would rightly
+            // refuse and which would only cost this body its legs.
+            intent.mode = .sprint
+            intent.action = nil
+        }
+        intents[idx] = intent
+        defensiveCommit = commit
     }
 
     /// Is the disc in the air right now?

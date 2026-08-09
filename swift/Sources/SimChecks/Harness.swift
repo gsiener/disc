@@ -182,6 +182,7 @@ let allSuites: [Suite] = [
     Suite(name: "trycatch", run: TryCatchTests.run),
     Suite(name: "engine", run: EngineTests.run),
     Suite(name: "events", run: EventTests.run),
+    Suite(name: "humandefence", run: HumanDefenceTests.run),
     Suite(name: "pivot", run: PivotTests.run),
     Suite(name: "replay", run: ReplayTests.run),
 ]

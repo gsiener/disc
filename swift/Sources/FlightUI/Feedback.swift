@@ -59,6 +59,13 @@ enum Feel {
         case block
         /// A drop. Deliberately silent; see the note above.
         case drop
+        /// The player sent a defender at the disc.
+        ///
+        /// Not in §5, because §5 was written for a game with no defensive input at all.
+        /// It is a *soft* tap on purpose and lighter than a release: the tap confirms the
+        /// order was heard, and the game must not congratulate an order whose outcome —
+        /// a D, or two seconds on the floor — has not happened yet.
+        case commit
         /// Any other change of possession.
         case turnover
         /// We scored.
@@ -91,6 +98,8 @@ enum Feel {
                 impact(.heavy, intensity: 0.7)
             case .drop:
                 break  // dead air, on purpose
+            case .commit:
+                impact(.soft, intensity: 0.28)
             case .turnover:
                 impact(.rigid, intensity: 0.55)
             case .goal:
@@ -304,6 +313,47 @@ struct Handoff: Equatable {
 
     /// 0 at the moment of the swap, 1 when it is over.
     var progress: Double { 1 - Swift.max(0, timeLeft) / Self.duration }
+}
+
+// MARK: - the defensive call
+
+/// The defender you just sent, and what you sent them to do.
+///
+/// **A commitment you cannot see is a button that does nothing.** The engine's answer to
+/// a tap is a body forty metres away changing what it is running at, which on a phone
+/// screen at this camera distance is a few pixels moving slightly differently — and the
+/// cost of being wrong is 2.04 s of that body lying on the grass. So the call is said out
+/// loud: who, and what.
+///
+/// Three things say it together and they say different halves. This plate names the
+/// player, because a jersey number is readable when the player is eight pixels tall. The
+/// control ring and the chevron move to them, because `Engine.humanDefend` moves
+/// `controlled` — which also means the existing handoff pulse fires on the swap for free,
+/// and the camera-following-the-disc story is unchanged. And `MatchView.recoveryReadout`
+/// counts the layout cost down afterwards, per `docs/gameplay-design.md` §4: "the 2.04 s
+/// layout cost must be legible, not mysterious".
+struct DefenceCall: Equatable {
+    /// The squad number of whoever was sent, when there is one to show.
+    let jersey: Int?
+    let kind: Engine.DefensiveCommit.Kind
+    var timeLeft: Double
+
+    /// Roughly a flight. Long enough to find the player you were given, short enough to
+    /// be gone before the disc lands.
+    static let duration = 1.1
+
+    /// What the order was, in two words.
+    var title: String {
+        switch kind {
+        case .bid: "GO GET IT"
+        case .close: "CLOSE HIM DOWN"
+        }
+    }
+
+    var detail: String {
+        guard let jersey else { return kind == .bid ? "BIDDING" : "CLOSING" }
+        return "#\(jersey) \(kind == .bid ? "IS BIDDING" : "IS CLOSING")"
+    }
 }
 
 // MARK: - wind

@@ -50,6 +50,19 @@ public struct MatchView: View {
     /// never reaches `humanRelease`, because nothing releases it.
     private let demoCharge: Double?
 
+    /// Whether to issue the defensive tap automatically, whenever there is one to issue.
+    ///
+    /// The same door as `-charge`, and for the same reason: `xcrun simctl launch` can pass
+    /// arguments but cannot touch the screen, and synthetic touch injection into the
+    /// Simulator does not reach it. The defensive call plate, the bid marker on the grass
+    /// and the recovery countdown all exist only after a tap, so without this they are
+    /// three pieces of HUD nobody can photograph — which is how a control stops being
+    /// looked at.
+    ///
+    /// It drives `defend()`, the identical function the finger drives, so what a
+    /// screenshot shows is the real path and not a mock of it. Off in every normal run.
+    private let autoDefend: Bool
+
     /// Whether this view is the one on screen.
     ///
     /// A `TabView` builds a tab when it is first selected and then keeps it alive
@@ -144,6 +157,14 @@ public struct MatchView: View {
     /// The slow-motion in effect, if any. See `SlowMo`.
     @State private var slowMo: SlowMo? = nil
 
+    /// Real seconds since the last hitstop started, so the cooldown has something to
+    /// measure. Starts large enough that the first one of a match is never swallowed.
+    @State private var sinceSlowMo = 999.0
+
+    /// The defender the player has just sent at the disc, while it is worth saying so.
+    /// See `DefenceCall`.
+    @State private var defenceCall: DefenceCall? = nil
+
     /// How long the thumb has been down on the current drag, in seconds of wall time.
     ///
     /// This is the charge. Advanced in `advance` off the frame clock rather than in the
@@ -174,6 +195,11 @@ public struct MatchView: View {
     /// in someone's hand is never.
     @State private var markStep = -1
 
+    /// Which control ring currently wears which treatment, so the twelve dashes are only
+    /// repainted when the answer actually changes. See `sync`.
+    @State private var ringDimmed = false
+    @State private var ringPainted = -1
+
     /// Bumped once per rendered frame purely so SwiftUI knows something happened.
     ///
     /// `Match` is a `final class` — deliberately, since passing a match around must not
@@ -185,12 +211,17 @@ public struct MatchView: View {
 
     /// Time, slowed, for as long as the moment is worth watching.
     ///
-    /// `docs/gameplay-design.md` §5: a contested or laid-out catch gets 0.45× for 0.35 s
-    /// **starting at the catch frame** — never before, because pre-slowing telegraphs a
-    /// dice roll that has not been rolled — a block gets 0.35× for 0.45 s, and a drop
-    /// gets nothing at all, because dead air is the drop's feedback. None of it was
-    /// reachable before the event stream: the box score cannot tell a contested catch
-    /// from a routine one, and by the time a counter has moved the catch frame is gone.
+    /// `docs/gameplay-design.md` §5 hands slow motion to every contested or laid-out
+    /// catch and to every block. **Measured, that is 86 hitstops in a full 7v7 game** —
+    /// five headless games at 15 points gave 19–41 contested and 41–53 laid-out catches
+    /// each, against 3–9 blocks and 4–10 interceptions. Broadcast ultimate slows down two
+    /// or three moments a game; at 86 the game does not feel emphatic, it feels like it
+    /// is stuttering, and the effect stops meaning anything at all because it is on the
+    /// metronome. See `slowMo(for:)` for what replaced it and what that measures.
+    ///
+    /// The catch frame rule still holds for what remains: **starting at the moment it
+    /// resolves**, never before, because pre-slowing telegraphs a dice roll that has not
+    /// been rolled.
     ///
     /// **The simulation does not know this exists.** §5 specifies it as "a render-side
     /// scale on the fixed-step accumulator", and that is exactly what it is: `Engine.step`
@@ -208,25 +239,62 @@ public struct MatchView: View {
         var timeLeft: Double
     }
 
-    /// The one place an event turns into a slowed clock. Everything not named here — a
-    /// drop above all — deliberately gets nothing.
+    /// The one place an event turns into a slowed clock.
+    ///
+    /// **Time stops for a D you had to dive for, and for nothing else.**
+    ///
+    /// That is §5's own sentence narrowed rather than contradicted: §5 already says the
+    /// block is "the peak moment of the sport on defence" and "the one event allowed the
+    /// full hitstop treatment". What it did not anticipate is how often this simulation
+    /// produces a laid-out *catch* — 41 to 53 of them in a full 7v7 game, because the
+    /// receiver AI bids hard — so "contested or laid-out catch" turned out to be a rule
+    /// that fires on a quarter of all completions. The fix belongs here and not in the
+    /// sim: nothing about what counts as a layout is wrong, only what the screen does
+    /// about it.
+    ///
+    /// Measured over five full 7v7 games (seeds 3, 19, 37, 41, 71), hitstops per game:
+    ///
+    /// | rule | per game |
+    /// |---|---|
+    /// | §5 as written | 86.2 |
+    /// | + only catches in the red zone | 50.6 |
+    /// | + only catches that score or land in the endzone | 25.0 |
+    /// | laid-out D **and** laid-out scoring catch | 9.6 |
+    /// | **laid-out D only (this)** | **3.2** |
+    ///
+    /// Two or three a game, which is the broadcast number, and every one of them is a
+    /// possession changing on a play nobody could have made standing up. The scoring
+    /// layout catch is the one real casualty and it was worth 6.4 a game on its own —
+    /// most goals in this sim are taken at full stretch, so slowing them slows the end of
+    /// most points, which is a metronome again.
+    ///
+    /// Everything dropped from §5 keeps its *other* feedback: a contested or laid-out
+    /// catch still gets `Feel.bigCatch`'s heavier tap, a goal still gets the callout and
+    /// the notification haptic. Only the clock is reserved.
+    ///
+    /// It also gives the new defensive tap the best possible payoff: the one thing the
+    /// game slows down for is exactly the thing `Engine.humanDefend` exists to let you
+    /// do.
     private static func slowMo(for event: MatchEvent) -> SlowMo? {
-        switch event {
-        case .caught(_, _, let grade, _):
-            // Never a routine completion. Completions are the metronome (§5) and a
-            // metronome that stops time is not one.
-            return grade == .routine ? nil : SlowMo(scale: 0.45, timeLeft: 0.35)
-        case .turnover(let reason, _, _, _, _, _):
-            // The peak moment of the sport on defence, and the only event allowed the
-            // full hitstop treatment. An interception is a catch block and counts.
-            switch reason {
-            case .block, .interception: return SlowMo(scale: 0.35, timeLeft: 0.45)
-            default: return nil
-            }
+        guard case .turnover(let reason, _, _, _, let grade, _) = event else { return nil }
+        switch reason {
+        // An interception is a catch block and counts. A *standing* block is a good play
+        // and a common one; it gets the heavy haptic and no more.
+        case .block, .interception:
+            return grade == .layout ? SlowMo(scale: 0.35, timeLeft: 0.45) : nil
         default:
             return nil
         }
     }
+
+    /// The least real time between two hitstops, in seconds.
+    ///
+    /// A second lever, and deliberately a small one: measured, the laid-out D's are spread
+    /// across a twenty-five minute game, so a cooldown removes 0.4 of the 3.2 rather than
+    /// most of them. It is here for the case the rate never averages away — two blocks in
+    /// the same scramble, where the second slow-motion lands on a screen still coming out
+    /// of the first and reads as a dropped frame rather than as a second highlight.
+    private static let slowMoCooldown = 8.0
 
     /// A drag in progress, in view coordinates plus the throw it currently means.
     private struct DragState {
@@ -275,6 +343,7 @@ public struct MatchView: View {
         var trail: Entity?
         var arrow: Entity?
         var preview: Entity?
+        var bidMark: Entity?
         var pulse: ModelEntity?
         var camera: PerspectiveCamera?
         var focus: Entity?
@@ -282,9 +351,10 @@ public struct MatchView: View {
 
     public init(
         format: FieldSpec? = nil, active: Bool = true, skipsSetup: Bool = false,
-        demoCharge: Double? = nil
+        demoCharge: Double? = nil, autoDefend: Bool = false
     ) {
         self.active = active
+        self.autoDefend = autoDefend
         self.formatOverride = format
         self.skipsSetup = skipsSetup
         self.demoCharge = demoCharge
@@ -373,6 +443,18 @@ public struct MatchView: View {
                 }
                 .background(Color(red: 0.055, green: 0.070, blue: 0.175))
                 .gesture(throwGesture(in: geo.size))
+                // Defence, on a tap. Simultaneous rather than sequenced, and safe to be:
+                // the throw is a `DragGesture(minimumDistance: 8)`, so a tap is input the
+                // offence has never used and cannot use — there is no gesture to lose.
+                //
+                // `SpatialTapGesture` rather than `onTapGesture` only because the drag is
+                // attached with `.gesture` and the two want to be siblings; the location
+                // it reports is deliberately ignored. A tap on a phone is a *call*, not an
+                // aim — you are telling a defender to go, not picking a spot on the grass
+                // with a thumb that covers four metres of it. Where to go is a question
+                // the engine can answer better than a finger can.
+                .simultaneousGesture(
+                    SpatialTapGesture().onEnded { _ in defend() })
                 // The scene is built once, with one entity per player. Changing format
                 // changes how many players there are, so the scene has to be rebuilt
                 // rather than synced — without this, switching to 7v7 leaves eight
@@ -387,6 +469,8 @@ public struct MatchView: View {
                 if let d = drag ?? demoDrag(in: geo.size) { aimOverlay(d, in: geo.size) }
                 callout
                 assistReadout
+                defenceReadout
+                defenceHint
 
                 // Full time. Drawn over everything, including the callouts — once the
                 // game is over the only interesting fact left is the result, and the
@@ -480,6 +564,9 @@ public struct MatchView: View {
         // owns — and only while a thumb is actually down.
         if drag != nil { hold += frameDt }
 
+        // The finger a headless run does not have. See `autoDefend`.
+        if autoDefend, match.defensiveCommit == nil { defend() }
+
         // Clamp the *accumulated* debt, not just this frame's: a hitch or a spell in
         // the background yields at most 0.25 s (30 ticks) of catch-up, and the rest is
         // dropped. The game slows down for a moment instead of fast-forwarding, and a
@@ -504,8 +591,12 @@ public struct MatchView: View {
             for event in match.drainEvents() {
                 if let flash = TurnoverFlash.make(event) { turnoverFlash = flash }
                 if let b = Feel.beat(for: event) { Feel.play(b) }
-                if let s = Self.slowMo(for: event) {
+                // The cooldown is checked here rather than inside `slowMo(for:)`, which
+                // stays a pure function of the event so it can be reasoned about — and
+                // measured — without a clock.
+                if let s = Self.slowMo(for: event), sinceSlowMo >= Self.slowMoCooldown {
                     slowMo = s
+                    sinceSlowMo = 0
                     slowed = true
                 }
             }
@@ -541,6 +632,11 @@ public struct MatchView: View {
             h.timeLeft -= frameDt
             handoff = h.timeLeft > 0 ? h : nil
         }
+        if var call = defenceCall {
+            call.timeLeft -= frameDt
+            defenceCall = call.timeLeft > 0 ? call : nil
+        }
+        sinceSlowMo += frameDt
         // Real seconds, not slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game*
         // time would run for the better part of a second on the clock the player lives on.
         if var s = slowMo {
@@ -610,6 +706,32 @@ public struct MatchView: View {
                         assist, jersey: slot.map(jersey), grade: grade)
                 }
             }
+    }
+
+    /// The defensive half of the control scheme, and the whole of it: send your best
+    /// defender at the disc.
+    ///
+    /// **The problem this fixes is that the opponent's possession was a cutscene.** The
+    /// player had one gesture, it required holding the disc, and the disc is in the other
+    /// team's hand for roughly half of every point — so half the game was watching. A tap
+    /// was free input the whole time: the throw is a drag with an 8 pt floor, so nothing
+    /// on offence has ever wanted one.
+    ///
+    /// What it commits and why is `Engine.humanDefend`'s decision, not this file's: the
+    /// engine picks by time-to-reach the point that matters and moves `controlled` to
+    /// whoever it sent, which is what makes the chevron, the control ring and the handoff
+    /// pulse all say who is going without any of them being told about defence.
+    ///
+    /// A refused tap is silent. Taps are cheap and constant on a touchscreen — one during
+    /// our own possession is somebody's palm, not a command — and buzzing at it would be
+    /// the game telling the player off for holding the phone.
+    private func defend() {
+        guard running, let commit = match.humanDefend() else { return }
+        Prefs.defenceUsed = true
+        let slot = match.players.firstIndex { $0.id == commit.defender }
+        defenceCall = DefenceCall(
+            jersey: slot.map(jersey), kind: commit.kind, timeLeft: DefenceCall.duration)
+        Feel.play(.commit)
     }
 
     /// The pinned gesture `-charge` asks for, if it asked for one. A drag up and to the
@@ -701,6 +823,11 @@ public struct MatchView: View {
         preview.isEnabled = false
         content.add(preview)
         refs.preview = preview
+
+        let bidMark = Self.bidMarker()
+        bidMark.isEnabled = false
+        content.add(bidMark)
+        refs.bidMark = bidMark
 
         let pulse = PitchScene.handoffPulse()
         pulse.isEnabled = false
@@ -808,6 +935,26 @@ public struct MatchView: View {
         return root
     }
 
+    /// The spot a committed defender has been sent to, drawn on the grass.
+    ///
+    /// A cross rather than a ring, and in the defence's blue rather than the gesture's
+    /// orange, because the pitch already carries three rings — control, target and the
+    /// drag's preview bracket — and a fourth would be one more thing to tell apart in the
+    /// half second a flight lasts. It says one thing the plate cannot: *where*, which on a
+    /// bid is the difference between a defender who is about to arrive and one who has
+    /// been sent at a disc they will never touch.
+    private static func bidMarker() -> Entity {
+        let root = Entity()
+        let bar = MeshResource.generateBox(size: [1.5, 0.02, 0.10])
+        let material = PitchScene.unlit(PitchScene.Palette.control, opacity: 0.8)
+        for i in 0..<2 {
+            let seg = ModelEntity(mesh: bar, materials: [material])
+            seg.orientation = simd_quatf(angle: Float(i) * .pi / 2, axis: [0, 1, 0])
+            root.addChild(seg)
+        }
+        return root
+    }
+
     /// The teammate a live throw is heading for, if there is one.
     ///
     /// "Nearest to the disc right now" rather than a predicted landing point: predicting
@@ -859,6 +1006,23 @@ public struct MatchView: View {
                     let ring = rings.children[i]
                     ring.position = [Float(p.pos.x), 0.022, Float(p.pos.z)]
                     ring.isEnabled = (i == match.controlled)
+                    // Dimmed while this body cannot act — §4's legible layout cost. Only
+                    // the controlled ring is ever drawn, so only it is ever repainted,
+                    // and only on the two frames a match where the answer changes.
+                    if i == match.controlled {
+                        let dim = match.recovery(of: p.id) != nil
+                        // Keyed on the ring as well as the treatment: control moves, and
+                        // a cache that only remembered "dimmed" would leave the previous
+                        // player's ring painted at 40% for the rest of the match.
+                        if dim != ringDimmed || i != ringPainted {
+                            ringDimmed = dim
+                            ringPainted = i
+                            let material = PitchScene.controlRingRamp[dim ? 1 : 0]
+                            for seg in ring.children {
+                                (seg as? ModelEntity)?.model?.materials = [material]
+                            }
+                        }
+                    }
                 }
                 if i < targets.children.count {
                     let target = targets.children[i]
@@ -1000,6 +1164,22 @@ public struct MatchView: View {
             }
         }
 
+        // Where the committed defender was sent. Enabled only while a commitment is live,
+        // which is at most 1.6 s and only ever on defence — so this and the drag's preview
+        // bracket can no more draw at once than a throw and a defensive tap can happen at
+        // once.
+        if let mark = refs.bidMark {
+            if let commit = match.defensiveCommit {
+                mark.isEnabled = true
+                mark.position = [Float(commit.at.x), 0.028, Float(commit.at.z)]
+                // Spun by wall time, like the preview bracket, so it is findable in
+                // peripheral vision while the eye is on the disc.
+                mark.orientation = simd_quatf(angle: Float(bobPhase * 0.9), axis: [0, 1, 0])
+            } else {
+                mark.isEnabled = false
+            }
+        }
+
         if let cam = refs.camera, let focus = refs.focus {
             let want = cameraTarget()
             var from = cam.position
@@ -1043,6 +1223,8 @@ public struct MatchView: View {
         hold = 0
         assistToast = nil
         handoff = nil
+        defenceCall = nil
+        sinceSlowMo = 999
         lastControlled = match.controlled
         markStep = -1
         // A rematch is a resume: whatever paused the old match has been dealt with by
@@ -1193,6 +1375,83 @@ public struct MatchView: View {
             .padding(.top, 62)
             .allowsHitTesting(false)
             .transition(.opacity)
+        }
+    }
+
+    /// The defensive call, and then the bill for it.
+    ///
+    /// Two states in one place, at the foot of the screen where the thumb is, because they
+    /// are two halves of one sentence: *this player is going* → *this player is on the
+    /// floor for another 1.4 s*. The first is the order; the second is `§4`'s legible
+    /// layout cost, and putting them anywhere but the same spot would make the cost read
+    /// as unrelated to the decision that bought it.
+    ///
+    /// The recovery line outranks the call, because by the time a body is down the order
+    /// is history and the only fact left is when you get them back. It is read straight
+    /// off `Engine.recovery`, i.e. off locomotion's own countdown, rather than off a timer
+    /// started here — a HUD clock that has to agree with a simulation clock is a HUD clock
+    /// that will not.
+    @ViewBuilder private var defenceReadout: some View {
+        if let seconds = match.recovery(of: match.controlled) {
+            defencePlate(
+                title: "DOWN",
+                tint: .orange,
+                detail: String(format: "BACK UP IN %.1fs", seconds))
+        } else if let call = defenceCall {
+            defencePlate(
+                title: call.title,
+                tint: Color(red: 0.45, green: 0.72, blue: 1),
+                detail: call.detail)
+        }
+    }
+
+    private func defencePlate(title: String, tint: Color, detail: String) -> some View {
+        VStack(spacing: 1) {
+            Text(title)
+                .font(.system(size: 15, weight: .heavy, design: .monospaced))
+                .foregroundStyle(tint)
+            Text(detail)
+                .font(.system(size: 11, design: .monospaced).bold())
+                .foregroundStyle(.white.opacity(0.6))
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(.black.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(.white.opacity(0.10), lineWidth: 1)))
+        // Padding inside the expanding frame, not outside it: a `.padding` wrapped
+        // *around* an infinite frame makes the whole thing taller than its parent, and an
+        // overflowing child gets centred rather than pinned — which is how this plate
+        // spent its first screenshot in the middle of the pitch on top of the turnover
+        // callout.
+        .padding(.bottom, 96)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+        .transition(.opacity)
+    }
+
+    /// The one line that tells a player defence exists.
+    ///
+    /// Shown only while the other team has the disc, only before anything has been
+    /// committed, and only until they have used it — after which it would be a permanent
+    /// caption on half of every point. The coach cards teach the tap properly; this is the
+    /// prompt at the moment it is usable, which is the only moment a prompt is worth
+    /// anything.
+    @ViewBuilder private var defenceHint: some View {
+        if match.possession != 0, match.holder != nil || match.discInFlight,
+            defenceCall == nil, match.defensiveCommit == nil, !Prefs.defenceUsed,
+            !match.isOver
+        {
+            Text("TAP TO ATTACK THE DISC")
+                .font(.system(size: 11, design: .monospaced).bold())
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 7).fill(.black.opacity(0.45)))
+                .padding(.bottom, 96)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .allowsHitTesting(false)
         }
     }
 
