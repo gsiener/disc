@@ -229,6 +229,11 @@ final class RefusalTests: XCTestCase {
             }
         }
 
+        // **The ledger reads 11 for 12 attempts, and that is expected rather than a shortfall.**
+        // Measured on CI at both ×1 and ×2 — so it is not the sampling cap, which doubled
+        // between those runs. The twelfth tap is made; it is simply not yet visible in this
+        // probe read, which happens immediately after it. The floor of 8 is what makes that
+        // harmless, and it is why the floor is not 12.
         let ledger = match.probe()
         XCTAssertGreaterThanOrEqual(
             ledger.taps, 8,

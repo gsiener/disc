@@ -327,9 +327,19 @@ jobs:
       # satisfied at ×1, and those tests took longer because `withTheDisc` spent more attempts,
       # each paying a full budget. So the waits need roughly 1.2–1.4× and 2 is the headroom.
       #
-      # 4 is not free, either: `samplingCap` is the one duration this suite genuinely pays, and
-      # the sampler was already cap-bound at ×1 (11 taps against a `wanted` of 12). Raising it
-      # to 240 s buys a twelfth tap for up to three more minutes of runner time.
+      # **The multiplier is not free, and the measured price of ×2 is 73 s.** The job ran the
+      # eleven tests in 215.8 s at ×1 (run 31396301991) and 288.6 s at ×2 (run 31396728400),
+      # both green. The cost is not idle waiting: it is `withTheDisc` retries, where a failed
+      # attempt polls for the whole of `possession` before relaunching, so every retry pays the
+      # budget in full. That is also why the two worst per-test ratios above are retry counts
+      # rather than slowness. ×4 would roughly double that surcharge again for no measured
+      # benefit, which is the argument against going back to it.
+      #
+      # One thing ×2 did *not* change, contradicting a guess made when this was written: the tap
+      # sampler returns **11 taps at both multipliers**, so it is not bound by `samplingCap`.
+      # `RefusalTests` attempts all twelve; the twelfth is simply not visible in the ledger read
+      # that follows it. The floor of 8 is what makes that harmless. Do not raise the cap
+      # expecting a twelfth tap — the gap is a probe-read ordering artefact, not a budget.
       - name: Run the touch tests
         working-directory: ios
         env:
