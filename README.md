@@ -16,13 +16,19 @@ The Three.js build still deploys as a renderer preview
 ([gsiener.github.io/disc](https://gsiener.github.io/disc/)),
 but it is not where the game lives anymore.
 
-> **Status: the first playable version exists.** Full matches run on an iPhone —
-> pulls, stall counts, checks after turnovers, brick marks, halftime, a box
-> score. The human plays the throwing game (drag-to-throw with receiver select
-> and aim assist); off-disc play and defense are AI-driven. The road to a
-> release fans of the sport would love is captured in
-> [`docs/release-plan.md`](docs/release-plan.md) — measurable targets for
-> completion rate, hold/break balance, tempo, and hucks.
+> **Status: it plays, and the numbers are the sport's numbers.** Full matches run
+> on an iPhone — pulls, stall counts, checks after turnovers, brick marks,
+> halftime, timeouts, caps, fouls and picks called by the players themselves, a
+> box score. You throw (drag, with a charge window and a receiver cone), you send
+> cutters off the disc (tap the space), and you commit a defender at the disc
+> (tap). Measured on 15-minute matches: **89.7% completion, 64% holds, 2.4%
+> drops, 3.7 calls a game, hucks past 40 m, a laid-out D about once a game** —
+> every target in [`docs/release-plan.md`](docs/release-plan.md) met. Eleven
+> XCUITest gestures verify the controls with real touches on every push.
+>
+> What is left is in [`docs/backlog.md`](docs/backlog.md), and the largest item
+> cannot be done by an agent: **nobody has played it for fun yet.** The tests
+> prove every control works; they say nothing about whether it feels good.
 
 ## The iOS game
 
@@ -38,11 +44,17 @@ for why that is not optional). The other tabs are engineering instruments — th
 same check suite on-device, a disc-flight viewer, trajectory plots, and a tick
 benchmark — which will be gated behind a debug flag before release.
 
-Controls today: drag direction aims, drag length is power, the finish height
-picks the throw type (down = dump, flat = backhand/forehand, up = hammer). A 35°
-cone resolves which teammate you meant — scored on angle, lane openness and
-distance sanity — and a quality-scaled assist may rotate the release up to 5°
-toward the ideal lead. Timing skill buys accuracy; it does not buy aim.
+Controls, in one line: **drag from the disc to throw, tap the grass to send a
+cutter, and the same tap on defence sends your best defender at the disc.**
+
+Drag direction aims, drag length is power, and the finish height picks the throw
+type (down = dump, flat = backhand/forehand, up = hammer). How long you hold
+before letting go sets release quality, with a perfect window at 0.85 s that
+narrows per throw type — timing skill buys accuracy, it does not buy aim. A 35°
+cone resolves which teammate you meant, scored on angle, lane openness and
+distance sanity, and a quality-scaled assist may rotate the release up to 5°
+toward the ideal lead. Drag back to where you started to abort. A tap that finds
+nobody says so rather than vanishing.
 
 ## Why it's interesting
 
@@ -109,7 +121,8 @@ push.
 | `ios/` | XcodeGen project for the app shell |
 | `src/sim/` | the TypeScript reference simulation (the oracle) |
 | `tools/` | golden generators, TS test harnesses, capture rigs |
-| `docs/release-plan.md` | the plan to v1, with measurable authenticity targets |
+| `docs/release-plan.md` | the plan to v1, with measurable authenticity targets — all met |
+| `docs/backlog.md` | what is left: findings, not features, with the evidence for each |
 | `docs/gameplay-design.md` | the design-director brief (camera grammar, controls, legibility, feel) |
 | `BRIEF.md` | the original engineering brief — "the reference is FIFA, not Madden" |
 
