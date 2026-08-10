@@ -105,7 +105,7 @@ final class ChargeTests: XCTestCase {
     /// would report a hold of zero and grade `rushed` for the wrong reason — which is why the
     /// measured hold is asserted to be *nonzero* as well as short.
     func testLettingGoImmediatelyIsRushed() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         let r = throwOnce(match, hold: 0)
         XCTAssertLessThan(
             r.hold, charge.minTime,
@@ -120,7 +120,7 @@ final class ChargeTests: XCTestCase {
     /// also 2.0, which means this is the bottom of the curve and the one hold where the app
     /// clamps — a good place for the clamp to be exercised by a real thumb.
     func testHoldingTooLongIsOvercharged() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         let r = throwOnce(match, hold: 2.0)
         XCTAssertGreaterThan(
             r.hold, charge.fullTime + charge.overGrace,
@@ -146,7 +146,7 @@ final class ChargeTests: XCTestCase {
     /// does not advertise. `inWindow` is still the interesting claim — outside it the game
     /// says nothing at all about your timing.
     func testAimingAtTheWindowGetsACleanRelease() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
 
         // The calibration throw. 0.60 s is on the plateau and well clear of both edges, so
         // whatever it measures is the overhead and not a clamp.

@@ -57,8 +57,13 @@ final class RefusalTests: XCTestCase {
     /// first accessibility read can reach it — leaving nothing but the next goal, a whole point
     /// away. So the test that needs the pre-pull phase is the test that wants our team pulling.
     func testATapBeforeThePullSaysTheGameIsNotLive() {
-        let match = MatchDriver(self, receives: .them)
-        match.wait("a stoppage", until: { !$0.isLive })
+        let match = MatchDriver(receives: .them)
+        // **On `pointCycle`, and this is the one wait in the suite that genuinely needs a point.**
+        // The `prePull` window this test wants is 5 s and may already be gone when the app
+        // finishes launching; the fallback is the next stoppage, which is a goal away. Every
+        // other budget here is sized to a launch or a possession and would expire first, naming
+        // the timeout rather than the control.
+        match.wait("a stoppage", timeout: MatchDriver.pointCycle, until: { !$0.isLive })
         // Nothing has been refused yet, so anything below is this tap's.
         XCTAssertEqual(match.probe().refused, 0)
 
@@ -102,7 +107,7 @@ final class RefusalTests: XCTestCase {
     /// not a refusal. `cut.ok` is the state that guarantees `MatchView.tap` routes to the half
     /// that reads the location.
     func testATapOnTheSkyIsRefusedWithTheGrassAsTheFix() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         match.waitToAct("our own offence", until: { $0.canCut })
 
         guard let said = match.tapForRefusal(match.pitchPoint(0.012, 0.05)) else {
@@ -154,7 +159,7 @@ final class RefusalTests: XCTestCase {
     /// the great majority of taps on the grass mean something, and every tap that does not is
     /// visible — checked by reading the plate on the first refusal of the run.
     func testTheOffensiveTapUsuallyMeansSomething() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         match.waitToAct("a cut to be legal", until: { $0.canCut })
 
         // **A grid over the whole pitch rather than the spaces a thrower attacks**, because the
@@ -193,8 +198,16 @@ final class RefusalTests: XCTestCase {
             // to be two back-to-back reads of the same state, and an accessibility read is the
             // most expensive thing a touch test does — three per tap is most of what this loop
             // spends its budget on.
-            let before = match.probe()
-            guard before.canCut else { continue }
+            //
+            // **Waited for rather than spun on.** `guard before.canCut else { continue }` re-read
+            // the probe as fast as the accessibility layer would answer, for as long as the cut
+            // was illegal — which is most of the time, since a call needs our own offence plus
+            // 1.1 s of `calledCutInterval`. That is the unpaced read this very comment calls the
+            // most expensive thing here. `poll` is the same loop with the 40 ms the rest of the
+            // suite uses, and nil means the possession never came, which ends the sampling
+            // rather than burning the cap on reads.
+            guard let before = match.poll(for: MatchDriver.possession, until: { $0.canCut })
+            else { break }
             let t = targets[attempt % targets.count]
             attempt += 1
             match.pitchPoint(t.0, t.1).tap()
@@ -265,7 +278,7 @@ final class RefusalTests: XCTestCase {
     /// CI now does. "Which rectangle did the game get" is the first question about a touch test
     /// that passes in one configuration and not the other.
     func testThePitchIsTheRectangleTheTapsAssume() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         guard let pitch = match.pitchRect else {
             return XCTFail("the probe never reported a pitch rect — probe: \(match.probe().raw)")
         }

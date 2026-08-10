@@ -36,8 +36,6 @@ import UltimateSim
 /// the two assertions below are honest about which of them has teeth.
 enum MatchDiffTests {
 
-    static let dt = 1.0 / 120.0
-
     // MARK: fixture
 
     struct Golden: Decodable {
@@ -126,7 +124,13 @@ enum MatchDiffTests {
         // regenerated over a different pool cannot be silently compared against these
         // matches. `MatchPool` plays them once for this suite, `stoppage` and `calls`.
         Check.eq(g.spec.seeds, MatchPool.seeds, "the fixture's seeds are the pool's seeds")
-        Check.bitEq(g.spec.seconds / dt, Double(MatchPool.ticks), "and its span is the pool's")
+        // `MatchPool.dt`, not a local copy. This assertion exists so a fixture regenerated over
+        // a different pool cannot be silently compared against these matches — converting with a
+        // second spelling of the tick rate would mean the check drifts with exactly the thing it
+        // is meant to catch.
+        Check.bitEq(
+            g.spec.seconds / MatchPool.dt, Double(MatchPool.ticks),
+            "and its span is the pool's")
         for match in MatchPool.matches {
             for (reason, count) in match.turnovers { turnovers[reason, default: 0] += count }
             matches += 1

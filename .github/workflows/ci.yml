@@ -23,12 +23,16 @@ permissions:
 # so a new push supersedes the old run. On `main` the key is the commit, so every commit gets
 # its own group and nothing can ever be superseded.
 #
-# This was first written as `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`,
-# which does not work: GitHub treats any non-empty string as true here, and a push evaluates
-# the expression to the *string* "false". Run 31390307688 (17ae87d) was duly cancelled two
-# minutes in when the next commit landed — the exact failure the comment above it forbade.
+# A manual re-run keys on the run rather than the commit, so re-running the workflow at a
+# commit cannot cancel that commit's in-flight push run — which would be this rule failing by
+# a second route.
+#
+# See docs/adr/0005, which records the spelling this replaced and why it did not work.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: >-
+    ci-${{ github.event_name == 'pull_request' && github.ref
+    || github.event_name == 'push' && github.sha
+    || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -121,12 +125,21 @@ jobs:
     # `-receive us` flips the coin toss (`EngineConfig.startingPullTeam`) so the disc arrives
     # with the pull, seconds after launch. Nothing about the gestures or the assertions changed
     # — see ios/UltimateUITests, where each test now names which side of the toss it needs and
-    # why. The waits came down with it; `MatchDriver` carries the three durations and the
-    # measurements.
+    # why. The waits came down with it; `MatchDriver` carries the durations and the
+    # measurements. Note `samplingCap` among them — at 60 × the slowdown it is the largest
+    # single budget in this job, and the one to look at before shortening `timeout-minutes`.
     #
     # This stays generous against a cold runner, a brew install and two simulator boots. It is
     # a ceiling on a pathology, not a budget the tests are expected to use.
-    timeout-minutes: 20
+    #
+    # **30 and not 20, because the 664 s measurement above predates three of this job's steps.**
+    # It is eleven tests on a warm simulator; it does not include the boot, the
+    # `build-for-testing` compile (3m14s measured on this runner) or the xcodegen install. And
+    # the cost of getting this wrong is asymmetric: a job killed by `timeout-minutes` skips its
+    # remaining steps, so `Upload test results` never runs and the `.xcresult` is lost on
+    # precisely the run that needed it — which is the diagnostic `-derivedDataPath` was made
+    # explicit to keep.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -163,12 +176,16 @@ jobs:
       #
       # `bootstatus -b` blocks until the device reports itself booted, so a boot that does
       # not happen fails *as a boot* in a step named for it. See issue #14.
-      - name: Boot the simulator
-        run: |
-          set -euo pipefail
-          xcrun simctl boot '${{ steps.sim.outputs.udid }}' || true
-          xcrun simctl bootstatus '${{ steps.sim.outputs.udid }}' -b
-          xcrun simctl list devices | grep -F '${{ steps.sim.outputs.udid }}'
+      #
+      # **Started here and waited for after the compile**, because those are two different
+      # things and only one of them is worth blocking on. `simctl boot` returns as soon as the
+      # boot is *initiated*; `bootstatus -b` is what waits. `build-for-testing` does not need a
+      # booted device, so waiting here would serialise a full boot ahead of a three-minute
+      # compile for nothing. Split, the boot happens during the compile and is merely confirmed
+      # afterwards — and a boot that never completes still fails in a step named for it, which
+      # is the property worth keeping.
+      - name: Start the simulator booting
+        run: xcrun simctl boot '${{ steps.sim.outputs.udid }}' || true
 
       # **Compiling is a separate step from testing, and that is the point.**
       #
@@ -190,20 +207,30 @@ jobs:
           -derivedDataPath build
           CODE_SIGNING_ALLOWED=NO
 
-      # Install and launch the app once, then kill it, so the first `app.launch()` a test
-      # makes is not also paying for a first install and a cold first frame. Non-blocking on
-      # purpose: this is a warm-up, not an assertion, and the tests are what get to fail.
-      - name: Warm the app
-        working-directory: ios
-        continue-on-error: true
+      # The other half of the boot above: confirm it finished, now that the compile has given
+      # it three minutes to do so. Blocking, and the device is printed because "which simulator
+      # did CI actually use" is the first question about a UI test failure that reproduces
+      # nowhere else.
+      - name: Wait for the simulator
         run: |
-          set -euxo pipefail
-          app=$(find build/Build/Products -maxdepth 2 -name 'Ultimate.app' -print -quit)
-          xcrun simctl install '${{ steps.sim.outputs.udid }}' "$app"
-          xcrun simctl launch '${{ steps.sim.outputs.udid }}' com.grahamsiener.ultimate \
-            -setup off -probe on || true
-          sleep 20
-          xcrun simctl terminate '${{ steps.sim.outputs.udid }}' com.grahamsiener.ultimate || true
+          set -euo pipefail
+          xcrun simctl bootstatus '${{ steps.sim.outputs.udid }}' -b
+          xcrun simctl list devices | grep -F '${{ steps.sim.outputs.udid }}'
+
+      # **There used to be a `Warm the app` step here and deleting it is the fix, not a
+      # regression.** It installed the app, launched it, slept 20 s and killed it, so that the
+      # first `app.launch()` a test made was not also paying for a cold first install.
+      #
+      # `MatchDriver.init` already does all of that and does it better: it installs, launches,
+      # and then *waits on the probe* — a condition — on the `patience` budget, which is sized
+      # for exactly this. The step contributed an unconditional 20 s whether the app reached a
+      # frame in three seconds or never launched at all, and being `continue-on-error` it could
+      # not report that it had bought nothing. It had also drifted: it warmed
+      # `-setup off -probe on`, missing the `-receive` and `-points` the tests actually launch
+      # with, so the run it warmed was not the run that followed.
+      #
+      # Compare `Start the simulator booting` / `Wait for the simulator` above, which is the
+      # same problem solved at the right depth: block on the condition, not on a number.
 
       # **Blocking, and it was briefly not — which was a mistake worth recording.**
       #
@@ -220,11 +247,12 @@ jobs:
       # *compiled*: a stale file had reverted another change's additions. A masked job
       # reports success for a compile error, which is strictly worse than a red job,
       # because a red job gets fixed and a green lie does not. If the runner turns out
-      # to be genuinely too slow even at 90 s, the answer is to say so here and skip the
-      # job deliberately — not to let it pass while failing.
+      # to be genuinely too slow even at `UITEST_SLOWDOWN: 4`, the answer is to say so here
+      # and skip the job deliberately — not to let it pass while failing.
       #
-      # (The `Warm the app` step above *is* `continue-on-error`, and that is not the same
-      # thing: it asserts nothing, so there is no verdict to mask. This step is the verdict.)
+      # There is no `continue-on-error` step left in this job at all: the one that had it,
+      # `Warm the app`, was deleted rather than kept as an exception. See the note where it
+      # used to be.
       #
       # `test-without-building` — the compile already happened, and happened in its own step.
       #

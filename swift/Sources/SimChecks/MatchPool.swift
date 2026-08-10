@@ -46,7 +46,10 @@ import UltimateSim
 /// failure list and the counts are order-independent of how the matches were scheduled.
 enum MatchPool {
 
-    static let dt = 1.0 / 120.0
+    /// The one and only step the simulation is advanced by, taken from the sim rather than
+    /// respelled here — ADR-0003 makes `dt` part of the input, so a pool that stepped at its own
+    /// private copy of the number would be a pool nobody could compare a fixture against.
+    static let dt = FrameClock.tickDt
 
     /// The canonical pool. `stoppage`'s eleven seeds, `calls`' three plus its eight, and
     /// `matchdiff`'s fixture spec are all this list, in this order — the order matters
@@ -92,20 +95,16 @@ enum MatchPool {
         let stallOuts: Int
     }
 
-    private nonisolated(unsafe) static var cached: [Match]?
-
     /// The pool, played on first use and kept. Ordered by `seeds`.
-    static var matches: [Match] {
-        if let cached { return cached }
-        let played = play(seeds)
-        cached = played
-        return played
-    }
-
-    /// Plays the given seeds concurrently and returns their records in the given order.
-    static func play(_ seeds: [UInt32]) -> [Match] {
-        concurrently(seeds, playOne)
-    }
+    ///
+    /// A plain `static let` rather than a hand-rolled `if let cached` over a
+    /// `nonisolated(unsafe) static var`, which is what this was: Swift initialises a static
+    /// property lazily and **exactly once** through `swift_once`, so the memoisation is free and
+    /// — unlike the hand-rolled version — atomic. The old shape was correct only for as long as
+    /// nothing read `matches` from two threads at once, at which point both readers would have
+    /// played all eleven matches and raced on the assignment. That is precisely the cost this
+    /// file exists to remove.
+    static let matches: [Match] = concurrently(seeds, playOne)
 
     /// Runs one independent match per seed, in parallel, and returns what each observation
     /// produced **in seed order** regardless of the order they finished in.
@@ -165,18 +164,13 @@ enum MatchPool {
                 let thrower = e.players.first(where: { $0.id == id })
             else { continue }
             timeoutFrames += 1
+            // `distXZ` rather than the expansion, which is what the loop this was lifted from
+            // spelled out twice. The sim owns the definition of a ground distance; a second copy
+            // here would be a second definition of one number.
             let pivot = e.game.pivot
-            let d = (
-                (thrower.pos.x - pivot.x) * (thrower.pos.x - pivot.x)
-                    + (thrower.pos.z - pivot.z) * (thrower.pos.z - pivot.z)
-            ).squareRoot()
-            worstDrift = Swift.max(worstDrift, d)
+            worstDrift = Swift.max(worstDrift, distXZ(thrower.pos, pivot))
             for p in e.players where p.team == thrower.team {
-                let away = (
-                    (p.pos.x - pivot.x) * (p.pos.x - pivot.x)
-                        + (p.pos.z - pivot.z) * (p.pos.z - pivot.z)
-                ).squareRoot()
-                worstSpread = Swift.max(worstSpread, away)
+                worstSpread = Swift.max(worstSpread, distXZ(p.pos, pivot))
             }
         }
 

@@ -41,7 +41,7 @@ final class TouchTests: XCTestCase {
     /// defaults to it. What is waited for is a pull settling, flying and being caught, not a
     /// whole point cycle. Nothing about the gesture or the oracle changed with it.
     func testDragReleasesAThrow() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         XCTAssertEqual(
             match.probe().thrown, 0, "nothing should have been thrown before the first drag")
 
@@ -83,7 +83,7 @@ final class TouchTests: XCTestCase {
     /// one run. The loop stays because the *legality* of a call still comes and goes with
     /// possession and the cooldown, which is a different thing from the aim being refused.
     func testTapOnOffenceCommandsACutter() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
         let before = match.waitToAct("a cut to be legal", until: { $0.canCut })
         XCTAssertEqual(before.cuts, 0)
 
@@ -146,7 +146,7 @@ final class TouchTests: XCTestCase {
         // `-receive them` — which is what the app does with no argument at all. Naming it here
         // rather than relying on the default is the point: this test's precondition is the
         // opposite of every other one's, and a silent default is how that gets lost.
-        let match = MatchDriver(self, receives: .them)
+        let match = MatchDriver(receives: .them)
         let before = match.waitToAct("the other team to have the disc", until: { $0.canDefend })
         XCTAssertEqual(before.defends, 0)
 
@@ -203,7 +203,7 @@ final class TouchTests: XCTestCase {
     /// thrown. That branch and the CANCEL rendering are selected by the same `d.aborted`
     /// boolean one frame apart, so what stays unverified is a single read inside the view.
     func testDragBackToTheOriginCancelsTheThrow() {
-        let match = MatchDriver(self)
+        let match = MatchDriver()
 
         // **A `refused` drag is a spent attempt, not a result, and this is where CI proved
         // it.** Run 31384063453 timed out here on a hardcoded 5 s with `poss=1;mine=0`: the

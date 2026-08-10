@@ -17,12 +17,32 @@ a broken `main` went unnoticed here. It also mis-notifies: GitHub renders a canc
 
 ```yaml
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    ci-${{ github.event_name == 'pull_request' && github.ref
+    || github.event_name == 'push' && github.sha
+    || github.run_id }}
+  cancel-in-progress: true
 ```
 
 Supersede on a pull request, where only the tip matters. **Never on `main`**, where every
 commit is already merged and each one deserves its own verdict.
+
+**The group does the work, not `cancel-in-progress`.** On a push the key is the commit, so
+every commit gets a group of its own and nothing can supersede it. A manual re-run keys on
+the run instead, so it cannot cancel the push run at the same commit. Only a pull request
+falls through to the ref, where a new push does supersede the old run — which is the intent.
+
+### Rejected spelling
+
+```yaml
+cancel-in-progress: ${{ github.event_name == 'pull_request' }}     # does not work
+```
+
+GitHub treats **any non-empty string** as true here, and a push evaluates that expression to
+the string `"false"`. Written this way the rule above reads correctly and does the opposite:
+run 31390307688 (commit `17ae87d`) was cancelled two minutes in when the next commit landed.
+Do not reintroduce it — put the condition in the group key, where it is a string comparison
+rather than a truthiness test.
 
 ## Consequences
 
@@ -42,8 +62,11 @@ reported a compile error as success.
 If a job is genuinely too slow or too flaky for the runner, the answer is to say so in the
 workflow and skip it **deliberately** — not to let it pass while failing.
 
-The one exception in the file is the `Warm the app` step, which is `continue-on-error` and is
-not the same thing: it asserts nothing, so there is no verdict to mask.
+There is now **no `continue-on-error` step in the file at all.** The one exception used to be
+`Warm the app`, on the grounds that it asserted nothing and so had no verdict to mask. That
+argument was sound and the step was still deleted: it slept a fixed 20 s to warm a launch that
+`MatchDriver.init` already performs and waits on properly, and — being masked — it could not
+report that it had drifted to launch arguments the tests no longer used.
 
 ## Related, and also load-bearing
 

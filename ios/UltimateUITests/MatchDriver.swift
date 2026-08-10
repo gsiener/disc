@@ -15,8 +15,6 @@ import XCTest
 struct MatchDriver {
 
     let app: XCUIApplication
-    /// The test that owns this driver, for failure attribution.
-    private let test: XCTestCase
 
     /// Launch into a live match with the probe on.
     ///
@@ -37,13 +35,11 @@ struct MatchDriver {
     ///
     /// See `UltimateApp.startingPullTeam`, and
     /// `.agents/friction-log/20260810-waittothrow-waits-for` for the measurement.
-    init(_ test: XCTestCase, receives: Possession = .us, arguments extra: [String] = []) {
-        self.test = test
+    init(receives: Possession = .us) {
         Self.announce()
         let app = XCUIApplication()
         app.launchArguments =
             ["-setup", "off", "-probe", "on", "-points", "9", "-receive", receives.rawValue]
-            + extra
         app.launch()
         self.app = app
 
@@ -67,7 +63,7 @@ struct MatchDriver {
         // If the probe never appeared, nothing below can mean anything — so it is asserted
         // here rather than being allowed to fail later, somewhere else, as a timeout.
         XCTAssertTrue(
-            Self.settle(app),
+            Self.ready(app),
             "the match probe never appeared — was the app launched with `-probe on`?")
 
         // The rectangle the game is on, taken once, so every tap below can be a fraction of
@@ -80,16 +76,27 @@ struct MatchDriver {
     ///
     /// Static and taking the app, because `init` calls it before `self` exists and `relaunch`
     /// calls it afterwards, and the two must not drift.
-    private static func settle(_ app: XCUIApplication) -> Bool {
+    ///
+    /// **Paced at 40 ms, for the same reason `poll` is** — an `exists` query is an accessibility
+    /// snapshot, and this loop runs at launch, which is exactly when the app is trying to render
+    /// a first frame on a machine slow enough to need `UITEST_SLOWDOWN`. Spinning here floods
+    /// the app with snapshot requests while it works on the very frame being waited for.
+    ///
+    /// Not named `settle`, though it once was: `settle` is a duration in this file, and a
+    /// duration and a readiness check answering to one name 100 lines apart is a trap. `poll`
+    /// cannot be reused here — it reads the probe's *label*, which does not exist yet.
+    private static func ready(_ app: XCUIApplication) -> Bool {
         let skip = app.buttons["coach.skip"]
         let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
         let deadline = Date().addingTimeInterval(patience)
         while Date() < deadline {
-            if skip.exists {
-                skip.tap()
-                continue
-            }
+            // Skip first, and deliberately not the other way around. The probe may well be in
+            // the element tree *behind* the coach cards, in which case testing it first would
+            // return true on the one run that has cards, leave them up, and every tap after
+            // that would hit a card instead of the pitch.
+            if skip.exists { skip.tap() }
             if probe.exists { return true }
+            usleep(40_000)
         }
         return false
     }
@@ -115,12 +122,12 @@ struct MatchDriver {
     func relaunch() -> Bool {
         app.terminate()
         app.launch()
-        return Self.settle(app)
+        return Self.ready(app)
     }
 
     // MARK: - how long anything is allowed to take
     //
-    // **There are exactly four durations in this suite and every wait names one of them.**
+    // **There are exactly five durations in this suite and every wait names one of them.**
     // That is a rule with a scar behind it. `patience` used to be the only knob, and it was
     // stretched to 90 s under CI — while `wait(timeout: 10)` and `wait(timeout: 5)` literals
     // sat in the tests, untouched by the override. So the job looked configured for a slow
@@ -187,6 +194,23 @@ struct MatchDriver {
     /// removed, because the taps *are* the measurement.
     static let samplingCap: TimeInterval = 60 * slowdown
 
+    /// How long to wait for **a whole point to come round**, for the one test that cannot
+    /// arrange its precondition and has to meet it on the next cycle.
+    ///
+    /// **This exists because removing the literals nearly broke the test they were protecting.**
+    /// `testATapBeforeThePullSaysTheGameIsNotLive` used to pass `timeout: 180`, and the sweep
+    /// that deleted every number in the suite turned it into the `patience` default — 12 s. But
+    /// that test's own subject is the pre-pull window, which lasts `prePullSeconds` (5 s) and is
+    /// gone before a launch, a coach-card dismissal and a first accessibility read are done. Its
+    /// designed fallback is therefore the *next* stoppage, one goal away: measured at 25–96 s
+    /// headless, and this suite runs on a renderer several times slower than that.
+    ///
+    /// 45 s local, 180 s on CI — which is the number that test used to carry, now scaled with
+    /// everything else instead of standing outside the knob. It is a real budget for a real
+    /// wait, not a pathology ceiling: unlike `possession` there is no relaunch that shortens it,
+    /// because a relaunch lands in the same pre-pull window that is too short to catch.
+    static let pointCycle: TimeInterval = 45 * slowdown
+
     /// Say which timing regime this run took, once, before the first test can be misread.
     ///
     /// A duration in this file is only meaningful next to the scale it was measured at, and
@@ -194,9 +218,13 @@ struct MatchDriver {
     static func announce() {
         guard !announced else { return }
         announced = true
+        // Every duration, not a selection. `possession` used to be missing from this line and
+        // it is the one that bounds nearly every wait the suite makes, so the answer to "which
+        // budget expired" was a number the run never printed.
         print(
-            "UITEST TIMING: slowdown ×\(slowdown) — patience \(patience)s, settle \(settle)s, "
-                + "sampling cap \(samplingCap)s")
+            "UITEST TIMING: slowdown ×\(slowdown) — patience \(patience)s, "
+                + "possession \(possession)s, settle \(settle)s, "
+                + "sampling cap \(samplingCap)s, point cycle \(pointCycle)s")
     }
     private nonisolated(unsafe) static var announced = false
 
@@ -359,8 +387,9 @@ struct MatchDriver {
     /// test if it never does.
     ///
     /// **The timeout is `patience` by default and no caller in this suite passes a number.**
-    /// One names `Self.settle` and the rest take the default; see the durations note above for
-    /// the two tests the literals that used to live here cost on the runner.
+    /// `waitToAct` names `Self.possession`, the pre-pull test names `Self.pointCycle`, and the
+    /// rest take the default; see the durations note above for the two tests that the literals
+    /// which used to live here cost on the runner.
     @discardableResult
     func wait(
         _ what: String, timeout: TimeInterval = MatchDriver.patience,
@@ -385,11 +414,10 @@ struct MatchDriver {
     /// This is the one loop; `wait` adds the failure and nothing else. It is separate because a
     /// *retry* needs to know that a state did not arrive without that being the test's verdict —
     /// see `withTheDisc`.
-    func poll(for timeout: TimeInterval, until condition: (Probe) -> Bool) -> Probe? {
+    func poll<T>(for timeout: TimeInterval, _ transform: (Probe) -> T?) -> T? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let now = probe()
-            if condition(now) { return now }
+            if let found = transform(probe()) { return found }
             // A tenth of the shortest thing worth waiting for. Tighter than this and the
             // accessibility traffic starts costing the app frames.
             usleep(40_000)
@@ -397,15 +425,14 @@ struct MatchDriver {
         return nil
     }
 
-    /// Wait for our man to be holding the disc, which is the only state a drag throws in.
+    /// The same loop asked as a yes/no question, which is what most callers want.
     ///
-    /// On the `possession` budget. Prefer `withTheDisc` in a test that is about to *use* the
-    /// disc: it relaunches an unlucky match instead of waiting for one, which this cannot do.
-    @discardableResult
-    func waitToThrow(file: StaticString = #filePath, line: UInt = #line) -> Probe {
-        wait(
-            "the disc in our hand", timeout: Self.possession, until: { $0.canThrow },
-            file: file, line: line)
+    /// The mapping form above is the general one because `withTheDisc`'s `resolve` produces a
+    /// *value*, and expressing that through a predicate meant running `resolve` twice — once to
+    /// decide and once to get the answer back out — which silently required every `resolve` a
+    /// test writes to be pure.
+    func poll(for timeout: TimeInterval, until condition: (Probe) -> Bool) -> Probe? {
+        poll(for: timeout) { condition($0) ? $0 : nil }
     }
 
     /// Wait for a control to become legal — a cut, a defensive commit — on the same budget as
@@ -457,15 +484,16 @@ struct MatchDriver {
             guard let before = poll(for: Self.possession, until: { $0.canThrow }) else {
                 // This match is not going to give us the disc soon. Take another one — but not
                 // on the last attempt, where a relaunch would only cost time nobody reads.
-                if attempt < attempts - 1 { relaunch() }
+                //
+                // A relaunch that never comes back has already spent `patience`; polling the
+                // next attempt against an app that is not there would spend `possession` again
+                // for a state that cannot arrive, so stop and let the caller's `guard` report it.
+                if attempt == attempts - 1 { break }
+                guard relaunch() else { break }
                 continue
             }
             act(before)
-            if let done = poll(for: Self.settle, until: { resolve(before, $0) != nil })
-                .flatMap({ resolve(before, $0) })
-            {
-                return done
-            }
+            if let done = poll(for: Self.settle, { resolve(before, $0) }) { return done }
         }
         return nil
     }
