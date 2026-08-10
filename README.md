@@ -121,6 +121,7 @@ push.
 | `ios/` | XcodeGen project for the app shell |
 | `src/sim/` | the TypeScript reference simulation (the oracle) |
 | `tools/` | golden generators, TS test harnesses, capture rigs |
+| `docs/adr/` | architecture decisions that are load-bearing and already made — read before proposing a restructure |
 | `docs/release-plan.md` | the plan to v1, with measurable authenticity targets — all met |
 | `docs/gameplay-design.md` | the design-director brief (camera grammar, controls, legibility, feel) |
 | `BRIEF.md` | the original engineering brief — "the reference is FIFA, not Madden" |
