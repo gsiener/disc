@@ -1,8 +1,43 @@
 # ULTIMATE — engineering brief
 
-A 7v7 Ultimate Frisbee game in Three.js, targeting the visual and systemic
-quality bar of a current-generation sports title. Read this before touching
-anything.
+An Ultimate Frisbee game in Three.js, targeting the visual and systemic quality
+bar of a current-generation sports title. Read this before touching anything.
+
+## There are three codebases and one of them is the oracle
+
+| tree | what it is |
+|---|---|
+| `src/` | the TypeScript simulation and the Three.js game. **The reference.** |
+| `swift/` | a Swift port of the sim (`UltimateSim`) plus its differential suite (`SimChecks`) |
+| `ios/` | the SwiftUI app that plays the port |
+
+[ADR-0001](docs/adr/0001-the-typescript-reference-is-the-oracle.md) makes the
+TypeScript reference the oracle: Swift mirrors it, and disagreement is settled by
+running the reference. That is what makes the port's ~2.25 M assertions mean
+something rather than being tautological.
+
+**Read [`docs/adr/`](docs/adr/) before changing a constant or a seam.** The ADRs
+are decisions, not suggestions, and three of them will bite you:
+
+- **0004 — pitch-relative constants scale.** A distance is either a fraction of a
+  pitch (it scales via `Playbook.depthScale`/`widthScale`, exactly `1.0` at
+  regulation) or a genuinely absolute body/air measurement (it does not). Getting
+  this wrong produced the most expensive bug in the project's history.
+- **0007 — a deliberate divergence from the oracle must be declared.** Swift may
+  be correct where the reference is wrong, but the mismatch goes in
+  `tools/goldens/divergences.ts` and the suite asserts it is still exactly the one
+  declared. An undeclared divergence is indistinguishable from a porting bug.
+- **0002 — SimChecks is a library**, so its assertions run inside the shipped app,
+  not only in a terminal.
+
+## The default format is minis, not sevens
+
+The game supports both, and **minis is the small pitch that most play happens
+on**. A constant that is only right at regulation is a bug, not a simplification.
+
+Note the codebase does not currently agree with itself about the default:
+`Play/Engine.swift:233` defaults to `.minis`, `Game/GameTypes.swift:107` to
+`.sevens`. Pass the format explicitly rather than relying on either.
 
 ## The reference is FIFA, not Madden
 
@@ -88,11 +123,27 @@ Established events:
 | `score` | `{team, playerId}` | point scored |
 | `player:footstep` | `{pos, foot, speed}` | for audio + turf scuffing |
 
-## Field geometry (regulation, metres)
+## Field geometry (metres)
 
-Playing field 100 × 37, endzones 18 deep at each end, so 64 × 37 of central
-"proper" plus two endzones. Brick marks 18 m in from each goal line. Origin is
-field centre, +Z toward one endzone, Y up. Cones at the eight corners.
+Origin is field centre, +Z toward one endzone, Y up. Cones at the eight corners.
+
+| | sevens (regulation) | minis |
+|---|---|---|
+| playing field | 100 × 37 | 37 × 18 |
+| endzone depth | 18 | 6 |
+| central "proper" | 64 × 37 | 25 × 18 |
+| goal line \| end line | 32 \| 50 | 12.5 \| 18.5 |
+| sideline | 18.5 | 9 |
+| brick in from goal line | 18 | 6 |
+| players per side | 7 | 3 |
+
+`Playbook.depthScale`/`widthScale` are the ratio of this format's dimension to
+regulation's, so they are exactly `1.0` at sevens — scaling a constant correctly
+is bit-identical there and moves no sevens golden. See ADR-0004.
+
+**The whole minis pitch is 37 m long.** A bare literal like `42` in a distance
+ramp exceeds it, saturates everywhere, and the term stops discriminating. That is
+not hypothetical; it is issue #17.
 
 ## The visual bar
 
@@ -120,6 +171,16 @@ npx tsc --noEmit                       # must be clean
 node tools/capture.mjs broadcast turf  # named shots -> shots/*.png
 node tools/capture.mjs                 # all shots
 ```
+
+That is the visual half. **The simulation half lives in
+[AGENTS.md](AGENTS.md#verifying-work)** — the six TypeScript suites, the golden
+regeneration rule, and `cd swift && swift run -c release SimTests`, which must end
+`PASS` with 0 failures. Touching `src/sim/` without running both halves is how a
+red commit reaches `main`.
+
+Several of those suite assertions are **red on a clean checkout** and are not
+yours; AGENTS.md names which. Diff against a clean worktree before you believe a
+failure is your doing.
 
 ### capture.mjs photographs a FROZEN TABLEAU. Know which rig you want.
 
