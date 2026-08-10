@@ -127,7 +127,10 @@ public struct MatchView: View {
     /// See `UltimateApp.startingPullTeam` for the measurement that motivated it.
     ///
     /// Nil in every normal run, which leaves `Engine.init`'s own choice of team 0 in place.
-    private let startingPullTeam: Int?
+    ///
+    /// Not `private`: `MatchPersistence.resume` builds an engine too, and it lives in another
+    /// file, so a `private` here is what let the restore path miss the toss. See `engineConfig`.
+    let startingPullTeam: Int?
 
     /// Whether this view is the one on screen.
     ///
@@ -542,7 +545,14 @@ public struct MatchView: View {
     /// one. Static, and called from `init` as well as from `restart`, because `init` needs
     /// it before `self` exists — and a REMATCH must open the same way this launch did, or
     /// `-receive us` would silently stop applying after the first game.
-    private static func engineConfig(_ setup: MatchSetup, startingPullTeam: Int?) -> EngineConfig {
+    ///
+    /// **Every `Engine(config:)` in this module goes through here, and that is load-bearing
+    /// rather than tidiness.** There are three: `init`, `restart`, and
+    /// `MatchPersistence.resume`. The third was missed while this was `private` to this file,
+    /// so a match saved under `-receive us` was replayed against a different opening pull —
+    /// which `MatchRestore` detects as a divergence and answers by *discarding the save*. A
+    /// fourth construction site that skips this will do the same thing silently. See #26.
+    static func engineConfig(_ setup: MatchSetup, startingPullTeam: Int?) -> EngineConfig {
         var config = setup.engineConfig
         if let t = startingPullTeam { config.startingPullTeam = t }
         return config

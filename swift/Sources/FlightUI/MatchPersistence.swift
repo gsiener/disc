@@ -125,9 +125,13 @@ extension MatchView {
         setup = played
 
         Task { @MainActor in
+            // `Self.engineConfig`, not `played.engineConfig` — the restored match has to be
+            // built the way the saved one was, and the coin toss is part of that. Built raw,
+            // a match saved under `-receive us` replays against the other team's opening pull,
+            // diverges, and is thrown away by the `catch` below as an un-restorable save.
             let engine = Engine(
                 format: played.fieldSpec.gameFormat, seed: saved.recording.seed,
-                config: played.engineConfig)
+                config: Self.engineConfig(played, startingPullTeam: startingPullTeam))
             do {
                 let restore = try MatchRestore(
                     saved, fingerprint: MatchSave.fingerprint(for: played), engine: engine)
