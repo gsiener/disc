@@ -327,6 +327,86 @@ extension MatchView {
         }
     }
 
+    /// The refusal, where the thumb was.
+    ///
+    /// **This is the only plate in the HUD that is not pinned to an edge, and the position is
+    /// the message.** Every other plate answers a question about the match, so it belongs
+    /// wherever the eye already goes; this one answers a question about *one touch* — did it
+    /// arrive, and what was wrong with it — and a caption at the foot of the screen cannot
+    /// say "this tap, here". So the ring is drawn at the contact point and the words sit
+    /// directly above it.
+    ///
+    /// **Grey, stroke-only, and quieter than an order.** An accepted call gets the gesture's
+    /// orange and 1.1 s in the plate rectangle; a refusal gets white at a third opacity and
+    /// no fill of its own beyond the backing needed to read it over turf. The game is
+    /// correcting an aim, not telling the player off — see `RefusedTap`.
+    ///
+    /// It is clamped inside the render surface with a wide enough margin that the words never
+    /// leave the screen and never wander into the plate rectangle 96 pt above the bottom
+    /// edge, which is the one collision this file exists to prevent (see the note at the top).
+    @ViewBuilder func refusedOverlay(_ refused: RefusedTap, in size: CGSize) -> some View {
+        let fade = 1 - Self.easeIn(refused.progress)
+        // Half the plate's height plus its own gap, so the words sit above the fingertip
+        // rather than under it — a thumb covers about 40 pt of glass.
+        //
+        // **The clamp is what keeps this out of the two rectangles that are already spoken
+        // for**, which is the collision this file's opening note is about. 72 pt down clears
+        // the scoreboard, which is pinned 12 pt from the top and about 40 pt tall — measured on
+        // a screenshot where a refusal for a tap on the sky landed on top of the score. 130 pt
+        // up clears the order-plate strip at 96 pt.
+        let x = Swift.min(Swift.max(refused.at.x, 84), Swift.max(84, size.width - 84))
+        let y = Swift.min(Swift.max(refused.at.y - 40, 72), Swift.max(72, size.height - 130))
+
+        ZStack(alignment: .topLeading) {
+            if let ring = refused.ringProgress {
+                // One expanding circle, thinning as it goes. The same shape the handoff
+                // pulse uses on a player, in grey rather than in the control colour, because
+                // this is the negative of that event.
+                let d = 26 + 54 * Self.easeOut(ring)
+                Circle()
+                    .strokeBorder(.white.opacity(0.40 * (1 - ring)), lineWidth: 1.5)
+                    .frame(width: d, height: d)
+                    .position(x: refused.at.x, y: refused.at.y)
+            }
+
+            VStack(spacing: 1) {
+                Text(refused.title)
+                    .font(.system(size: 13, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.62 * fade))
+                Text(refused.detail)
+                    .font(.system(size: 10, design: .monospaced).bold())
+                    .foregroundStyle(.white.opacity(0.40 * fade))
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.black.opacity(0.42 * fade))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(.white.opacity(0.14 * fade), lineWidth: 1)))
+            .position(x: x, y: y)
+            // One element carrying both lines — "NOBODY THERE, NO CUTTER THAT WAY" — for the
+            // same reason the order plates are: the refusal is one sentence and the test that
+            // guards it wants to read the sentence.
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("hud.refused")
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+
+    /// Fades that are not linear, so the words hold their contrast for most of their life and
+    /// then go. A linear fade on a 1.4 s plate is unreadable for the last half of it.
+    private static func easeIn(_ t: Double) -> Double {
+        let x = Swift.min(1, Swift.max(0, t))
+        return x * x * x
+    }
+
+    private static func easeOut(_ t: Double) -> Double {
+        let x = 1 - Swift.min(1, Swift.max(0, t))
+        return 1 - x * x
+    }
+
     /// The paused state. One tap resumes, and until it comes the accumulator is not fed —
     /// see `advance`.
     var pausedOverlay: some View {

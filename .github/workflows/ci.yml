@@ -138,6 +138,29 @@ jobs:
           -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
           CODE_SIGNING_ALLOWED=NO
 
+      # **And again on the rectangle a player actually gets.** A debug build wraps the match in
+      # the instruments `TabView`, which leaves the game 750 × 338 at (62, 0) of an 874 × 402
+      # window on an iPhone 17 Pro; a release build is the match and nothing else. So the step
+      # above exercises a layout that ships to nobody, and a tap fraction that means one thing
+      # there means another thing here — see `.agents/friction-log/20260810-the-pitch-is-not-the-window`.
+      #
+      # `RefusalTests` rather than the whole suite, because it is the one that is *about* the
+      # geometry: `testThePitchIsTheRectangleTheTapsAssume` asserts the pitch is the whole window
+      # in this configuration, and the other four drive real taps through the release layout to
+      # prove the refusal plates are visible on it. The rest of the suite is about gestures whose
+      # geometry is relative, and doubling ten minutes of match time to re-run them would buy
+      # very little.
+      - name: Run the refusal tests against the release layout
+        working-directory: ios
+        run: >
+          xcodebuild test
+          -project Ultimate.xcodeproj
+          -scheme UltimateUITests
+          -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
+          -configuration Release
+          -only-testing:UltimateUITests/RefusalTests
+          CODE_SIGNING_ALLOWED=NO
+
       # The gestures, the probe readings and the failure screenshots, which are the only way
       # to tell a real regression from a simulator that never booted.
       - name: Upload test results

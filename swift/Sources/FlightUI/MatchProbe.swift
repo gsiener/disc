@@ -73,6 +73,11 @@ extension MatchView {
         // still reads as the receiving team. A drag test that waited for possession 0 would
         // sleep through the one moment the disc is guaranteed to be in our hand.
         put("poss", "\(match.possession)")
+        // The coarse phase, which is the only one outside the package: `setup` before a pull,
+        // `live` while the point is being played, `dead` between. It is here because half the
+        // refusals a tap can meet are phase refusals, and a test that wants to provoke one has
+        // to be able to wait for the phase rather than race the pull clock.
+        put("phase", match.phase.rawValue)
         flag("mine", match.holder != nil && match.holder == match.controlled)
         flag("flight", match.discInFlight)
         flag("cut.ok", match.canCallCut)
@@ -100,6 +105,37 @@ extension MatchView {
         put("thrown", "\(thrown)")
         put("cuts", "\(cuts)")
         put("defends", "\(defends)")
+
+        // The tap ledger, which is the one thing on this line that is about the *control*
+        // rather than about the match. `taps` counts every tap the offence took, `refused`
+        // every tap either half turned down, `wide` the accepted calls that only landed
+        // because an empty cone was widened to a right angle — so a run that taps N times
+        // reports the hit rate the 35° cone gets alone, `(taps - refused - wide) / taps`, and
+        // the hit rate a player now gets, `(taps - refused) / taps`, from the same taps. See
+        // `MatchView.callCut`.
+        put("taps", "\(offenceTaps)")
+        put("refused", "\(refusals)")
+        put("wide", "\(widenedCalls)")
+        // And why the last one was refused, as `RefusedTap.Reason`'s own spelling, so a test
+        // can name the refusal it expected instead of matching on the words on screen.
+        put("refuse", lastRefusal?.rawValue ?? "-")
+        // And every refusal of the run by reason, `reason:count` and `|`-separated, sorted so a
+        // diff between two runs is a diff and not a re-ordering.
+        put(
+            "tally",
+            refusalTally.isEmpty
+                ? "-"
+                : refusalTally.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }
+                    .joined(separator: "|"))
+
+        // The rectangle the game is actually being played on, in the window's coordinates —
+        // which is neither the window nor the window minus a tab bar; see `viewFrame`. A test
+        // maps its taps through this and asserts on it, so the geometry a player gets is the
+        // geometry that was tested.
+        put(
+            "rect",
+            [viewFrame.minX, viewFrame.minY, viewFrame.width, viewFrame.height]
+                .map { String(Int($0.rounded())) }.joined(separator: ","))
 
         // The charge, which is the one thing on this line the screen never shows.
         if let r = lastRelease {
@@ -144,7 +180,9 @@ extension MatchView {
             Text(probeState)
                 .font(.system(size: 7, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.55))
-                .lineLimit(3)
+                // Four, because the tap ledger and the pitch rectangle made it a line longer.
+                // A truncated probe is a test that cannot read the field it needed.
+                .lineLimit(6)
                 .padding(.horizontal, 6)
                 .padding(.bottom, 4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)

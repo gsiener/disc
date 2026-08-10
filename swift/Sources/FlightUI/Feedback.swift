@@ -393,6 +393,124 @@ struct CutCall: Equatable {
     }
 }
 
+// MARK: - the tap that was not taken
+
+/// A tap the game would not take, and why, said where the thumb landed.
+///
+/// **A control that fails silently is unlearnable, and this one failed silently two taps in
+/// three.** Both halves of the tap refuse for good reasons — the cone can name nobody, the
+/// disc can be in a team-mate's hand, the point can not have started, the last call can have
+/// been a moment ago — and until now every one of those was indistinguishable from the tap
+/// not having registered at all. The first play session measured roughly one tap in three
+/// finding somebody on a minis pitch; the other two produced nothing on screen, so nothing
+/// on screen distinguished "nobody was there" from a broken game.
+///
+/// So a refusal is now an answer. Two parts, and they answer different questions:
+///
+///   - **A ring where the finger was**, which answers *did the tap arrive*. It has to be at
+///     the point of contact rather than on a plate at the foot of the screen, because that
+///     is the question — a plate 200 pt away cannot say "this tap, here".
+///   - **Two words naming the reason**, which answer *what would have made it work*. They
+///     are different sentences for different reasons on purpose: NOBODY THERE means point
+///     somewhere else, TOO SOON means wait, NOT YOUR DISC means you are not on offence.
+///     One word for all of them ("REFUSED") would be honest and useless.
+///
+/// Grey and stroke-only, in the HUD's established idiom, and shorter-lived than an order
+/// plate: an accepted call is a commitment worth reading twice, and a refusal is a
+/// correction worth reading once.
+struct RefusedTap: Equatable {
+
+    /// Why the tap did nothing. One case per refusal path in `Engine.humanCallCut` and
+    /// `Engine.humanDefend`, plus the one this file owns — a ray that never met the grass.
+    ///
+    /// The raw values are what the probe reports, so a UI test can name the refusal it
+    /// expected rather than asserting on the words.
+    enum Reason: String, Equatable {
+        /// The cone named nobody, and neither did the widened fallback: there is no
+        /// team-mate in that half of the pitch to send.
+        case nobodyThere
+        /// A body was named and the playbook had no route to give them.
+        case noRoute
+        /// A team-mate is holding it, so the call is theirs to make and not ours.
+        case notYours
+        /// The point is not running — before a pull, after a goal, during a stoppage.
+        case notLive
+        /// The call cooldown. `Engine.calledCutInterval` is one cut per 1.1 s.
+        case tooSoon
+        /// The ray never descended: a tap on the sky, or on the crowd above the horizon.
+        case offPitch
+        /// On defence, with every defender on the floor.
+        case everybodyDown
+        /// The disc is nobody's: our own throw is in the air, or it is loose on the grass
+        /// after a turnover. The tap has no half to be — there is no cut to call without a
+        /// thrower and no defender to send at our own disc — and it is the refusal a player
+        /// meets most often, because it covers every tap made during a flight.
+        case discUnsettled
+
+        /// Two words, in the voice a team-mate would use.
+        var title: String {
+            switch self {
+            case .nobodyThere: "NOBODY THERE"
+            case .noRoute: "NO LANE THERE"
+            case .notYours: "NOT YOUR DISC"
+            case .notLive: "NOT IN PLAY"
+            case .tooSoon: "TOO SOON"
+            case .offPitch: "OFF THE PITCH"
+            case .everybodyDown: "NOBODY UP"
+            case .discUnsettled: "NOBODY TO SEND"
+            }
+        }
+
+        /// What would have made it work. The half a player can act on.
+        var detail: String {
+            switch self {
+            case .nobodyThere: "NO CUTTER THAT WAY"
+            case .noRoute: "TRY ANOTHER SPACE"
+            case .notYours: "A TEAM-MATE HAS IT"
+            case .notLive: "WAIT FOR THE PULL"
+            case .tooSoon: "ONE CALL AT A TIME"
+            case .offPitch: "TAP THE GRASS"
+            case .everybodyDown: "EVERYONE IS DOWN"
+            case .discUnsettled: "WAIT FOR THE DISC"
+            }
+        }
+    }
+
+    let reason: Reason
+    /// Where the finger landed, in the render surface's own coordinates.
+    let at: CGPoint
+    /// Seconds of display left. Burned down by `MatchView.advance` on wall time, like every
+    /// other plate in this file.
+    var timeLeft: Double
+
+    /// Long enough to read two short lines, and no longer.
+    ///
+    /// **1.8 s rather than the order plates' 1.1 s, and the extra is not decoration.** One
+    /// `XCUIElement.label` read against this view tree costs 0.4–0.9 s on this simulator and
+    /// `waitForExistence` plus a failure-triage pass costs over a second (see the friction log),
+    /// so a plate that lived as long as an order plate could not be *read* by the test that
+    /// guards it — measured: it was found on a single-suite run and missed on a full one. A
+    /// legibility fix nothing can check is a legibility fix on trust.
+    static let duration = 1.8
+    /// The ring's own life, which is much shorter: it is the receipt for the touch, and a
+    /// receipt that hangs around starts reading as a thing on the pitch.
+    static let pulse = 0.42
+
+    var title: String { reason.title }
+    var detail: String { reason.detail }
+
+    /// 0 at the tap, 1 when the words are gone.
+    var progress: Double { 1 - Swift.max(0, timeLeft) / Self.duration }
+
+    /// 0 at the tap, 1 when the ring is gone, and nil once it is — so the caller draws
+    /// nothing rather than drawing a finished ring.
+    var ringProgress: Double? {
+        let spent = Self.duration - Swift.max(0, timeLeft)
+        guard spent < Self.pulse else { return nil }
+        return Swift.max(0, spent / Self.pulse)
+    }
+}
+
 // MARK: - wind
 
 /// The wind, in the frame the camera is actually looking through.

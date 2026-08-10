@@ -62,12 +62,14 @@ final class TouchTests: XCTestCase {
     /// *told*, which is the whole reason `CutCall` exists — a commitment you cannot see is a
     /// button that does nothing.
     ///
-    /// **The tap is retried, and that is not flake-hiding.** A refused tap is a designed
-    /// outcome: `humanCallCut` returns nil when the 35° cone is empty, and on a minis pitch
-    /// there are two team-mates, so most directions name nobody. Measured across runs here,
-    /// roughly one tap in three lands on somebody. A player points somewhere else; so does
-    /// this. What is asserted is that *some* piece of grass a thumb would plausibly pick sends
-    /// a runner, and that when one does, the screen says who.
+    /// **The tap is still retried, and it now almost never needs to be.** A refused tap used
+    /// to be the common case: `humanCallCut` returns nil when the 35° cone is empty, and on a
+    /// minis pitch there are two team-mates, so most directions named nobody — measured with a
+    /// finger, roughly one tap in three landed on somebody. `MatchView.callCut` now widens an
+    /// empty cone to the half of the pitch the finger pointed at, so a tap on the grass during
+    /// our own possession is an order almost every time; `RefusalTests` measures both rates in
+    /// one run. The loop stays because the *legality* of a call still comes and goes with
+    /// possession and the cooldown, which is a different thing from the aim being refused.
     func testTapOnOffenceCommandsACutter() {
         let match = MatchDriver(self)
         let before = match.wait("a cut to be legal", timeout: 150, until: { $0.canCut })
@@ -75,8 +77,9 @@ final class TouchTests: XCTestCase {
 
         // Upfield of centre and spread across the width — the spaces a thrower actually
         // attacks. Every one is a point on the grass (anything above the horizon returns nil
-        // from `MatchScene.groundPoint` and is not a tap at all) and every one is clear of the
-        // debug tab bar; see `MatchDriver.point`.
+        // from `MatchScene.groundPoint` and is not a tap at all), and every one is a fraction
+        // of the *pitch* rather than of the window, so it is the same piece of grass in a
+        // release build as in a debug one; see `MatchDriver.pitchPoint`.
         let targets = [
             (0.50, 0.34), (0.30, 0.36), (0.70, 0.36), (0.50, 0.46), (0.38, 0.30), (0.62, 0.30),
             (0.24, 0.46), (0.76, 0.46),
@@ -92,7 +95,7 @@ final class TouchTests: XCTestCase {
                 until: { $0.canCut })
             tried += 1
             if let plates = match.tapAndWatch(
-                match.point(t.0, t.1), counter: { $0.cuts }, plates: ["hud.cut"], within: 0.6)
+                match.pitchPoint(t.0, t.1), counter: { $0.cuts }, plates: ["hud.cut"], within: 0.6)
             {
                 said = plates["hud.cut"] ?? ""
             }
@@ -141,7 +144,7 @@ final class TouchTests: XCTestCase {
                 until: { $0.canDefend })
             tried += 1
             plates = match.tapAndWatch(
-                match.point(0.5, 0.5), counter: { $0.defends },
+                match.pitchPoint(0.5, 0.5), counter: { $0.defends },
                 plates: ["hud.defence", "hud.recovery"], within: 0.6)
         }
         guard let plates else {
