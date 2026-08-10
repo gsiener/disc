@@ -267,6 +267,47 @@ extension MatchView {
         }
     }
 
+    /// What the last tap ordered, on offence.
+    ///
+    /// It reuses `defencePlate` and it sits in the identical rectangle, which is safe for
+    /// exactly the reason the two halves of the tap are safe: `defenceReadout` can only
+    /// draw while *they* have the disc and this can only draw while *we* do. In the
+    /// gesture's orange rather than defence's blue, matching the ghost on the grass — the
+    /// plate and the route are one sentence about one decision, the same argument
+    /// `MatchScene.bidMarker` makes for the blue.
+    @ViewBuilder var cutReadout: some View {
+        if let call = cutCall, match.possession == 0 {
+            defencePlate(
+                title: call.title,
+                tint: Color(red: 1.0, green: 0.55, blue: 0.10),
+                detail: call.detail)
+        }
+    }
+
+    /// The one prompt that says the offence has a control at all, until it has been used
+    /// once.
+    ///
+    /// Same rules as `defenceHint`, including standing down whenever anything else wants
+    /// that rectangle: it excludes itself while the cut plate is up (it is about to be
+    /// replaced by the answer to itself) and while a drag is in progress, because a player
+    /// mid-throw is being told to do something they cannot do with the thumb they are
+    /// using.
+    @ViewBuilder var cutHint: some View {
+        if match.possession == 0, match.holder != nil, match.holder == match.controlled,
+            cutCall == nil, drag == nil, !Prefs.cutUsed, !match.isOver,
+            match.recovery(of: match.controlled) == nil
+        {
+            Text("TAP THE SPACE TO SEND A CUTTER")
+                .font(.system(size: 11, design: .monospaced).bold())
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(RoundedRectangle(cornerRadius: 7).fill(.black.opacity(0.45)))
+                .padding(.bottom, 96)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .allowsHitTesting(false)
+        }
+    }
+
     /// The paused state. One tap resumes, and until it comes the accumulator is not fed —
     /// see `advance`.
     var pausedOverlay: some View {

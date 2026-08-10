@@ -165,6 +165,7 @@ enum Prefs {
     private static let setupKey = "match.setup.v1"
     private static let coachKey = "coach.seen.v1"
     private static let defenceKey = "defence.used.v1"
+    private static let cutKey = "cut.used.v1"
 
     private static var store: UserDefaults { .standard }
 
@@ -193,5 +194,14 @@ enum Prefs {
     static var defenceUsed: Bool {
         get { store.bool(forKey: defenceKey) }
         set { store.set(newValue, forKey: defenceKey) }
+    }
+
+    /// Whether the player has ever called a cut. The offensive twin of `defenceUsed`, and
+    /// a separate key on purpose: the two halves of the tap are learned at different
+    /// moments — you meet defence on the pull and offence the first time you catch one —
+    /// so one flag would silence the prompt for a control the player has never used.
+    static var cutUsed: Bool {
+        get { store.bool(forKey: cutKey) }
+        set { store.set(newValue, forKey: cutKey) }
     }
 }

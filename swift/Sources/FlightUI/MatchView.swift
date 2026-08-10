@@ -62,6 +62,23 @@ public struct MatchView: View {
     /// never reaches `humanRelease`, because nothing releases it.
     private let demoCharge: Double?
 
+    /// A tap to issue automatically, in fractions of the screen, whenever the engine will
+    /// take one.
+    ///
+    /// The offensive twin of `autoDefend`, and it exists for the same reason and one more.
+    /// The reason it shares: everything a called cut puts on screen — the ghost route on
+    /// the grass, the order plate, the prompt going away — lives behind a finger, and
+    /// synthetic touch injection does not reach the Simulator. The reason it does not: this
+    /// is the only control whose *screen coordinates* matter, so it is also the only way to
+    /// photograph whether `MatchScene.groundPoint` puts the finger where the player thinks
+    /// they put it. A tap at (0.5, 0.35) should send somebody up the middle of the frame.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -cut 0.5,0.35
+    ///
+    /// It drives `tap(at:in:)`, the identical function the finger drives, so a screenshot
+    /// shows the real path. Nil in every normal run.
+    private let demoCut: CGPoint?
+
     /// Whether to issue the defensive tap automatically, whenever there is one to issue.
     ///
     /// The same door as `-charge`, and for the same reason: `xcrun simctl launch` can pass
@@ -239,6 +256,9 @@ public struct MatchView: View {
     /// See `DefenceCall`.
     @State var defenceCall: DefenceCall? = nil
 
+    /// The cut the player has just called, while it is worth saying so. See `CutCall`.
+    @State var cutCall: CutCall? = nil
+
     /// What the aim assist did to the last throw, while it is still worth saying.
     @State var assistToast: AssistToast? = nil
     /// The control swap being announced, while there is one.
@@ -256,6 +276,10 @@ public struct MatchView: View {
     /// frame — a dictionary allocation and a full walk of the scene roots, 120 times a
     /// second, to find nine entities that never move between roots.
     @State var scene = MatchScene()
+
+    /// The size of the pitch on screen, as last measured. Written by the one
+    /// `GeometryReader` that knows it, read by `-cut`'s synthetic tap.
+    @State private var viewSize: CGSize = .zero
 
     /// Bumped once per rendered frame purely so SwiftUI knows something happened.
     ///
@@ -381,10 +405,11 @@ public struct MatchView: View {
     public init(
         format: FieldSpec? = nil, points: Int? = nil, active: Bool = true,
         skipsSetup: Bool = false, demoCharge: Double? = nil, autoDefend: Bool = false,
-        saveCycle: Double? = nil
+        saveCycle: Double? = nil, demoCut: CGPoint? = nil
     ) {
         self.active = active
         self.autoDefend = autoDefend
+        self.demoCut = demoCut
         self.formatOverride = format
         self.pointsOverride = points
         self.skipsSetup = skipsSetup
@@ -520,18 +545,24 @@ public struct MatchView: View {
                 }
                 .background(Color(red: 0.055, green: 0.070, blue: 0.175))
                 .gesture(throwGesture(in: geo.size))
-                // Defence, on a tap. Simultaneous rather than sequenced, and safe to be:
-                // the throw is a `DragGesture(minimumDistance: 8)`, so a tap is input the
-                // offence has never used and cannot use — there is no gesture to lose.
+                // THE WHOLE GRAMMAR: **drag from the disc to throw, tap the grass to send
+                // a cutter, and the same tap on defence sends your best defender at the
+                // disc.** Simultaneous with the drag rather than sequenced, and safe to be:
+                // the throw is a `DragGesture(minimumDistance: 8)`, so a tap can never be
+                // the start of a throw and a throw can never end as a tap. `SpatialTapGesture`
+                // rather than `onTapGesture` only because the drag is attached with
+                // `.gesture` and the two want to be siblings.
                 //
-                // `SpatialTapGesture` rather than `onTapGesture` only because the drag is
-                // attached with `.gesture` and the two want to be siblings; the location
-                // it reports is deliberately ignored. A tap on a phone is a *call*, not an
-                // aim — you are telling a defender to go, not picking a spot on the grass
-                // with a thumb that covers four metres of it. Where to go is a question
-                // the engine can answer better than a finger can.
+                // **The location is used on offence and ignored on defence**, which is not
+                // an inconsistency but the two different questions being asked. On defence
+                // the question is *when* — where to go is the disc's business and the engine
+                // can answer it better than a thumb that covers four metres of grass. On
+                // offence the question is *where*: which piece of field you want attacked.
+                // And even there the point is only ever read as a **direction** from the
+                // thrower, resolved by the same 35 degree cone the drag uses, so the thumb's
+                // coarseness is priced in exactly once for both halves of the offence.
                 .simultaneousGesture(
-                    SpatialTapGesture().onEnded { _ in defend() })
+                    SpatialTapGesture().onEnded { g in tap(at: g.location, in: geo.size) })
                 // The scene is built once, with one entity per player. Changing format
                 // changes how many players there are, so the scene has to be rebuilt
                 // rather than synced — without this, switching to 7v7 leaves eight
@@ -548,6 +579,8 @@ public struct MatchView: View {
                 assistReadout
                 defenceReadout
                 defenceHint
+                cutReadout
+                cutHint
 
                 // Full time. Drawn over everything, including the callouts — once the
                 // game is over the only interesting fact left is the result, and the
@@ -629,7 +662,14 @@ public struct MatchView: View {
             // drawing the pinned value.
             .onAppear {
                 if demoCharge != nil, drag == nil { drag = demoDrag(in: geo.size) }
+                viewSize = geo.size
             }
+            // The one thing `advance` cannot know on its own. The synthetic tap `-cut`
+            // issues is in *screen* coordinates, and the screen's size lives only inside
+            // this `GeometryReader`; the tick loop is outside it. `onChange` covers a
+            // rotation or a split view, both of which move the same fraction of the screen
+            // to a different piece of grass.
+            .onChange(of: geo.size) { _, new in viewSize = new }
         }
     }
 
@@ -677,6 +717,16 @@ public struct MatchView: View {
 
         // The finger a headless run does not have. See `autoDefend`.
         if autoDefend, match.defensiveCommit == nil { defend() }
+
+        // And its offensive twin. See `demoCut`, and `viewSize` for the one fact this
+        // needs that the tick loop cannot see. Every frame, because the engine's own
+        // cooldown is what decides when a tap is taken — this is a finger held down, not
+        // a schedule of its own.
+        if let u = demoCut, viewSize != .zero, match.canCallCut {
+            tap(
+                at: CGPoint(x: u.x * viewSize.width, y: u.y * viewSize.height),
+                in: viewSize)
+        }
 
         // The home button and the sheet tap a headless run does not have either. See
         // `saveCycle`.
@@ -752,6 +802,10 @@ public struct MatchView: View {
             call.timeLeft -= frameDt
             defenceCall = call.timeLeft > 0 ? call : nil
         }
+        if var call = cutCall {
+            call.timeLeft -= frameDt
+            cutCall = call.timeLeft > 0 ? call : nil
+        }
         // The hitstop's own fuse and its cooldown, burned in real seconds rather than
         // slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game* time would run for
         // the better part of a second on the clock the player lives on.
@@ -813,6 +867,55 @@ public struct MatchView: View {
                         assist, jersey: slot.map(jersey), grade: grade)
                 }
             }
+    }
+
+    /// One tap, two meanings, decided by who has the disc.
+    ///
+    /// There is no mode here and no modifier: on defence the tap is `defend()` and on
+    /// offence it is `callCut(at:)`, and the two can never both apply because one needs
+    /// them holding it and the other needs us holding it. Both engine entry points refuse
+    /// silently when their situation is not the live one, so the routing does not have to
+    /// be exhaustive — it only has to try the right one first.
+    private func tap(at point: CGPoint, in size: CGSize) {
+        guard running else { return }
+        if match.possession != 0 || match.holder == nil {
+            defend()
+            return
+        }
+        callCut(at: point, in: size)
+    }
+
+    /// Send a teammate into the space you just pointed at.
+    ///
+    /// **The problem this fixes is that off the disc there was nothing to do.** Two of the
+    /// three phases had input — the drag on the disc, the tap on defence — and the third,
+    /// which is most of a possession, was watching seven bodies play without you. What was
+    /// missing was never a movement system: `Playbook.buildCut` builds the routes and
+    /// `TeamAIOffence` runs them. What was missing was a way to *ask*.
+    ///
+    /// So the tap picks a **space** and the engine picks the body: see
+    /// `Engine.humanCallCut` for why that is the right way round for this sport and for the
+    /// thumb. This file's whole job is turning a screen point into a point on the grass —
+    /// `MatchScene.groundPoint` — and a refusal into silence.
+    ///
+    /// A refused tap is silent, exactly as a refused defensive one is. On offence the
+    /// refusals are the cooldown and an empty cone, and both are things a player does
+    /// several times a point without meaning anything by it.
+    private func callCut(at point: CGPoint, in size: CGSize) {
+        guard let camera = scene.camera,
+            let at = Self.groundPoint(tap: point, in: size, camera: camera),
+            let called = match.humanCallCut(atX: at.x, atZ: at.z)
+        else { return }
+        // Written down at the tick that has not run yet, which is where a replay will apply
+        // it. The *point on the grass* is what is recorded, never the receiver it resolved
+        // to — see `ReplayInput.callCut`.
+        inputs.append(
+            RecordedInput(tick: tickCount, input: .callCut(x: at.x, z: at.z)))
+        Prefs.cutUsed = true
+        let slot = match.players.firstIndex { $0.id == called.receiver }
+        cutCall = CutCall(
+            jersey: slot.map(jersey), kind: called.kind, timeLeft: CutCall.duration)
+        Feel.play(.commit)
     }
 
     /// The defensive half of the control scheme, and the whole of it: send your best

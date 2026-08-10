@@ -113,6 +113,15 @@ public struct RecordedField: Codable, Equatable, Sendable {
 ///
 /// `defend` is the whole of the defensive control: a tap is a *call*, carrying no
 /// coordinates (see `Engine.humanDefend`), so there is nothing to store but the tick.
+///
+/// `callCut` is the offensive half of that same tap, and it is the one human input that
+/// does carry coordinates. It has to: `humanDefend` picks its own body from the state of
+/// the play, so the tick is the whole of it, whereas a called cut is resolved from *where
+/// on the grass* the finger landed (see `Engine.humanCallCut`) and a tape without the
+/// point would replay a different order. The point is stored, never the receiver it
+/// resolved to — the resolution is `coneSelect` over the bodies at that tick, and a
+/// recording that stored the answer instead of the question could disagree with the
+/// simulation it claims to describe.
 public enum ReplayInput: Codable, Equatable, Sendable {
     case drag(dx: Double, dy: Double, shortEdge: Double)
     case release(throwType: String, aimX: Double, aimY: Double, aimZ: Double, power: Double, loft: Double)
@@ -120,6 +129,7 @@ public enum ReplayInput: Codable, Equatable, Sendable {
         throwType: String, aimX: Double, aimY: Double, aimZ: Double, power: Double, loft: Double,
         quality: Double)
     case defend
+    case callCut(x: Double, z: Double)
 }
 
 /// An input and the tick it is consumed by. See the file comment for why this is an
@@ -251,6 +261,8 @@ public struct Recording: Codable, Equatable, Sendable {
                 }
             case .defend:
                 break
+            case .callCut(let x, let z):
+                guard x.isFinite, z.isFinite else { throw ReplayError.nonFiniteInput(i) }
             }
         }
     }
@@ -352,6 +364,14 @@ func applyReplayInput(_ input: ReplayInput, to match: Engine) {
         // and touches nothing when there is nothing to commit to — so a recorded tap that
         // no longer applies costs the replay exactly what it cost the live match.
         match.humanDefend()
+
+    case .callCut(let x, let z):
+        // Refused calls are dropped identically on both paths, and for a stricter reason
+        // than the defensive tap's: `humanCallCut` consumes an RNG draw on the success
+        // path and none on any refusal path, so a call that the live match refused and the
+        // replay honoured — or the reverse — would not merely lose an order, it would
+        // shift every AI decision after it.
+        match.humanCallCut(atX: x, atZ: z)
     }
 }
 

@@ -101,6 +101,22 @@ struct UltimateApp: App {
         return args[i + 1] == "on"
     }()
 
+    /// `-cut 0.5,0.35` taps that fraction of the screen, whenever a cut can be called.
+    ///
+    /// The offensive tap is the one control whose screen coordinates carry meaning — see
+    /// `MatchView.demoCut` — and taps are the one input this environment cannot synthesise.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -cut 0.5,0.35
+    static let demoCut: CGPoint? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-cut"), i + 1 < args.count else { return nil }
+        let parts = args[i + 1].split(separator: ",")
+        guard parts.count == 2, let x = Double(parts[0]), let y = Double(parts[1]),
+            x >= 0, x <= 1, y >= 0, y <= 1
+        else { return nil }
+        return CGPoint(x: x, y: y)
+    }()
+
     /// `-savecycle 20` plays for twenty seconds, saves the match, throws the engine away
     /// and restores it from the save — the whole persistence round trip, in one launch.
     ///
@@ -167,7 +183,8 @@ struct UltimateApp: App {
                 MatchView(
                     format: Self.startFormat, points: Self.startPoints, active: tab == 0,
                     skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
-                    autoDefend: Self.autoDefend, saveCycle: Self.saveCycle)
+                    autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
+                    demoCut: Self.demoCut)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -182,7 +199,8 @@ struct UltimateApp: App {
             MatchView(
                 format: Self.startFormat, points: Self.startPoints,
                 skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
-                autoDefend: Self.autoDefend, saveCycle: Self.saveCycle)
+                autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
+                demoCut: Self.demoCut)
         }
     }
 }

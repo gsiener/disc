@@ -579,8 +579,12 @@ enum ReplayTests {
         case .release(_, let ax, let ay, let az, let power, let loft): [ax, ay, az, power, loft]
         case .charged(_, let ax, let ay, let az, let power, let loft, let quality):
             [ax, ay, az, power, loft, quality]
-        // A tap carries no numbers at all — see `ReplayInput.defend`.
+        // A defensive tap carries no numbers at all — see `ReplayInput.defend`. The
+        // offensive one carries the point on the grass it landed on, and it is exactly as
+        // bit-sensitive as an aim: the direction from the thrower to it decides which of
+        // the seven routes is run.
         case .defend: []
+        case .callCut(let x, let z): [x, z]
         }
     }
 }

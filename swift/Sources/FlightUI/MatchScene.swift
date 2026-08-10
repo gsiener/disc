@@ -49,6 +49,7 @@ final class MatchScene {
     var preview: Entity?
     var bidMark: Entity?
     var pulse: ModelEntity?
+    var cutGhost: Entity?
     var camera: PerspectiveCamera?
     var focus: Entity?
 
@@ -63,6 +64,11 @@ final class MatchScene {
     /// repainted when the answer actually changes. See `MatchView.sync`.
     var ringDimmed = false
     var ringPainted = -1
+
+    /// Which rung of the called cut's fade ramp the ghost currently wears, so seventeen
+    /// entities are only repainted on the frames the answer changes. -1 means "no ghost",
+    /// which is also what the next one's first frame is compared against.
+    var cutGhostPaint = -1
 
     /// Recent disc positions while it is in the air, oldest first. Collected in the tick
     /// loop rather than in the render pass, because the render pass runs once per drawn
@@ -118,6 +124,7 @@ final class MatchScene {
         markStep = -1
         ringDimmed = false
         ringPainted = -1
+        cutGhostPaint = -1
         trailSamples.removeAll()
         bobPhase = 0
         previewKey = nil
@@ -198,6 +205,11 @@ extension MatchView {
         pulse.isEnabled = false
         content.add(pulse)
         scene.pulse = pulse
+
+        let ghost = Self.cutGhost()
+        ghost.isEnabled = false
+        content.add(ghost)
+        scene.cutGhost = ghost
 
         // A new scene is a new set of entities, so every cache that remembers what was
         // last assigned to one is now remembering somebody else's.
@@ -328,6 +340,102 @@ extension MatchView {
             root.addChild(seg)
         }
         return root
+    }
+
+    // MARK: - the order, drawn
+
+    /// How many beads the commanded route is drawn with.
+    static let cutGhostBeads = 16
+
+    /// The order the player gave, laid on the grass.
+    ///
+    /// **It is a ghost and not a marker, and the distinction is the whole feature.**
+    /// `docs/gameplay-design.md` §4 asks that a commanded route be shown fading, so the
+    /// player can see *the order* next to *the execution of it* — a called cut that is
+    /// covered, or run late, or beaten to the space, is information the player can only
+    /// act on if the two are on screen together. A marker that tracked the runner would
+    /// draw the execution twice and the order not at all.
+    ///
+    /// So it is pinned where the runner stood when the order was given (`CalledCut.from`),
+    /// runs through the setup step — the deliberately wrong-way first move, which is worth
+    /// seeing because it is the half of a cut that looks like a mistake — and ends at the
+    /// space. Sixteen beads and a ring, all pre-built: the fade is a material swap per
+    /// frame off a baked ramp, exactly as the handoff pulse and the ground mark do it,
+    /// because a route rebuilt per frame would allocate 17 meshes 120 times a second.
+    ///
+    /// Orange, the gesture's colour, because this is the player's own intent rather than a
+    /// state of the world — the same argument the drag's aim arrow and preview bracket
+    /// make. The bid marker's blue belongs to defence and the control gold to the chevron.
+    static func cutGhost() -> Entity {
+        let root = Entity()
+        let bead = MeshResource.generateBox(size: [0.22, 0.02, 0.22])
+        for _ in 0..<cutGhostBeads {
+            root.addChild(ModelEntity(mesh: bead, materials: [cutGhostRamp[0]]))
+        }
+        // The space itself, at the end of the line. Bigger than a bead and hollow, so it
+        // reads as a destination rather than as the last dash.
+        let ring = ModelEntity(
+            mesh: .generateCylinder(height: 0.02, radius: 0.9), materials: [cutGhostRamp[0]])
+        ring.name = "target"
+        root.addChild(ring)
+        return root
+    }
+
+    /// The ghost fading out, pre-baked for the reason `PitchScene.handoffRamp` is. Slot 0
+    /// is gone; the last slot is the moment the order was given.
+    static let cutGhostRamp: [UnlitMaterial] = (0..<12).map { i in
+        PitchScene.unlit(PitchScene.Palette.cone, opacity: Float(i) / 11 * 0.75)
+    }
+
+    /// Which rung of the ramp a remaining lifetime lands on. Linear, unlike the handoff's
+    /// squared curve: this one is meant to be readable for most of its life and then go,
+    /// rather than to flash and vanish.
+    static func cutGhostStep(_ timeLeft: Double) -> Int {
+        let t = Float(max(0, min(1, timeLeft / Engine.calledCutGhostTime)))
+        return Swift.min(cutGhostRamp.count - 1, Swift.max(0, Int((t * 11).rounded())))
+    }
+
+    // MARK: - the finger, in world coordinates
+
+    /// Where on the pitch a screen point is pointing.
+    ///
+    /// **A tap has to become a direction, and only a direction.** `Engine.humanCallCut`
+    /// takes the heading from the thrower to this point and hands it to the same 35° cone
+    /// select the throw gesture uses; the *distance* is never read. That is what makes this
+    /// a safe piece of arithmetic to have here — a metre of error in the ground point moves
+    /// the heading by a degree or two, well inside a cone that exists precisely because a
+    /// thumb is a coarse instrument.
+    ///
+    /// The maths is the standard pinhole inverse, against the *actual* camera entity rather
+    /// than against `cameraTarget()`: the camera eases toward that target over several
+    /// frames (see `sync`), so the transform on the entity is where the picture was really
+    /// taken from and the target is only where it is heading. RealityKit's perspective
+    /// camera looks down its own -Z with `fieldOfViewInDegrees` measured *vertically* —
+    /// `PerspectiveCameraComponent.fieldOfViewOrientation` defaults to `.vertical` — so the
+    /// horizontal half-angle is the vertical one scaled by the aspect ratio.
+    ///
+    /// Nil when the ray does not descend (a tap on the sky), which is a real thing a finger
+    /// can do: the pitch does not fill the frame.
+    static func groundPoint(
+        tap: CGPoint, in size: CGSize, camera: PerspectiveCamera
+    ) -> (x: Double, z: Double)? {
+        guard size.width > 0, size.height > 0 else { return nil }
+        let fov = camera.camera.fieldOfViewInDegrees * .pi / 180
+        let tanY = tan(fov / 2)
+        let aspect = Float(size.width / size.height)
+        // Normalised device coordinates: -1…1 with +Y up, which is the flip from a screen
+        // whose origin is top-left.
+        let nx = Float(2 * tap.x / size.width - 1)
+        let ny = Float(1 - 2 * tap.y / size.height)
+        let inCamera = SIMD3<Float>(nx * tanY * aspect, ny * tanY, -1)
+
+        let origin = camera.position(relativeTo: nil)
+        let heading = camera.orientation(relativeTo: nil).act(inCamera)
+        // Level with the horizon or above it: there is no grass along that ray.
+        guard heading.y < -1e-4 else { return nil }
+        let t = -origin.y / heading.y
+        let hit = origin + heading * t
+        return (Double(hit.x), Double(hit.z))
     }
 
     /// The teammate a live throw is heading for, if there is one.
@@ -574,6 +682,45 @@ extension MatchView {
                 mark.orientation = simd_quatf(angle: Float(bobPhase * 0.9), axis: [0, 1, 0])
             } else {
                 mark.isEnabled = false
+            }
+        }
+
+        // The order the player gave, fading. Pinned where the runner was standing when it
+        // was given, so the body running away from it is the execution and this is the
+        // instruction — see `MatchScene.cutGhost`.
+        if let ghost = scene.cutGhost {
+            if let called = match.calledCut {
+                ghost.isEnabled = true
+                let step = Self.cutGhostStep(called.timeLeft)
+                let repaint = step != scene.cutGhostPaint
+                let n = Self.cutGhostBeads
+                // The setup step is short and the break is long, so the beads are split by
+                // *count* rather than by length: a third of them walk the sell and the rest
+                // the run, which keeps the deliberately wrong-way first move visible
+                // instead of collapsing it into two dashes.
+                let split = n / 3
+                for (i, child) in ghost.children.enumerated() {
+                    if child.name == "target" {
+                        child.position = [Float(called.target.x), 0.03, Float(called.target.z)]
+                    } else if i < n {
+                        let onSell = i < split
+                        let a: Vec2d = onSell ? called.from : called.setup
+                        let b: Vec2d = onSell ? called.setup : called.target
+                        let steps: Int = onSell ? split - 1 : n - split - 1
+                        let along: Int = onSell ? i : i - split
+                        let t = Double(along) / Double(Swift.max(1, steps))
+                        let x: Double = a.x + (b.x - a.x) * t
+                        let z: Double = a.z + (b.z - a.z) * t
+                        child.position = [Float(x), 0.03, Float(z)]
+                    }
+                    if repaint {
+                        (child as? ModelEntity)?.model?.materials = [Self.cutGhostRamp[step]]
+                    }
+                }
+                scene.cutGhostPaint = step
+            } else {
+                ghost.isEnabled = false
+                scene.cutGhostPaint = -1
             }
         }
 

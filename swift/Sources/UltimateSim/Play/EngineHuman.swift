@@ -29,6 +29,11 @@ final class HumanInput {
     /// The commitment in force, if any. Read by the HUD; written only by `humanDefend`
     /// and by the tick that expires it.
     var commit: Engine.DefensiveCommit?
+    /// The last cut the human called, while it is still worth drawing. Written only by
+    /// `humanCallCut` and by the tick that fades it.
+    var calledCut: Engine.CalledCut?
+    /// Seconds until another cut may be called. See `Engine.calledCutInterval`.
+    var callCooldown: Double = 0
 }
 
 extension Engine {
@@ -165,6 +170,146 @@ extension Engine {
             // does this, rather than putting a second disc into the sky to find out.
             return false
         }
+    }
+
+    // MARK: - off the disc
+
+    /// A cut the human has called, kept for as long as it is worth drawing.
+    ///
+    /// **This is a receipt, not a control.** Nothing in the simulation reads it: by the
+    /// time it exists the order has already been given, `TeamAI` owns the route, and
+    /// `tickCutters` will run and retire it with no knowledge that a human asked. It is
+    /// here so the player can see *the order they gave* next to the execution of it —
+    /// `docs/gameplay-design.md` §4 — which is the difference between "my cutter is
+    /// useless" and "I sent him into the one lane that was covered".
+    public struct CalledCut: Equatable, Sendable {
+        /// Who was sent.
+        public let receiver: PlayerId
+        /// Which of the seven routes the tap resolved to.
+        public let kind: Playbook.CutKind
+        /// The lane it claimed. Two live cuts may never share one, so this is the piece of
+        /// field the order took off the rest of the offence.
+        public let lane: Playbook.LaneKey
+        /// Where the runner stood when the order was given. The ghost is drawn from here
+        /// and does *not* follow him, on purpose: the point of it is to stay still while
+        /// the body moves, so the two can be compared.
+        public let from: Vec2d
+        /// The setup step — deliberately the wrong way — and the space the cut attacks.
+        public let setup: Vec2d
+        public let target: Vec2d
+        /// Seconds of ghost left.
+        public var timeLeft: Double
+    }
+
+    /// How long the commanded route stays on screen, in seconds.
+    ///
+    /// The reference's `CUT_GHOST_TIME`. It is a *drawing* lifetime and nothing else: the
+    /// cut itself lives as long as `CutRoute.maxTime` says, 1.6 s for an up-line and 3.4 s
+    /// for the canonical under, and is retired by the AI's own `tickCutters`.
+    public static let calledCutGhostTime = 1.5
+
+    /// The shortest gap between two called cuts, in seconds.
+    ///
+    /// **A tap has no edge to fall off.** The reference drives this from a held stick and
+    /// says so in `commandCut`'s contract — "call it on the edge of the hold, not every
+    /// step, or the receiver will jog the setup step forever" — because every call rebuilds
+    /// the route and restarts it at `setup`. A finger on glass gives one edge per tap and a
+    /// player can produce ten a second, so on a phone the caller's idempotency obligation
+    /// has to be a rate limit or it is nothing.
+    ///
+    /// `PLAY.cutStagger` rather than a new number, because it is the same quantity: the
+    /// minimum gap the offence already imposes between the starts of two of its own cuts,
+    /// and the thing that makes a second cut read as a *second cut* rather than as two
+    /// people leaving at once. The human gets the tempo the AI gives itself. It is a limit
+    /// on the *rate of orders*, not on which orders may be given — every route stays
+    /// reachable at every moment.
+    public static let calledCutInterval = Playbook.PLAY.cutStagger
+
+    /// Send a teammate into the space the human just pointed at. The whole of the human's
+    /// offensive input away from the disc.
+    ///
+    /// **A tap names a SPACE, and the space names the cutter.** The alternative was to tap
+    /// a body and give it the cut that best fits where it stands, and that is the wrong way
+    /// round for this sport: a thrower does not pick a person and then wonder where they
+    /// will go, they see a piece of field they want attacked and the right cutter is
+    /// whoever can attack it. It is also the only version that survives a thumb — a finger
+    /// covers about four metres of pitch, so "the player you tapped" is a coin toss in a
+    /// stack and "the direction you tapped" is not.
+    ///
+    /// So the tap is resolved exactly as a drag is: `atX`/`atZ` is a point on the grass,
+    /// the direction from the thrower to it goes through the **same** `coneSelect` the
+    /// throw gesture runs, and the teammate that 35° cone picks — 60% angular fit, 25% lane
+    /// openness, 15% distance sanity — is the one sent. Point at the deep space and the
+    /// best-placed body in that direction goes deep. The player learns one targeting model,
+    /// not two, and the man the tap sends is the man a drag in the same direction would
+    /// have thrown to.
+    ///
+    /// **What it does not do is move anybody.** The order goes through `TeamAI.commandCut`,
+    /// the AI's one documented entry point, which builds a real route out of `buildCut` and
+    /// arms it in the same `Mem.cut` the AI's own cuts live in. From there `tickCutters`
+    /// runs it, `cutterIntent` steers it and the lane table protects it, none of them
+    /// knowing a human was involved. That is the same rule `humanRelease` and
+    /// `applyDefensiveCommit` obey: the human authors an intent the AI could have authored,
+    /// and never gets a private path into the simulation.
+    ///
+    /// **What it costs.** One RNG draw, the lane, and the tempo. `commandCut` evicts an AI
+    /// cut already holding the lane the order claims — sending that player to clear, which
+    /// re-solves him back into the stack on the next pass — so the human outranks the AI,
+    /// exactly once, for one lane. And the order ignores the initiation gates the AI holds
+    /// itself to (`maxLiveCuts`, `stackHold`, `cutStagger`), because those are the AI
+    /// deciding whether a cut is *worth* making and the human has already decided. The
+    /// `calledCutInterval` above is what keeps that from emptying the stack.
+    ///
+    /// Returns the order, or nil when there is nothing to order: the disc is not in our
+    /// hand, the point is dead, the cone is empty, or the last call was too recent. A
+    /// refused tap changes nothing at all — no draw is consumed on any refusal path.
+    @discardableResult
+    public func humanCallCut(atX: Double, atZ: Double) -> CalledCut? {
+        guard !isOver, game.phase == .livePossession else { return nil }
+        // Our disc, in the hand of the body the player is driving. On defence the same tap
+        // is `humanDefend`, and the two can never both apply: one wants us holding it and
+        // the other wants them holding it.
+        guard let c = carrier, c == controlled, let thrower = player(c) else { return nil }
+        guard human.callCooldown <= 0 else { return nil }
+
+        let dx = atX - thrower.pos.x
+        let dz = atZ - thrower.pos.z
+        let bodies = targetingBodies()
+        guard let me = bodies.first(where: { $0.id == c }),
+            let picked = coneSelect(dx: dx, dz: dz, thrower: me, bodies: bodies),
+            let side = ai.first(where: { $0.team == thrower.team })
+        else { return nil }
+
+        let d = disc.state.pos
+        guard let route = side.commandCut(picked, dx, dz, Vec2d(d.x, d.z)),
+            let runner = player(picked)
+        else { return nil }
+
+        let called = CalledCut(
+            receiver: picked, kind: route.kind, lane: route.lane,
+            from: Vec2d(runner.pos.x, runner.pos.z),
+            setup: route.setup, target: route.target,
+            timeLeft: Engine.calledCutGhostTime)
+        human.calledCut = called
+        human.callCooldown = Engine.calledCutInterval
+        return called
+    }
+
+    /// Burn down the ghost and the call cooldown by one tick.
+    ///
+    /// Called from `step`, next to `applyDefensiveCommit`, and it is the whole of the
+    /// per-tick cost of the offensive command — one subtraction and a compare. There is
+    /// deliberately no per-tick *re-issue* here, and that is the difference between the two
+    /// halves of the control scheme rather than an omission: a defensive commitment has to
+    /// be rewritten into the intent stream every tick because it overrides what the AI
+    /// wants that body to do, and a called cut does not because it *is* what the AI wants
+    /// that body to do — it lives in `Mem.cut`, the same slot an AI cut lives in, and the
+    /// AI carries it to completion and retires it on its own clock.
+    func expireCalledCut(_ dt: Double) {
+        human.callCooldown = Swift.max(0, human.callCooldown - dt)
+        guard var cut = human.calledCut else { return }
+        cut.timeLeft -= dt
+        human.calledCut = cut.timeLeft > 0 ? cut : nil
     }
 
     // MARK: - on defence

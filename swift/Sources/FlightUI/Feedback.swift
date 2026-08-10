@@ -356,6 +356,43 @@ struct DefenceCall: Equatable {
     }
 }
 
+/// The cut the player just called, while it is worth saying so.
+///
+/// The offensive twin of `DefenceCall`, and deliberately the same shape: a title that
+/// names the order in two words and a line that names the runner. The reason it is worth
+/// saying at all is that the ghost on the grass answers *where* and cannot answer *what* —
+/// an under and a break-under differ by which side of the mark they attack, which is a
+/// distinction of three metres on the pitch and the whole of the decision.
+@available(macOS 15.0, iOS 18.0, *)
+struct CutCall: Equatable {
+    /// The squad number of whoever was sent, when there is one to show.
+    let jersey: Int?
+    let kind: Playbook.CutKind
+    var timeLeft: Double
+
+    /// Shorter than the ghost it accompanies (1.5 s), because the words are read once and
+    /// the line on the grass is what you keep watching.
+    static let duration = 1.1
+
+    /// What the order was, in the words a team would actually shout.
+    var title: String {
+        switch kind {
+        case .deep: "GO DEEP"
+        case .under: "COME UNDER"
+        case .breakUnder: "BREAK SIDE"
+        case .strike: "STRIKE"
+        case .upLine: "UP THE LINE"
+        case .dump: "DUMP"
+        case .swing: "SWING IT"
+        }
+    }
+
+    var detail: String {
+        guard let jersey else { return "CUTTING" }
+        return "#\(jersey) IS GOING"
+    }
+}
+
 // MARK: - wind
 
 /// The wind, in the frame the camera is actually looking through.

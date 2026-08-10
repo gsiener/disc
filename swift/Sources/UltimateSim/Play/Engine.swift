@@ -177,6 +177,17 @@ public final class Engine {
     /// `humanDefend` and by the tick that expires it.
     public var defensiveCommit: DefensiveCommit? { human.commit }
 
+    /// The cut the human last called, while it is still worth drawing. Read by the HUD;
+    /// written only by `humanCallCut` and by the tick that fades it. Nothing in the
+    /// simulation reads it — see `CalledCut`.
+    public var calledCut: CalledCut? { human.calledCut }
+
+    /// Whether a cut may be called right now. The HUD greys its prompt on this rather than
+    /// inventing a second copy of the rule.
+    public var canCallCut: Bool {
+        human.callCooldown <= 0 && game.phase == .livePossession && carrier == controlled
+    }
+
     /// Calls made this match, by kind, plus how many of them were contested.
     /// Telemetry only — nothing in the simulation reads it.
     public var callTally: CallTally { calls.tally }
@@ -553,6 +564,10 @@ public final class Engine {
         //     `catchBodies`, which reads `actionOf` for the flag that decides whether a
         //     defender may play the disc at all.
         applyDefensiveCommit(&intents, dt: dt)
+        // 3c. The offensive command has nothing to apply here — a called cut is armed in
+        //     `Mem.cut` at the moment it is called and the AI has already run it into
+        //     `intents` above. All that is left is to age the ghost and the call cooldown.
+        expireCalledCut(dt)
 
         actionOf.removeAll(keepingCapacity: true)
         for intent in intents where intent.action != nil { actionOf[intent.id] = intent.action }

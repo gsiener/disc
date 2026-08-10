@@ -38,7 +38,7 @@ struct CoachOverlay: View {
 
     @State private var page = 0
 
-    private static let pages = 5
+    private static let pages = 6
 
     var body: some View {
         ZStack {
@@ -98,6 +98,7 @@ struct CoachOverlay: View {
         case 1: lesson(title: "TIME THE RELEASE", body: chargeLesson)
         case 2: lesson(title: "FINISH HIGH OR LOW", body: typeLesson)
         case 3: lesson(title: "AIM AT A TEAM-MATE", body: coneLesson)
+        case 4: lesson(title: "TAP TO SEND A CUTTER", body: cutLesson)
         default: lesson(title: "TAP ON DEFENCE", body: defenceLesson)
         }
     }
@@ -177,6 +178,14 @@ struct CoachOverlay: View {
             .frame(height: 96)
             .padding(.vertical, 2)
         note("Point at nobody and it is an open throw — the disc goes exactly where you aimed.")
+    }
+
+    @ViewBuilder private func cutLesson() -> some View {
+        line("Holding the disc and nobody is open? Tap the space you want attacked.")
+        line(
+            "The team-mate best placed for that space runs it — deep if you tapped downfield, under if you tapped across, a reset if you tapped behind you."
+        )
+        note("The order fades on the grass while they run it, so you can see what you asked for next to what you got. One order at a time; the rest of the offence keeps its shape.")
     }
 
     @ViewBuilder private func defenceLesson() -> some View {
