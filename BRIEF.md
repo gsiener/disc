@@ -1,15 +1,30 @@
 # ULTIMATE — engineering brief
 
-An Ultimate Frisbee game in Three.js, targeting the visual and systemic quality
-bar of a current-generation sports title. Read this before touching anything.
+An Ultimate Frisbee game targeting the visual and systemic quality bar of a
+current-generation sports title. Read this before touching anything.
 
-## There are three codebases and one of them is the oracle
+## Where the work is, as of 2026-08-10
 
-| tree | what it is |
-|---|---|
-| `src/` | the TypeScript simulation and the Three.js game. **The reference.** |
-| `swift/` | a Swift port of the sim (`UltimateSim`) plus its differential suite (`SimChecks`) |
-| `ios/` | the SwiftUI app that plays the port |
+The game began as a Three.js web client and **that is no longer where it is being
+built.** Current work is the simulation, its Swift port, and the iOS app that
+plays it.
+
+| tree | what it is | last 60 commits |
+|---|---|---|
+| `src/sim/` | the TypeScript simulation. **The reference — see ADR-0001.** | 40 |
+| `swift/` | the Swift port (`UltimateSim`) and its differential suite (`SimChecks`) | 60 |
+| `ios/` | the SwiftUI app that plays the port | 29 |
+| `tools/` | golden generation, the TS suites, the capture rigs | 60 |
+| `src/render`, `world`, `entities`, `camera`, `ui`, `audio` | the Three.js client | **0** |
+
+The Three.js client is not abandoned — `npm run build` is green, `tsc` is clean,
+and Three is still the only runtime dependency. But nothing in its rendering layer
+has changed in **68 commits**, and the last substantive change was 2026-08-06.
+Treat the visual sections below as the standard for *that* client, not as the
+current bar for gameplay work on the port.
+
+If you are picking up an issue, it is almost certainly in `swift/`, `src/sim/`,
+`ios/` or `tools/`.
 
 [ADR-0001](docs/adr/0001-the-typescript-reference-is-the-oracle.md) makes the
 TypeScript reference the oracle: Swift mirrors it, and disagreement is settled by
@@ -145,7 +160,12 @@ is bit-identical there and moves no sevens golden. See ADR-0004.
 ramp exceeds it, saturates everywhere, and the term stops discriminating. That is
 not hypothetical; it is issue #17.
 
-## The visual bar
+## The visual bar — Three.js client only
+
+Everything from here to the end of this file is about the Three.js client and its
+capture rigs. That layer is dormant (see "Where the work is"), so this section is
+the standard to meet **if you are working on it** — not a bar the Swift port or
+the iOS app is currently judged against.
 
 Every frame is judged by a critic that does not know what it is looking at and is
 asked to place it against shipped AAA sports titles. What that means concretely:
