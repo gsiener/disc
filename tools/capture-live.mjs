@@ -21,9 +21,11 @@
  */
 import puppeteer from 'puppeteer-core';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const CHROME = process.env.CHROME_PATH
   ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -57,6 +59,24 @@ const QUALITY = flag('q', 'high');
 const N = Number(flag('n', 8));
 const GAP = Number(flag('gap', 2.5));
 const WARM = Number(flag('warm', 3));
+
+/**
+ * A third of a second, before three minutes of Chrome.
+ *
+ * A syntax error in ANY file under `src/` — very often a peer agent's, mid-save,
+ * in a file this rig does not import — stops vite completing the module graph,
+ * so `window.__READY__` never flips and the wait below dies at 180 s with a
+ * `TimeoutError` pointing at this file rather than at the broken one. Logged
+ * three times (`20260805193950`, `20260805220550`, `20260805221042`). The gate
+ * asks the same question with vite's own parser and names the file and line.
+ */
+const GATE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'gate.mjs');
+const gate = spawnSync(process.execPath, [GATE, '--quiet'], { stdio: 'inherit' });
+if (gate.status !== 0) {
+  console.error('\ncapture aborted before launching Chrome. This is the 0.3 s version of');
+  console.error('the 180 s TimeoutError you would otherwise have paid for the same fault.');
+  process.exit(gate.status ?? 1);
+}
 
 async function serverUp() {
   try {

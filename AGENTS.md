@@ -97,6 +97,7 @@ capture directory under `shots/` (gitignored entirely — copy the specific PNG)
 Both of these matter and they catch different things:
 
 ```sh
+npm run gate            # 0.2 s — does every .ts under src/ still PARSE?
 npx tsc --noEmit        # must be clean
 node tools/test-game.ts        # 147 assertions — rules, targeting, control
 node tools/test-ai.ts          # 70  — off-ball structure
@@ -105,6 +106,14 @@ node tools/test-move.ts        # 37  — body separation
 node tools/test-anim.ts        # 83  — gait, foot contact
 node tools/test-camera.ts      # 71  — broadcast camera
 ```
+
+`npm run gate` is first because it is the only one that names the right line for
+the defect this repo actually keeps hitting: a backtick inside a `/* glsl */`
+comment closes the template literal, and `tsc` answers with a cascade of errors
+at lines that are not the fault. Six recurrences, all by agents who had read the
+warning — so it is a parser now rather than a paragraph. Both capture rigs run it
+before they launch Chrome, which is also what turns a peer's half-saved file from
+a 180 s puppeteer `TimeoutError` into a named file and line.
 
 Regenerating goldens rewrites files other agents own, so **name the modules you
 own**: `node --experimental-strip-types tools/gen-goldens.ts rules gamestate`

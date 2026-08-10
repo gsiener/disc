@@ -30,6 +30,13 @@ jobs:
 
       - run: npm ci
 
+      # Before the typecheck, because for the one defect it catches it is both
+      # faster and more accurate. A backtick in a GLSL comment made `tsc` emit
+      # 183 errors across a 945-line file, of which one was the fault; the gate
+      # emits one, on the right line, with a caret under the character.
+      - name: Syntax gate
+        run: npm run gate
+
       - name: Typecheck
         run: npx tsc --noEmit
 
