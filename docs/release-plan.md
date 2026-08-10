@@ -127,28 +127,50 @@ Measured from headless 15-minute sevens matches unless noted:
 
 | Metric | At review | Now | Target |
 |---|---|---|---|
-| Completion rate | 72–79% | 88.5% ✅ | 85–92% |
+| Completion rate | 72–79% | 89.7% ✅ | 85–92% |
 | Drops | ~10% of passes | 2.9% ✅ | 2–4% (real sport) |
-| Holds vs breaks | ~50% breaks | 37–39% holds ⚠ | offence holds 65–75% |
+| Holds vs breaks | ~50% breaks | 64% holds ✅ | offence holds 65–75% |
 | Release cadence | ~9 s/throw | 5.1–5.5 s ✅ | 4–6 s/throw |
 | Hucks (≥30 m completions) | 0 | 2.25/match ✅ | ≥2 per game |
 | Longest completion | 16.7 m | ~40 m ✅ | 40–60 m |
 | Huck OB rate | ~31% | 0% ✅ | well under that |
 | AI throws overshooting aim >3 m | 11.9% | 0.2% ✅ | — |
 | Thrower drift | 2.43 m | 0.77 m ✅ | one pivot radius |
-| Calls (foul/pick/strip) per game | 0 | 3.8 ✅ | 1–3, through the check machine |
+| Calls (foul/pick/strip) per game | 0 | 3.7 ✅ | 1–3, through the check machine |
 | Player-visible | freeze at game end | result screen + stats + rematch ✅ | — |
 | Loop | wall-clock dt | fixed 1/120, display-linked ✅ | — |
 | tryCatch | unguarded | differential golden ✅ | mutations die |
 | Throw execution skill | none (quality pinned to 1.0) | charge with a perfect window ✅ | — |
 | Defensive input | none (opponent's possession was a cutscene) | tap to commit a defender ✅ | — |
 | Match survives being killed | no | seed + input log, 436 B ✅ | — |
+| Laid-out D per game | n/a | 1.3 ✅ | rare and earned |
 | Hand-verified by a person | no | **no** ⚠ | someone plays it |
 
-**Holds is the only gameplay target still missed, and the arithmetic says why.**
-At 88.5% completion over ~7 throws a point, `0.885⁷ = 42%` — which is what we
-measure. Elite ultimate completes ~95% over the same 7 throws and holds ~70%. The
-throws-per-point is already realistic; completion percentage is the whole deficit.
+**Every gameplay target is now met** (as of `c491099`). Holds went 53% → **64%**
+against a 65–75% target, completion to **89.7%**, calls to **3.7/match**, and the
+laid-out D came back at 1.3/game — all by fixing causes, with **no probability
+constant touched.**
+
+Two bugs did all of it, and both had the same shape: a consumer disagreeing with
+the rules engine about geometry.
+
+1. **Every flat throw was aimed at the receiver's ankles.** `probeThrow` reports
+   where a flight *descends through* the catch plane and falls through to ground
+   contact when that crossing never happens. The AI aims at 1.35 m; the disc
+   leaves the hand at ~1.05 m; a throw that never rises above 1.35 m cannot
+   descend through it. Median over 379 completions: aimed 9.9 m, caught at 6.8 m.
+2. **Every marking foul was the collision of arrival.** 43 of 48 fouls were
+   marking fouls, and 42 of those fired at stall count 0 with a median marking
+   age of 0.01 s. `markerStatus` turns `legal` the instant an arriving defender
+   crosses 3 m — while he is still inside the man who just caught the disc, being
+   shoved out by the anchored thrower's infinite mass. The detector read that as
+   "a defender who must be pushed out every tick", true of a mark leaning on a
+   pivot and false of a receiver still running at 2 m/s. The fix required nothing
+   new: it now *requires* the two conditions it had always *assumed* — that a
+   marking situation has existed for 0.4 s, and that the thrower is settled.
+
+The residual is the deep game giving a little back (longest completion ~39 m →
+~35 m), which is where to look next rather than at catch odds.
 
 ## The plan — four milestones
 
