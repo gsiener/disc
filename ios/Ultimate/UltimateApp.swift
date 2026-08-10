@@ -60,6 +60,38 @@ struct UltimateApp: App {
         return Int(args[i + 1])
     }()
 
+    /// `-receive us` opens the match with the disc coming to *our* team.
+    ///
+    /// **This is a coin toss, and it is the whole of what it is.** `Engine.init` gives the
+    /// opening pull to team 0 — the human's — because pulling is a throw and a game should
+    /// open with something to do. The side effect nobody was choosing is that the human's
+    /// team therefore *receives* nothing: our first live possession is one whole opponent
+    /// possession plus a pull deadline away, measured at 25–64 s. For a player that is the
+    /// game; for a touch test whose subject is one gesture it is the entire duration of the
+    /// test, which is how `MatchDriver.patience` came to be 90 s and how the touch job came
+    /// to pass on margin. See `.agents/friction-log/20260810-waittothrow-waits-for`.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -receive us
+    ///
+    /// `us` gives the opening pull to team 1, so the disc arrives in our hand a few seconds
+    /// after launch; `them` names today's behaviour explicitly, for the tests whose subject
+    /// is the *defensive* tap and which therefore need the opponent holding it.
+    ///
+    /// **Setup-only, and it has to stay that way.** It is one value of
+    /// `EngineConfig.startingPullTeam` read once at construction — the same category as
+    /// `-format` and `-points`. Nothing about how a possession is played changes, and
+    /// `GameState.awardPoint` still gives every subsequent pull to the scorer, which is the
+    /// rule. Nil when the argument is absent, and never written back to the player's setup.
+    static let startingPullTeam: Int? = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-receive"), i + 1 < args.count else { return nil }
+        switch args[i + 1] {
+        case "us": return 1
+        case "them": return 0
+        default: return nil
+        }
+    }()
+
     /// `-setup off` opens straight into a live match instead of the pre-game sheet.
     ///
     /// The sheet is the right first screen for a person and a wall for automation, which
@@ -205,7 +237,8 @@ struct UltimateApp: App {
                     format: Self.startFormat, points: Self.startPoints, active: tab == 0,
                     skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
                     autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
-                    demoCut: Self.demoCut, showsProbe: Self.showsProbe)
+                    demoCut: Self.demoCut, showsProbe: Self.showsProbe,
+                    startingPullTeam: Self.startingPullTeam)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -221,7 +254,8 @@ struct UltimateApp: App {
                 format: Self.startFormat, points: Self.startPoints,
                 skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
                 autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
-                demoCut: Self.demoCut, showsProbe: Self.showsProbe)
+                demoCut: Self.demoCut, showsProbe: Self.showsProbe,
+                startingPullTeam: Self.startingPullTeam)
         }
     }
 }

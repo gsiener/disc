@@ -54,18 +54,30 @@ final class ChargeTests: XCTestCase {
     /// with the probe reading `mine=1` and the release refused a frame later. A player shrugs
     /// and throws again, so this does too, and the retry is bounded so a genuinely broken
     /// release still fails.
+    ///
+    /// The retry itself lives in `MatchDriver.withTheDisc` now, shared with the two drag tests
+    /// in `TouchTests` that used not to have one. What is left here is the oracle.
     private func throwOnce(_ match: MatchDriver, hold: TimeInterval) -> (hold: Double, grade: String) {
-        var after: MatchDriver.Probe?
-        for attempt in 0..<5 where after == nil {
-            let before = match.waitToThrow()
-            match.drag(hold: hold)
-            let settled = match.wait(
-                "the release to be resolved (attempt \(attempt + 1))", timeout: 10,
-                until: { $0.thrown > before.thrown || $0.dragEnd == "refused" })
-            if settled.thrown > before.thrown { after = settled }
-        }
+        // **`MatchDriver.withTheDisc`, not a hand-rolled loop, and it is the same contract this
+        // function invented.** Two things came out of hoisting it. The literal `timeout: 10` that
+        // used to be here was invisible to CI's override and is what lost
+        // `testHoldingTooLongIsOvercharged` on run 31384063453. And an attempt that cannot get
+        // the disc now relaunches instead of waiting a point cycle for it — five attempts each
+        // willing to wait one was a 225 s failure path.
+        //
+        // The oracle is the tape growing, asked as a *difference across the gesture* rather than
+        // against a baseline captured up front. That matters here specifically:
+        // `testAimingAtTheWindowGetsACleanRelease` calls this twice, so by the second call the
+        // count is already 1 — and a relaunch inside that call resets it to 0, which a captured
+        // baseline of 1 could never be beaten from again.
+        let after = match.withTheDisc(
+            "a drag held for \(hold)s",
+            act: { _ in match.drag(hold: hold) },
+            resolve: { before, now in now.thrown > before.thrown ? now : nil })
         guard let after else {
-            XCTFail("five drags were all refused by the engine — probe: \(match.probe().raw)")
+            XCTFail(
+                "no drag from our own thrower was accepted as a throw — probe: "
+                    + match.probe().raw)
             return (0, "")
         }
         guard let measured = after.hold else {

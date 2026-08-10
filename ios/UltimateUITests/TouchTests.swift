@@ -36,14 +36,26 @@ final class TouchTests: XCTestCase {
     /// the engine *accepted* is appended (see `throwGesture`), so a count that went up means
     /// `humanRelease` returned true and the throw is one a replay would reproduce. A visual
     /// oracle would also have passed for a disc that fell out of a hand.
+    ///
+    /// **`-receive us` is why this test is seconds rather than a minute**, and the driver
+    /// defaults to it. What is waited for is a pull settling, flying and being caught, not a
+    /// whole point cycle. Nothing about the gesture or the oracle changed with it.
     func testDragReleasesAThrow() {
         let match = MatchDriver(self)
-        let before = match.waitToThrow()
-        XCTAssertEqual(before.thrown, 0, "nothing should have been thrown before the first drag")
+        XCTAssertEqual(
+            match.probe().thrown, 0, "nothing should have been thrown before the first drag")
 
-        match.drag(hold: 0.4)
-
-        let after = match.wait("the throw to be recorded", timeout: 10) { $0.thrown > before.thrown }
+        // Retried, because the disc can change hands between the wait and the gesture, and an
+        // unlucky match is relaunched rather than waited out — see `MatchDriver.withTheDisc`. A
+        // refused release spends an attempt and is not a pass.
+        let after = match.withTheDisc(
+            "a drag to throw",
+            act: { _ in match.drag(hold: 0.4) },
+            resolve: { before, now in now.thrown > before.thrown ? now : nil })
+        guard let after else {
+            return XCTFail(
+                "four drags from our own thrower recorded no throw — probe: \(match.probe().raw)")
+        }
         XCTAssertEqual(after.dragEnd, "throw", "the drag should have ended as a throw")
         // The drag went up and to the right, which `ThrowGesture.interpret` reads as flat and
         // right-handed. If the screen convention ever flips, this is where it shows.
@@ -72,7 +84,7 @@ final class TouchTests: XCTestCase {
     /// possession and the cooldown, which is a different thing from the aim being refused.
     func testTapOnOffenceCommandsACutter() {
         let match = MatchDriver(self)
-        let before = match.wait("a cut to be legal", timeout: 150, until: { $0.canCut })
+        let before = match.waitToAct("a cut to be legal", until: { $0.canCut })
         XCTAssertEqual(before.cuts, 0)
 
         // Upfield of centre and spread across the width — the spaces a thrower actually
@@ -90,9 +102,7 @@ final class TouchTests: XCTestCase {
             let t = targets[attempt % targets.count]
             // Legal again: the previous refusal may have been the `cutStagger` cooldown rather
             // than an empty cone.
-            match.wait(
-                "a cut to be legal (attempt \(attempt + 1))", timeout: 90,
-                until: { $0.canCut })
+            match.waitToAct("a cut to be legal (attempt \(attempt + 1))", until: { $0.canCut })
             tried += 1
             if let plates = match.tapAndWatch(
                 match.pitchPoint(t.0, t.1), counter: { $0.cuts }, plates: ["hud.cut"], within: 0.6)
@@ -132,16 +142,19 @@ final class TouchTests: XCTestCase {
     /// and never `hud.defence` — which is the HUD working as designed, and is the layout cost
     /// `docs/gameplay-design.md` §4 requires to be legible.
     func testTapOnDefenceCommitsADefender() {
-        let match = MatchDriver(self)
-        let before = match.wait("the other team to have the disc", until: { $0.canDefend })
+        // **The one test that wants the opponent holding it**, so it is the one that asks for
+        // `-receive them` — which is what the app does with no argument at all. Naming it here
+        // rather than relying on the default is the point: this test's precondition is the
+        // opposite of every other one's, and a silent default is how that gets lost.
+        let match = MatchDriver(self, receives: .them)
+        let before = match.waitToAct("the other team to have the disc", until: { $0.canDefend })
         XCTAssertEqual(before.defends, 0)
 
         var plates: [String: String]?
         var tried = 0
         for attempt in 0..<12 where plates == nil {
-            match.wait(
-                "a defensive tap to be legal (attempt \(attempt + 1))", timeout: 90,
-                until: { $0.canDefend })
+            match.waitToAct(
+                "a defensive tap to be legal (attempt \(attempt + 1))", until: { $0.canDefend })
             tried += 1
             plates = match.tapAndWatch(
                 match.pitchPoint(0.5, 0.5), counter: { $0.defends },
@@ -191,25 +204,37 @@ final class TouchTests: XCTestCase {
     /// boolean one frame apart, so what stays unverified is a single read inside the view.
     func testDragBackToTheOriginCancelsTheThrow() {
         let match = MatchDriver(self)
-        let before = match.waitToThrow()
 
-        // 19 pt across: past the 8 pt floor that starts the gesture, inside the 26 pt radius
-        // that calls it off. In points via a coordinate offset rather than a normalised one,
-        // because both thresholds are absolute point distances and must not scale with the
-        // screen.
-        let start = match.throwerPoint
-        start.press(
-            forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 18, dy: -6)),
-            withVelocity: XCUIGestureVelocity(rawValue: 400),
-            thenHoldForDuration: 0.4)
-
-        let after = match.wait("the drag to be resolved", timeout: 5) { $0.dragEnd != "-" }
+        // **A `refused` drag is a spent attempt, not a result, and this is where CI proved
+        // it.** Run 31384063453 timed out here on a hardcoded 5 s with `poss=1;mine=0`: the
+        // possession changed hands between the wait and the gesture, so the engine refused the
+        // release and no `dragend` of either kind arrived. Resolving only on a *decided* drag —
+        // `cancel` or `throw` — makes that a retry instead of a failure, and keeps the
+        // assertion exactly as strict: the decision has to be `cancel`.
+        let after = match.withTheDisc(
+            "a drag that comes home",
+            act: { _ in
+                // 19 pt across: past the 8 pt floor that starts the gesture, inside the 26 pt
+                // radius that calls it off. In points via a coordinate offset rather than a
+                // normalised one, because both thresholds are absolute point distances and
+                // must not scale with the screen.
+                let start = match.throwerPoint
+                start.press(
+                    forDuration: 0.01, thenDragTo: start.withOffset(CGVector(dx: 18, dy: -6)),
+                    withVelocity: XCUIGestureVelocity(rawValue: 400),
+                    thenHoldForDuration: 0.4)
+            },
+            resolve: { _, now in ["cancel", "throw"].contains(now.dragEnd) ? now : nil })
+        guard let after else {
+            return XCTFail(
+                "four drags inside the cancel radius were never resolved either way — probe: "
+                    + match.probe().raw)
+        }
         XCTAssertEqual(
             after.dragEnd, "cancel",
             "a drag released inside the cancel radius should have been called off — probe: "
                 + after.raw)
-        XCTAssertEqual(
-            after.thrown, before.thrown, "a cancelled drag must not throw anything")
+        XCTAssertEqual(after.thrown, 0, "a cancelled drag must not throw anything")
         XCTAssertEqual(after.drag, "none", "the aim overlay should be gone")
     }
 }

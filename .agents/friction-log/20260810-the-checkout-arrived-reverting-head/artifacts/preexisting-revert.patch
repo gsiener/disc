@@ -1,0 +1,1084 @@
+diff --git a/.agents/friction-log/20260810-humancallcut-refuses-without-a-reason/friction.md b/.agents/friction-log/20260810-humancallcut-refuses-without-a-reason/friction.md
+deleted file mode 100644
+index 5639338..0000000
+--- a/.agents/friction-log/20260810-humancallcut-refuses-without-a-reason/friction.md
++++ /dev/null
+@@ -1,41 +0,0 @@
+----
+-title: 'humanCallCut returns nil for five different reasons and the view has to guess which, because the only public phase is the coarse one'
+-severity: 'minor'
+----
+-
+-Found while making refused taps legible (#67), which needs exactly the fact the
+-engine does not report.
+-
+-`Engine.humanCallCut(atX:atZ:)` returns `CalledCut?`. It refuses for five distinct
+-reasons — the game is over, the phase is not `livePossession`, the controlled
+-player is not the carrier, the call cooldown has not expired, the cone named
+-nobody — and `nil` for all of them. `humanDefend()` is the same shape with three.
+-A caller that wants to tell the player *what to fix* has to reconstruct the reason
+-from public state, which is what `MatchView.situationalRefusal` now does:
+-
+-```swift
+-if match.phase != .live { return .notLive }
+-if match.holder != match.controlled { return .notYours }
+-return .tooSoon                      // by elimination, since canCallCut is false
+-```
+-
+-That works because `Engine.canCallCut` exists and is the engine's own answer to
+-the three situational refusals — but only *approximately*, because
+-**`Engine.phase` is the coarse `GamePhase` (`setup`/`pull`/`live`/`dead`) and
+-`canCallCut` tests `GameState`'s fine phase.** `check` and `turnoverDead` both
+-fold into `.live`, so a tap during the stoppage after a call, with the disc back in
+-our hand, is reported to the player as TOO SOON when the true reason is that the
+-point is not running. Same instruction, less exact reason, and there is no way to
+-do better from outside the package.
+-
+-Two shapes would fix it, both inside files owned elsewhere at the time
+-(`Play/EngineHuman.swift`, `Play/Engine.swift`):
+-
+-- return a result rather than an optional — `enum CutRefusal { case notLive,
+-  notCarrier, cooldown, coneEmpty }`, which also gives the checks something to
+-  assert; or
+-- expose the fine phase, or a `stoppage: Bool`, so the coarse fold is not the only
+-  read available.
+-
+-Until then the words on screen are right four times out of five refusals and the
+-fifth is a milder lie than silence was.
+diff --git a/.agents/friction-log/20260810-the-pitch-is-not-the-window/friction.md b/.agents/friction-log/20260810-the-pitch-is-not-the-window/friction.md
+deleted file mode 100644
+index 2fb5eab..0000000
+--- a/.agents/friction-log/20260810-the-pitch-is-not-the-window/friction.md
++++ /dev/null
+@@ -1,62 +0,0 @@
+----
+-title: 'The pitch is 750x338 at (62,0) of an 874x402 window, so every UI-test tap expressed as a window fraction was aiming somewhere else'
+-severity: 'major'
+----
+-
+-Found while making refused taps legible (#67), by adding the render surface's own
+-frame to the UI-test probe and printing it.
+-
+-`ios/UltimateUITests` aims its taps with
+-`app.coordinate(withNormalizedOffset:)`, which is a fraction of **the window**.
+-The game is not the window. Measured on an iPhone 17 Pro simulator in landscape,
+-`MatchView`'s `GeometryReader` reports:
+-
+-```
+-PLAYABLE RECT: pitch (62.0, 0.0, 750.0, 338.0) of window (0.0, 0.0, 874.0, 402.0)
+-               insets l62 t0 r62 b64
+-```
+-
+-So in a **debug** build the pitch is inset 62 pt on each side — the display cutout
+-— and 64 pt at the bottom, which is the instruments `TabView`.
+-`pitchPoint(0.5, 0.5)` and `point(0.5, 0.5)` are 30 pt apart vertically and the
+-error grows toward the edges: a tap meant for the near sideline at x = 0.08 lands
+-9% of the pitch off, which at this camera is several degrees of heading — and the
+-heading *is* the input, since `Engine.humanCallCut` reads only the direction from
+-the thrower.
+-
+-Worse, the error is **different in the configuration that ships**, and not in the
+-way anyone assumed. A release build has `showsInstruments == false` and no
+-`TabView`, and it is *not* the whole window either — measured:
+-
+-```
+-debug:   pitch (62.0, 0.0, 750.0, 338.0)   insets l62 t0 r62 b64
+-release: pitch (62.0, 0.0, 750.0, 382.0)   insets l62 t0 r62 b20
+-```
+-
+-The tab bar costs 44 pt of pitch height; the remaining 20 pt is the home
+-indicator, and the 62 pt a side is the device in both. So a tap fraction tuned by
+-hand in Debug is a different piece of grass in Release, and the touch tests were
+-verifying a rectangle no player gets. The first version of the assertion in
+-`testThePitchIsTheRectangleTheTapsAssume` said Release *was* the window, and the
+-first Release run of it is what corrected that.
+-
+-The fix is cheap and it is in place: the probe reports
+-`rect=x,y,w,h` from `geo.frame(in: .global)`, `MatchDriver.pitchPoint` maps
+-fractions through it, and `RefusalTests.testThePitchIsTheRectangleTheTapsAssume`
+-prints both rectangles and asserts the one edge the configuration decides — a
+-strip bigger than a home indicator under the pitch in Debug, and nothing but the
+-home indicator in Release. Run the suite both ways:
+-
+-```sh
+-xcodebuild test -project Ultimate.xcodeproj -scheme UltimateUITests -destination '...'
+-xcodebuild test -project Ultimate.xcodeproj -scheme UltimateUITests -destination '...' -configuration Release
+-```
+-
+-**Two related traps, both paid for once here.** The scoreboard is the one piece of
+-HUD that takes touches (a `.background` shape is hit-testable), it is pinned 12 pt
+-down and full width bar a 16 pt margin, and the sky — everything above the horizon,
+-which `MatchScene.groundPoint` refuses — is only about 50 pt tall. So the only
+-piece of sky a finger can reach is the far left of that strip: a tap on the sky at
+-x = 0.5 never reaches the game. And `-cut x,y` takes fractions of the *pitch*
+-already, because it multiplies by `viewSize`, so its coordinates and a UI test's
+-window fractions were never the same coordinates.
+diff --git a/ios/UltimateUITests/RefusalTests.swift b/ios/UltimateUITests/RefusalTests.swift
+deleted file mode 100644
+index b4d9257..0000000
+--- a/ios/UltimateUITests/RefusalTests.swift
++++ /dev/null
+@@ -1,291 +0,0 @@
+-import XCTest
+-
+-/// The taps the game will not take, and the rate at which it takes the rest.
+-///
+-/// **Why this suite exists.** The first play session with a real finger measured two things
+-/// about the tap, and they were the same finding twice: roughly one tap in three found
+-/// somebody on a minis pitch, and the other two were refused *silently* — nothing on screen
+-/// distinguished "nobody was there" from "my tap did not register". A control that fails
+-/// invisibly two times in three cannot be learned, because every failure teaches the player
+-/// something different and none of them is true.
+-///
+-/// So there are two kinds of test here and they guard the two halves of the fix:
+-///
+-///   - **The refusal is visible.** Each of these drives a tap whose refusal is *provable* from
+-///     the state the app is in — not "usually refused" — and asserts the words are on the
+-///     screen. `hud.refused` carries both lines of the plate as one label, so the assertion is
+-///     on the sentence a player reads. The two provable ones are the phase (nothing is legal
+-///     before a pull) and the geometry (a ray above the horizon never meets the grass); the
+-///     cooldown is not testable at this timing resolution and there is a note below saying why.
+-///   - **The hit rate is measured.** `testTheOffensiveTapUsuallyMeansSomething` taps the grass
+-///     as many times as a two-minute possession allows and reports both rates off the probe's
+-///     tap ledger: what the 35° cone alone would have accepted, and what the widened tap path
+-///     actually accepted. Both numbers come out of the same taps, so nothing has to be
+-///     re-measured against an older build to compare.
+-///
+-/// **The plate outlives an accessibility read on purpose.** `RefusedTap.duration` is 1.4 s
+-/// against the order plates' 1.1 s, because one `XCUIElement.label` read against this view
+-/// tree costs 0.4–0.9 s on this simulator (see `.agents/friction-log`) — a legibility fix that
+-/// could not be read by the test guarding it would be a legibility fix on trust.
+-final class RefusalTests: XCTestCase {
+-
+-    override func setUp() {
+-        super.setUp()
+-        continueAfterFailure = false
+-    }
+-
+-    /// **Tap before the pull → NOT IN PLAY.**
+-    ///
+-    /// The most provable refusal in the game and the one a new player hits first: the app opens
+-    /// with `-setup off` straight into `prePull`, where a disc is in a hand and the point has
+-    /// not started. Neither half of the tap is available — `humanCallCut` demands
+-    /// `livePossession` and `humanDefend` demands a live point — so this tap is refused
+-    /// whichever way `MatchView.tap` routes it, which is why the assertion is on the reason and
+-    /// not on which branch produced it.
+-    ///
+-    /// **The phase is waited for rather than raced.** `-setup off` opens in `prePull` and the
+-    /// engine pulls for itself five seconds later, which is less than a launch plus a coach-card
+-    /// dismissal plus a first accessibility read has to spare. So this waits for the probe to
+-    /// report a phase that is not `live` — true the instant the app opens, and true again at
+-    /// every stoppage after a goal, so the test cannot lose its window.
+-    func testATapBeforeThePullSaysTheGameIsNotLive() {
+-        let match = MatchDriver(self)
+-        match.wait("a stoppage", timeout: 180, until: { !$0.isLive })
+-        // Nothing has been refused yet, so anything below is this tap's.
+-        XCTAssertEqual(match.probe().refused, 0)
+-
+-        guard let said = match.tapForRefusal(match.pitchPoint(0.5, 0.45)) else {
+-            return XCTFail(
+-                "a tap before the pull said nothing at all — probe: \(match.probe().raw)")
+-        }
+-        XCTAssertTrue(
+-            said.contains("NOT IN PLAY"),
+-            "the refusal should say the point has not started, said: \(said)")
+-        XCTAssertTrue(
+-            said.contains("WAIT FOR THE PULL"),
+-            "the refusal should say what to do about it, said: \(said)")
+-
+-        // And the probe agrees with the screen, which is what makes the reason assertable by
+-        // name in the tests below rather than by matching on words.
+-        let after = match.probe()
+-        XCTAssertGreaterThan(after.refused, 0, "the refusal should be counted")
+-        XCTAssertEqual(after.refusal, "notLive", "probe: \(after.raw)")
+-    }
+-
+-    /// **Tap the sky → OFF THE PITCH.**
+-    ///
+-    /// The one refusal this view owns rather than the engine: `MatchScene.groundPoint` returns
+-    /// nil for a ray that never descends, which is a real thing a finger does because the pitch
+-    /// does not fill the frame. Provable for the same reason as the pull tap — the geometry does
+-    /// not depend on the state of the match — and it is the case that used to be least
+-    /// distinguishable from a broken control, since a tap on the sky is exactly what a player
+-    /// does when they mean "deep".
+-    ///
+-    /// **The point is measured, not guessed, and it is in the corner for a reason.** Photographed
+-    /// on an iPhone 17 Pro in landscape, y = 0.05 of the pitch is above the horizon and y = 0.17
+-    /// is already grass — so the sky is a strip about 50 pt tall, and the scoreboard (pinned 12 pt
+-    /// down, ~40 pt tall, full width bar the 16 pt margins) covers most of it and is the one piece
+-    /// of HUD that takes touches. The far left of that strip is outside the scoreboard's margin,
+-    /// which makes it the one piece of sky a finger can actually reach.
+-    ///
+-    /// **It waits for our own offence, because the sky only means "off the pitch" there.** The
+-    /// defensive half of the tap ignores where the finger landed on purpose — where to go is the
+-    /// disc's business — so a tap on the sky while they have it is a legitimate commitment and
+-    /// not a refusal. `cut.ok` is the state that guarantees `MatchView.tap` routes to the half
+-    /// that reads the location.
+-    func testATapOnTheSkyIsRefusedWithTheGrassAsTheFix() {
+-        let match = MatchDriver(self)
+-        match.wait("our own offence", timeout: 150, until: { $0.canCut })
+-
+-        guard let said = match.tapForRefusal(match.pitchPoint(0.012, 0.05)) else {
+-            return XCTFail("a tap above the horizon said nothing — probe: \(match.probe().raw)")
+-        }
+-        XCTAssertTrue(
+-            said.contains("OFF THE PITCH") && said.contains("TAP THE GRASS"),
+-            "the refusal should send the player back to the grass, said: \(said)")
+-        XCTAssertEqual(match.probe().refusal, "offPitch", "probe: \(match.probe().raw)")
+-    }
+-
+-    // **There is deliberately no test for the cooldown refusal, and the reason is worth
+-    // keeping.** `TOO SOON` is the refusal a player provokes most deliberately — tap again
+-    // because the first tap did not obviously work — and `Engine.calledCutInterval` is 1.1 s,
+-    // which is not long enough to drive from a UI test. Two taps have to straddle it with no
+-    // probe read in between (one read costs up to 0.9 s of the window), and an
+-    // `XCUICoordinate.tap()` is not a bounded-duration operation: measured on a loaded machine
+-    // the second tap of a back-to-back pair landed *after* the cooldown had expired and was
+-    // refused for a different reason entirely (`nobodyThere`, probe confirmed). A test that
+-    // asserts which of two refusals happened, on a machine that decides how far apart the taps
+-    // are, is a coin flip wearing a green tick — see the friction log on per-seed bands for what
+-    // this project already pays for tests like that.
+-    //
+-    // What covers it instead: the reason is on the probe as `refuse`/`tally` in every run, and
+-    // `testTheOffensiveTapUsuallyMeansSomething` asserts that whatever refusals a run of real
+-    // taps produced, the screen said so.
+-
+-    /// **Tap the grass on offence, as many times as the match allows → most of them are
+-    /// orders, and the ones that are not say why.**
+-    ///
+-    /// This is the measurement the change was made against, and it is taken with a finger
+-    /// because the number it is compared to was. The reporter's figure was "about one tap in
+-    /// three finds somebody on minis"; the probe's tap ledger reproduces that and the improved
+-    /// rate from the same taps:
+-    ///
+-    ///   - `taps` — every tap the offence took;
+-    ///   - `refused` — every one that produced nothing;
+-    ///   - `wide` — every accepted call that only landed because `MatchView.callCut` widened an
+-    ///     empty 35° cone to the half of the pitch the finger pointed at.
+-    ///
+-    /// So `(taps - refused - wide) / taps` is what the cone alone accepts — the *before* — and
+-    /// `(taps - refused) / taps` is what a player now gets. Both are printed, because a
+-    /// measurement nobody reads is a measurement nobody has.
+-    ///
+-    /// **The assertion is deliberately loose and the print is the point.** The rate depends on
+-    /// where two team-mates happen to be standing, which is a simulation whose seed this test
+-    /// does not pin; asserting a tight number would make an unrelated AI change fail here (see
+-    /// the friction log on per-seed bands). What is asserted is the property the fix claims:
+-    /// the great majority of taps on the grass mean something, and every tap that does not is
+-    /// visible — checked by reading the plate on the first refusal of the run.
+-    func testTheOffensiveTapUsuallyMeansSomething() {
+-        let match = MatchDriver(self)
+-        match.wait("a cut to be legal", timeout: 150, until: { $0.canCut })
+-
+-        // **A grid over the whole pitch rather than the spaces a thrower attacks**, because the
+-        // subject is a tap that names nobody and a sample that only points upfield hides it.
+-        // Measured on an iPhone 17 Pro, both sets of taps in the same build:
+-        //
+-        //   - ten upfield attacking spaces: the 35° cone alone accepted 27/37 = 73%;
+-        //   - this twenty-point grid:       the 35° cone alone accepted 15/33 = 45%.
+-        //
+-        // The widened tap accepted 97% and 94% of the same taps. So how bad the cone looks
+-        // depends entirely on how much of the pitch the sample covers, which is the argument for
+-        // the grid: a player pointing at the near sideline is making a real tap.
+-        //
+-        // Fractions of the pitch, so this measures the same grass in a release build as in a
+-        // debug one.
+-        let targets = [
+-            (0.08, 0.26), (0.30, 0.26), (0.52, 0.26), (0.74, 0.26), (0.92, 0.26),
+-            (0.08, 0.44), (0.30, 0.44), (0.52, 0.44), (0.74, 0.44), (0.92, 0.44),
+-            (0.08, 0.62), (0.30, 0.62), (0.52, 0.62), (0.74, 0.62), (0.92, 0.62),
+-            (0.08, 0.78), (0.30, 0.78), (0.52, 0.78), (0.74, 0.78), (0.92, 0.78),
+-        ]
+-        // Every tap needs a legal moment, and a legal moment needs our possession and 1.1 s
+-        // since the last call, so the budget is wall time rather than a tap count.
+-        let deadline = Date().addingTimeInterval(150)
+-        var attempt = 0
+-        var refusalsSeen = 0
+-        var platesSeen = 0
+-        while Date() < deadline, attempt < 40 {
+-            let legal = match.probe()
+-            guard legal.canCut else { continue }
+-            let t = targets[attempt % targets.count]
+-            attempt += 1
+-            let before = match.probe()
+-            match.pitchPoint(t.0, t.1).tap()
+-            let after = match.probe()
+-            // **Every refusal of the run is looked for on screen and only the whole run is
+-            // asserted.** One `exists` read can lose the race with a 1.8 s plate, so a per-tap
+-            // assertion would be a flake; a run in which taps were refused and the screen never
+-            // once said so is the failure worth having.
+-            if after.refused > before.refused {
+-                refusalsSeen += 1
+-                if match.element("hud.refused").exists { platesSeen += 1 }
+-            }
+-        }
+-
+-        let ledger = match.probe()
+-        XCTAssertGreaterThanOrEqual(
+-            ledger.taps, 8,
+-            "not enough taps to measure a rate — probe: \(ledger.raw)")
+-
+-        let accepted = ledger.taps - ledger.refused
+-        let coneOnly = accepted - ledger.widened
+-        let now = Double(accepted) / Double(ledger.taps)
+-        let cone = Double(coneOnly) / Double(ledger.taps)
+-        print(
+-            """
+-            TAP HIT RATE over \(ledger.taps) real taps on the grass:
+-              35° cone alone : \(coneOnly)/\(ledger.taps) = \(pct(cone))
+-              widened tap    : \(accepted)/\(ledger.taps) = \(pct(now))
+-              refused        : \(ledger.refused) — \(ledger.refusalTally)
+-            """)
+-
+-        // **0.6, well under the 0.72–0.94 measured, and the looseness is deliberate.** The rate
+-        // depends on where two team-mates happen to be standing over the two minutes this test
+-        // gets, and a band tight against a measurement is a band an unrelated AI change breaks —
+-        // see the friction log on per-seed bands, twice. What is defended is the property: a tap
+-        // on the grass is normally an order and not nothing, which is the opposite of the 33% the
+-        // cone alone scored on the same taps.
+-        XCTAssertGreaterThan(
+-            now, 0.6,
+-            "a tap on the grass during our own possession should be an order — "
+-                + "\(ledger.refused) of \(ledger.taps) were refused, last \(ledger.refusal)")
+-        XCTAssertGreaterThanOrEqual(
+-            now, cone, "the widening cannot make the tap worse")
+-        if refusalsSeen > 0 {
+-            XCTAssertGreaterThan(
+-                platesSeen, 0,
+-                "\(refusalsSeen) taps were refused and the screen never said so — which is the "
+-                    + "exact bug this suite exists for. Probe: \(ledger.raw)")
+-        }
+-    }
+-
+-    /// **The rectangle the game is played on is the rectangle these tests tap.**
+-    ///
+-    /// Measured on an iPhone 17 Pro in landscape, in an 874 × 402 window:
+-    ///
+-    ///   - **debug:  pitch 750 × 338 at (62, 0)** — `UltimateApp.showsInstruments` wraps the match
+-    ///     in a `TabView` and its bar takes 64 pt off the bottom;
+-    ///   - **release: pitch 750 × 382 at (62, 0)** — no tab bar, so the bottom inset is 20 pt of
+-    ///     home indicator and the game is 44 pt taller.
+-    ///
+-    /// Neither is the window: both lose 62 pt on each side to the notch and the display cutout.
+-    /// So a tap expressed as a fraction of the *window* is a different piece of grass in the
+-    /// configuration that ships than in the one the tests run in — which is exactly the trap this
+-    /// test keeps shut. Every tap in this suite goes through `MatchDriver.pitchPoint`, a fraction
+-    /// of the rectangle the probe reports, and this asserts which rectangle a run actually got.
+-    ///
+-    /// Run it both ways — `xcodebuild test` and `xcodebuild test -configuration Release` — which
+-    /// CI now does. "Which rectangle did the game get" is the first question about a touch test
+-    /// that passes in one configuration and not the other.
+-    func testThePitchIsTheRectangleTheTapsAssume() {
+-        let match = MatchDriver(self)
+-        guard let pitch = match.pitchRect else {
+-            return XCTFail("the probe never reported a pitch rect — probe: \(match.probe().raw)")
+-        }
+-        let window = match.app.frame
+-        let bottom = window.maxY - pitch.maxY
+-        print(
+-            "PLAYABLE RECT: pitch \(pitch) of window \(window) — "
+-                + "insets l\(pitch.minX - window.minX) t\(pitch.minY - window.minY) "
+-                + "r\(window.maxX - pitch.maxX) b\(bottom)")
+-
+-        XCTAssertTrue(
+-            window.contains(pitch), "the pitch cannot be outside the window it is drawn in")
+-        // Side insets are the device's, not the layout's, so they are the same in both
+-        // configurations and symmetric. If they ever stop being, `pitchPoint` is mapping x wrong.
+-        XCTAssertEqual(
+-            pitch.minX - window.minX, window.maxX - pitch.maxX, accuracy: 1,
+-            "the pitch should be centred between the display cutouts")
+-        // Big enough to still be a game either way: a pitch squeezed to a fraction of the screen
+-        // would make every tap fraction in this suite meaningless.
+-        XCTAssertGreaterThan(pitch.width, window.width * 0.7)
+-        XCTAssertGreaterThan(pitch.height, window.height * 0.7)
+-
+-        // The bottom is the one edge the configuration decides, and it is the whole difference
+-        // between the layout the tests exercise and the layout that ships.
+-        #if DEBUG
+-            XCTAssertGreaterThan(
+-                bottom, 40,
+-                "a debug build has the instruments tab bar under the pitch — if this fails, "
+-                    + "`showsInstruments` has changed and the touch tests are exercising the "
+-                    + "shipped layout by accident")
+-        #else
+-            XCTAssertLessThan(
+-                bottom, 40,
+-                "a release build is the match and nothing else, so the only thing under the pitch "
+-                    + "is the home indicator — pitch \(pitch), window \(window)")
+-        #endif
+-    }
+-
+-    private func pct(_ x: Double) -> String { String(format: "%.0f%%", x * 100) }
+-}
+diff --git a/ios/UltimateUITests/TouchTests.swift b/ios/UltimateUITests/TouchTests.swift
+index eb3f875..da1ca10 100644
+--- a/ios/UltimateUITests/TouchTests.swift
++++ b/ios/UltimateUITests/TouchTests.swift
+@@ -62,14 +62,12 @@ final class TouchTests: XCTestCase {
+     /// *told*, which is the whole reason `CutCall` exists — a commitment you cannot see is a
+     /// button that does nothing.
+     ///
+-    /// **The tap is still retried, and it now almost never needs to be.** A refused tap used
+-    /// to be the common case: `humanCallCut` returns nil when the 35° cone is empty, and on a
+-    /// minis pitch there are two team-mates, so most directions named nobody — measured with a
+-    /// finger, roughly one tap in three landed on somebody. `MatchView.callCut` now widens an
+-    /// empty cone to the half of the pitch the finger pointed at, so a tap on the grass during
+-    /// our own possession is an order almost every time; `RefusalTests` measures both rates in
+-    /// one run. The loop stays because the *legality* of a call still comes and goes with
+-    /// possession and the cooldown, which is a different thing from the aim being refused.
++    /// **The tap is retried, and that is not flake-hiding.** A refused tap is a designed
++    /// outcome: `humanCallCut` returns nil when the 35° cone is empty, and on a minis pitch
++    /// there are two team-mates, so most directions name nobody. Measured across runs here,
++    /// roughly one tap in three lands on somebody. A player points somewhere else; so does
++    /// this. What is asserted is that *some* piece of grass a thumb would plausibly pick sends
++    /// a runner, and that when one does, the screen says who.
+     func testTapOnOffenceCommandsACutter() {
+         let match = MatchDriver(self)
+         let before = match.wait("a cut to be legal", timeout: 150, until: { $0.canCut })
+@@ -77,9 +75,8 @@ final class TouchTests: XCTestCase {
+ 
+         // Upfield of centre and spread across the width — the spaces a thrower actually
+         // attacks. Every one is a point on the grass (anything above the horizon returns nil
+-        // from `MatchScene.groundPoint` and is not a tap at all), and every one is a fraction
+-        // of the *pitch* rather than of the window, so it is the same piece of grass in a
+-        // release build as in a debug one; see `MatchDriver.pitchPoint`.
++        // from `MatchScene.groundPoint` and is not a tap at all) and every one is clear of the
++        // debug tab bar; see `MatchDriver.point`.
+         let targets = [
+             (0.50, 0.34), (0.30, 0.36), (0.70, 0.36), (0.50, 0.46), (0.38, 0.30), (0.62, 0.30),
+             (0.24, 0.46), (0.76, 0.46),
+@@ -95,7 +92,7 @@ final class TouchTests: XCTestCase {
+                 until: { $0.canCut })
+             tried += 1
+             if let plates = match.tapAndWatch(
+-                match.pitchPoint(t.0, t.1), counter: { $0.cuts }, plates: ["hud.cut"], within: 0.6)
++                match.point(t.0, t.1), counter: { $0.cuts }, plates: ["hud.cut"], within: 0.6)
+             {
+                 said = plates["hud.cut"] ?? ""
+             }
+@@ -144,7 +141,7 @@ final class TouchTests: XCTestCase {
+                 until: { $0.canDefend })
+             tried += 1
+             plates = match.tapAndWatch(
+-                match.pitchPoint(0.5, 0.5), counter: { $0.defends },
++                match.point(0.5, 0.5), counter: { $0.defends },
+                 plates: ["hud.defence", "hud.recovery"], within: 0.6)
+         }
+         guard let plates else {
+diff --git a/swift/Sources/FlightUI/Feedback.swift b/swift/Sources/FlightUI/Feedback.swift
+index 182327f..4d2869f 100644
+--- a/swift/Sources/FlightUI/Feedback.swift
++++ b/swift/Sources/FlightUI/Feedback.swift
+@@ -393,124 +393,6 @@ struct CutCall: Equatable {
+     }
+ }
+ 
+-// MARK: - the tap that was not taken
+-
+-/// A tap the game would not take, and why, said where the thumb landed.
+-///
+-/// **A control that fails silently is unlearnable, and this one failed silently two taps in
+-/// three.** Both halves of the tap refuse for good reasons — the cone can name nobody, the
+-/// disc can be in a team-mate's hand, the point can not have started, the last call can have
+-/// been a moment ago — and until now every one of those was indistinguishable from the tap
+-/// not having registered at all. The first play session measured roughly one tap in three
+-/// finding somebody on a minis pitch; the other two produced nothing on screen, so nothing
+-/// on screen distinguished "nobody was there" from a broken game.
+-///
+-/// So a refusal is now an answer. Two parts, and they answer different questions:
+-///
+-///   - **A ring where the finger was**, which answers *did the tap arrive*. It has to be at
+-///     the point of contact rather than on a plate at the foot of the screen, because that
+-///     is the question — a plate 200 pt away cannot say "this tap, here".
+-///   - **Two words naming the reason**, which answer *what would have made it work*. They
+-///     are different sentences for different reasons on purpose: NOBODY THERE means point
+-///     somewhere else, TOO SOON means wait, NOT YOUR DISC means you are not on offence.
+-///     One word for all of them ("REFUSED") would be honest and useless.
+-///
+-/// Grey and stroke-only, in the HUD's established idiom, and shorter-lived than an order
+-/// plate: an accepted call is a commitment worth reading twice, and a refusal is a
+-/// correction worth reading once.
+-struct RefusedTap: Equatable {
+-
+-    /// Why the tap did nothing. One case per refusal path in `Engine.humanCallCut` and
+-    /// `Engine.humanDefend`, plus the one this file owns — a ray that never met the grass.
+-    ///
+-    /// The raw values are what the probe reports, so a UI test can name the refusal it
+-    /// expected rather than asserting on the words.
+-    enum Reason: String, Equatable {
+-        /// The cone named nobody, and neither did the widened fallback: there is no
+-        /// team-mate in that half of the pitch to send.
+-        case nobodyThere
+-        /// A body was named and the playbook had no route to give them.
+-        case noRoute
+-        /// A team-mate is holding it, so the call is theirs to make and not ours.
+-        case notYours
+-        /// The point is not running — before a pull, after a goal, during a stoppage.
+-        case notLive
+-        /// The call cooldown. `Engine.calledCutInterval` is one cut per 1.1 s.
+-        case tooSoon
+-        /// The ray never descended: a tap on the sky, or on the crowd above the horizon.
+-        case offPitch
+-        /// On defence, with every defender on the floor.
+-        case everybodyDown
+-        /// The disc is nobody's: our own throw is in the air, or it is loose on the grass
+-        /// after a turnover. The tap has no half to be — there is no cut to call without a
+-        /// thrower and no defender to send at our own disc — and it is the refusal a player
+-        /// meets most often, because it covers every tap made during a flight.
+-        case discUnsettled
+-
+-        /// Two words, in the voice a team-mate would use.
+-        var title: String {
+-            switch self {
+-            case .nobodyThere: "NOBODY THERE"
+-            case .noRoute: "NO LANE THERE"
+-            case .notYours: "NOT YOUR DISC"
+-            case .notLive: "NOT IN PLAY"
+-            case .tooSoon: "TOO SOON"
+-            case .offPitch: "OFF THE PITCH"
+-            case .everybodyDown: "NOBODY UP"
+-            case .discUnsettled: "NOBODY TO SEND"
+-            }
+-        }
+-
+-        /// What would have made it work. The half a player can act on.
+-        var detail: String {
+-            switch self {
+-            case .nobodyThere: "NO CUTTER THAT WAY"
+-            case .noRoute: "TRY ANOTHER SPACE"
+-            case .notYours: "A TEAM-MATE HAS IT"
+-            case .notLive: "WAIT FOR THE PULL"
+-            case .tooSoon: "ONE CALL AT A TIME"
+-            case .offPitch: "TAP THE GRASS"
+-            case .everybodyDown: "EVERYONE IS DOWN"
+-            case .discUnsettled: "WAIT FOR THE DISC"
+-            }
+-        }
+-    }
+-
+-    let reason: Reason
+-    /// Where the finger landed, in the render surface's own coordinates.
+-    let at: CGPoint
+-    /// Seconds of display left. Burned down by `MatchView.advance` on wall time, like every
+-    /// other plate in this file.
+-    var timeLeft: Double
+-
+-    /// Long enough to read two short lines, and no longer.
+-    ///
+-    /// **1.8 s rather than the order plates' 1.1 s, and the extra is not decoration.** One
+-    /// `XCUIElement.label` read against this view tree costs 0.4–0.9 s on this simulator and
+-    /// `waitForExistence` plus a failure-triage pass costs over a second (see the friction log),
+-    /// so a plate that lived as long as an order plate could not be *read* by the test that
+-    /// guards it — measured: it was found on a single-suite run and missed on a full one. A
+-    /// legibility fix nothing can check is a legibility fix on trust.
+-    static let duration = 1.8
+-    /// The ring's own life, which is much shorter: it is the receipt for the touch, and a
+-    /// receipt that hangs around starts reading as a thing on the pitch.
+-    static let pulse = 0.42
+-
+-    var title: String { reason.title }
+-    var detail: String { reason.detail }
+-
+-    /// 0 at the tap, 1 when the words are gone.
+-    var progress: Double { 1 - Swift.max(0, timeLeft) / Self.duration }
+-
+-    /// 0 at the tap, 1 when the ring is gone, and nil once it is — so the caller draws
+-    /// nothing rather than drawing a finished ring.
+-    var ringProgress: Double? {
+-        let spent = Self.duration - Swift.max(0, timeLeft)
+-        guard spent < Self.pulse else { return nil }
+-        return Swift.max(0, spent / Self.pulse)
+-    }
+-}
+-
+ // MARK: - wind
+ 
+ /// The wind, in the frame the camera is actually looking through.
+diff --git a/swift/Sources/FlightUI/MatchHUD.swift b/swift/Sources/FlightUI/MatchHUD.swift
+index 8abd1af..1f15647 100644
+--- a/swift/Sources/FlightUI/MatchHUD.swift
++++ b/swift/Sources/FlightUI/MatchHUD.swift
+@@ -327,86 +327,6 @@ extension MatchView {
+         }
+     }
+ 
+-    /// The refusal, where the thumb was.
+-    ///
+-    /// **This is the only plate in the HUD that is not pinned to an edge, and the position is
+-    /// the message.** Every other plate answers a question about the match, so it belongs
+-    /// wherever the eye already goes; this one answers a question about *one touch* — did it
+-    /// arrive, and what was wrong with it — and a caption at the foot of the screen cannot
+-    /// say "this tap, here". So the ring is drawn at the contact point and the words sit
+-    /// directly above it.
+-    ///
+-    /// **Grey, stroke-only, and quieter than an order.** An accepted call gets the gesture's
+-    /// orange and 1.1 s in the plate rectangle; a refusal gets white at a third opacity and
+-    /// no fill of its own beyond the backing needed to read it over turf. The game is
+-    /// correcting an aim, not telling the player off — see `RefusedTap`.
+-    ///
+-    /// It is clamped inside the render surface with a wide enough margin that the words never
+-    /// leave the screen and never wander into the plate rectangle 96 pt above the bottom
+-    /// edge, which is the one collision this file exists to prevent (see the note at the top).
+-    @ViewBuilder func refusedOverlay(_ refused: RefusedTap, in size: CGSize) -> some View {
+-        let fade = 1 - Self.easeIn(refused.progress)
+-        // Half the plate's height plus its own gap, so the words sit above the fingertip
+-        // rather than under it — a thumb covers about 40 pt of glass.
+-        //
+-        // **The clamp is what keeps this out of the two rectangles that are already spoken
+-        // for**, which is the collision this file's opening note is about. 72 pt down clears
+-        // the scoreboard, which is pinned 12 pt from the top and about 40 pt tall — measured on
+-        // a screenshot where a refusal for a tap on the sky landed on top of the score. 130 pt
+-        // up clears the order-plate strip at 96 pt.
+-        let x = Swift.min(Swift.max(refused.at.x, 84), Swift.max(84, size.width - 84))
+-        let y = Swift.min(Swift.max(refused.at.y - 40, 72), Swift.max(72, size.height - 130))
+-
+-        ZStack(alignment: .topLeading) {
+-            if let ring = refused.ringProgress {
+-                // One expanding circle, thinning as it goes. The same shape the handoff
+-                // pulse uses on a player, in grey rather than in the control colour, because
+-                // this is the negative of that event.
+-                let d = 26 + 54 * Self.easeOut(ring)
+-                Circle()
+-                    .strokeBorder(.white.opacity(0.40 * (1 - ring)), lineWidth: 1.5)
+-                    .frame(width: d, height: d)
+-                    .position(x: refused.at.x, y: refused.at.y)
+-            }
+-
+-            VStack(spacing: 1) {
+-                Text(refused.title)
+-                    .font(.system(size: 13, weight: .heavy, design: .monospaced))
+-                    .foregroundStyle(.white.opacity(0.62 * fade))
+-                Text(refused.detail)
+-                    .font(.system(size: 10, design: .monospaced).bold())
+-                    .foregroundStyle(.white.opacity(0.40 * fade))
+-            }
+-            .padding(.horizontal, 10).padding(.vertical, 5)
+-            .background(
+-                RoundedRectangle(cornerRadius: 7)
+-                    .fill(.black.opacity(0.42 * fade))
+-                    .overlay(
+-                        RoundedRectangle(cornerRadius: 7)
+-                            .strokeBorder(.white.opacity(0.14 * fade), lineWidth: 1)))
+-            .position(x: x, y: y)
+-            // One element carrying both lines — "NOBODY THERE, NO CUTTER THAT WAY" — for the
+-            // same reason the order plates are: the refusal is one sentence and the test that
+-            // guards it wants to read the sentence.
+-            .accessibilityElement(children: .combine)
+-            .accessibilityIdentifier("hud.refused")
+-        }
+-        .frame(width: size.width, height: size.height, alignment: .topLeading)
+-        .allowsHitTesting(false)
+-    }
+-
+-    /// Fades that are not linear, so the words hold their contrast for most of their life and
+-    /// then go. A linear fade on a 1.4 s plate is unreadable for the last half of it.
+-    private static func easeIn(_ t: Double) -> Double {
+-        let x = Swift.min(1, Swift.max(0, t))
+-        return x * x * x
+-    }
+-
+-    private static func easeOut(_ t: Double) -> Double {
+-        let x = 1 - Swift.min(1, Swift.max(0, t))
+-        return 1 - x * x
+-    }
+-
+     /// The paused state. One tap resumes, and until it comes the accumulator is not fed —
+     /// see `advance`.
+     var pausedOverlay: some View {
+diff --git a/swift/Sources/FlightUI/MatchProbe.swift b/swift/Sources/FlightUI/MatchProbe.swift
+index 12a33f1..ac38c8a 100644
+--- a/swift/Sources/FlightUI/MatchProbe.swift
++++ b/swift/Sources/FlightUI/MatchProbe.swift
+@@ -73,11 +73,6 @@ extension MatchView {
+         // still reads as the receiving team. A drag test that waited for possession 0 would
+         // sleep through the one moment the disc is guaranteed to be in our hand.
+         put("poss", "\(match.possession)")
+-        // The coarse phase, which is the only one outside the package: `setup` before a pull,
+-        // `live` while the point is being played, `dead` between. It is here because half the
+-        // refusals a tap can meet are phase refusals, and a test that wants to provoke one has
+-        // to be able to wait for the phase rather than race the pull clock.
+-        put("phase", match.phase.rawValue)
+         flag("mine", match.holder != nil && match.holder == match.controlled)
+         flag("flight", match.discInFlight)
+         flag("cut.ok", match.canCallCut)
+@@ -106,37 +101,6 @@ extension MatchView {
+         put("cuts", "\(cuts)")
+         put("defends", "\(defends)")
+ 
+-        // The tap ledger, which is the one thing on this line that is about the *control*
+-        // rather than about the match. `taps` counts every tap the offence took, `refused`
+-        // every tap either half turned down, `wide` the accepted calls that only landed
+-        // because an empty cone was widened to a right angle — so a run that taps N times
+-        // reports the hit rate the 35° cone gets alone, `(taps - refused - wide) / taps`, and
+-        // the hit rate a player now gets, `(taps - refused) / taps`, from the same taps. See
+-        // `MatchView.callCut`.
+-        put("taps", "\(offenceTaps)")
+-        put("refused", "\(refusals)")
+-        put("wide", "\(widenedCalls)")
+-        // And why the last one was refused, as `RefusedTap.Reason`'s own spelling, so a test
+-        // can name the refusal it expected instead of matching on the words on screen.
+-        put("refuse", lastRefusal?.rawValue ?? "-")
+-        // And every refusal of the run by reason, `reason:count` and `|`-separated, sorted so a
+-        // diff between two runs is a diff and not a re-ordering.
+-        put(
+-            "tally",
+-            refusalTally.isEmpty
+-                ? "-"
+-                : refusalTally.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }
+-                    .joined(separator: "|"))
+-
+-        // The rectangle the game is actually being played on, in the window's coordinates —
+-        // which is neither the window nor the window minus a tab bar; see `viewFrame`. A test
+-        // maps its taps through this and asserts on it, so the geometry a player gets is the
+-        // geometry that was tested.
+-        put(
+-            "rect",
+-            [viewFrame.minX, viewFrame.minY, viewFrame.width, viewFrame.height]
+-                .map { String(Int($0.rounded())) }.joined(separator: ","))
+-
+         // The charge, which is the one thing on this line the screen never shows.
+         if let r = lastRelease {
+             put("grade", r.grade.rawValue)
+@@ -180,9 +144,7 @@ extension MatchView {
+             Text(probeState)
+                 .font(.system(size: 7, design: .monospaced))
+                 .foregroundStyle(.white.opacity(0.55))
+-                // Four, because the tap ledger and the pitch rectangle made it a line longer.
+-                // A truncated probe is a test that cannot read the field it needed.
+-                .lineLimit(6)
++                .lineLimit(3)
+                 .padding(.horizontal, 6)
+                 .padding(.bottom, 4)
+                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+diff --git a/swift/Sources/FlightUI/MatchView.swift b/swift/Sources/FlightUI/MatchView.swift
+index c0c7de4..7e1143d 100644
+--- a/swift/Sources/FlightUI/MatchView.swift
++++ b/swift/Sources/FlightUI/MatchView.swift
+@@ -268,29 +268,6 @@ public struct MatchView: View {
+     /// The cut the player has just called, while it is worth saying so. See `CutCall`.
+     @State var cutCall: CutCall? = nil
+ 
+-    /// The tap the game would not take, while it is worth saying so. See `RefusedTap`.
+-    @State var refusedTap: RefusedTap? = nil
+-
+-    /// The tap ledger, which is why this change is measurable rather than argued about.
+-    ///
+-    /// Three view-side counters, written only by `callCut`/`defend`/`refuse` and read only by
+-    /// the probe: how many taps the offence took, how many taps of either half were turned
+-    /// down, and how many of the accepted ones only landed because the empty cone was widened
+-    /// to a right angle. `offenceTaps - refusals - widenedCalls` over `offenceTaps` is the hit
+-    /// rate the 35° cone gets on its own, in the same run that measures the hit rate a player
+-    /// now gets — which is the before-and-after the whole exercise asked for, taken with a
+-    /// finger rather than modelled.
+-    @State var offenceTaps = 0
+-    @State var refusals = 0
+-    @State var widenedCalls = 0
+-    /// The reason the last refused tap gave, for the probe. Nil before the first one.
+-    @State var lastRefusal: RefusedTap.Reason? = nil
+-    /// Every refusal of the run, by reason. The last one says what the plate is showing; this
+-    /// says what a whole session of tapping ran into, which is what a measurement needs — "11 of
+-    /// 39 taps were refused" is not actionable until it is "7 of them named nobody and 4 were
+-    /// taps that arrived after the disc changed hands".
+-    @State var refusalTally: [String: Int] = [:]
+-
+     /// The last release the thumb made, with the hold that graded it. Written by
+     /// `throwGesture` and read only by the probe — see `MatchProbe.Released` for why the
+     /// hold has to be kept rather than re-derived.
+@@ -324,27 +301,8 @@ public struct MatchView: View {
+     @State var scene = MatchScene()
+ 
+     /// The size of the pitch on screen, as last measured. Written by the one
+-    /// `GeometryReader` that knows it, read by `-cut`'s synthetic tap and by the probe.
+-    ///
+-    /// **The probe reads it because a debug build and a release build play on different
+-    /// rectangles.** `UltimateApp.showsInstruments` puts a five-item tab bar under the pitch
+-    /// in a debug build, which on an iPhone 17 Pro in landscape leaves the game 874 × 338 of
+-    /// an 874 × 402 window; a release build has the whole window. A touch test that expressed
+-    /// its taps as fractions of the *window* was therefore aiming at different grass in the
+-    /// configuration that ships than in the one it ran in. Reporting the rectangle lets a test
+-    /// aim at fractions of the pitch instead, and lets it assert which rectangle it got.
+-    @State var viewSize: CGSize = .zero
+-
+-    /// The same rectangle, in the window's coordinates.
+-    ///
+-    /// **The pitch is not the window and it is not the window minus a tab bar either.** Measured
+-    /// on an iPhone 17 Pro in landscape, a debug build gives the game 750 × 338 of an 874 × 402
+-    /// window: the instruments tab bar takes a strip, and the notch and the home indicator take
+-    /// insets on three sides. A touch test that turned a fraction into a window offset was
+-    /// therefore aiming a few degrees off wherever it thought it was aiming, in the debug
+-    /// configuration *and* in the release one, differently. The origin is the missing half of
+-    /// fixing that, so the probe reports the whole rectangle.
+-    @State var viewFrame: CGRect = .zero
++    /// `GeometryReader` that knows it, read by `-cut`'s synthetic tap.
++    @State private var viewSize: CGSize = .zero
+ 
+     /// Bumped once per rendered frame purely so SwiftUI knows something happened.
+     ///
+@@ -648,12 +606,6 @@ public struct MatchView: View {
+                 cutReadout
+                 cutHint
+ 
+-                // The tap that was not taken. Above the order plates because it is about the
+-                // touch that just happened rather than about the match, and it cannot collide
+-                // with them: an accepted call clears it, and its own rectangle is clamped out
+-                // of the plate strip. See `refusedOverlay`.
+-                if let refused = refusedTap { refusedOverlay(refused, in: geo.size) }
+-
+                 // Full time. Drawn over everything, including the callouts — once the
+                 // game is over the only interesting fact left is the result, and the
+                 // only interesting input left is the rematch button.
+@@ -740,17 +692,13 @@ public struct MatchView: View {
+             .onAppear {
+                 if demoCharge != nil, drag == nil { drag = demoDrag(in: geo.size) }
+                 viewSize = geo.size
+-                viewFrame = geo.frame(in: .global)
+             }
+             // The one thing `advance` cannot know on its own. The synthetic tap `-cut`
+             // issues is in *screen* coordinates, and the screen's size lives only inside
+             // this `GeometryReader`; the tick loop is outside it. `onChange` covers a
+             // rotation or a split view, both of which move the same fraction of the screen
+             // to a different piece of grass.
+-            .onChange(of: geo.size) { _, new in
+-                viewSize = new
+-                viewFrame = geo.frame(in: .global)
+-            }
++            .onChange(of: geo.size) { _, new in viewSize = new }
+         }
+     }
+ 
+@@ -797,12 +745,7 @@ public struct MatchView: View {
+         scene.bobPhase += frameDt * 3.6
+ 
+         // The finger a headless run does not have. See `autoDefend`.
+-        // The middle of the render surface, because that is where `-defend on` documents the
+-        // tap as landing and because the defensive half ignores the point anyway — it is
+-        // carried only so a refusal has somewhere to draw itself.
+-        if autoDefend, match.defensiveCommit == nil {
+-            defend(at: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2))
+-        }
++        if autoDefend, match.defensiveCommit == nil { defend() }
+ 
+         // And its offensive twin. See `demoCut`, and `viewSize` for the one fact this
+         // needs that the tick loop cannot see. Every frame, because the engine's own
+@@ -892,10 +835,6 @@ public struct MatchView: View {
+             call.timeLeft -= frameDt
+             cutCall = call.timeLeft > 0 ? call : nil
+         }
+-        if var refused = refusedTap {
+-            refused.timeLeft -= frameDt
+-            refusedTap = refused.timeLeft > 0 ? refused : nil
+-        }
+         // The hitstop's own fuse and its cooldown, burned in real seconds rather than
+         // slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game* time would run for
+         // the better part of a second on the clock the player lives on.
+@@ -975,15 +914,10 @@ public struct MatchView: View {
+     /// them holding it and the other needs us holding it. Both engine entry points refuse
+     /// silently when their situation is not the live one, so the routing does not have to
+     /// be exhaustive — it only has to try the right one first.
+-    ///
+-    /// **What is no longer silent is the refusal.** Both halves still refuse for the same
+-    /// reasons and the engine is unchanged; what changed is that a refused tap now says so at
+-    /// the point of the tap, and says *which* reason, because the reasons ask for different
+-    /// things from the player. See `RefusedTap`, and `MatchHUD.refusedOverlay`.
+     private func tap(at point: CGPoint, in size: CGSize) {
+         guard running else { return }
+         if match.possession != 0 || match.holder == nil {
+-            defend(at: point)
++            defend()
+             return
+         }
+         callCut(at: point, in: size)
+@@ -1002,137 +936,26 @@ public struct MatchView: View {
+     /// thumb. This file's whole job is turning a screen point into a point on the grass —
+     /// `MatchScene.groundPoint` — and a refusal into silence.
+     ///
+-    /// **A tap is an order, so a tap always means something.** The cone was chosen for a
+-    /// *drag*, where the player is aiming along a line and the disc has to go where they
+-    /// pointed; a tap is a point on a pitch with two team-mates on it, and 35 degrees of
+-    /// either side of it names nobody most of the time. Measured with a finger, roughly one
+-    /// tap in three found a body on minis and the other two did nothing at all.
+-    ///
+-    /// So when the cone comes back empty this widens it to the whole half of the pitch the
+-    /// finger was pointing at and sends the nearest team-mate to that heading — see
+-    /// `nearestCutter(toward:)`. It is the same command with a different point in it:
+-    /// `humanCallCut` runs its own cone select over the substituted heading, keeps the veto
+-    /// on a body that is unavailable or too close to pass to, and may still pick a *different*
+-    /// team-mate if the lane and distance terms prefer one. Nothing in the engine changed and
+-    /// nothing but the tap path can reach this — a drag still means exactly where it points,
+-    /// because there the direction is the throw.
+-    ///
+-    /// The 90 degrees is the whole of the widening and it is deliberately not 180: past a
+-    /// right angle the runner the game picked would be behind the space the player pointed
+-    /// at, which is a worse answer than NOBODY THERE.
++    /// A refused tap is silent, exactly as a refused defensive one is. On offence the
++    /// refusals are the cooldown and an empty cone, and both are things a player does
++    /// several times a point without meaning anything by it.
+     private func callCut(at point: CGPoint, in size: CGSize) {
+-        offenceTaps += 1
+         guard let camera = scene.camera,
+-            let at = Self.groundPoint(tap: point, in: size, camera: camera)
+-        else { return refuse(.offPitch, at: point) }
+-
+-        if let called = match.humanCallCut(atX: at.x, atZ: at.z) {
+-            return accept(called, aimedAt: at)
+-        }
+-
+-        // Why not. `Engine.canCallCut` is the engine's own answer to the three refusals that
+-        // are about the *situation* rather than the direction — so if it says the call was
+-        // available, an empty cone is the only thing left, and the widening is worth trying.
+-        guard match.canCallCut else { return refuse(situationalRefusal(), at: point) }
+-        guard let alternative = nearestCutter(toward: at) else {
+-            return refuse(.nobodyThere, at: point)
+-        }
+-        // The team-mate's own position as the aim, which is a heading the cone cannot refuse:
+-        // zero degrees of angular error against a body it has already been told is available.
+-        let aim = (x: alternative.pos.x, z: alternative.pos.z)
+-        guard let called = match.humanCallCut(atX: aim.x, atZ: aim.z) else {
+-            // A body was named and `TeamAI.commandCut` had no route to give them. Rare, and a
+-            // different sentence: pointing somewhere else is the fix, waiting is not.
+-            return refuse(.noRoute, at: point)
+-        }
+-        widenedCalls += 1
+-        accept(called, aimedAt: aim)
+-    }
+-
+-    /// Record an accepted call and say who is going.
+-    ///
+-    /// **The recorded point is the one the engine was actually given**, not the one the finger
+-    /// landed on, because `ReplayInput.callCut` carries a point and replays it through this
+-    /// same `humanCallCut` — a tape holding the raw tap would resolve a different cone on the
+-    /// way back and desync. The widening therefore happens once, here, and the tape is a list
+-    /// of headings the engine accepted.
+-    private func accept(_ called: Engine.CalledCut, aimedAt at: (x: Double, z: Double)) {
++            let at = Self.groundPoint(tap: point, in: size, camera: camera),
++            let called = match.humanCallCut(atX: at.x, atZ: at.z)
++        else { return }
++        // Written down at the tick that has not run yet, which is where a replay will apply
++        // it. The *point on the grass* is what is recorded, never the receiver it resolved
++        // to — see `ReplayInput.callCut`.
+         inputs.append(
+             RecordedInput(tick: tickCount, input: .callCut(x: at.x, z: at.z)))
+         Prefs.cutUsed = true
+-        refusedTap = nil
+         let slot = match.players.firstIndex { $0.id == called.receiver }
+         cutCall = CutCall(
+             jersey: slot.map(jersey), kind: called.kind, timeLeft: CutCall.duration)
+         Feel.play(.commit)
+     }
+ 
+-    /// Which of `humanCallCut`'s situational refusals applied, for a tap that got as far as
+-    /// the grass and was still turned down.
+-    ///
+-    /// Read off the engine's own public state in the same order the engine tests them, so the
+-    /// words on screen cannot claim a reason the engine did not have. It is only ever called
+-    /// once `canCallCut` is false, so one of these three is true by construction; the fall
+-    /// through is the cooldown, which is the one the engine keeps to itself.
+-    ///
+-    /// **One read is coarser than the engine's own and knowingly so.** `canCallCut` tests
+-    /// `GameState`'s fine phase (`livePossession`), and the only phase this side of the package
+-    /// boundary is `Engine.phase`, which folds `check` and `turnoverDead` into `.live`. So a
+-    /// tap during the stoppage after a call, with the disc back in our hand, reads as TOO SOON
+-    /// rather than NOT IN PLAY — the same instruction (wait), a less exact reason. Fixing it
+-    /// properly means the engine saying why it refused, which is `EngineHuman`'s to give and
+-    /// not this file's to guess: see the report on this change.
+-    private func situationalRefusal() -> RefusedTap.Reason {
+-        if match.phase != .live { return .notLive }
+-        if match.holder != match.controlled { return .notYours }
+-        return .tooSoon
+-    }
+-
+-    /// The team-mate nearest in heading to the space the player pointed at, within a right
+-    /// angle of it.
+-    ///
+-    /// A read-only pass over the same facts the engine's own select reads — team, id,
+-    /// availability, and `HumanTargeting.selectMinRange`, taken from the engine rather than
+-    /// copied — so a body this picks is a body the cone will accept when it is handed that
+-    /// heading. `Engine.recovery` is availability: it is non-nil exactly while locomotion has
+-    /// a body committed to a layout, a fall or the scrape off the grass.
+-    private func nearestCutter(toward at: (x: Double, z: Double)) -> AIPlayer? {
+-        guard let held = match.holder, let thrower = match.body(of: held) else { return nil }
+-        let dx = at.x - thrower.pos.x
+-        let dz = at.z - thrower.pos.z
+-        let aim = (dx * dx + dz * dz).squareRoot()
+-        guard aim > 1e-3 else { return nil }
+-
+-        var best: AIPlayer?
+-        // cos 90°, so a team-mate square to the aim is already out.
+-        var bestCosine = 0.0
+-        for p in match.players where p.team == thrower.team && p.id != held {
+-            guard match.recovery(of: p.id) == nil else { continue }
+-            let vx = p.pos.x - thrower.pos.x
+-            let vz = p.pos.z - thrower.pos.z
+-            let d = (vx * vx + vz * vz).squareRoot()
+-            guard d >= HumanTargeting.selectMinRange else { continue }
+-            let cosine = (vx * dx + vz * dz) / (d * aim)
+-            if cosine > bestCosine {
+-                bestCosine = cosine
+-                best = p
+-            }
+-        }
+-        return best
+-    }
+-
+-    /// Say no, where the thumb was.
+-    ///
+-    /// The counters are for the measurement this change exists to make: `offenceTaps` against
+-    /// `refusals` is the hit rate a finger actually gets, and `widenedCalls` is how much of it
+-    /// the widening bought. They are read by the probe and by nothing else — see `MatchProbe`.
+-    private func refuse(_ reason: RefusedTap.Reason, at point: CGPoint) {
+-        refusals += 1
+-        lastRefusal = reason
+-        refusalTally[reason.rawValue, default: 0] += 1
+-        refusedTap = RefusedTap(reason: reason, at: point, timeLeft: RefusedTap.duration)
+-    }
+-
+     /// The defensive half of the control scheme, and the whole of it: send your best
+     /// defender at the disc.
+     ///
+@@ -1147,24 +970,11 @@ public struct MatchView: View {
+     /// whoever it sent, which is what makes the chevron, the control ring and the handoff
+     /// pulse all say who is going without any of them being told about defence.
+     ///
+-    /// A refused tap no longer passes in silence, but it is still not scolded: no haptic
+-    /// fires on a refusal and the words are grey. Taps are cheap and constant on a
+-    /// touchscreen — one during our own possession is somebody's palm, not a command — so
+-    /// buzzing at it would be the game telling the player off for holding the phone. Saying
+-    /// quietly which of the two defensive refusals happened is a different thing: `NOT IN
+-    /// PLAY` and `NOBODY UP` are the difference between waiting and having already spent
+-    /// your defenders.
+-    private func defend(at point: CGPoint) {
+-        guard running else { return }
+-        guard let commit = match.humanDefend() else {
+-            // Three refusals, in the order `humanDefend` tests them: the point is not running;
+-            // the disc is ours or nobody's, so there is nothing to chase and no thrower to
+-            // call a cut off; or everybody who could have gone is on the floor.
+-            if match.phase != .live { return refuse(.notLive, at: point) }
+-            if match.possession == 0 { return refuse(.discUnsettled, at: point) }
+-            return refuse(.everybodyDown, at: point)
+-        }
+-        refusedTap = nil
++    /// A refused tap is silent. Taps are cheap and constant on a touchscreen — one during
++    /// our own possession is somebody's palm, not a command — and buzzing at it would be
++    /// the game telling the player off for holding the phone.
++    private func defend() {
++        guard running, let commit = match.humanDefend() else { return }
+         // A tap that committed somebody is an input; a tap that was refused changed
+         // nothing and is not one. `humanDefend` refuses identically on replay, so either
+         // choice would restore correctly — recording only the taps that did something
+@@ -1274,16 +1084,6 @@ public struct MatchView: View {
+         assistToast = nil
+         handoff = nil
+         defenceCall = nil
+-        cutCall = nil
+-        // The refusal and the tap ledger belong to the match that was being played, not to the
+-        // one starting: a REMATCH that opened with "NOBODY THERE" still on screen would be the
+-        // new match answering the old match's tap.
+-        refusedTap = nil
+-        offenceTaps = 0
+-        refusals = 0
+-        widenedCalls = 0
+-        lastRefusal = nil
+-        refusalTally = [:]
+         lastControlled = match.controlled
+         // A rematch is a resume: whatever paused the old match has been dealt with by
+         // the time somebody taps a button on the result card.

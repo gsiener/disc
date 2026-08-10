@@ -48,9 +48,17 @@ final class RefusalTests: XCTestCase {
     /// dismissal plus a first accessibility read has to spare. So this waits for the probe to
     /// report a phase that is not `live` — true the instant the app opens, and true again at
     /// every stoppage after a goal, so the test cannot lose its window.
+    ///
+    /// **And it asks for `-receive them`, which is the one thing here that is not the default.**
+    /// The window this test needs is `PRE_PULL`, and how long that lasts depends on who is
+    /// pulling: a computer-run line pulls after `EngineConfig.pullSettle`, 0.8 s, while a human
+    /// one gets `pullDeadline`, 5 s, before the engine pulls for it. `-receive us` hands the pull
+    /// to the opponent and would close this window in under a second — before a launch and a
+    /// first accessibility read can reach it — leaving nothing but the next goal, a whole point
+    /// away. So the test that needs the pre-pull phase is the test that wants our team pulling.
     func testATapBeforeThePullSaysTheGameIsNotLive() {
-        let match = MatchDriver(self)
-        match.wait("a stoppage", timeout: 180, until: { !$0.isLive })
+        let match = MatchDriver(self, receives: .them)
+        match.wait("a stoppage", until: { !$0.isLive })
         // Nothing has been refused yet, so anything below is this tap's.
         XCTAssertEqual(match.probe().refused, 0)
 
@@ -95,7 +103,7 @@ final class RefusalTests: XCTestCase {
     /// that reads the location.
     func testATapOnTheSkyIsRefusedWithTheGrassAsTheFix() {
         let match = MatchDriver(self)
-        match.wait("our own offence", timeout: 150, until: { $0.canCut })
+        match.waitToAct("our own offence", until: { $0.canCut })
 
         guard let said = match.tapForRefusal(match.pitchPoint(0.012, 0.05)) else {
             return XCTFail("a tap above the horizon said nothing — probe: \(match.probe().raw)")
@@ -147,7 +155,7 @@ final class RefusalTests: XCTestCase {
     /// visible — checked by reading the plate on the first refusal of the run.
     func testTheOffensiveTapUsuallyMeansSomething() {
         let match = MatchDriver(self)
-        match.wait("a cut to be legal", timeout: 150, until: { $0.canCut })
+        match.waitToAct("a cut to be legal", until: { $0.canCut })
 
         // **A grid over the whole pitch rather than the spaces a thrower attacks**, because the
         // subject is a tap that names nobody and a sample that only points upfield hides it.
@@ -168,18 +176,27 @@ final class RefusalTests: XCTestCase {
             (0.08, 0.62), (0.30, 0.62), (0.52, 0.62), (0.74, 0.62), (0.92, 0.62),
             (0.08, 0.78), (0.30, 0.78), (0.52, 0.78), (0.74, 0.78), (0.92, 0.78),
         ]
-        // Every tap needs a legal moment, and a legal moment needs our possession and 1.1 s
-        // since the last call, so the budget is wall time rather than a tap count.
-        let deadline = Date().addingTimeInterval(150)
+        // **Stopped by a tap count, capped by wall time — and it used to be the other way
+        // round.** A flat 150 s budget meant this test always cost 150 s: it kept tapping long
+        // after the rate had stopped moving, and on CI run 31384063453 it passed in 164 s, which
+        // was most of that job. What the measurement needs is a sample, so the loop asks for one
+        // — a dozen taps, which at the 1.1 s `calledCutInterval` plus a possession to make them
+        // in is most of a minute — and `MatchDriver.samplingCap` is the cap on that, not the
+        // plan. The assertion floor below is unchanged at eight.
+        let wanted = 12
+        let deadline = Date().addingTimeInterval(MatchDriver.samplingCap)
         var attempt = 0
         var refusalsSeen = 0
         var platesSeen = 0
-        while Date() < deadline, attempt < 40 {
-            let legal = match.probe()
-            guard legal.canCut else { continue }
+        while Date() < deadline, attempt < wanted {
+            // One read, used both as the legality check and as the before-tap ledger. It used
+            // to be two back-to-back reads of the same state, and an accessibility read is the
+            // most expensive thing a touch test does — three per tap is most of what this loop
+            // spends its budget on.
+            let before = match.probe()
+            guard before.canCut else { continue }
             let t = targets[attempt % targets.count]
             attempt += 1
-            let before = match.probe()
             match.pitchPoint(t.0, t.1).tap()
             let after = match.probe()
             // **Every refusal of the run is looked for on screen and only the whole run is

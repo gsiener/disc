@@ -25,31 +25,49 @@ struct MatchDriver {
     /// on every test would mean every test also verifies the sheet, and a shared failure is
     /// a worse signal than five separate ones. `-points 9` buys a long enough game that a
     /// test waiting for its third possession does not run into full time.
-    init(_ test: XCTestCase, arguments extra: [String] = []) {
+    ///
+    /// **`-receive` is the argument that made this suite fast, and every test states which
+    /// side of it it wants.** `Engine.init` gives the opening pull to the human's team, so
+    /// with no argument our first live possession is one whole opponent possession away —
+    /// measured at 25–64 s, against waits that were therefore 90 s. `us` flips the coin
+    /// toss: the opponent pulls, we receive, and the disc is in our hand within a few
+    /// seconds of launch. `them` is the same statement in the other direction, for the
+    /// defensive tap. It is a *default* here rather than a per-test argument for the tests
+    /// that throw, because a test that forgets to say is a test that waits a minute.
+    ///
+    /// See `UltimateApp.startingPullTeam`, and
+    /// `.agents/friction-log/20260810-waittothrow-waits-for` for the measurement.
+    init(_ test: XCTestCase, receives: Possession = .us, arguments extra: [String] = []) {
         self.test = test
+        Self.announce()
         let app = XCUIApplication()
-        app.launchArguments = ["-setup", "off", "-probe", "on", "-points", "9"] + extra
+        app.launchArguments =
+            ["-setup", "off", "-probe", "on", "-points", "9", "-receive", receives.rawValue]
+            + extra
         app.launch()
         self.app = app
 
-        // The coach cards. They are shown once per install, which on a simulator means once
-        // per fresh clone of the device — so a test suite meets them on exactly one run and
-        // then never again, which is the worst possible frequency for something that blocks
-        // every input on the screen. Skipping is what a player does with the same button.
-        let skip = app.buttons["coach.skip"]
-        if skip.waitForExistence(timeout: Self.patience * 0.3) {
-            skip.tap()
-        }
-
-        // The probe itself. If this never appears, nothing below can mean anything, so it is
-        // asserted here rather than being allowed to fail later as a timeout.
+        // The coach cards, and the probe, waited for **together**.
         //
-        // Queried through a local rather than through `probeElement`, because a stored property
+        // The cards are shown once per install, which on a simulator means once per fresh
+        // clone of the device — so a suite meets them on exactly one run and then never
+        // again, which is the worst possible frequency for something that blocks every input
+        // on the screen. Skipping is what a player does with the same button.
+        //
+        // **The two waits are one wait because a `waitForExistence` that fails costs its whole
+        // timeout.** Waiting for the skip button first meant that on every run after the first
+        // — which is every run — each of the eleven tests paid the full coach timeout for a
+        // button that was never going to appear, before it even started looking for the probe.
+        // Racing them costs whichever arrives, which is the probe.
+        //
+        // Queried through locals rather than through `probeElement`, because a stored property
         // is still uninitialised at this point and reaching for `self` to read one computed
-        // property does not compile. The query is the same one.
+        // property does not compile. The queries are the same ones.
         let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        // If the probe never appeared, nothing below can mean anything — so it is asserted
+        // here rather than being allowed to fail later, somewhere else, as a timeout.
         XCTAssertTrue(
-            probe.waitForExistence(timeout: Self.patience),
+            Self.settle(app),
             "the match probe never appeared — was the app launched with `-probe on`?")
 
         // The rectangle the game is on, taken once, so every tap below can be a fraction of
@@ -57,16 +75,141 @@ struct MatchDriver {
         pitchRect = Probe(probe.label).pitch
     }
 
-    /// How long to wait for the app to show its first frame.
+    /// Wait for a freshly launched app to be ready to be touched: the coach cards dealt with
+    /// and the probe on screen. Returns whether it got there.
     ///
-    /// **A CI runner has no GPU.** Locally this app draws a RealityKit scene stepping a match
-    /// at 120 Hz and the probe is on screen in under a second; on `macos-15` the simulator
-    /// falls back to a software renderer, and the first CI run logged `Unable to monitor event
-    /// loop` at t=6.81 s before missing a 10 s wait. That is the machine being slow, not the
-    /// app being wrong — so the wait is generous under `CI` and stays tight locally, where a
-    /// genuinely missing probe should fail fast rather than cost a minute a test.
-    static let patience: TimeInterval =
-        ProcessInfo.processInfo.environment["CI"] == nil ? 10 : 90
+    /// Static and taking the app, because `init` calls it before `self` exists and `relaunch`
+    /// calls it afterwards, and the two must not drift.
+    private static func settle(_ app: XCUIApplication) -> Bool {
+        let skip = app.buttons["coach.skip"]
+        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        let deadline = Date().addingTimeInterval(patience)
+        while Date() < deadline {
+            if skip.exists {
+                skip.tap()
+                continue
+            }
+            if probe.exists { return true }
+        }
+        return false
+    }
+
+    /// Throw this match away and start another one.
+    ///
+    /// **This is what replaced the long wait, and it is the whole reason the suite has no
+    /// timeout sized to a point cycle any more.** `-receive us` puts the disc in our hand a few
+    /// seconds after launch — but it cannot promise the possession *survives* to the gesture. A
+    /// dropped pull hands it straight back, and the next time our team touches it is one point
+    /// cycle later: measured, 35-43 s, on roughly one launch in fifteen.
+    ///
+    /// Waiting that out means a timeout sized to the worst case, which is the thing this task
+    /// existed to remove. A relaunch is a *fresh point with a fresh seed* and it costs **1.3 s**
+    /// — measured, from `Terminate` to the probe being readable. So an unlucky match is not
+    /// waited out, it is discarded, and the budget stays sized to the common case.
+    ///
+    /// Nothing about the gesture under test changes: the new match is the same launch
+    /// arguments, the same configuration, and the same `-receive` side. `pitchRect` is
+    /// deliberately not re-read — it is a fact about the configuration and the device, not about
+    /// the match, and `testThePitchIsTheRectangleTheTapsAssume` is what guards that.
+    @discardableResult
+    func relaunch() -> Bool {
+        app.terminate()
+        app.launch()
+        return Self.settle(app)
+    }
+
+    // MARK: - how long anything is allowed to take
+    //
+    // **There are exactly four durations in this suite and every wait names one of them.**
+    // That is a rule with a scar behind it. `patience` used to be the only knob, and it was
+    // stretched to 90 s under CI — while `wait(timeout: 10)` and `wait(timeout: 5)` literals
+    // sat in the tests, untouched by the override. So the job looked configured for a slow
+    // machine and was not: CI run 31384063453 lost `testHoldingTooLongIsOvercharged` to a
+    // hardcoded 10 s and `testDragBackToTheOriginCancelsTheThrow` to a hardcoded 5 s, both
+    // with a healthy probe. A knob half the waits ignore is worse than no knob, because it
+    // makes the job look tuned. **No `wait` call in this suite passes a number.**
+
+    /// How much slower than a developer's Mac to assume this machine is.
+    ///
+    /// **Named by the runner, not sniffed from the environment, and that is deliberate.** The
+    /// old spelling branched on `CI`, which a dozen local tools set for their own reasons — so
+    /// a developer with `CI=true` exported got the 90 s waits and would never have seen a
+    /// regression that a tight local run fails on. Nothing sets `UITEST_SLOWDOWN` by accident;
+    /// `.github/workflows/ci.yml` sets it explicitly, and the number it sets is reviewable.
+    ///
+    /// Clamped, because an unparseable or absurd value should be a local run rather than a
+    /// silently infinite one, and echoed by `announce()` so every run says which regime it took.
+    static let slowdown: Double = {
+        guard let raw = ProcessInfo.processInfo.environment["UITEST_SLOWDOWN"],
+            let v = Double(raw), v >= 1, v <= 20
+        else { return 1 }
+        return v
+    }()
+
+    /// How long to wait for the app to be *there* — a first frame, the probe on screen, a
+    /// stoppage that is true the instant the match opens.
+    ///
+    /// **12 s, down from 90.** 90 s was sized for the wait it shared with the disc, and that one
+    /// has moved to `possession`, where its worst case can be stated honestly. What is left here
+    /// is a launch and a render, and if those take twelve seconds something is wrong with the
+    /// machine rather than with the pacing — which is a thing a suite should say quickly.
+    static let patience: TimeInterval = 12 * slowdown
+
+    /// How long to wait for **the game to hand us the disc**, before giving up on this match
+    /// and starting another one.
+    ///
+    /// `-receive us` makes the common case a pull settling, flying and being caught: measured,
+    /// 2–6 s. What it cannot promise is that the possession survives to the gesture — a dropped
+    /// pull hands the disc straight back, and then our team next touches it one point cycle
+    /// later, 25–45 s away.
+    ///
+    /// **The answer to that is `relaunch()`, not a bigger number here.** A timeout sized to the
+    /// worst case is exactly what this suite was asked to stop doing: it makes every unlucky run
+    /// slow and it hides the day the common case regresses. Twelve seconds is generous against a
+    /// 2–6 s median and short enough that discarding the match is cheaper than waiting for it.
+    static let possession: TimeInterval = 12 * slowdown
+
+    /// How long to wait for a gesture the app has *already been given* to show up in the
+    /// state — a throw reaching the input tape, a drag resolving to throw or cancel.
+    ///
+    /// Much shorter than `patience` on purpose: this is not waiting for the game to arrive at
+    /// anything, it is waiting for a frame or two plus one accessibility read. If this expires
+    /// the gesture did not land, which is the failure the suite exists to report.
+    static let settle: TimeInterval = 4 * slowdown
+
+    /// How long a test that *samples* — taps repeatedly to measure a rate — may spend doing it,
+    /// as a safety cap rather than as its plan. See `RefusalTests`, which stops on a tap count.
+    ///
+    /// **This is the one test in the suite that genuinely wants a lot of real possession**, and
+    /// it is budgeted rather than waited for: every tap needs our own offence and 1.1 s of
+    /// `calledCutInterval` since the last call, so a rate over a dozen taps costs the better
+    /// part of a minute however fast the possessions arrive. It is not a wait that can be
+    /// removed, because the taps *are* the measurement.
+    static let samplingCap: TimeInterval = 60 * slowdown
+
+    /// Say which timing regime this run took, once, before the first test can be misread.
+    ///
+    /// A duration in this file is only meaningful next to the scale it was measured at, and
+    /// the first question about a UI test that passed slowly is which one it got.
+    static func announce() {
+        guard !announced else { return }
+        announced = true
+        print(
+            "UITEST TIMING: slowdown ×\(slowdown) — patience \(patience)s, settle \(settle)s, "
+                + "sampling cap \(samplingCap)s")
+    }
+    private nonisolated(unsafe) static var announced = false
+
+    /// Which team the launch should hand the opening pull to, said from the test's point of
+    /// view rather than the engine's. See `init`.
+    enum Possession: String {
+        /// We receive the opening pull: the disc is in our hand seconds after launch. Every
+        /// test whose subject is a throw, a charge or an offensive tap wants this.
+        case us
+        /// They receive it, which is what the app does with no argument at all. Only the
+        /// defensive tap wants it, because it is the one control that needs them holding it.
+        case them
+    }
 
     /// Any element by identifier, whatever type SwiftUI decided to make it.
     ///
@@ -212,35 +355,119 @@ struct MatchDriver {
 
     // MARK: - waiting
 
-    /// Poll the probe until a condition holds, and return the state it held in.
+    /// Poll the probe until a condition holds, and return the state it held in — failing the
+    /// test if it never does.
     ///
-    /// A deadline and a fresh read each time, rather than `sleep` plus one read: the match
-    /// runs at 120 ticks a second behind this and the interesting states — our man holding
-    /// the disc, a cut being legal — last for a fraction of a second at a time.
+    /// **The timeout is `patience` by default and no caller in this suite passes a number.**
+    /// One names `Self.settle` and the rest take the default; see the durations note above for
+    /// the two tests the literals that used to live here cost on the runner.
     @discardableResult
     func wait(
-        _ what: String, timeout: TimeInterval = 90, until condition: (Probe) -> Bool,
+        _ what: String, timeout: TimeInterval = MatchDriver.patience,
+        until condition: (Probe) -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) -> Probe {
-        let deadline = Date().addingTimeInterval(timeout)
-        var last = probe()
-        while Date() < deadline {
-            last = probe()
-            if condition(last) { return last }
-            // A tenth of the shortest thing worth waiting for. Tighter than this and the
-            // accessibility traffic starts costing the app frames.
-            usleep(40_000)
-        }
+        if let held = poll(for: timeout, until: condition) { return held }
+        let last = probe()
         XCTFail(
             "timed out after \(Int(timeout))s waiting for \(what) — probe: \(last.raw)",
             file: file, line: line)
         return last
     }
 
+    /// `wait` without the verdict: the state the condition held in, or nil if it never did.
+    ///
+    /// **A deadline and a fresh read each time, rather than `sleep` plus one read.** The match
+    /// runs at 120 ticks a second behind this and the interesting states — our man holding the
+    /// disc, a cut being legal — last for a fraction of a second at a time, so a single read
+    /// after a sleep would miss most of them.
+    ///
+    /// This is the one loop; `wait` adds the failure and nothing else. It is separate because a
+    /// *retry* needs to know that a state did not arrive without that being the test's verdict —
+    /// see `withTheDisc`.
+    func poll(for timeout: TimeInterval, until condition: (Probe) -> Bool) -> Probe? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let now = probe()
+            if condition(now) { return now }
+            // A tenth of the shortest thing worth waiting for. Tighter than this and the
+            // accessibility traffic starts costing the app frames.
+            usleep(40_000)
+        }
+        return nil
+    }
+
     /// Wait for our man to be holding the disc, which is the only state a drag throws in.
+    ///
+    /// On the `possession` budget. Prefer `withTheDisc` in a test that is about to *use* the
+    /// disc: it relaunches an unlucky match instead of waiting for one, which this cannot do.
     @discardableResult
     func waitToThrow(file: StaticString = #filePath, line: UInt = #line) -> Probe {
-        wait("the disc in our hand", until: { $0.canThrow }, file: file, line: line)
+        wait(
+            "the disc in our hand", timeout: Self.possession, until: { $0.canThrow },
+            file: file, line: line)
+    }
+
+    /// Wait for a control to become legal — a cut, a defensive commit — on the same budget as
+    /// the disc itself, because both are the game handing the test a situation rather than the
+    /// app answering for a gesture. The tap tests loop over this, so a situation that comes and
+    /// goes is already tolerated; what they cannot tolerate is it never coming, which is what
+    /// the budget bounds.
+    @discardableResult
+    func waitToAct(
+        _ what: String, until condition: (Probe) -> Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) -> Probe {
+        wait(what, timeout: Self.possession, until: condition, file: file, line: line)
+    }
+
+    /// Wait for the disc, do something with it, and try again if the possession was gone by
+    /// the time the gesture landed.
+    ///
+    /// **The gap between the wait and the gesture is real and it has failed on CI.** `wait`
+    /// returns on a probe read; the gesture that follows costs a press, a drag interpolation
+    /// and a hold, and the match runs at 120 Hz throughout. On run 31384063453
+    /// `testDragBackToTheOriginCancelsTheThrow` waited for `mine=1`, dragged, and read
+    /// `poss=1;mine=0` — the disc had changed hands mid-gesture, so the drag was refused and
+    /// no `dragend` ever arrived. That is not the control being broken and a test must not
+    /// report it as such.
+    ///
+    /// So the shape is: get the disc, act, and let `resolve` say whether the action *reached the
+    /// simulation*. Nil from `resolve` spends the attempt.
+    ///
+    /// **An attempt that never gets the disc at all relaunches rather than waits.** That is the
+    /// difference between this and every earlier version of the harness: a match whose pull we
+    /// lost is discarded for 1.3 s instead of waited out for 40, so no budget here is sized to a
+    /// point cycle. See `relaunch()`.
+    ///
+    /// `resolve` is handed the state *before* the gesture as well as the state now, so a test can
+    /// ask "did the count go up" without capturing a baseline that a relaunch would invalidate —
+    /// a relaunch resets the input tape to zero, and a baseline read before it would never be
+    /// beaten again.
+    ///
+    /// **Nothing in here calls `XCTFail`, and the caller's `guard` is the failure.** A `wait`
+    /// that failed inside would report "timed out waiting for the disc in our hand" for a test
+    /// whose actual complaint is "no gesture produced anything", which names the wrong thing and
+    /// sends the next reader to the wrong file.
+    func withTheDisc<T>(
+        _ what: String, attempts: Int = 4, act: (Probe) -> Void,
+        resolve: (_ before: Probe, _ now: Probe) -> T?
+    ) -> T? {
+        for attempt in 0..<attempts {
+            guard let before = poll(for: Self.possession, until: { $0.canThrow }) else {
+                // This match is not going to give us the disc soon. Take another one — but not
+                // on the last attempt, where a relaunch would only cost time nobody reads.
+                if attempt < attempts - 1 { relaunch() }
+                continue
+            }
+            act(before)
+            if let done = poll(for: Self.settle, until: { resolve(before, $0) != nil })
+                .flatMap({ resolve(before, $0) })
+            {
+                return done
+            }
+        }
+        return nil
     }
 
     // MARK: - touching

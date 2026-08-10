@@ -63,3 +63,8 @@ of hours, because writing entries worked and reading them did not.
 | major | `20260810015209-xcuitest-gestures-are` | XCUITest: gestures are main-thread-only, and one accessibility read costs as long as a HUD plate lives |
 | major | `20260810-every-shape-constant` | Every shape and value constant in the AI port is a metre count measured on 100 x 37 m, and the minis pitch inherits all of them silently |
 | major | `20260810-waittothrow-waits-for` | MatchDriver.waitToThrow waits for OUR player to hold, which with no input happens once per point — 47-96 s against a 90 s timeout, at both formats |
+| minor | `20260810-humancallcut-refuses-without-a-reason` | humanCallCut returns nil for five different reasons and the view has to guess which, because the only public phase is the coarse one |
+| major | `20260810-the-pitch-is-not-the-window` | The pitch is 750x338 at (62,0) of an 874x402 window, so every UI-test tap expressed as a window fraction was aiming somewhere else |
+| major | `20260810-a-hardcoded-timeout-in-a-ui-test` | A CI timeout override only reached the waits that took the default — two tests died on hardcoded 10 s and 5 s literals while the job looked configured |
+| major | `20260810-the-checkout-arrived-reverting-head` | A task brief said the tree was clean and no peers were running; the tree held 863 lines of uncommitted reverts and two peer commits landed mid-task, one in a file I was editing |
+| major | `20260810-a-lost-pull-costs-a-point-cycle` | A UI test cannot wait for a second possession — a lost pull costs a whole point cycle, so the fix is to relaunch the app (1.3 s) rather than wait (40 s) |

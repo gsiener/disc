@@ -102,10 +102,23 @@ jobs:
   ui-tests:
     name: Touch tests (XCUITest)
     runs-on: macos-15
-    # A UI test spends most of its time waiting for the match to reach a state where the
-    # control under test is legal — measured, a possession changes hands about every ten
-    # seconds — so the suite is minutes rather than seconds.
-    timeout-minutes: 40
+    # **The waiting is the story of this job and it has been cut, not padded.**
+    #
+    # A UI test used to spend nearly all of its time waiting for the match to hand the human's
+    # team a possession, which with no input happens about **once per point cycle** — because
+    # `Engine.init` gave the opening pull to team 0, so team 0 received nothing. Measured
+    # headlessly: 25-64 s to the first window and 38-96 s between windows, against waits of
+    # 90 s. Eleven tests took 664 s and passed on margin.
+    #
+    # `-receive us` flips the coin toss (`EngineConfig.startingPullTeam`) so the disc arrives
+    # with the pull, seconds after launch. Nothing about the gestures or the assertions changed
+    # — see ios/UltimateUITests, where each test now names which side of the toss it needs and
+    # why. The waits came down with it; `MatchDriver` carries the three durations and the
+    # measurements.
+    #
+    # This stays generous against a cold runner, a brew install and two simulator boots. It is
+    # a ceiling on a pathology, not a budget the tests are expected to use.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -188,8 +201,11 @@ jobs:
       #
       # The first CI run of these tests failed with the probe never appearing after
       # `Unable to monitor event loop` at t=6.81 s: a software renderer trying to draw a
-      # RealityKit scene stepping a match at 120 Hz. `MatchDriver.patience` answers that
-      # by stretching every wait to 90 s under `CI` while staying tight locally.
+      # RealityKit scene stepping a match at 120 Hz. That is answered by `UITEST_SLOWDOWN`
+      # below — every wait in the suite is a multiple of it — and not by a 90 s constant,
+      # which turned out to reach only the waits that took `wait`'s default and left the
+      # tests' own `timeout: 10` and `timeout: 5` literals running at a laptop's budget.
+      # Two tests died on exactly those two literals in run 31384063453.
       #
       # The mistake was also adding `continue-on-error: true` at the same time. The next
       # run went green — and the tests had not run at all, because the suite no longer
@@ -203,10 +219,25 @@ jobs:
       # thing: it asserts nothing, so there is no verdict to mask. This step is the verdict.)
       #
       # `test-without-building` — the compile already happened, and happened in its own step.
+      #
+      # **`UITEST_SLOWDOWN` is the one timing knob**, and it is set here rather than sniffed.
+      #
+      # It used to be `CI: "true"`, read by `MatchDriver.patience`, and that was wrong twice
+      # over. It was *invisible* to the `wait(timeout: 10)` and `wait(timeout: 5)` literals in
+      # the tests, so a run on this software renderer lost two tests to a developer machine's
+      # budget while the job looked configured for a slow one. And `CI` is a variable a dozen
+      # local tools export for their own reasons, so a developer who happened to have it set
+      # ran the whole suite at CI's generous budget and could not have seen a regression that
+      # a tight local run fails on. A name nothing else uses, carrying the number rather than
+      # a boolean, fixes both: every wait in the suite is a multiple of it, and the multiplier
+      # is reviewable here.
+      #
+      # 4 is measured, not guessed: the runner has no GPU and falls back to a software
+      # renderer, and the durations this suite reports are about four times their local values.
       - name: Run the touch tests
         working-directory: ios
         env:
-          CI: "true"
+          UITEST_SLOWDOWN: "4"
         run: >
           xcodebuild test-without-building
           -project Ultimate.xcodeproj

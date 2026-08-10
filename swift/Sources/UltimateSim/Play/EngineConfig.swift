@@ -93,6 +93,27 @@ public struct EngineConfig: Sendable {
     /// makes. Defaults to the opponent only; set both and the game plays itself.
     public var autoTeams: Set<TeamId> = [1]
 
+    /// WHICH TEAM PULLS TO OPEN — the coin toss, which nothing in this engine models.
+    ///
+    /// `nil` keeps `Engine.init`'s long-standing choice of team 0, made *for* the player:
+    /// pulling is a throw, so a game that opens with something to do beats one that opens
+    /// watching a disc arrive. The rest of the match is unaffected either way —
+    /// `GameState.awardPoint` gives the pull to the scorer, which is the rule, and this
+    /// knob does not touch that.
+    ///
+    /// It is here because the choice has a second consequence nobody was choosing: the
+    /// human's team pulling means the human's team does **not** receive, so the first
+    /// live possession team 0 gets is one whole opponent possession away. That is fine for
+    /// a player, who has a pull to make, and it is 25–64 s of nothing for a test whose
+    /// subject is a throw. `1` — the opponent pulls, we receive — puts the disc in our
+    /// hand a few seconds after the app opens. See `UltimateApp.startingPullTeam`.
+    ///
+    /// **Not carried by `Replay.Recording`**, which has never had a field for it because
+    /// there has never been more than one value. A match saved and restored therefore opens
+    /// its second half from the default, whatever this said. That is invisible while this is
+    /// nil and it is why nothing sets it outside a launch argument.
+    public var startingPullTeam: TeamId? = nil
+
     // MARK: match length
 
     /// First to this many goals wins. `nil` derives it from the format the way the

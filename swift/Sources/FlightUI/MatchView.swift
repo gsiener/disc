@@ -118,6 +118,17 @@ public struct MatchView: View {
     /// and it draws nothing and reads nothing when it is off.
     let showsProbe: Bool
 
+    /// Which team pulls to open, when the launch arguments say — `-receive us` / `them`.
+    ///
+    /// A coin toss and nothing else: it is one value of `EngineConfig.startingPullTeam`,
+    /// read at construction, in the same category as `formatOverride` and `pointsOverride`.
+    /// It exists because the opening pull decides who *receives*, and a test whose subject
+    /// is a throw should not have to wait a whole opponent possession to be handed the disc.
+    /// See `UltimateApp.startingPullTeam` for the measurement that motivated it.
+    ///
+    /// Nil in every normal run, which leaves `Engine.init`'s own choice of team 0 in place.
+    private let startingPullTeam: Int?
+
     /// Whether this view is the one on screen.
     ///
     /// A `TabView` builds a tab when it is first selected and then keeps it alive
@@ -470,10 +481,12 @@ public struct MatchView: View {
     public init(
         format: FieldSpec? = nil, points: Int? = nil, active: Bool = true,
         skipsSetup: Bool = false, demoCharge: Double? = nil, autoDefend: Bool = false,
-        saveCycle: Double? = nil, demoCut: CGPoint? = nil, showsProbe: Bool = false
+        saveCycle: Double? = nil, demoCut: CGPoint? = nil, showsProbe: Bool = false,
+        startingPullTeam: Int? = nil
     ) {
         self.active = active
         self.showsProbe = showsProbe
+        self.startingPullTeam = startingPullTeam
         self.autoDefend = autoDefend
         self.demoCut = demoCut
         self.formatOverride = format
@@ -513,7 +526,8 @@ public struct MatchView: View {
         // so the only cost of touching a setting is a different wind.
         _match = State(
             initialValue: Engine(
-                format: chosen.fieldSpec.gameFormat, seed: s, config: chosen.engineConfig))
+                format: chosen.fieldSpec.gameFormat, seed: s,
+                config: Self.engineConfig(chosen, startingPullTeam: startingPullTeam)))
     }
 
     /// A seed for a new match, drawn from the clock. The engine stays fully
@@ -522,6 +536,16 @@ public struct MatchView: View {
     /// default that made every launch identical.
     private static func freshSeed() -> UInt32 {
         UInt32(truncatingIfNeeded: DispatchTime.now().uptimeNanoseconds)
+    }
+
+    /// The setup's engine config, with the coin toss applied when a launch argument named
+    /// one. Static, and called from `init` as well as from `restart`, because `init` needs
+    /// it before `self` exists — and a REMATCH must open the same way this launch did, or
+    /// `-receive us` would silently stop applying after the first game.
+    private static func engineConfig(_ setup: MatchSetup, startingPullTeam: Int?) -> EngineConfig {
+        var config = setup.engineConfig
+        if let t = startingPullTeam { config.startingPullTeam = t }
+        return config
     }
 
     public var body: some View {
@@ -1263,7 +1287,8 @@ public struct MatchView: View {
 
         seed = Self.freshSeed()
         match = Engine(
-            format: setup.fieldSpec.gameFormat, seed: seed, config: setup.engineConfig)
+            format: setup.fieldSpec.gameFormat, seed: seed,
+            config: Self.engineConfig(setup, startingPullTeam: startingPullTeam))
         cancelDrag()
         // Every render cache the new match invalidates, in one call — see
         // `MatchScene.invalidate`, and the three-copy reset list it replaced.

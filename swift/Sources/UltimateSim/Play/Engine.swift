@@ -260,7 +260,10 @@ public final class Engine {
         // nothing decides it here, so it is chosen for the player rather than against
         // them: pulling is a throw, `humanRelease` will make it, and a game that opens
         // with something to do beats one that opens watching a disc arrive.
-        opts.startingPullTeam = 0
+        //
+        // `EngineConfig.startingPullTeam` is the toss, for the caller who needs the other
+        // side of it. Nil is this line unchanged.
+        opts.startingPullTeam = config.startingPullTeam ?? 0
         opts.rules = { r in
             r.gameTo = goal
             // Halftime at the midpoint of whatever length this game is, which reproduces
