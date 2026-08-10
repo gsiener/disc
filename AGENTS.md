@@ -61,7 +61,15 @@ Managed by [Frog](https://github.com/wevm/frog). Entries live in
 - Log papercuts and friction (tooling, docs, APIs, tests, conventions) as you
   hit them with `npx frog log`.
 - Do not add global, system, or internal friction.
-- Run `npx frog list` first to see what is already known.
+- **Read [`.agents/friction-log/INDEX.md`](.agents/friction-log/INDEX.md) before
+  you start** — every entry's title and severity on one screen. Grep it for the
+  file or subsystem you are about to touch.
+
+Reading is the half that has not been working. There are fifty entries and the
+instruction to `npx frog list` has been in this file the whole time; a diagnosis
+written on 6 August, complete with the preventive fix, was reconstructed from
+scratch on 9 August at a cost of hours. Writing an entry costs a minute. The
+asymmetry is the whole argument.
 
 Write the entry **at the moment you hit the friction**, not at the end of the
 task. This repository has already lost several hard-won findings that way — a
