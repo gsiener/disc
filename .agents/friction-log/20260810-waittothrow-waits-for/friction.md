@@ -26,13 +26,32 @@ waits on:
 `ChargeTests.testAimingAtTheWindowGetsACleanRelease` calls `waitToThrow` twice with five
 retries each.
 
+`ChargeTests` and `TouchTests.testDragReleasesAThrow` both fail this way on CI, where the
+probe reads `poss=1;phase=live;mine=0;flight=0;thrown=0;score=0-0` — ninety seconds of live
+play in which the opponent held throughout and we never touched it.
+
+## Measured on a Mac with a GPU, same simulator, same invocation
+
+Both tests **pass** locally either side of the issue-#66 pitch-scale fix; what changes is
+how close they run to the 90 s wait timeout.
+
+| test | before (`b3a7d10`) | after (`a87b7d5`), two samples |
+|---|---|---|
+| `ChargeTests.testAimingAtTheWindowGetsACleanRelease` | 76.1 s | 66.3 s, 44.6 s |
+| `TouchTests.testDragReleasesAThrow` | 35.1 s | 9.5 s, 28.5 s |
+
+So the fix roughly halves the wait, and 76 s against a 90 s timeout is why CI — which runs a
+software renderer and is slower in wall-clock for the same match time — went red while a
+developer machine stayed green. **The headroom roughly doubled and the structure did not
+change**, and the sample-to-sample spread on `ChargeTests` is 22 s, so this is still a test
+that passes on margin rather than by construction.
+
 ## Why nothing caught it
 
 It was read as a minis authenticity bug — the default mode really was stalling out every
 possession — so the timeout looked like a symptom of that. It is not: sevens, which has
-never had the authenticity problem, waits 47-62 s on the same predicate. Fixing the minis
-stall-out share to 0% (issue #66) moved these numbers around by seed and did not fix them,
-because the wait is not caused by how the AI plays.
+never had the authenticity problem, waits 47-62 s on the same predicate, and no amount of
+making the AI play better removes a wait that is one whole point cycle long.
 
 ## Suggestion
 
