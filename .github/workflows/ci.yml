@@ -186,10 +186,14 @@ jobs:
         run: |
           set -euo pipefail
           xcrun simctl list devices available
-          udid=$(xcrun simctl list devices available --json \
-            | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];print(next(x['udid'] for rt in sorted(d) if 'iOS' in rt for x in d[rt] if x['name'].startswith('iPhone')))")
+          read -r udid name runtime < <(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];rt,x=next((rt,x) for rt in sorted(d) if 'iOS' in rt for x in d[rt] if x['name'].startswith('iPhone'));print(x['udid'],x['name'].replace(' ','_'),rt.rsplit('.',1)[-1])")
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
-          echo "using $udid"
+          # Name and runtime, not just the udid. A udid identifies a run; it does not say what
+          # geometry that run got, and "which device produced this pitch rectangle" is a
+          # question a udid alone cannot answer (issue #13). The touch tests print the same
+          # three facts next to the rectangle itself.
+          echo "using ${name//_/ } — $runtime — $udid"
 
       # **Boot it here, deliberately, and wait for it.**
       #

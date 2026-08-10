@@ -284,8 +284,23 @@ final class RefusalTests: XCTestCase {
         }
         let window = match.app.frame
         let bottom = window.maxY - pitch.maxY
+        // **Named with the device that produced it, which is the whole of issue #13.**
+        //
+        // Two rectangles were known and measured by hand on an iPhone 17 Pro (above). CI then
+        // reported a third — `rect=62,0,750,349` — and there was no way to tell what it came
+        // from, because the runner picks whatever iPhone its Xcode happens to ship (see the
+        // `Pick a simulator` step) and this line named only the numbers. A rectangle nobody can
+        // attribute is a rectangle nobody can decide is correct.
+        //
+        // The simulator sets these three in every process it hosts, so no UIKit import and no
+        // guessing. Empty on a physical device, which is honest rather than wrong.
+        let env = ProcessInfo.processInfo.environment
+        let device = env["SIMULATOR_DEVICE_NAME"] ?? "unknown device"
+        let model = env["SIMULATOR_MODEL_IDENTIFIER"] ?? "?"
+        let runtime = env["SIMULATOR_RUNTIME_VERSION"] ?? "?"
         print(
-            "PLAYABLE RECT: pitch \(pitch) of window \(window) — "
+            "PLAYABLE RECT: on \(device) (\(model), iOS \(runtime)) — "
+                + "pitch \(pitch) of window \(window) — "
                 + "insets l\(pitch.minX - window.minX) t\(pitch.minY - window.minY) "
                 + "r\(window.maxX - pitch.maxX) b\(bottom)")
 
