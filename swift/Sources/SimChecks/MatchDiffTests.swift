@@ -121,32 +121,27 @@ enum MatchDiffTests {
         ]
         var matches = 0
 
-        for seed in g.spec.seeds {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            for _ in 0..<Int(g.spec.seconds / dt) where !e.isOver {
-                e.step(dt: dt)
-                for event in e.drainEvents() {
-                    guard case .turnover(let reason, _, _, _, _, _) = event else { continue }
-                    turnovers[reason.rawValue, default: 0] += 1
-                }
-            }
+        // THE FIXTURE'S POOL IS `MatchPool`'S POOL, and this is asserted rather than assumed
+        // — the spec carries the seeds, the span and the roster size precisely so a fixture
+        // regenerated over a different pool cannot be silently compared against these
+        // matches. `MatchPool` plays them once for this suite, `stoppage` and `calls`.
+        Check.eq(g.spec.seeds, MatchPool.seeds, "the fixture's seeds are the pool's seeds")
+        Check.bitEq(g.spec.seconds / dt, Double(MatchPool.ticks), "and its span is the pool's")
+        for match in MatchPool.matches {
+            for (reason, count) in match.turnovers { turnovers[reason, default: 0] += count }
             matches += 1
-            totals["points"]! += e.game.point
-            let t = e.callTally
+            totals["points"]! += match.point
+            let t = match.calls
             calls["foul"]! += t.foul
             calls["pick"]! += t.pick
             calls["strip"]! += t.strip
             calls["travel"]! += t.travel
             calls["contested"]! += t.contested
-            for team in 0..<2 {
-                let ts = e.game.teamStats(team)
-                totals["attempts"]! += ts.attempts
-                totals["completions"]! += ts.completions
-                totals["goals"]! += ts.goals
-                totals["blocks"]! += ts.blocks
-                totals["stallOuts"]! += ts.stallOuts
-            }
+            totals["attempts"]! += match.attempts
+            totals["completions"]! += match.completions
+            totals["goals"]! += match.goals
+            totals["blocks"]! += match.blocks
+            totals["stallOuts"]! += match.stallOuts
         }
 
         Check.eq(matches, g.matches, "the port played the same number of matches")

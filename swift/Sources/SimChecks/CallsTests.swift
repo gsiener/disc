@@ -41,7 +41,9 @@ enum CallsTests {
     static let dt = 1.0 / 120.0
     /// Seeds shared with `EngineTests.playAndMeasure`, so the call telemetry and the
     /// match telemetry describe the same three matches.
-    static let seeds: [UInt32] = [11, 23, 37]
+    /// Derived from `MatchPool.seeds` rather than repeated, so the three matches this
+    /// asserts on cannot drift away from the eleven the pool plays.
+    static let seeds: [UInt32] = Array(MatchPool.seeds.prefix(3))
 
     /// A wider pool, for the questions a three-match sample cannot answer.
     ///
@@ -52,7 +54,7 @@ enum CallsTests {
     /// a coin landing heads, and the first unrelated change to the throw solver flips it —
     /// which is exactly what happened while this was being written. Eight seeds is a
     /// sample; the property is unchanged and the bar is higher, not lower.
-    static let poolSeeds: [UInt32] = [2, 5, 7, 13, 19, 29, 41, 53]
+    static let poolSeeds: [UInt32] = Array(MatchPool.seeds.dropFirst(3))
 
     static func run() throws {
         callsAreRare()
@@ -66,12 +68,11 @@ enum CallsTests {
         var totals = Engine.CallTally()
         var perMatch: [Int] = []
 
-        for seed in seeds {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            for _ in 0..<(120 * 900) where !e.isOver { e.step(dt: dt) }
-
-            let t = e.callTally
+        // The first three of the eleven, off `MatchPool` — the same three matches this loop
+        // used to play for itself, and the same three `stoppage` and `matchdiff` measure.
+        for match in MatchPool.matches.prefix(seeds.count) {
+            let seed = match.seed
+            let t = match.calls
             perMatch.append(t.total)
             totals.foul += t.foul
             totals.pick += t.pick
@@ -83,7 +84,7 @@ enum CallsTests {
                 "calls/s\(seed): \(t.total) in fifteen minutes — "
                     + "\(t.foul) foul, \(t.pick) pick, \(t.strip) strip, \(t.travel) travel; "
                     + "\(t.contested) contested, \(t.total - t.contested) accepted "
-                    + "(\(e.score[0])-\(e.score[1]) over \(e.game.point - 1) points)")
+                    + "(\(match.score[0])-\(match.score[1]) over \(match.point - 1) points)")
 
             // The band. It is the tripwire for a detector that has become trigger-happy,
             // and it has done that job once — it is what caught the marking foul firing on
@@ -119,11 +120,9 @@ enum CallsTests {
 
         // Every kind that has a detector should be reachable, over the wider pool.
         var pooled = totals
-        for seed in poolSeeds {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            for _ in 0..<(120 * 900) where !e.isOver { e.step(dt: dt) }
-            let t = e.callTally
+        for match in MatchPool.matches.dropFirst(seeds.count) {
+            let seed = match.seed
+            let t = match.calls
             pooled.foul += t.foul
             pooled.pick += t.pick
             pooled.strip += t.strip

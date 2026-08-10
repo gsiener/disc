@@ -298,9 +298,23 @@ enum HumanDefenceTests {
         var routine = 0
         var games = 0
 
-        for seed in [3, 19, 37] as [UInt32] {
+        // THREE WHOLE GAMES TO FIFTEEN, and they are the longest thing in this suite: a 7v7
+        // to 15 takes around forty simulated minutes, where every other match measured
+        // anywhere in `SimChecks` is cut off at fifteen. Nothing here can be shared with
+        // another suite — no other check plays a game out to its target — but the three games
+        // are independent of each other and this loop touches `Check` only after they are
+        // all played, so they are played at the same time. See `MatchPool.concurrently`.
+        struct Tally: Sendable {
+            var routine = 0
+            var nonRoutine = 0
+            var laidOutD = 0
+            var otherD = 0
+            var finished = false
+        }
+        let tallies = MatchPool.concurrently([3, 19, 37]) { seed -> Tally in
             let e = Engine(format: .sevens, seed: seed)
             e.autoTeams = [0, 1]
+            var t = Tally()
             var ticks = 0
             while !e.isOver, ticks < 120 * 60 * 45 {
                 e.step(dt: dt)
@@ -308,16 +322,24 @@ enum HumanDefenceTests {
                 for event in e.drainEvents() {
                     switch event {
                     case .caught(_, _, let grade, _):
-                        if grade == .routine { routine += 1 } else { nonRoutine += 1 }
+                        if grade == .routine { t.routine += 1 } else { t.nonRoutine += 1 }
                     case .turnover(let reason, _, _, _, let grade, _):
                         guard reason == .block || reason == .interception else { continue }
-                        if grade == .layout { laidOutD += 1 } else { otherD += 1 }
+                        if grade == .layout { t.laidOutD += 1 } else { t.otherD += 1 }
                     default:
                         continue
                     }
                 }
             }
-            if e.isOver { games += 1 }
+            t.finished = e.isOver
+            return t
+        }
+        for tally in tallies {
+            routine += tally.routine
+            nonRoutine += tally.nonRoutine
+            laidOutD += tally.laidOutD
+            otherD += tally.otherD
+            if tally.finished { games += 1 }
         }
 
         guard games > 0 else {

@@ -21,8 +21,10 @@ import UltimateSim
 enum StoppageTests {
 
     static let dt = 1.0 / 120.0
-    /// The same eleven matches the rest of the suite measures over.
-    static let seeds: [UInt32] = [11, 23, 37, 2, 5, 7, 13, 19, 29, 41, 53]
+    /// The same eleven matches the rest of the suite measures over — and the same eleven
+    /// `calls` and `matchdiff` measure over, which is why they are played once, in
+    /// `MatchPool`, rather than three times here and twice more there.
+    static let seeds: [UInt32] = MatchPool.seeds
 
     static func run() throws {
         theTimeoutIsCalled()
@@ -46,14 +48,11 @@ enum StoppageTests {
         var called = 0
         var perMatch: [Int] = []
 
-        for seed in seeds {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            for _ in 0..<(120 * 900) where !e.isOver { e.step(dt: dt) }
-
+        for match in MatchPool.matches {
+            let seed = match.seed
             var here = 0
             for t in 0..<2 {
-                let used = e.game.teamStats(t).timeoutsUsed
+                let used = match.timeoutsUsed[t]
                 here += used
                 // Two per half is four per team per match, and the machine is the only
                 // thing that hands them out — so this is a check on the caller not having
@@ -87,18 +86,10 @@ enum StoppageTests {
     /// a decision in, rather than past the 8.5 at which `TeamAI` throws anything at all.
     private static func theCountResumesOneHigher() {
         var resumed: [Int] = []
-        for seed in seeds.prefix(5) {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            var wasTimeout = false
-            for _ in 0..<(120 * 900) where !e.isOver {
-                e.step(dt: dt)
-                let inTimeout = e.game.phase == .timeout
-                if wasTimeout && !inTimeout && e.game.phase == .check {
-                    resumed.append(e.game.pendingStallResume)
-                }
-                wasTimeout = inTimeout
-            }
+        // The first five matches of the pool, in seed order — the same five, and the same
+        // transitions off the same ticks, as when this loop played them itself.
+        for match in MatchPool.matches.prefix(5) {
+            resumed.append(contentsOf: match.resumedCounts)
         }
         Check.ok(!resumed.isEmpty, "some timeout resumed a live possession")
         guard !resumed.isEmpty else { return }
@@ -130,11 +121,15 @@ enum StoppageTests {
     /// count it resumes at: a set play is taken off the catch, so the count comes back at
     /// one, where a panic call comes back at eight.
     private static func theSetPlayTimeoutIsReachable() {
-        var setPlays = 0
-        var panics = 0
-        for seed in seeds {
+        // Not the canonical pool — a different target is a different match — so there is
+        // nothing to share. Eleven independent matches still need not be played one after
+        // another, though; see `MatchPool.concurrently` for why that is safe and why the
+        // counting happens back here rather than in the worker.
+        let counted = MatchPool.concurrently(seeds) { seed -> (Int, Int) in
             let e = Engine(format: .sevens, target: 5, seed: seed)
             e.autoTeams = [0, 1]
+            var setPlays = 0
+            var panics = 0
             var wasTimeout = false
             for _ in 0..<(120 * 900) where !e.isOver {
                 e.step(dt: dt)
@@ -144,7 +139,10 @@ enum StoppageTests {
                 }
                 wasTimeout = inTimeout
             }
+            return (setPlays, panics)
         }
+        let setPlays = counted.reduce(0) { $0 + $1.0 }
+        let panics = counted.reduce(0) { $0 + $1.1 }
         Check.note(
             "timeout reasons over \(seeds.count) games to 5: \(setPlays) set plays, "
                 + "\(panics) stall resets")
@@ -165,30 +163,14 @@ enum StoppageTests {
         var timeouts = 0
         var worstSpread = 0.0
 
-        for seed in seeds.prefix(5) {
-            let e = Engine(format: .sevens, seed: seed)
-            e.autoTeams = [0, 1]
-            for _ in 0..<(120 * 900) where !e.isOver {
-                e.step(dt: dt)
-                guard e.game.phase == .timeout, let id = e.game.thrower,
-                    let thrower = e.players.first(where: { $0.id == id })
-                else { continue }
-                timeouts += 1
-                let pivot = e.game.pivot
-                let d = (
-                    (thrower.pos.x - pivot.x) * (thrower.pos.x - pivot.x)
-                        + (thrower.pos.z - pivot.z) * (thrower.pos.z - pivot.z)
-                ).squareRoot()
-                worstDrift = Swift.max(worstDrift, d)
-                // Nobody on the offence should be at the far goal line waiting for a pull.
-                for p in e.players where p.team == thrower.team {
-                    let away = (
-                        (p.pos.x - pivot.x) * (p.pos.x - pivot.x)
-                            + (p.pos.z - pivot.z) * (p.pos.z - pivot.z)
-                    ).squareRoot()
-                    worstSpread = Swift.max(worstSpread, away)
-                }
-            }
+        // Per-tick during the pool's own pass: every `.timeout` frame with a thrower on the
+        // disc, the thrower's distance from his pivot, and the furthest team-mate from it —
+        // maxima over the same five matches, which a max over per-match maxima is.
+        for match in MatchPool.matches.prefix(5) {
+            timeouts += match.timeoutFrames
+            worstDrift = Swift.max(worstDrift, match.worstThrowerDrift)
+            // Nobody on the offence should be at the far goal line waiting for a pull.
+            worstSpread = Swift.max(worstSpread, match.worstTeamMateDistance)
         }
 
         Check.ok(timeouts > 0, "there were timeout frames to measure")
@@ -222,14 +204,17 @@ enum StoppageTests {
     private static func theZoneIsReachableFromTheWeather() {
         // The bottom of the windy band, so this asserts the worst blow the draw can make
         // rather than a convenient gale.
-        var cfg = EngineConfig.default
-        cfg.fixedWind = Vec2d(0, Playbook.windySpeed.min)
+        var mutable = EngineConfig.default
+        mutable.fixedWind = Vec2d(0, Playbook.windySpeed.min)
+        // Immutable before it is captured: a `var` cannot cross into a concurrent closure,
+        // and the config a match was played with should not be editable afterwards anyway.
+        let cfg = mutable
 
-        var zonePoints = 0
-        var points = 0
-        for seed in seeds.prefix(3) {
+        let pinned = MatchPool.concurrently(Array(seeds.prefix(3))) { seed -> (Int, Int) in
             let e = Engine(format: .sevens, seed: seed, config: cfg)
             e.autoTeams = [0, 1]
+            var zonePoints = 0
+            var points = 0
             var lastPoint = -1
             for _ in 0..<(120 * 600) where !e.isOver {
                 e.step(dt: dt)
@@ -238,7 +223,10 @@ enum StoppageTests {
                 points += 1
                 if e.ai.contains(where: { $0.currentScheme == .zone }) { zonePoints += 1 }
             }
+            return (zonePoints, points)
         }
+        let zonePoints = pinned.reduce(0) { $0 + $1.0 }
+        let points = pinned.reduce(0) { $0 + $1.1 }
         Check.ok(points > 0, "the pinned-weather matches played points")
         Check.note("zone: \(zonePoints) of \(points) points on a pinned \(Playbook.windySpeed.min) m/s day")
         Check.eq(zonePoints, points, "every point of a blow is a zone point")

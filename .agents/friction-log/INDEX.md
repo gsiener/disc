@@ -68,3 +68,4 @@ of hours, because writing entries worked and reading them did not.
 | major | `20260810-a-hardcoded-timeout-in-a-ui-test` | A CI timeout override only reached the waits that took the default — two tests died on hardcoded 10 s and 5 s literals while the job looked configured |
 | major | `20260810-the-checkout-arrived-reverting-head` | A task brief said the tree was clean and no peers were running; the tree held 863 lines of uncommitted reverts and two peer commits landed mid-task, one in a file I was editing |
 | major | `20260810-a-lost-pull-costs-a-point-cycle` | A UI test cannot wait for a second possession — a lost pull costs a whole point cycle, so the fix is to relaunch the app (1.3 s) rather than wait (40 s) |
+| major | `20260810-three-suites-played` | Three suites played the same eleven matches, and nothing in the code said so |
