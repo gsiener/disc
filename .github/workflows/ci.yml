@@ -42,9 +42,7 @@ jobs:
   # plain `swift run` is the whole test harness.
   #
   # macos-15 ships Xcode 16.x, which is the floor for swift-tools-version 6.0
-  # (Package.swift). No SPM dependency cache: the package has zero external
-  # dependencies (no Package.resolved exists), so there is nothing to restore
-  # that a fresh release build would not rebuild anyway.
+  # (Package.swift).
   sim-tests:
     name: Swift differential suite (SimTests)
     runs-on: macos-15
@@ -56,9 +54,39 @@ jobs:
       - name: Swift version
         run: swift --version
 
-      - name: Build and run SimTests
+      # **The cache is of build products, not of dependencies, and that distinction is the
+      # whole point.** This job used to carry a note saying no cache was needed because the
+      # package has zero external dependencies and no `Package.resolved` — which is true of
+      # *dependencies* and irrelevant to the thing that actually costs time. What takes 72.9 s
+      # locally from cold (48 s incremental) is compiling this package's own ~30k lines of
+      # Swift in release mode, and a runner does it from scratch every single run.
+      #
+      # Keyed on the sources, so any change to them is a miss and a full rebuild — this can
+      # make a run slower to start but never wrong. `restore-keys` lets a near-miss start from
+      # the previous build state and recompile only what moved, which is the common case.
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: swift/.build
+          key: spm-release-${{ runner.os }}-${{ hashFiles('swift/Package.swift', 'swift/Sources/**/*.swift') }}
+          restore-keys: |
+            spm-release-${{ runner.os }}-
+
+      # **Compiling is a separate step from testing, for the reason ADR-0006 records and the
+      # touch job already applies.** As one `swift run`, a compile error was reported by the
+      # step that reports the test verdict — so a build failure read as a test failure, and
+      # the timing table nobody had until this was split was impossible to produce. Now a
+      # compile error is red here with the compiler's own message, and the step below reports
+      # only what the assertions did.
+      - name: Build SimTests
         working-directory: swift
-        run: swift run -c release SimTests
+        run: swift build -c release --product SimTests
+
+      # `.build/release/SimTests` rather than `swift run`, which would re-enter the build
+      # system and quietly reintroduce exactly what the split above separated.
+      - name: Run the differential suite
+        working-directory: swift
+        run: .build/release/SimTests
 
   # The iOS app, built for the simulator so no signing identity is needed.
   # The .xcodeproj is generated from ios/project.yml (see the note there — the
