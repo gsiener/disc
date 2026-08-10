@@ -43,20 +43,28 @@ struct MatchDriver {
 
         // The probe itself. If this never appears, nothing below can mean anything, so it is
         // asserted here rather than being allowed to fail later as a timeout.
+        //
+        // Queried through a local rather than through `probeElement`, because a stored property
+        // is still uninitialised at this point and reaching for `self` to read one computed
+        // property does not compile. The query is the same one.
+        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
         XCTAssertTrue(
-            probeElement.waitForExistence(timeout: Self.patience),
+            probe.waitForExistence(timeout: Self.patience),
             "the match probe never appeared — was the app launched with `-probe on`?")
+
+        // The rectangle the game is on, taken once, so every tap below can be a fraction of
+        // the pitch rather than of the window. See `pitchPoint`.
+        pitchRect = Probe(probe.label).pitch
     }
 
     /// How long to wait for the app to show its first frame.
     ///
-    /// **A CI runner has no GPU.** Locally this app draws a RealityKit scene stepping a
-    /// match at 120 Hz and the probe is on screen in under a second; on `macos-15` the
-    /// simulator falls back to a software renderer and the first run logged `Unable to
-    /// monitor event loop` at t=6.81 s before missing a 10 s wait entirely. That is the
-    /// machine being slow, not the app being wrong — so the wait is generous there and
-    /// stays tight locally, where a genuinely missing probe should fail fast rather than
-    /// cost a minute per test.
+    /// **A CI runner has no GPU.** Locally this app draws a RealityKit scene stepping a match
+    /// at 120 Hz and the probe is on screen in under a second; on `macos-15` the simulator
+    /// falls back to a software renderer, and the first CI run logged `Unable to monitor event
+    /// loop` at t=6.81 s before missing a 10 s wait. That is the machine being slow, not the
+    /// app being wrong — so the wait is generous under `CI` and stays tight locally, where a
+    /// genuinely missing probe should fail fast rather than cost a minute a test.
     static let patience: TimeInterval =
         ProcessInfo.processInfo.environment["CI"] == nil ? 10 : 90
 
@@ -114,6 +122,34 @@ struct MatchDriver {
         var dragEnd: String { string("dragend") }
         var cut: String { string("cut") }
         var defence: String { string("def") }
+
+        /// Taps the offence took, taps either half refused, and accepted calls that only
+        /// landed because the empty cone was widened. See `MatchView.callCut`.
+        var taps: Int { int("taps") }
+        var refused: Int { int("refused") }
+        var widened: Int { int("wide") }
+        /// Why the last refusal happened, spelled as `RefusedTap.Reason`.
+        var refusal: String { string("refuse") }
+        /// Every refusal of the run by reason, `nobodyThere:7|tooSoon:2`.
+        var refusalTally: String { string("tally") }
+        /// `Engine.phase`: `setup` before a pull, `live` in a point, `dead` between.
+        var phase: String { string("phase") }
+        var isLive: Bool { phase == "live" }
+
+        /// The rectangle the game is drawn and tapped on, in the window's coordinates.
+        ///
+        /// **It is not the window, and it is a different rectangle in each configuration.**
+        /// Measured on an iPhone 17 Pro in landscape, in an 874 × 402 window: a debug build gives
+        /// the game 750 × 338 at (62, 0) — the instruments tab bar takes 64 pt off the bottom — and
+        /// a release build gives it 750 × 382 at (62, 0), 44 pt more pitch, with only the home
+        /// indicator below it. Both lose 62 pt a side to the display cutout. So a fraction of the
+        /// window is a different piece of grass from a fraction of the pitch, in both
+        /// configurations and differently. See `pitchPoint`.
+        var pitch: CGRect? {
+            let parts = string("rect").split(separator: ",").compactMap { Double($0) }
+            guard parts.count == 4, parts[2] > 0, parts[3] > 0 else { return nil }
+            return CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
+        }
         /// Seconds until the watched body is back on its feet, or nil while it is.
         var recovery: Double? { double("rec") }
         var isOver: Bool { flag("over") }
@@ -148,6 +184,28 @@ struct MatchDriver {
                 }
                 return found
             }
+        }
+        return nil
+    }
+
+    /// Tap somewhere the tap is expected to be refused, and read the refusal plate.
+    ///
+    /// **The retry is a race with the accessibility layer, not with the game.** `RefusedTap`
+    /// lives 1.8 s and a `label` read costs up to 0.9 s of it, with `exists` costing another
+    /// — measured, a single-suite run found the plate and a full-suite run missed the same
+    /// plate for the same tap, with the probe confirming the refusal had happened. Tapping
+    /// again re-arms the plate, which turns a lost race into a slower pass. It is only safe
+    /// for refusals that *stay* refused — a cooldown expires, so a second tap there would be
+    /// accepted, and that test asserts the reason off the probe instead.
+    ///
+    /// Returns the plate's sentence, or nil if every tap left the screen silent.
+    func tapForRefusal(_ where_: XCUICoordinate, attempts: Int = 4) -> String? {
+        for _ in 0..<attempts {
+            where_.tap()
+            let plate = element("hud.refused")
+            guard plate.exists else { continue }
+            let said = plate.label
+            if !said.isEmpty { return said }
         }
         return nil
     }
@@ -195,15 +253,42 @@ struct MatchDriver {
     /// drag uses — so where on the glass the finger lands is the input, and an element
     /// query would be answering a question the game does not ask.
     ///
-    /// **Keep `y` under about 0.8.** These offsets are fractions of the *window*, and a debug
-    /// build is the workbench: `UltimateApp.showsInstruments` puts a five-item tab bar across
-    /// the bottom, so on an iPhone 17 Pro in landscape the pitch is 874 × 338 of a 874 × 402
-    /// window and anything below y ≈ 0.84 is a tab, not grass. A release build has no tab bar
-    /// and the pitch is the whole window — which is a difference worth knowing about before a
-    /// test that passes here is trusted there.
+    /// **These offsets are fractions of the *window*, which is not the pitch in a debug
+    /// build.** `UltimateApp.showsInstruments` puts a five-item tab bar across the bottom, so
+    /// on an iPhone 17 Pro in landscape the pitch is 874 × 338 of an 874 × 402 window and
+    /// anything below y ≈ 0.84 is a tab, not grass; a release build has no tab bar and the
+    /// pitch is the whole window. So the same fraction is different grass in the configuration
+    /// that ships than in the one the tests ran in — which is why anything aiming at the game
+    /// should use `pitchPoint` instead, and why `testThePitchIsTheRectangleTheTapsAssume`
+    /// exists to say which rectangle a run got.
     func point(_ x: Double, _ y: Double) -> XCUICoordinate {
         app.coordinate(withNormalizedOffset: CGVector(dx: x, dy: y))
     }
+
+    /// A point as a fraction of **the pitch** — the rectangle the game is actually drawn and
+    /// tapped on, wherever it sits in the window.
+    ///
+    /// The rectangle comes off the probe (`MatchView.viewFrame`, the one `GeometryReader` that
+    /// knows it), origin included, because it is inset on every side and by a different amount
+    /// in each configuration. So `pitchPoint(0.5, 0.5)` is the middle of the grass in a debug
+    /// build and in a release build, and a tap that means something in one means the same thing
+    /// in the other.
+    ///
+    /// Falls back to the window if the probe has not reported a rectangle yet, which only
+    /// happens before the first frame.
+    func pitchPoint(_ x: Double, _ y: Double) -> XCUICoordinate {
+        guard let pitch = pitchRect else { return point(x, y) }
+        return app.coordinate(withNormalizedOffset: .zero)
+            .withOffset(
+                CGVector(
+                    dx: pitch.minX + x * pitch.width,
+                    dy: pitch.minY + y * pitch.height))
+    }
+
+    /// The pitch rectangle, read once at launch. It cannot change during a test — nothing here
+    /// rotates the device — and reading it is an accessibility query, which is the most
+    /// expensive thing a touch test does.
+    let pitchRect: CGRect?
 
     /// The thrower's end of the drag.
     ///
@@ -211,11 +296,11 @@ struct MatchDriver {
     /// attack. `MatchView.throwGesture` is a `DragGesture` on the whole render surface and
     /// does not care where the drag began — direction and distance are the input — so this
     /// is chosen to look like a thumb on a player rather than because it has to be one.
-    var throwerPoint: XCUICoordinate { point(0.34, 0.62) }
+    var throwerPoint: XCUICoordinate { pitchPoint(0.34, 0.62) }
 
     /// Where a flat forehand at full power finishes: up and to the right, which
     /// `ThrowGesture.interpret` reads as `rise ≈ 0.19` — flat — and `dx >= 0` — forehand.
-    var forehandPoint: XCUICoordinate { point(0.62, 0.50) }
+    var forehandPoint: XCUICoordinate { pitchPoint(0.62, 0.50) }
 
     /// Drag from the thrower and release, with the thumb down for about `hold` seconds.
     ///
