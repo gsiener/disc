@@ -70,3 +70,4 @@ of hours, because writing entries worked and reading them did not.
 | major | `20260810-a-lost-pull-costs-a-point-cycle` | A UI test cannot wait for a second possession — a lost pull costs a whole point cycle, so the fix is to relaunch the app (1.3 s) rather than wait (40 s) |
 | major | `20260810-three-suites-played` | Three suites played the same eleven matches, and nothing in the code said so |
 | minor | `20260810-agents-md-recommends` | AGENTS.md tells every agent to verify in the same directory, and the second one clobbers the first mid-build |
+| major | `20260810-the-deep-shot-is-unreachable-at-minis` | isDeepShot is arithmetically unreachable at minis — 0 of 332 live releases — so the whole huck model is dead code on the default pitch |

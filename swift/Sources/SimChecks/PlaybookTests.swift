@@ -311,6 +311,7 @@ enum PlaybookTests {
         zone(g)
         claims()
         minisPitch()
+        minisShape()
 
         Check.note("worst playbook deviation \(worst) (\(worstUlps) ulp)")
     }
@@ -1172,6 +1173,302 @@ enum PlaybookTests {
             minis.chooseFormation(Vec2d(0, 10), 1, .vertical, 0, 1), .endzone,
             "and calls the endzone set two and a half metres out — the same fraction "
                 + "of a shorter pitch")
+    }
+
+    // MARK: - minis has a SHAPE, not only bounds
+
+    /// **The properties `minisPitch()` above cannot express.** Issue #18.
+    ///
+    /// Every minis assertion in `minisPitch()` has the form `abs(s.x) <= 9 - edgeMargin`,
+    /// and `clampToField` satisfies all of them unconditionally — it is the function that
+    /// puts the point there. The bug they were written after is *in bounds*: the vertical
+    /// stack spans `stackLead + 4 * stackSpacing` = 27.8 m, the minis end line is at 18.5,
+    /// so the back of it clamped into the endzone and stood on itself — with the disc at
+    /// the centre, three of the five cutter stations came back as the same point. Seven
+    /// players, five distinct places to stand, every one of them between the lines. It
+    /// would pass the suite written for it.
+    ///
+    /// Three shape properties are asserted here, and each is stated so that it holds at
+    /// **both** formats — which is the only way a property about scaling can be checked at
+    /// all. A bound that is true only on the pitch it was measured on is the metre literal
+    /// this whole class of bug is made of; see
+    /// `.agents/friction-log/20260810-every-shape-constant`.
+    ///
+    /// The fourth property in the issue — that `isDeepShot` ever fires in a minis match —
+    /// needs a match, so it lives in `EngineTests.playAndMeasure`. It is also the one that
+    /// found something: see `minisIsPlayable`.
+    private static func minisShape() {
+        let minis = Playbook(field: .minis)
+        let formats: [(String, Playbook)] = [("sevens", pb), ("minis", minis)]
+        let names: [Playbook.FormationName] = [.vertical, .horizontal, .side, .endzone]
+        let dirs: [Dir] = [1, -1]
+        let signs: [Playbook.Sign] = [1, -1]
+
+        // ==== 1. THE STATIONS OF A SET ARE SEVEN DISTINCT POINTS ==================
+        //
+        // The sharp form first, on the exact shape the bug had: the five cutters of a
+        // vertical stack at the centre of the pitch, which is where the minis game starts
+        // every possession and where three of the five used to coincide. Every gap is one
+        // `stackSpacing` scaled to the pitch — 4.2 m at sevens, 1.640625 m at minis.
+        //
+        // 1e-12 rather than `bitEq`: the gap is the difference of two independently rounded
+        // sums, so it lands a couple of ulps either side of the product. That is nine orders
+        // of magnitude below the metre this is protecting, and the failure it exists for
+        // — a clamp swallowing a slot — moves a gap to zero, not to its last bit.
+        for (label, p) in formats {
+            let column = p.formationStations(.vertical, Vec2d(0, 0), 1, 1)
+                .filter { $0.role == .cutter }
+            Check.eq(column.count, 5, "\(label): the vertical set stands five cutters")
+            let want = Playbook.PLAY.stackSpacing * p.depthScale
+            for i in 1..<column.count {
+                Check.near(
+                    column[i].z - column[i - 1].z, want, 1e-12,
+                    "\(label): vertical stack slot \(i) is one scaled stackSpacing behind "
+                        + "slot \(i - 1)")
+            }
+            Check.ok(
+                abs(column.last!.z) <= p.field.endLine - p.edgeMargin - 1e-9,
+                "\(label): and the back of the stack is inside the end line without being "
+                    + "clamped there (\(column.last!.z) m)")
+        }
+
+        // The general form: over the whole playing field proper, the set the offence would
+        // actually run there never puts two of its seven stations on the same spot.
+        //
+        // `chooseFormation` picks the set rather than the loop, deliberately. A vertical
+        // stack asked for with the disc 0.8 goal lines out really does clamp its back two
+        // cutters together, on either pitch — but no offence stands in a vertical stack
+        // there, because `chooseFormation` has been in its endzone set since 13 m (scaled)
+        // from the line, and asserting on a set nobody calls would be asserting on nothing.
+        //
+        // The floor is 0.75 m: a body, not an epsilon. The bug it is for is exactly 0, and
+        // the measured worst case is 4.20 m at sevens and 1.01 m at minis — the minis one
+        // being the back of a vertical stack with the disc 0.59 goal lines out, one step
+        // short of the endzone call, where the stack no longer quite fits. That headroom is
+        // small on purpose: it is the residue of the same bug, and it should be visible.
+        let bodyWidth = 0.75
+        for (label, p) in formats {
+            var worst = Double.infinity
+            var worstWhere = ""
+            for prefer in [Playbook.FormationName.vertical, .horizontal, .side] {
+                for wind in [0.0, 9.0] {
+                    for dir in dirs {
+                        for openSign in signs {
+                            for fx in stride(from: -1.0, through: 1.0, by: 0.05) {
+                                for fz in stride(from: -1.0, through: 1.0, by: 0.01) {
+                                    let a = Vec2d(
+                                        fx * p.field.sideline,
+                                        Double(dir) * fz * p.field.goalLine)
+                                    let name = p.chooseFormation(a, dir, prefer, wind, openSign)
+                                    let st = p.formationStations(name, a, dir, openSign)
+                                    for i in 0..<st.count {
+                                        for j in (i + 1)..<st.count {
+                                            let d = Foundation.hypot(
+                                                st[i].x - st[j].x, st[i].z - st[j].z)
+                                            if d < worst {
+                                                worst = d
+                                                worstWhere =
+                                                    "\(name.rawValue) dir \(dir) "
+                                                    + "open \(openSign) wind \(wind) "
+                                                    + "disc "
+                                                    + String(format: "(%.2f, %.2f)", fx, fz)
+                                                    + " of the pitch, stations \(i)/\(j)"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Check.ok(
+                worst >= bodyWidth,
+                "\(label): no two stations of the set the offence would actually run stand "
+                    + "inside a body of each other — closest was "
+                    + String(format: "%.4f", worst) + " m at \(worstWhere)")
+        }
+
+        // ==== 2. A FORMATION IS THE SAME FRACTION OF THE PITCH AT BOTH FORMATS =====
+        //
+        // The property `depthScale` exists to produce, stated as `EngineSeamTests` states
+        // the pull's: put the disc at the same fractional point on each pitch and the set's
+        // downfield extents — how far in front of the disc its front station stands, how
+        // far behind its deepest handler sits, and the span between them — must come out as
+        // the same fraction of the goal line. A single unscaled metre literal anywhere in
+        // `formationStations` breaks this, and no in-bounds check can see it.
+        //
+        // The tolerance is 1e-12 rather than a percentage because the claim is not "close":
+        // `depthScale` is a ratio of two field numbers, so every offset is the regulation
+        // one times an exact factor and the two fractions agree to the last few bits.
+        // Measured worst over the whole sweep: 4.4e-16.
+        //
+        // **The domain stops at 0.53 goal lines, and that is a finding rather than a
+        // convenience.** The two pitches are not similar rectangles: the minis end line is
+        // 1.48 goal lines out where the regulation one is 1.5625, so the 0.869-goal-line
+        // vertical stack runs out of endzone to stand in earlier on the small pitch. Beyond
+        // 0.5393 goal lines `clampToField` starts taking the back of the minis stack and
+        // the fractions part company — 7.5e-4 at 0.540, 5.1e-2 by the endzone call at
+        // 0.59375, and 1.264e-01 at worst over the whole pitch. That is the same shortfall
+        // the assertion above measures as 1.01 m, seen from the other side.
+        let sameFractionTo = 0.53
+        for name in names {
+            for dir in dirs {
+                for openSign in signs {
+                    var worst = 0.0
+                    var worstWhere = ""
+                    for fx in stride(from: -1.0, through: 1.0, by: 0.1) {
+                        for fz in stride(from: -1.0, through: sameFractionTo, by: 0.005) {
+                            let big = downfieldFractions(pb, name, fx, fz, dir, openSign)
+                            let small = downfieldFractions(minis, name, fx, fz, dir, openSign)
+                            let d = Swift.max(
+                                abs(big.front - small.front),
+                                Swift.max(
+                                    abs(big.back - small.back), abs(big.span - small.span)))
+                            if d > worst {
+                                worst = d
+                                worstWhere =
+                                    "disc " + String(format: "(%.2f, %.3f)", fx, fz)
+                                    + " of the pitch — sevens front "
+                                    + String(format: "%.6f", big.front) + " back "
+                                    + String(format: "%.6f", big.back) + ", minis front "
+                                    + String(format: "%.6f", small.front) + " back "
+                                    + String(format: "%.6f", small.back)
+                            }
+                        }
+                    }
+                    Check.ok(
+                        worst <= 1e-12,
+                        "the \(name.rawValue) set occupies the same fraction of the pitch at "
+                            + "both formats (dir \(dir), open \(openSign)): worst deviation "
+                            + String(format: "%.3e", worst) + " at \(worstWhere)")
+                }
+            }
+        }
+
+        // ==== 3. ALL SIX LANES ARE REACHABLE AT BOTH FORMATS ======================
+        //
+        // `laneOf`'s under/deep boundary was a flat 16 m, which is further than the minis
+        // disc is from the back of the endzone — so every cut classified as an under, both
+        // deep lanes were unreachable, and `liveLanes` became a two-lane table that
+        // collided cuts nowhere near each other. A lane is the piece of field a cut
+        // consumes, and a six-lane vocabulary collapsed to two is an offence that will not
+        // let two people run at once.
+        //
+        // Reachability is asserted three ways, weakest to strongest: somewhere on the
+        // pitch, from every disc position the open field offers, and by the cut vocabulary
+        // `buildCut` can actually build.
+        let allLanes = Set(Playbook.ALL_LANES.map(\.rawValue))
+        Check.eq(allLanes.count, 6, "there are six lanes to reach")
+
+        for (label, p) in formats {
+            var union: Set<String> = []
+            var worstFromOneDisc = Int.max
+            var worstWhere = ""
+            for dir in dirs {
+                for openSign in signs {
+                    // The disc a stride inside the coaching band and in the open field —
+                    // on the sideline itself there is no break side to reach, and past the
+                    // endzone call the deep game is over on either pitch.
+                    for fx in [-0.8, -0.4, 0.0, 0.4, 0.8] {
+                        for fz in [-1.0, -0.5, 0.0, 0.3, 0.59] {
+                            let disc = Vec2d(
+                                fx * p.field.sideline, Double(dir) * fz * p.field.goalLine)
+                            var seen: Set<String> = []
+                            for gx in stride(from: -1.0, through: 1.0, by: 0.05) {
+                                for gz in stride(from: -1.0, through: 1.0, by: 0.02) {
+                                    let q = p.clampToField(
+                                        Vec2d(gx * p.field.sideline, gz * p.field.endLine))
+                                    seen.insert(p.laneOf(q.x, q.z, disc, dir, openSign).rawValue)
+                                }
+                            }
+                            union.formUnion(seen)
+                            if seen.count < worstFromOneDisc {
+                                worstFromOneDisc = seen.count
+                                worstWhere =
+                                    "dir \(dir) open \(openSign) disc "
+                                    + String(format: "(%.2f, %.2f)", fx, fz)
+                                    + " of the pitch reached \(seen.sorted())"
+                            }
+                        }
+                    }
+                }
+            }
+            for lane in Playbook.ALL_LANES {
+                Check.ok(
+                    union.contains(lane.rawValue),
+                    "\(label): the \(lane.rawValue) lane is somewhere on the pitch")
+            }
+            Check.eq(
+                worstFromOneDisc, 6,
+                "\(label): every one of the six lanes is reachable from every open-field "
+                    + "disc position — \(worstWhere)")
+
+            // And the offence can build a cut into each of them. `laneOf` classifying a
+            // corner of the pitch as `break-deep` is worth nothing if no route the playbook
+            // knows how to draw ever lands there.
+            var built: Set<String> = []
+            for dir in dirs {
+                for openSign in signs {
+                    for side in signs {
+                        for fx in [-0.8, -0.4, 0.0, 0.4, 0.8] {
+                            for fz in [-1.0, -0.5, 0.0, 0.3, 0.59] {
+                                let disc = Vec2d(
+                                    fx * p.field.sideline, Double(dir) * fz * p.field.goalLine)
+                                for kind in [
+                                    Playbook.CutKind.under, .breakUnder, .deep, .strike,
+                                    .upLine, .dump, .swing,
+                                ] {
+                                    for j in [0.0, 0.5, 1.0] {
+                                        for ahead in [-0.2, 0.3, 0.8] {
+                                            let from = p.clampToField(
+                                                Vec2d(
+                                                    disc.x,
+                                                    disc.z + Double(dir) * ahead
+                                                        * p.field.goalLine))
+                                            built.insert(
+                                                p.buildCut(
+                                                    kind, from, disc, dir, openSign, side, j
+                                                ).lane.rawValue)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for lane in Playbook.ALL_LANES {
+                Check.ok(
+                    built.contains(lane.rawValue),
+                    "\(label): the cut vocabulary can build a route into the "
+                        + "\(lane.rawValue) lane")
+            }
+        }
+    }
+
+    /// A formation's downfield extents relative to the disc, as fractions of the goal line.
+    ///
+    /// `fz` is ATTACK-RELATIVE — `dir * fz * goalLine` — so the same `fz` names the same
+    /// point of the same pitch whichever way the team is going, which is what makes the two
+    /// formats comparable at all.
+    private struct DownfieldFractions {
+        let front: Double
+        let back: Double
+        let span: Double
+    }
+
+    private static func downfieldFractions(
+        _ p: Playbook, _ name: Playbook.FormationName, _ fx: Double, _ fz: Double,
+        _ dir: Dir, _ openSign: Playbook.Sign
+    ) -> DownfieldFractions {
+        let a = Vec2d(fx * p.field.sideline, Double(dir) * fz * p.field.goalLine)
+        let rel = p.formationStations(name, a, dir, openSign).map {
+            Double(dir) * ($0.z - a.z)
+        }
+        let front = (rel.max() ?? 0) / p.field.goalLine
+        let back = (rel.min() ?? 0) / p.field.goalLine
+        return DownfieldFractions(front: front, back: back, span: front - back)
     }
 
     // MARK: - helpers
