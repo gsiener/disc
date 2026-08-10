@@ -19,9 +19,17 @@ permissions:
 # that does not build — which is precisely how a broken `main` went unnoticed
 # here. It also mis-notifies: GitHub renders a cancelled run as
 # "CI: All jobs have failed", so every rapid second push raises a false alarm.
+# The group does the work, not `cancel-in-progress`. On a pull request the key is the ref,
+# so a new push supersedes the old run. On `main` the key is the commit, so every commit gets
+# its own group and nothing can ever be superseded.
+#
+# This was first written as `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`,
+# which does not work: GitHub treats any non-empty string as true here, and a push evaluates
+# the expression to the *string* "false". Run 31390307688 (17ae87d) was duly cancelled two
+# minutes in when the next commit landed — the exact failure the comment above it forbade.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
 
 jobs:
   # The differential suite: SimChecks loads the JSON goldens bundled as package
