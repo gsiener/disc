@@ -570,6 +570,50 @@ public final class TeamAI {
         return v
     }
 
+    // MARK: - refusals
+
+    /// Roster lookups this brain could not make, in the words `Engine.refusals` uses.
+    ///
+    /// **Three `byId[...]!`s used to stand where `body(_:_:)` does now**, and each was
+    /// correct only because the roster is fixed: `stackOrder`'s comparator, the handler
+    /// station fill and the stall clock's marker all spend an id that came out of a list
+    /// built one or more frames earlier, and every one of them was reachable only because
+    /// nothing has ever left `byId` between the two. `Engine.setLine` is documented as the
+    /// seam a substitution system arrives through, and the first line change that drops or
+    /// swaps a body turns each of those into a crash in the middle of a match.
+    ///
+    /// The pattern is `Engine.checkRosterIsIndexable`'s, for the same reason: trap in a
+    /// debug build where a developer sees it, and in release hand the note up to the
+    /// engine, which merges it into `refusals` — a list `EngineTests` asserts stays empty
+    /// across full automated matches on both formats. So a substitution that breaks this
+    /// fails a check rather than either crashing a player's game or passing quietly.
+    ///
+    /// Capped like the engine's own list: a brain that has lost its roster produces one of
+    /// these per body per tick, and an unbounded array would be the second failure.
+    public private(set) var refusals: [String] = []
+    static let maxRefusals = 32
+
+    /// The body carrying this id — **the lookup, not the force-unwrap.** Nil, with a
+    /// report, for an id that is no longer on this brain's roster.
+    func body(_ id: Int, _ site: String) -> AIPlayer? {
+        if let p = byId[id] { return p }
+        note("no body on the roster for id \(id) (\(site))")
+        return nil
+    }
+
+    func note(_ text: String) {
+        if refusals.count < TeamAI.maxRefusals { refusals.append("team \(team): \(text)") }
+        assertionFailure("\(text) [team \(team)]")
+    }
+
+    /// Hand the notes to the owner and forget them. `Engine.step` calls this every tick,
+    /// which is what puts them in front of the checks.
+    public func drainRefusals() -> [String] {
+        if refusals.isEmpty { return [] }
+        defer { refusals.removeAll(keepingCapacity: true) }
+        return refusals
+    }
+
     /// Re-form after a turnover, a score or the start of a point.
     func onPossessionChange(_ world: AIWorld) {
         possessionEpoch += 1
@@ -662,14 +706,19 @@ public final class TeamAI {
             // Front of the stack is whoever is closest to the disc.
             let d = world.disc.pos
             // Total order via the `|| (a - b)` id tiebreak, so stability is moot.
-            stackOrder = cutters.sorted { a, b in
-                let pa = byId[a]!
-                let pb2 = byId[b]!
-                let da = Playbook.dist2(pa.pos.x, pa.pos.z, d.x, d.z)
-                let db = Playbook.dist2(pb2.pos.x, pb2.pos.z, d.x, d.z)
-                if da != db { return da < db }
-                return a < b
-            }
+            //
+            // Sorted over the BODIES rather than over the ids, so the roster lookup happens
+            // once per cutter and outside the comparator. `cutters` is a slice of `ranked`,
+            // which was filtered on `byId` a dozen lines up, so this drops nobody today —
+            // and the day it does, `body` says so instead of the comparator trapping.
+            stackOrder = cutters.compactMap { body($0, "stack order") }
+                .sorted { pa, pb in
+                    let da = Playbook.dist2(pa.pos.x, pa.pos.z, d.x, d.z)
+                    let db = Playbook.dist2(pb.pos.x, pb.pos.z, d.x, d.z)
+                    if da != db { return da < db }
+                    return pa.id < pb.id
+                }
+                .map(\.id)
         } else {
             // Keep the order the stack already has; a demoted handler joins the back.
             var next = stackOrder.filter { cutters.contains($0) }

@@ -153,14 +153,19 @@ extension TeamAI {
         }
 
         // ---- stall clock.
-        if thrower != nil && markerId >= 0 {
+        //
+        // The marker's body is looked up rather than force-unwrapped. `markerId` is either
+        // a `matchup` key or a body out of `mates`, and both are in `byId` today because
+        // the roster never changes mid-point — the day it does, a count on a substituted
+        // marker would have trapped here. A marker with no body is no marker: the count
+        // stops and resets, which is what the `else` already does for no marker at all.
+        if let thrower, markerId >= 0, let mk = body(markerId, "stall clock") {
             if markerId != stallMarker {
                 stallMarker = markerId
                 stallClock = 0
             }
-            let mk = byId[markerId]!
             let d = Playbook.dist2(
-                mk.pos.x, mk.pos.z, thrower!.pos.x, thrower!.pos.z)
+                mk.pos.x, mk.pos.z, thrower.pos.x, thrower.pos.z)
             stallClock = tickStall(stallClock, d, dt)
         } else {
             stallClock = 0

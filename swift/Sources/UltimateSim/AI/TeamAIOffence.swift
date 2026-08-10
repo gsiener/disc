@@ -213,7 +213,10 @@ extension TeamAI {
         let stations = pb.formationStations(formation, anchor, dir, openSign)
             .filter { $0.role == .handler }
         let throwerId = world.disc.carrier
-        var ids = handlerRing.filter { $0 != throwerId && byId[$0] != nil }
+        // Reported rather than silently filtered: a handler in the ring with no body on
+        // the roster is a line change nobody told the offence about, and the station he
+        // was going to stand on is the reset. See `TeamAI.body`.
+        var ids = handlerRing.filter { $0 != throwerId && body($0, "handler stations") != nil }
         handlerStation.removeAll()
         // Fill stations IN ORDER, nearest free handler to each. Station 0 is the reset;
         // with two handlers and one of them holding the disc there is only ever one body
@@ -225,7 +228,8 @@ extension TeamAI {
             var bi = 0
             var bd = 1e9
             for i in 0..<ids.count {
-                let p = byId[ids[i]]!
+                // Already reported at the filter above, so this one is silent.
+                guard let p = byId[ids[i]] else { continue }
                 let d = Playbook.dist2(p.pos.x, p.pos.z, stations[s].x, stations[s].z)
                 if d < bd {
                     bd = d

@@ -79,6 +79,22 @@ public let BID_HESITATION = 0.35
 /// good view of the catch.
 public let BID_LEAD = 0.45
 
+/// The highest a disc can be arriving and still be a DIVE, in metres.
+///
+/// A layout is a horizontal dive: `Locomotion.beginLayout` takes the body prone, and a
+/// prone body's reach ceiling is a little over a metre. Above that the play on the disc
+/// is a jump, not a bid — which is why `defenceInFlight` and `offenceInFlight` both
+/// guarded their bid with a height at all.
+///
+/// The number they guarded it with was 1.85, and NOTHING REACHES IT: `land.y` comes out
+/// of `predictCatchPoint` clamped to `CATCH_CEILING`, 1.45. So the clause was inert, and
+/// a defender under a descending huck arriving at chest height would leave his feet for
+/// it — a dive at a disc he could only ever have jumped at, and two seconds on the turf
+/// when he missed. Measured over three matches, restoring the bid without this took the
+/// longest completion in two of the three seeds from 33 m to 26 m: the deep game was
+/// being taken away by defenders belly-flopping under hucks.
+public let LAYOUT_CEILING = 1.10
+
 /// How far from the disc a player will actually be when it arrives, metres.
 ///
 /// Measured rather than inferred from a time. They cover `d` in `t` seconds, so in the
@@ -170,10 +186,21 @@ public func possessionValue(_ yards: Double) -> Double {
 /// Max range in metres for a throw type, including the wind along the throw.
 public func maxThrowRange(_ p: AIPlayer, _ type: AIThrowType, _ windAlong: Double) -> Double
 {
-    let typeFactor: [AIThrowType: Double] = [
-        .backhand: 1.0, .forehand: 0.93, .hammer: 0.58, .scoober: 0.42, .push: 0.30,
-    ]
-    let base = (21 + 36 * (p.attr.throwPower / 100)) * typeFactor[type]!
+    // **A switch, where the reference has a `Record<ThrowType, number>`.** The reference's
+    // table is total by its own type — TypeScript will not compile a `Record` that misses a
+    // case — and `[AIThrowType: Double]` plus a `!` is not: it is a runtime trap that
+    // happens to be unreachable because the literal below covers all five cases today. A
+    // sixth throw type would compile and then crash mid-match. The switch moves that to
+    // compile time, which is what the reference already had. Same five numbers.
+    let typeFactor: Double
+    switch type {
+    case .backhand: typeFactor = 1.0
+    case .forehand: typeFactor = 0.93
+    case .hammer: typeFactor = 0.58
+    case .scoober: typeFactor = 0.42
+    case .push: typeFactor = 0.30
+    }
+    let base = (21 + 36 * (p.attr.throwPower / 100)) * typeFactor
     return base * (1 + 0.045 * clamp(windAlong, -8, 8)) * (0.86 + 0.14 * p.energy)
 }
 
@@ -211,10 +238,17 @@ public func throwReleaseSpeed(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -
 /// flight is close to constant in distance once the throw is longer than a dump, about
 /// 17 m/s for a 70-power backhand. See the reference for the sweep.
 public func throwFlightTime(_ p: AIPlayer, _ type: AIThrowType, _ d: Double) -> Double {
-    let typeFactor: [AIThrowType: Double] = [
-        .backhand: 1.0, .forehand: 1.0, .hammer: 0.80, .scoober: 0.70, .push: 0.78,
-    ]
-    let arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor[type]!
+    // Exhaustive at compile time rather than by a complete-looking literal — see
+    // `maxThrowRange` above for why. Same five numbers.
+    let typeFactor: Double
+    switch type {
+    case .backhand: typeFactor = 1.0
+    case .forehand: typeFactor = 1.0
+    case .hammer: typeFactor = 0.80
+    case .scoober: typeFactor = 0.70
+    case .push: typeFactor = 0.78
+    }
+    let arrive = (11.0 + 8.6 * (p.attr.throwPower / 100)) * typeFactor
     let flat = 0.28 + d / arrive
     /// **A huck is a different throw and it hangs.** Past `ThrowSolver.loftRange` the
     /// solver stops taking the flat root and throws the disc over the top, and the flight

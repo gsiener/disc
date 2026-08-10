@@ -558,6 +558,11 @@ public final class Engine {
         //    change nothing except make a replay depend on the order.
         var intents: [PlayerIntent] = []
         for team in ai { intents.append(contentsOf: updateTeam(team, world, dt)) }
+        // A brain that could not find a body on its own roster says so here rather than
+        // trapping on a `byId[...]!`. Same channel as everything else the machine refused,
+        // because `EngineTests` asserts that channel is empty over a full match — see
+        // `TeamAI.refusals` and `checkRosterIsIndexable`.
+        for team in ai { for r in team.drainRefusals() { note(r) } }
 
         // 3b. The human's defensive commitment, over the top of the AI's intent for that
         //     one body. Before `actionOf` on purpose — see `applyDefensiveCommit`, and

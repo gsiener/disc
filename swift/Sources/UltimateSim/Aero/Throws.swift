@@ -54,38 +54,61 @@ public struct ThrowSpec: Sendable {
     public enum PlaneRef: Sendable { case velocity, world }
 }
 
-public let THROW_SPECS: [ThrowType: ThrowSpec] = [
-    .backhand: ThrowSpec(
-        speed: (12, 27), spin: (38, 62), spinSign: -1, bank: 0, nose: -0.02,
-        planeRef: .velocity, elevation: 0.10, invert: false,
-        about: "Flat power throw. Turns over slightly while fast, fades back to the left as it slows."
-    ),
-    .forehand: ThrowSpec(
-        speed: (11, 25), spin: (34, 56), spinSign: 1, bank: -0.04, nose: 0.0,
-        planeRef: .velocity, elevation: 0.10, invert: false,
-        about: "Mirror of the backhand: opposite spin, so it turns and fades the other way."
-    ),
-    .hammer: ThrowSpec(
-        speed: (16, 27), spin: (30, 50), spinSign: 1, bank: 0, nose: 0.12,
-        planeRef: .world, elevation: 0.68, invert: true,
-        about: "Overhead, upside down. Inverted lift pulls it over the top and it drops hard and left."
-    ),
-    .scoober: ThrowSpec(
-        speed: (10, 18), spin: (26, 44), spinSign: -1, bank: 0.70, nose: 0.08,
-        planeRef: .world, elevation: 0.34, invert: true,
-        about: "Upside-down backhand grip. Short, breaks the opposite way to a hammer."
-    ),
-    .push: ThrowSpec(
-        speed: (7, 14), spin: (20, 34), spinSign: 1, bank: 0, nose: 0.02,
-        planeRef: .velocity, elevation: 0.10, invert: false,
-        about: "Chest-height dump. Low speed, low spin, dies quickly."
-    ),
-    .blade: ThrowSpec(
-        speed: (15, 26), spin: (34, 54), spinSign: 1, bank: 1.30, nose: 0.02,
-        planeRef: .velocity, elevation: 0.55, invert: false,
-        about: "Thrown on edge. Almost no vertical lift, so it knifes sideways and falls out of the sky."
-    ),
-]
+/// The release conditions for one throw — **total by the compiler**, which the dictionary
+/// below is not.
+///
+/// `THROW_SPECS[type]!` stood at four call sites in this file, and every one of them was
+/// safe only because the literal happens to list all six cases of a six-case enum. That is
+/// an unreachable runtime trap guarding a fact the type system can prove: a seventh throw
+/// would compile and crash on release. The switch is the same table, checked where a
+/// missing case is a build error instead of a crash mid-flight.
+///
+/// The dictionary is kept and derived from this, because it is public API and callers
+/// enumerate it — a second copy of the numbers is exactly what this is avoiding.
+public func throwSpec(_ type: ThrowType) -> ThrowSpec {
+    switch type {
+    case .backhand: return specBackhand
+    case .forehand: return specForehand
+    case .hammer: return specHammer
+    case .scoober: return specScoober
+    case .push: return specPush
+    case .blade: return specBlade
+    }
+}
+
+public let THROW_SPECS: [ThrowType: ThrowSpec] = Dictionary(
+    uniqueKeysWithValues: ThrowType.allCases.map { ($0, throwSpec($0)) })
+
+private let specBackhand = ThrowSpec(
+    speed: (12, 27), spin: (38, 62), spinSign: -1, bank: 0, nose: -0.02,
+    planeRef: .velocity, elevation: 0.10, invert: false,
+    about: "Flat power throw. Turns over slightly while fast, fades back to the left as it slows."
+)
+private let specForehand = ThrowSpec(
+    speed: (11, 25), spin: (34, 56), spinSign: 1, bank: -0.04, nose: 0.0,
+    planeRef: .velocity, elevation: 0.10, invert: false,
+    about: "Mirror of the backhand: opposite spin, so it turns and fades the other way."
+)
+private let specHammer = ThrowSpec(
+    speed: (16, 27), spin: (30, 50), spinSign: 1, bank: 0, nose: 0.12,
+    planeRef: .world, elevation: 0.68, invert: true,
+    about: "Overhead, upside down. Inverted lift pulls it over the top and it drops hard and left."
+)
+private let specScoober = ThrowSpec(
+    speed: (10, 18), spin: (26, 44), spinSign: -1, bank: 0.70, nose: 0.08,
+    planeRef: .world, elevation: 0.34, invert: true,
+    about: "Upside-down backhand grip. Short, breaks the opposite way to a hammer."
+)
+private let specPush = ThrowSpec(
+    speed: (7, 14), spin: (20, 34), spinSign: 1, bank: 0, nose: 0.02,
+    planeRef: .velocity, elevation: 0.10, invert: false,
+    about: "Chest-height dump. Low speed, low spin, dies quickly."
+)
+private let specBlade = ThrowSpec(
+    speed: (15, 26), spin: (34, 54), spinSign: 1, bank: 1.30, nose: 0.02,
+    planeRef: .velocity, elevation: 0.55, invert: false,
+    about: "Thrown on edge. Almost no vertical lift, so it knifes sideways and falls out of the sky."
+)
 
 // The reference writes the `[0,1]` clamp out longhand in each of these three functions
 // and also exports it as `clamp01` from `move/Attributes.ts`. Swift has one namespace
@@ -94,19 +117,19 @@ public let THROW_SPECS: [ThrowType: ThrowSpec] = [
 
 /// Release speed in m/s for a normalised power in [0,1].
 public func throwSpeed(_ type: ThrowType, _ power: Double) -> Double {
-    let s = THROW_SPECS[type]!.speed
+    let s = throwSpec(type).speed
     return s.0 + (s.1 - s.0) * clamp01(power)
 }
 
 /// Normalised power in [0,1] that produces `speed` m/s. Inverse of `throwSpeed`.
 public func powerForSpeed(_ type: ThrowType, _ speed: Double) -> Double {
-    let s = THROW_SPECS[type]!.speed
+    let s = throwSpec(type).speed
     return clamp01((speed - s.0) / (s.1 - s.0))
 }
 
 /// Unsigned spin rate in rad/s for a normalised spin in [0,1].
 public func throwSpinRate(_ type: ThrowType, _ spin: Double) -> Double {
-    let s = THROW_SPECS[type]!.spin
+    let s = throwSpec(type).spin
     return s.0 + (s.1 - s.0) * clamp01(spin)
 }
 
@@ -156,7 +179,7 @@ public func throwDisc(
     spin: Double = 0.5,
     options opts: ThrowOptions = ThrowOptions()
 ) -> DiscState {
-    let spec = THROW_SPECS[type]!
+    let spec = throwSpec(type)
     let hand = opts.sign
 
     var s = DiscState()
