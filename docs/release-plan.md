@@ -144,7 +144,8 @@ Measured from headless 15-minute sevens matches unless noted:
 | Defensive input | none (opponent's possession was a cutscene) | tap to commit a defender ✅ | — |
 | Match survives being killed | no | seed + input log, 436 B ✅ | — |
 | Laid-out D per game | n/a | 1.3 ✅ | rare and earned |
-| Hand-verified by a person | no | **no** ⚠ | someone plays it |
+| Verified by real touches | no | **yes, in CI on every push** ✅ | 11 XCUITest gestures |
+| Subjective feel judged by a human | no | **no** ⚠ | someone plays it |
 
 **Every gameplay target is now met** (as of `c491099`). Holds went 53% → **64%**
 against a 65–75% target, completion to **89.7%**, calls to **3.7/match**, and the
@@ -242,6 +243,37 @@ interleave — authenticity items are sim-side, UX items are app-side, so they
 parallelize cleanly. The two L-sized items (foul pipeline, off-disc controls) are the
 only things allowed to slip past the first TestFlight build; everything else above is
 in it. M3 lands last but CI (in M0) guards the whole run.
+
+## The default mode was never measured
+
+The last item found is the one most worth remembering, because nothing in the suite
+could see it and nothing about the symptom pointed at the cause.
+
+Everything in this game was tuned on **sevens**. **Minis — the format the pre-game
+sheet offers by default, and therefore the first thing anyone would ever play — was
+never measured at all.** It was unplayable: every possession ended at the stall count,
+and the score was 0–0 after 150 seconds.
+
+Three independent measurements found it, none of them a unit test: a human driving real
+touches, a UI test timing out after 90 s waiting for the disc, and the tap-a-cut tests
+routinely waiting 30–90 s for a legal moment.
+
+The cause was neither the AI nor the tactics. `GameFormat` threads the *pitch*
+honestly, but the ~40 bare metre literals the AI **decides** with were never threaded,
+because the playbook had one field and no reason to distinguish "eleven metres" from "a
+fifth of the way to the goal line". The stack spanned nine metres past the minis end
+line; two of six lanes were unreachable; and the whole minis pitch fits inside the flat
+top of the possession-value curve, so a completion gaining a quarter of the field was
+worth +0.036 against a turnover costing 0.46. **A rational thrower holds — and he did,
+to stall 8–9 on two thirds of releases.** The AI was solving the wrong pitch correctly.
+
+Expressing the shapes and the value model as fractions of the field fixed it: stall-outs
+went from 56–89% of turnovers to 0 of 32, cadence from 5.4–7.0 s to 3.7–4.5 s, and a
+game to 7 now finishes. Sevens is bit-identical, because both scales are ratios of two
+field numbers and are exactly 1.0 at regulation.
+
+That is the whole session in one bug: **the code did exactly what it said, and what it
+said had been measured against a world it was no longer running in.**
 
 ## What this project actually learned
 
