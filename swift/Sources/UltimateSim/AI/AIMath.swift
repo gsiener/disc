@@ -43,6 +43,15 @@ public func reachHeight(_ p: AIPlayer) -> Double { 2.02 + 0.88 * (p.attr.jumping
 /// This is the AI's own athleticism model and **buys nothing the rules will honour** —
 /// the engine's layout extension is a flat 1.55 m. It exists so a more agile player
 /// believes in a dive sooner, not so they reach further.
+///
+/// So it is a decision threshold and nothing else, and only two gates take it:
+/// `TeamAIDefence.canPlay` and the human commit gate in `EngineHuman`. The offence does
+/// not — `wantsBid`/`shouldBid` price a bid against the flat `STANDING_REACH` and
+/// `EXTENDED_REACH` instead, so a more agile cutter bids no sooner than anyone else.
+///
+/// It used to ride onward as `PlayerAction.bid(extend:)` as well, which
+/// `Engine.locoAction` discarded — a per-player reach that read as modelled all the way
+/// to the boundary and was applied nowhere.
 public func layoutExtend(_ p: AIPlayer) -> Double {
     0.85 + 0.95 * (p.attr.agility / 100) + 0.35 * (p.attr.jumping / 100)
 }

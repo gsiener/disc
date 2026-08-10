@@ -606,7 +606,6 @@ extension TeamAI {
                 }
                 let pace =
                     contested ? 1 : clamp(0.34 + 0.85 * (t / Swift.max(0.08, land.t)), 0.34, 1)
-                let extend = layoutExtend(p)
                 var mode: AIMoveMode = .sprint
                 var action: PlayerAction?
                 if gap <= 0.15 && land.y > 1.9 && land.y < reachHeight(p) + 0.5 {
@@ -616,7 +615,7 @@ extension TeamAI {
                     // You lay out for a disc you cannot otherwise reach — not for one you
                     // can simply run down. `shouldBid` is the whole test.
                     mode = .layout
-                    action = .bid(x: land.x, z: land.z, extend: extend)
+                    action = .bid(x: land.x, z: land.z)
                 } else if gap <= 0.05 {
                     mode = .catch
                     let diff = clamp(

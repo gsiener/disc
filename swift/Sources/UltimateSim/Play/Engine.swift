@@ -875,7 +875,7 @@ public final class Engine {
     /// here would be inventing a meaning locomotion does not have.
     public static func locoAction(_ a: PlayerAction?) -> IntentAction? {
         switch a {
-        case .bid(let x, let z, _): IntentAction(kind: "bid", x: x, z: z)
+        case .bid(let x, let z): IntentAction(kind: "bid", x: x, z: z)
         case .jump: IntentAction(kind: "jump")
         default: nil
         }

@@ -267,7 +267,14 @@ public enum PlayerAction: Equatable, Sendable {
         /// The thrower's own estimate of completion, 0…1. Telemetry and commentary.
         expected: Double)
     case `catch`(difficulty: Double)
-    case bid(x: Double, z: Double, extend: Double)
+    /// A dive at a point. **Only the point**: how far the diver extends is not carried,
+    /// because nothing downstream can honour it. `Locomotion` gives every layout the same
+    /// extension and `CatchDecision` pays out on a flat `EXTENDED_REACH`, so the per-player
+    /// `layoutExtend` that decides *whether* to bid stays where it is used — the gates in
+    /// `TeamAIDefence.canPlay` and `EngineHuman` — rather than riding along here looking
+    /// like a reach somebody applies. The reference (`src/sim/AI.ts`) still carries an
+    /// `extend` field on its own `bid`; it is write-only there too.
+    case bid(x: Double, z: Double)
     case jump(height: Double)
     case stall(count: Double)
     case pickup

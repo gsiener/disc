@@ -469,10 +469,13 @@ enum TeamAITests {
             approx(expected, dbl(a[9]), "\(tag) throw expected")
         case .catch(let difficulty):
             approx(difficulty, dbl(a[1]), "\(tag) catch difficulty")
-        case .bid(let x, let z, let extend):
+        case .bid(let x, let z):
             approx(x, dbl(a[1]), "\(tag) bid x")
             approx(z, dbl(a[2]), "\(tag) bid z")
-            approx(extend, dbl(a[3]), "\(tag) bid extend")
+            // `a[3]` is the reference's `extend`, deliberately unread. It is write-only in
+            // `src/sim/AI.ts` too — nothing there consumes it either — so the port no longer
+            // carries it on `.bid`. What it holds is `layoutExtend(p)` for the bidding
+            // player, which `AIMathTests` already pins bit for bit against `aimath.json`.
         case .jump(let height):
             approx(height, dbl(a[1]), "\(tag) jump height")
         case .stall(let count):

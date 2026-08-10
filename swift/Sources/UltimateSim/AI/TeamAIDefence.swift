@@ -580,7 +580,7 @@ extension TeamAI {
                     && wantsBid(p, land, stakes: stakes)
                 {
                     mode = .layout
-                    action = .bid(x: land.x, z: land.z, extend: layoutExtend(p))
+                    action = .bid(x: land.x, z: land.z)
                 }
                 let c = pb.clampToField(Vec2d(land.x, land.z), margin: 0.45)
                 out.append(

@@ -573,18 +573,20 @@ extension Engine {
             // away for nothing. Outside it the tap is still a full-effort run at the disc
             // — the commitment stands, it just is not yet a dive.
             let t = timeToReach(p, commit.at.x, commit.at.z)
+            // A gate, not a reach: `layoutExtend` decides when this body believes in a dive.
+            // Nothing downstream extends further for a more agile player.
             let reach = layoutExtend(p)
             let gap = Foundation.hypot(commit.at.x - p.pos.x, commit.at.z - p.pos.z)
             if lp.state == .layout {
                 // Already in the air. Hold the bid so the flag survives the dive.
                 intent.mode = .layout
-                intent.action = .bid(x: commit.at.x, z: commit.at.z, extend: reach)
+                intent.action = .bid(x: commit.at.x, z: commit.at.z)
             } else if commit.at.y > 1.85 && commit.at.y < loco.reachAt(lp, t: 0) + 0.4 && gap < 2.2 {
                 intent.mode = .jump
                 intent.action = .jump(height: commit.at.y)
             } else if gap < reach + 1.4 || t < 0.45 {
                 intent.mode = .layout
-                intent.action = .bid(x: commit.at.x, z: commit.at.z, extend: reach)
+                intent.action = .bid(x: commit.at.x, z: commit.at.z)
             } else {
                 intent.mode = .sprint
                 intent.action = nil

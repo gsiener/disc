@@ -1494,7 +1494,7 @@ enum EngineTests {
     /// the current AI bids rarely enough that no fixed seed reliably produces one, and a
     /// check that only sometimes exercises its subject is not a check.
     private static func bidsReachTheBody() {
-        let bid = Engine.locoAction(.bid(x: 12.5, z: -7.25, extend: 1.4))
+        let bid = Engine.locoAction(.bid(x: 12.5, z: -7.25))
         Check.eq(bid?.kind, "bid", "a bid becomes a bid")
         Check.bitEqViaJSON(bid?.x ?? .nan, 12.5, "and carries its target x")
         Check.bitEqViaJSON(bid?.z ?? .nan, -7.25, "and its target z")
@@ -1516,7 +1516,7 @@ enum EngineTests {
             id: 3, team: 0, targetX: 4, targetZ: 5, faceX: 0, faceZ: 1,
             mode: .layout, effort: 1, desiredSpeed: 8, maxSpeed: 8.5,
             maxAccel: 7, maxDecel: 9, turnRate: 6, arriveRadius: 0.4,
-            personalSpace: 0.6, action: .bid(x: 9.5, z: -3.25, extend: 1.2))
+            personalSpace: 0.6, action: .bid(x: 9.5, z: -3.25))
         var carried = Engine.locoIntent(intent)
         Check.eq(carried.action?.kind, "bid", "locoIntent carries the bid through")
         Check.bitEqViaJSON(carried.action?.x ?? .nan, 9.5, "with its target x intact")
