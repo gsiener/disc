@@ -153,6 +153,10 @@ extension MatchView {
         // And how the last one finished. The abort is a *non-event* — no throw, no plate, no
         // recorded input — so the only way to tell "the cancel worked" from "the gesture
         // never arrived" is to have the gesture say which one it was.
+        //
+        // **Sticky: nothing clears this between gestures**, so a reader that has just made a
+        // drag and sees `cancel` cannot conclude that its own drag was cancelled — it may be
+        // looking at the previous one. Poll it for a *change*, not for a value.
         put("dragend", lastDragEnd)
 
         // The two order plates, as the words they are printing.

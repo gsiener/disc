@@ -208,10 +208,11 @@ final class TouchTests: XCTestCase {
         // **A `refused` drag is a spent attempt, not a result, and this is where CI proved
         // it.** Run 31384063453 timed out here on a hardcoded 5 s with `poss=1;mine=0`: the
         // possession changed hands between the wait and the gesture, so the engine refused the
-        // release and no `dragend` of either kind arrived. Resolving only on a *decided* drag —
-        // `cancel` or `throw` — makes that a retry instead of a failure, and keeps the
-        // assertion exactly as strict: the decision has to be `cancel`.
-        let after = match.withTheDisc(
+        // release and no `dragend` of either kind arrived. Resolving only on a drag *this
+        // attempt* decided — `cancel` or `throw`, and different from what `dragend` already
+        // said — makes that a retry instead of a failure, and keeps the assertion exactly as
+        // strict: the decision has to be `cancel`.
+        let resolved = match.withTheDisc(
             "a drag that comes home",
             act: { _ in
                 // 19 pt across: past the 8 pt floor that starts the gesture, inside the 26 pt
@@ -224,17 +225,46 @@ final class TouchTests: XCTestCase {
                     withVelocity: XCUIGestureVelocity(rawValue: 400),
                     thenHoldForDuration: 0.4)
             },
-            resolve: { _, now in ["cancel", "throw"].contains(now.dragEnd) ? now : nil })
-        guard let after else {
+            resolve: { before, now -> (before: MatchDriver.Probe, after: MatchDriver.Probe)? in
+                // **A change in `dragend`, not a value in it, and the difference is a real
+                // failure rather than a style point.** `dragend` is sticky: `lastDragEnd` holds
+                // the *previous* drag's outcome and nothing clears it, so `contains(now.dragEnd)`
+                // on its own is also satisfied by an earlier attempt whose result landed after
+                // that attempt's `settle` had expired. This poll would then return instantly, on
+                // a gesture it never made, and the assertions below would name the cancel control
+                // for a drag nobody in this attempt performed.
+                //
+                // `before` is the probe read a few milliseconds before the gesture — see
+                // `withTheDisc` — so requiring the field to *move* across the gesture is a tight
+                // statement of "this drag is the one that decided it". What it cannot catch is a
+                // stale result that repeats a value verbatim (a late `cancel` read into `before`,
+                // then a real `cancel`); that spends the attempt, so the worst case is this test
+                // failing as "never resolved" — a complaint about the harness, which is where it
+                // belongs — rather than as "the cancel threw something", which is a false
+                // accusation about the game. Closing it entirely would need a per-gesture counter
+                // on the probe, which `dragend` is not.
+                guard now.dragEnd != before.dragEnd, ["cancel", "throw"].contains(now.dragEnd)
+                else { return nil }
+                return (before, now)
+            })
+        guard let resolved else {
             return XCTFail(
                 "four drags inside the cancel radius were never resolved either way — probe: "
                     + match.probe().raw)
         }
+        let (before, after) = resolved
         XCTAssertEqual(
             after.dragEnd, "cancel",
             "a drag released inside the cancel radius should have been called off — probe: "
                 + after.raw)
-        XCTAssertEqual(after.thrown, 0, "a cancelled drag must not throw anything")
+        // **Against the count before the gesture, not against zero.** An attempt inside
+        // `withTheDisc` may have relaunched the app, which resets `MatchView.inputs` — and even
+        // where it has not, a literal 0 is an assertion about the whole match where the only
+        // claim this test owns is about one drag. Same reasoning as `ChargeTests.throwOnce`.
+        XCTAssertEqual(
+            after.thrown, before.thrown,
+            "a cancelled drag must not throw anything — \(before.thrown) thrown before the "
+                + "gesture, \(after.thrown) after — probe: " + after.raw)
         XCTAssertEqual(after.drag, "none", "the aim overlay should be gone")
     }
 }
