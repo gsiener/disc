@@ -278,17 +278,34 @@ extension TeamAI {
     {
         let n = 10
         var out: [FlightSample] = []
-        // The arc follows the FLIGHT TIME, not the distance — the release-speed
-        // stretch made long throws fast and flat, and the old distance fit modelled a
-        // 30 m huck 1.8 m over the defenders the real disc crossed at head height.
-        let arc = type == .hammer ? 3.2 : 0.28 + 0.36 * tf * tf
+        // **A disc is not a shell, and this used to model one.** The bulge was
+        // `0.28 + 0.36 * tf^2`, a ballistic arc sized off gravity, and `laneBlockage`
+        // reads the height back to decide whether a defender can reach the flight —
+        // discarding every sample above his reach. Together they asserted that any throw
+        // over about 26 m sails clean over everybody: measured over four fifteen-minute
+        // matches, `blockage` was 0.008 on the mean completion and identically 0.000 on
+        // every throw that was actually blocked or intercepted. The AI was not misjudging
+        // coverage; it was blind to it.
+        //
+        // The disc flies flat. Sampled off the real integrator through the solved release,
+        // a backhand released at 1.05 m holds 0.9 to 1.3 m for the whole flight at every
+        // distance from 6 m to 30 m. A huck is the exception and genuinely goes over the
+        // top — see `ThrowSolver.loftRange`.
+        let throwLen = Playbook.dist2(from.x, from.z, to.x, to.z)
+        let arc =
+            type == .hammer
+            ? 3.2 : (throwLen >= ThrowSolver.loftRange ? loftArc : 0.16)
+        // `from` is a player's ground position and `to` is a catch point, so neither y is
+        // the disc's. The flight runs hand to hands.
+        let y0 = Swift.max(from.y, handHeight)
+        let y1 = Swift.max(from.y, handHeight - ThrowSolver.catchDrop)
         for i in 0...n {
             let s = Double(i) / Double(n)
             out.append(
                 FlightSample(
                     t: s * tf,
                     x: Playbook.lerp(from.x, to.x, s),
-                    y: Playbook.lerp(Swift.max(from.y, 1.2), to.y, s) + arc * 4 * s * (1 - s),
+                    y: Playbook.lerp(y0, y1, s) + arc * 4 * s * (1 - s),
                     z: Playbook.lerp(from.z, to.z, s)))
         }
         return out
@@ -336,16 +353,42 @@ extension TeamAI {
     }
 
     /// Metres of separation the receiver will have when the disc arrives.
+    ///
+    /// **The threat is whoever gets to the DISC first, not whoever is standing nearest
+    /// the receiver.** This used to pick the defender closest to the receiver's current
+    /// position and price the pass off him alone, which makes a poach, an undercut and the
+    /// deep help invisible: none of them is the receiver's man, so none of them existed.
+    /// Measured over four fifteen-minute matches, the median interception was a disc taken
+    /// 1.2 m from the intended receiver by a defender 0.5 m off it, on a throw the model
+    /// had priced at 4.1 m of separation.
     func separationAt(_ r: AIPlayer, _ aim: Vec3d, _ tf: Double) -> Double {
-        var bestDef: AIPlayer?
+        var onMan: AIPlayer?
+        var onDisc: AIPlayer?
         var bd = 1e9
+        var ad = 1e9
         for f in foes {
             let d = Playbook.dist2(f.pos.x, f.pos.z, r.pos.x, r.pos.z)
             if d < bd {
                 bd = d
-                bestDef = f
+                onMan = f
+            }
+            let a = Playbook.dist2(f.pos.x, f.pos.z, aim.x, aim.z)
+            if a < ad {
+                ad = a
+                onDisc = f
             }
         }
+        if let onDisc, onDisc !== onMan {
+            return Swift.min(
+                separationFrom(r, onMan, aim, tf), separationFrom(r, onDisc, aim, tf))
+        }
+        return separationFrom(r, onMan, aim, tf)
+    }
+
+    /// `separationAt` against one named defender.
+    func separationFrom(_ r: AIPlayer, _ bestDef: AIPlayer?, _ aim: Vec3d, _ tf: Double)
+        -> Double
+    {
         guard let bestDef else { return 6 }
         let tR = timeToReach(r, aim.x, aim.z)
         let reaction = 0.30 - 0.18 * (bestDef.attr.defAwareness / 100)
