@@ -576,7 +576,7 @@ extension TeamAI {
                 if gap <= 0.1 && land.y > 1.85 && land.y < reachHeight(p) + 0.4 {
                     mode = .jump
                     action = .jump(height: land.y)
-                } else if rec.bidCommit && p.id == onPlay && land.y < 1.85
+                } else if rec.bidCommit && p.id == onPlay && land.y < LAYOUT_CEILING
                     && wantsBid(p, land, stakes: stakes)
                 {
                     mode = .layout

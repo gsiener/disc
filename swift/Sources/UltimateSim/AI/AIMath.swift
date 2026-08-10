@@ -102,6 +102,22 @@ public let BID_LEAD = 0.45
 /// when he missed. Measured over three matches, restoring the bid without this took the
 /// longest completion in two of the three seeds from 33 m to 26 m: the deep game was
 /// being taken away by defenders belly-flopping under hucks.
+///
+/// **This is a DECLARED DIVERGENCE from the oracle** — the first one, under
+/// [ADR-0007](../../../../docs/adr/0007-when-correct-and-matching-the-oracle-disagree.md).
+/// It is declared in `tools/goldens/divergences.ts` against the reference's `1.85`, and
+/// `SimChecks/DivergenceTests.swift` asserts that this value, the declaration, and
+/// `src/sim/AI.ts`'s own source still say what the registry claims they say. Editing it
+/// without editing the registry is a red suite, by construction.
+///
+/// The inertness above was re-measured before this was wired up: three full reference
+/// matches, 202k evaluations of the two in-flight branches, `land.y` never above 1.4498.
+///
+/// It guards the **bid**, at `TeamAIDefence.defenceInFlight`. It deliberately does not
+/// touch the two neighbouring `land.y > 1.85` / `land.y > 1.9` clauses, which are *jump*
+/// gates — the same number in the opposite role. Those still mirror the reference, and
+/// lowering them would switch on a branch that has never once executed rather than tighten
+/// a bid. See ADR-0007's Consequences.
 public let LAYOUT_CEILING = 1.10
 
 /// How far from the disc a player will actually be when it arrives, metres.

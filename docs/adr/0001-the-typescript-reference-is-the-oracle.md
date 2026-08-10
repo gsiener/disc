@@ -40,10 +40,11 @@ does not make requires Swift to deliberately disagree with the oracle — which 
 permanent documented divergence plus a golden regeneration. The port's cheapest path is
 therefore always to match the reference, even where the reference is wrong.
 
-That cost has already produced a visible pathology: `AIMath.LAYOUT_CEILING` was added with
-a twelve-line proof that the reference's `1.85` is unreachable, and then **never called**,
-because calling it would mean diverging. See ADR-0007, which records that this tension has
-no policy yet.
+That cost produced a visible pathology: `AIMath.LAYOUT_CEILING` was added with a twelve-line
+proof that the reference's `1.85` is unreachable, and then **never called**, because calling
+it would mean diverging. [ADR-0007](0007-when-correct-and-matching-the-oracle-disagree.md)
+settles that tension — divergence is allowed and must be declared in a registry the
+differential suite enforces — and `LAYOUT_CEILING` is its first entry and is now called.
 
 **What is unenforced.** Steps 1–3 are enforced by prose in `AGENTS.md` and by nothing
 executable. CI runs no TypeScript at all. See issue #15 — this is a gap in the *enforcement*

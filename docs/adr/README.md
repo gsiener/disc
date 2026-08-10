@@ -16,7 +16,7 @@ unfinished, that is a gap in *carrying out* the decision, not a reason to revisi
 | [0004](0004-pitch-relative-constants-scale.md) | Pitch-relative constants scale; genuinely absolute distances do not | Accepted |
 | [0005](0005-ci-never-cancels-on-main.md) | CI never cancels in-progress runs on `main` | Accepted |
 | [0006](0006-the-xcode-project-is-generated.md) | The Xcode project is generated from `ios/project.yml` | Accepted |
-| [0007](0007-when-correct-and-matching-the-oracle-disagree.md) | When "correct" and "matches the oracle" disagree | **Proposed — needs a decision** |
+| [0007](0007-when-correct-and-matching-the-oracle-disagree.md) | When "correct" and "matches the oracle" disagree | Accepted |
 
 ## Writing a new one
 

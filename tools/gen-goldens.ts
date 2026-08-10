@@ -31,6 +31,7 @@ import { dirname, join } from 'node:path';
 import { coeffGoldens } from './goldens/coeffs.ts';
 import { aiMathGoldens } from './goldens/aimath.ts';
 import { discRuntimeGoldens } from './goldens/discruntime.ts';
+import { divergenceGoldens } from './goldens/divergences.ts';
 import { flightGoldens } from './goldens/flight.ts';
 import { teamAIGoldens } from './goldens/teamai.ts';
 import { humanReleaseGoldens } from './goldens/humanrelease.ts';
@@ -73,6 +74,10 @@ const GENERATORS: Record<string, () => unknown> = {
   'teamai.json': teamAIGoldens,
   'throwsolver.json': throwSolverGoldens,
   'trycatch.json': tryCatchGoldens,
+  // Not a behavioural fixture: the declared Swift-vs-reference divergences (ADR-0007)
+  // plus a scrape of the reference's own AI constants. Regenerate it whenever you touch
+  // a constant on either side — it is the only fixture that reads the reference as text.
+  'divergences.json': divergenceGoldens,
   // Slow (eleven full matches). Named-module runs skip it unless you ask for it.
   'matchdiff.json': matchDiffGoldens,
 };
