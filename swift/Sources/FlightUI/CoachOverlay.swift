@@ -88,6 +88,10 @@ struct CoachOverlay: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            // The one control that gets a player — or a UI test, which meets these cards on
+            // the first launch of every fresh simulator — from the lesson to the pitch in
+            // one touch.
+            .accessibilityIdentifier("coach.skip")
         }
         .padding(.bottom, 12)
     }

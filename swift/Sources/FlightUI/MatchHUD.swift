@@ -29,6 +29,13 @@ import UltimateSim
 ///     plate spent its first screenshot in the middle of the pitch.
 ///   - **Every plate is `.allowsHitTesting(false)`** unless it is a control. The pitch
 ///     underneath is the game, and a caption that eats a throw is worse than no caption.
+///   - **Every plate that is the visible answer to a touch carries an
+///     `accessibilityIdentifier`**, and its words are combined into one label. Those plates
+///     are the oracle the UI tests assert on — `hud.cut` is how a test knows a tap sent a
+///     cutter, `hud.aim` is how it knows a drag went home and read CANCEL — so the
+///     identifiers are part of the contract and not decoration. `.combine` is what makes
+///     the whole plate one element whose label holds both lines; without it the title and
+///     the detail are two anonymous static texts and a test has to guess which is which.
 @available(macOS 15.0, iOS 18.0, *)
 extension MatchView {
 
@@ -111,6 +118,7 @@ extension MatchView {
         )
         .padding(.horizontal, 16)
         .padding(.top, 12)
+        .accessibilityIdentifier("hud.scoreboard")
     }
 
     /// Which way the wind is blowing, and how hard.
@@ -178,6 +186,8 @@ extension MatchView {
             .padding(.top, 62)
             .allowsHitTesting(false)
             .transition(.opacity)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("hud.assist")
         }
     }
 
@@ -197,18 +207,20 @@ extension MatchView {
     @ViewBuilder var defenceReadout: some View {
         if let seconds = match.recovery(of: match.controlled) {
             defencePlate(
+                id: "hud.recovery",
                 title: "DOWN",
                 tint: .orange,
                 detail: String(format: "BACK UP IN %.1fs", seconds))
         } else if let call = defenceCall {
             defencePlate(
+                id: "hud.defence",
                 title: call.title,
                 tint: Color(red: 0.45, green: 0.72, blue: 1),
                 detail: call.detail)
         }
     }
 
-    private func defencePlate(title: String, tint: Color, detail: String) -> some View {
+    private func defencePlate(id: String, title: String, tint: Color, detail: String) -> some View {
         VStack(spacing: 1) {
             Text(title)
                 .font(.system(size: 15, weight: .heavy, design: .monospaced))
@@ -233,6 +245,10 @@ extension MatchView {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .allowsHitTesting(false)
         .transition(.opacity)
+        // One element carrying both lines — "GO GET IT, #9 IS BIDDING" — because the whole
+        // plate is one sentence and a test wants to read the sentence.
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(id)
     }
 
     /// The one line that tells a player defence exists.
@@ -264,6 +280,7 @@ extension MatchView {
                 .padding(.bottom, 96)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)
+                .accessibilityIdentifier("hud.defenceHint")
         }
     }
 
@@ -278,6 +295,7 @@ extension MatchView {
     @ViewBuilder var cutReadout: some View {
         if let call = cutCall, match.possession == 0 {
             defencePlate(
+                id: "hud.cut",
                 title: call.title,
                 tint: Color(red: 1.0, green: 0.55, blue: 0.10),
                 detail: call.detail)
@@ -305,6 +323,7 @@ extension MatchView {
                 .padding(.bottom, 96)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)
+                .accessibilityIdentifier("hud.cutHint")
         }
     }
 
@@ -410,6 +429,8 @@ extension MatchView {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .allowsHitTesting(false)
         .transition(.opacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("hud.callout")
     }
 
     /// The aim line. Drawn in view space rather than in the scene because it is a
@@ -486,6 +507,12 @@ extension MatchView {
             .background(RoundedRectangle(cornerRadius: 7).fill(.black.opacity(0.7)))
             .foregroundStyle(tint)
             .position(x: d.current.x, y: d.current.y - 34)
+            // The label under the thumb, as one readable element: "CANCEL, RELEASE TO KEEP
+            // IT" while the drag is home, "FOREHAND 62%, TO #7" while it is a throw. It is
+            // the only place the cancel state is stated in words, so it is the oracle for
+            // the abort — see `MatchView.cancelRadius`.
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("hud.aim")
         }
         .allowsHitTesting(false)
     }

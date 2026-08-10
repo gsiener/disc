@@ -78,6 +78,11 @@ targets:
     # target. Opening the project in Xcode papers over it by writing a scheme into
     # `xcuserdata`, which is not committed — so it works until someone cleans, and
     # never works on a machine that has not opened the project.
+    #
+    # Deliberately still empty. The UI tests get their own scheme below rather than being
+    # hung off this one, so `xcodebuild -scheme Ultimate build` — which is what CI's
+    # existing iOS job runs and what a person opening the project gets — keeps building
+    # exactly one target and cannot be broken by a test that does not compile.
     scheme:
       testTargets: []
       gatherCoverageData: false
@@ -90,3 +95,83 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+
+  # The one target that touches the game the way a person does.
+  #
+  # **Everything player-facing in this app had been verified twice and touched zero
+  # times.** The throw, the charge, the two taps and the abort were each checked by calling
+  # the function a finger would call, and photographed by pinning a state with a launch
+  # argument (`-charge`, `-defend on`, `-cut`, `-savecycle`). Both are real verification of
+  # correctness and neither is a touch — and six agents established that this environment
+  # cannot synthesise one from outside: `CGEvent` posting reaches the cursor and never the
+  # Simulator, `screencapture -R` is denied, `idb` is not installed, and `xcrun simctl ui`
+  # only sets appearance.
+  #
+  # XCUITest is not outside. It runs in the app's own process and drives UIKit's gesture
+  # recognisers directly, so `tap()`, `press(forDuration:thenDragTo:)` and the coordinate
+  # variants produce touches the `DragGesture` and the `SpatialTapGesture` in `MatchView`
+  # receive as touches. It needs nothing installed, and it runs under `xcodebuild test` —
+  # which means CI, on a different machine, gets the same verification on every push.
+  #
+  # `bundle.ui-testing` rather than `bundle.unit-test`: a unit-test bundle is injected into
+  # the host app and can call its code, which is the thing this project already has plenty
+  # of. A UI-test bundle runs in a *separate* process and may only touch the screen and read
+  # the accessibility tree, which is the constraint that makes a pass mean something.
+  UltimateUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: UltimateUITests
+    dependencies:
+      # The app under test. XcodeGen turns this into TEST_TARGET_NAME plus the build
+      # dependency, which is what lets `XCUIApplication()` find the bundle to launch.
+      - target: Ultimate
+      # The sim, for `ThrowCharge` and `ReleaseGrade`. The charge test asserts that the
+      # grade the app reported for a measured hold is the grade the *model* specifies for
+      # that hold, and re-typing 0.85 and 0.09 into the test would assert only that the
+      # test agrees with itself.
+      - package: UltimateSim
+        product: UltimateSim
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.grahamsiener.ultimate.uitests
+        # Swift 5 here, and 6.0 everywhere else. Nothing in a UI test benefits from strict
+        # concurrency — the bundle owns no state and calls one framework — while plenty of
+        # XCUITest is inconvenient under it: `XCUIElementQuery.firstMatch` is `@MainActor` in
+        # recent SDKs and not in older ones, and the cancel test deliberately runs a gesture
+        # on another queue in order to read the screen while the thumb is still down, which
+        # is a non-`Sendable` capture. Pinning the language mode is how that stays a decision
+        # rather than a different set of diagnostics per Xcode.
+        SWIFT_VERSION: "5"
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 87P5K2MP32
+        # Same reason as the app's, and the same failure without them: an empty
+        # SUPPORTED_PLATFORMS makes xcodebuild reject every destination it is given with a
+        # misleading "iOS <version> is not installed".
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: iphoneos iphonesimulator
+        TARGETED_DEVICE_FAMILY: "1,2"
+
+# A scheme of its own, so `test` is a separate verb from `build`.
+#
+# The `Ultimate` scheme stays exactly what it was — one target, no test action — because it
+# is what CI's iOS job and a person opening the project both use, and adding a test target
+# to it would make a broken test break the build. This scheme is the one that runs touches:
+#
+#   xcodebuild test -scheme UltimateUITests \
+#     -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+schemes:
+  UltimateUITests:
+    build:
+      targets:
+        Ultimate: [run, test]
+        UltimateUITests: [test]
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - UltimateUITests
+    run:
+      config: Debug

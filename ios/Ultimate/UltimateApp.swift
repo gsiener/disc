@@ -133,6 +133,27 @@ struct UltimateApp: App {
         return Double(args[i + 1])
     }()
 
+    /// `-probe on` draws the match state as one line of text a UI test can read.
+    ///
+    /// **This is the argument that finally makes a real touch verifiable.** Every other
+    /// argument above exists because this environment cannot deliver one: `-charge` pins a
+    /// gesture nobody dragged, `-defend on` issues a tap nobody made, `-cut` taps a point
+    /// nobody pointed at. `XCUITest` *can* deliver the touch — it drives UIKit's own
+    /// gesture recognisers in-process — so those arguments stop being the only door. What
+    /// XCUITest cannot do is see inside the app, and two of the facts a touch test needs are
+    /// deliberately not on the HUD: whether it is legal to act yet, and what hold produced
+    /// the grade the meter showed. The probe says both. See `MatchProbe`.
+    ///
+    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -probe on
+    ///
+    /// Off in every normal run, and it changes no simulation state whatsoever — it is a
+    /// `Text` view over the pitch that reads the live engine and writes nothing.
+    static let showsProbe: Bool = {
+        let args = ProcessInfo.processInfo.arguments
+        guard let i = args.firstIndex(of: "-probe"), i + 1 < args.count else { return false }
+        return args[i + 1] == "on"
+    }()
+
     /// The tab named on the command line, or `play` when none was.
     static let requestedTab: Int = {
         let args = ProcessInfo.processInfo.arguments
@@ -184,7 +205,7 @@ struct UltimateApp: App {
                     format: Self.startFormat, points: Self.startPoints, active: tab == 0,
                     skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
                     autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
-                    demoCut: Self.demoCut)
+                    demoCut: Self.demoCut, showsProbe: Self.showsProbe)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
@@ -200,7 +221,7 @@ struct UltimateApp: App {
                 format: Self.startFormat, points: Self.startPoints,
                 skipsSetup: Self.skipsSetup, demoCharge: Self.demoCharge,
                 autoDefend: Self.autoDefend, saveCycle: Self.saveCycle,
-                demoCut: Self.demoCut)
+                demoCut: Self.demoCut, showsProbe: Self.showsProbe)
         }
     }
 }

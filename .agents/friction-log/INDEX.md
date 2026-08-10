@@ -54,4 +54,5 @@ of hours, because writing entries worked and reading them did not.
 | minor | `20260809162502-no-launch-argument` | No launch argument shortens a match, so verifying anything at full time costs ~10 minutes of Simulator wall time |
 | minor | `20260809174419-swift-build-c` | swift build -c release cannot verify your own work while a peer is mid-edit in another target |
 | major | `20260809174439-a-locomotion-replaced` | A Locomotion replaced at each point silently drops its LocoHost, and nothing in the suite notices |
+| major | `20260810015209-xcuitest-gestures-are` | XCUITest: gestures are main-thread-only, and one accessibility read costs as long as a HUD plate lives |
 | minor | `20260809175052-registering-a-simchecks` | Registering a SimChecks suite means committing Harness.swift, which peers add lines to at the same time |

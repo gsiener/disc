@@ -1,0 +1,32 @@
+iPhone 17 Pro simulator, Debug build, HEAD c491099, `-setup off -probe on -points 9`.
+150 s of wall time, no human input at all. One line per change of state.
+
+ZDIAG   0.03 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG   2.70 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  12.39 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  12.71 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  22.09 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  22.50 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  32.29 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  32.40 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+ZDIAG  42.36 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  52.80 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  52.87 poss=0;mine=1;flight=0;cut.ok=0;score=0-0
+ZDIAG  53.50 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+ZDIAG  64.96 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  75.36 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  75.44 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+ZDIAG  85.47 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG  95.89 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG  96.01 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+ZDIAG 105.96 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG 116.28 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG 116.80 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+ZDIAG 126.80 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG 136.57 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG 137.27 poss=1;mine=0;flight=0;cut.ok=0;score=0-0
+ZDIAG 146.65 poss=1;mine=0;flight=1;cut.ok=0;score=0-0
+ZDIAG 146.73 poss=0;mine=1;flight=0;cut.ok=1;score=0-0
+
+Note the ten-second cadence: a throw (`flight=1`) roughly every 10 s and never sooner,
+which is the stall count, and 0-0 after two and a half minutes.

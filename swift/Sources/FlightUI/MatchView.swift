@@ -109,6 +109,15 @@ public struct MatchView: View {
     /// Nil in every normal run.
     private let saveCycle: Double?
 
+    /// Whether to draw the state probe a UI test reads. `-probe on`, and nothing else.
+    ///
+    /// See `MatchProbe`. It is the missing half of `XCUITest` being able to verify this
+    /// game at all: XCUITest can deliver a real touch but can only assert on what is on
+    /// screen, and the two facts a touch test needs — *is it legal to act yet* and *what
+    /// hold produced that grade* — are deliberately not on the HUD. Off in every normal run,
+    /// and it draws nothing and reads nothing when it is off.
+    let showsProbe: Bool
+
     /// Whether this view is the one on screen.
     ///
     /// A `TabView` builds a tab when it is first selected and then keeps it alive
@@ -259,6 +268,20 @@ public struct MatchView: View {
     /// The cut the player has just called, while it is worth saying so. See `CutCall`.
     @State var cutCall: CutCall? = nil
 
+    /// The last release the thumb made, with the hold that graded it. Written by
+    /// `throwGesture` and read only by the probe — see `MatchProbe.Released` for why the
+    /// hold has to be kept rather than re-derived.
+    @State var lastRelease: Released? = nil
+
+    /// How the last drag finished: `throw`, `cancel`, `refused`, or `-` before the first
+    /// one. Written by `throwGesture`, read only by the probe.
+    ///
+    /// The abort is the one control in the game whose success is *nothing happening*, so
+    /// without this a UI test cannot tell a working cancel from a gesture that never reached
+    /// the app at all — which is precisely the failure this whole exercise is trying to rule
+    /// out.
+    @State var lastDragEnd: String = "-"
+
     /// What the aim assist did to the last throw, while it is still worth saying.
     @State var assistToast: AssistToast? = nil
     /// The control swap being announced, while there is one.
@@ -405,9 +428,10 @@ public struct MatchView: View {
     public init(
         format: FieldSpec? = nil, points: Int? = nil, active: Bool = true,
         skipsSetup: Bool = false, demoCharge: Double? = nil, autoDefend: Bool = false,
-        saveCycle: Double? = nil, demoCut: CGPoint? = nil
+        saveCycle: Double? = nil, demoCut: CGPoint? = nil, showsProbe: Bool = false
     ) {
         self.active = active
+        self.showsProbe = showsProbe
         self.autoDefend = autoDefend
         self.demoCut = demoCut
         self.formatOverride = format
@@ -651,6 +675,11 @@ public struct MatchView: View {
                         showCoach = false
                     }
                 }
+
+                // The state a UI test reads, when one asked for it. Last in the stack so
+                // nothing can cover it, and hit-testing-transparent so it cannot cost the
+                // game an input. See `MatchProbe`.
+                probeOverlay
             }
             // `-charge` promises the *whole* gesture and used to deliver two thirds of it.
             // `demoDrag` reached the aim overlay directly, so the aim line, power bar and
@@ -832,18 +861,27 @@ public struct MatchView: View {
                 // function of a drag's numbers and it is right that *if* a release is
                 // made, an 8 pt drag is a throw. Whether to make one is this file's
                 // decision, and a thumb that came back to where it started has said no.
-                guard !d.aborted else { return cancelDrag() }
+                guard !d.aborted else {
+                    lastDragEnd = "cancel"
+                    return cancelDrag()
+                }
                 // The charge, cashed in. The window narrows with the throw's own
                 // difficulty — a blade is 1.60× harder to release cleanly than a
                 // backhand — which is what makes the hard throws hard rather than
                 // merely differently shaped.
                 let charge = ThrowGesture.charge(for: d.type)
-                let grade = charge.grade(hold: clock.hold)
-                let quality = charge.quality(hold: clock.hold)
+                let held = clock.hold
+                let grade = charge.grade(hold: held)
+                let quality = charge.quality(hold: held)
                 let thrown = match.humanRelease(
                     d.type, aim: d.aim, power: d.power, loft: d.loft, quality: quality)
                 cancelDrag()
+                lastDragEnd = thrown ? "throw" : "refused"
                 guard thrown else { return }
+                // The one fact about the throw that nothing else keeps: `clock.hold` was
+                // just zeroed by `cancelDrag`, and the grade is on screen for 1.2 s and not
+                // at all on the plateau. See `MatchProbe`.
+                lastRelease = Released(type: d.type, hold: held, grade: grade)
                 // Written down at the tick that has not run yet, which is where a replay
                 // will apply it — see `Replay.swift` on why the two are the same state
                 // transition. Only a throw the engine accepted is recorded, so the tape

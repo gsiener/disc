@@ -77,3 +77,75 @@ jobs:
           -configuration Release
           build
           CODE_SIGNING_ALLOWED=NO
+
+  # The touch tests. **This is the only job that verifies the game the way a person plays
+  # it.**
+  #
+  # Everything else in this file checks that the simulation computes the right numbers. This
+  # runs the app on a booted simulator and drives real UIKit gestures at it — a drag that
+  # throws, a held drag that is graded, a tap that sends a cutter, a tap that sends a
+  # defender, a drag that comes home and aborts — and asserts on what the HUD says and what
+  # the match's own input tape records. See ios/UltimateUITests for what each one drives and
+  # for the two things XCUITest turned out not to be able to do.
+  #
+  # It is a separate job rather than a step on `ios-build` because it needs a *booted*
+  # simulator and several minutes of match time, while the build job needs neither and should
+  # stay the fast signal.
+  #
+  # **The destination is chosen by runtime, not by name.** `name=iPhone 17 Pro` is a local
+  # fact: macos-15 runners ship an older Xcode with an older device set, and a name that does
+  # not exist there fails the whole job with "Unable to find a device matching the provided
+  # destination specifier" — which reads as a broken test suite rather than as a missing
+  # simulator. `platform=iOS Simulator,OS=latest,name=iPhone 16 Pro` would have the same
+  # problem one Xcode later, so the runner is asked to pick: `xcodebuild` resolves
+  # `id=` from `simctl list` below, which is the only spelling that cannot go stale.
+  ui-tests:
+    name: Touch tests (XCUITest)
+    runs-on: macos-15
+    # A UI test spends most of its time waiting for the match to reach a state where the
+    # control under test is legal — measured, a possession changes hands about every ten
+    # seconds — so the suite is minutes rather than seconds.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Any available iPhone, whichever runtime this runner happens to have. Printed as well
+      # as captured, because "which simulator did CI actually use" is the first question
+      # about a UI test failure that reproduces nowhere else.
+      - name: Pick a simulator
+        id: sim
+        run: |
+          set -euo pipefail
+          xcrun simctl list devices available
+          udid=$(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];print(next(x['udid'] for rt in sorted(d) if 'iOS' in rt for x in d[rt] if x['name'].startswith('iPhone')))")
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+          echo "using $udid"
+
+      - name: Run the touch tests
+        working-directory: ios
+        run: >
+          xcodebuild test
+          -project Ultimate.xcodeproj
+          -scheme UltimateUITests
+          -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
+          CODE_SIGNING_ALLOWED=NO
+
+      # The gestures, the probe readings and the failure screenshots, which are the only way
+      # to tell a real regression from a simulator that never booted.
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-test-results
+          path: |
+            ~/Library/Developer/Xcode/DerivedData/**/Logs/Test/*.xcresult
+          retention-days: 7
+          if-no-files-found: ignore
