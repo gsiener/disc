@@ -204,10 +204,17 @@ final class RefusalTests: XCTestCase {
             // was illegal — which is most of the time, since a call needs our own offence plus
             // 1.1 s of `calledCutInterval`. That is the unpaced read this very comment calls the
             // most expensive thing here. `poll` is the same loop with the 40 ms the rest of the
-            // suite uses, and nil means the possession never came, which ends the sampling
-            // rather than burning the cap on reads.
+            // suite uses.
+            //
+            // **`continue` and not `break`, which is a mistake this loop has already made once.**
+            // Nil here means one possession did not arrive inside `possession`, not that the
+            // sampling is over — the cut this test measures needs *our* offence, so a lapse
+            // longer than 12 s is an ordinary turnover and the next possession is the point of
+            // having a 60 s cap at all. Breaking on it ended run 31395668095 with 5 taps against
+            // a floor of 8, which reads as the tap control being broken and was the sampler
+            // giving up. The outer `while` owns when to stop; this only owns pacing.
             guard let before = match.poll(for: MatchDriver.possession, until: { $0.canCut })
-            else { break }
+            else { continue }
             let t = targets[attempt % targets.count]
             attempt += 1
             match.pitchPoint(t.0, t.1).tap()
