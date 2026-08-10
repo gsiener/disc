@@ -40,10 +40,49 @@ public struct EngineConfig: Sendable {
     /// a force that moves with the disc, which across the reference's six sweep seeds
     /// roughly doubled scoring. Both zone biases are pushed well negative because a zone
     /// renders as bodies with no visible relationship to each other.
+    /// THE ZONE BIASES ARE ZERO, and they used to be -0.55 and -0.45.
+    ///
+    /// They were pushed well negative when a zone rendered as bodies with no visible
+    /// relationship to each other, which is a rendering verdict on a tactic. It has since
+    /// cost more than it bought: `Playbook.shouldPlayZone` maxes its wind term at 1.0, so
+    /// a bias of -0.55 demanded a wind term above 1.05 and no wind on earth could reach
+    /// it. The two negative numbers were a second, hidden reason zone could never be
+    /// called, underneath the weather — fixing the weather alone would not have made the
+    /// 3-2-2 cup appear even once.
+    ///
+    /// At zero, the wind and the scoreboard decide it and nothing else does, which is the
+    /// whole content of `shouldPlayZone`. A game mode that wants a zone team can still say
+    /// so here; that is what the knob is for.
     public var sideStyles: [SideStyle] = [
-        SideStyle(formation: .vertical, force: .forehand, aggressionScale: 1.05, zoneBias: -0.55),
-        SideStyle(formation: .horizontal, force: .middle, aggressionScale: 0.95, zoneBias: -0.45),
+        SideStyle(formation: .vertical, force: .forehand, aggressionScale: 1.05, zoneBias: 0),
+        SideStyle(formation: .horizontal, force: .middle, aggressionScale: 0.95, zoneBias: 0),
     ]
+
+    // MARK: weather
+
+    /// THE DAY THE MATCH IS PLAYED ON.
+    ///
+    /// The draw used to live inline in `Engine.init` as `Vec3d(w.range(-1.5, 1.5), 0,
+    /// w.range(-1.1, 1.1))` — a breeze topping out at 1.86 m/s against a zone trigger
+    /// whose smoothstep does not leave the floor until 4.5. Zone was not rare, it was
+    /// unreachable. `Playbook.drawWeather` owns the distribution and the argument for it;
+    /// this is the engine's hook for pinning or replacing it.
+    ///
+    /// `nil` draws the day from `Playbook.drawWeather` off a fork of the match seed, which
+    /// is the shipping behaviour. Setting it pins the wind — which is how a check, a
+    /// screenshot or a "windy day" game mode gets a guaranteed zone point instead of
+    /// waiting for one match in ten.
+    public var fixedWind: Vec2d? = nil
+
+    /// The wind for a match, drawn from `rng` unless `fixedWind` says otherwise.
+    ///
+    /// Takes the fork rather than making one, so the salt stays at the call site where it
+    /// has always been and a pinned day burns no draws at all.
+    public func wind(from rng: Rng) -> Vec3d {
+        if let w = fixedWind { return Vec3d(w.x, 0, w.z) }
+        let day = Playbook.drawWeather(rng)
+        return Vec3d(day.wind.x, 0, day.wind.z)
+    }
 
     /// Initial value for `Engine.aggression` — how willing both offences are to let it
     /// go, 0.6 (conservative) to 1.6 (gunner). The reference's own knob and the only
@@ -94,6 +133,16 @@ public struct EngineConfig: Sendable {
     /// pull roles reverse — is wired and real; only its duration is tuned to something
     /// a thumb can sit through.
     public var halftimeSeconds: Double = 6.0
+
+    /// Seconds a timeout lasts.
+    ///
+    /// **A deliberate departure from `DEFAULT_RULES`, which says 70**, and the same
+    /// departure the reference makes: `Game.ts` passes 12. Seventy seconds of game clock is
+    /// what the rule says and it is 8400 ticks of a frame in which nothing whatsoever
+    /// happens. Twelve is long enough for both sides to re-form around the disc — which is
+    /// the whole of what a timeout buys, see `Engine.considerTimeout` — and short enough
+    /// that a watcher does not put the phone down.
+    public var timeoutSeconds: Double = 12.0
 
     // MARK: pacing waits
 

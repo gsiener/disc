@@ -127,26 +127,13 @@ extension Engine {
         // are the two base looks of the sport and read nothing alike. The reference's A/B
         // puts them at a dead heat on scoring, so this is chosen for legibility, not tempo.
         //
-        // Both sides defend person. A zone renders as bodies with no visible relationship
-        // to each other, so the bias is pushed well negative rather than left at default.
+        // Both sides defend person unless the day says otherwise — the zone biases are
+        // zero and the wind decides. See `EngineConfig.sideStyles` for why they are no
+        // longer negative, which is a story about arithmetic and not about taste.
         //
         // The table itself lives on `EngineConfig.sideStyles` now, defaults unchanged, so
         // a mode can restyle a side without editing this file.
-        let styles = config.sideStyles
-        ai = (0..<2).map { t in
-            var cfg = DEFAULT_TEAM_CONFIG
-            cfg.seed = 1 + t + 2 * game.point
-            let style = styles[t % styles.count]
-            cfg.formation = style.formation
-            cfg.force = style.force
-            // `aggression` is the engine's exposed knob; the reference's per-side values
-            // are folded into it rather than overriding it, so setting it still means
-            // something and the two sides stay distinguishable.
-            cfg.aggression = aggression * style.aggressionScale
-            cfg.zoneBias = style.zoneBias
-            return TeamAI(
-                team: t, dir: dirFor(t), rng: rng, cfg: cfg, field: format.field)
-        }
+        buildTeamAIs()
 
         // Declare the lines. They are already the default rosters, so this changes
         // nothing today; it is here because the machine's contract is that a line is
@@ -169,6 +156,41 @@ extension Engine {
         disc.wind = wind
         controlled = nearestOnTeam(0, to: Vec3d(game.discPos.x, 0, game.discPos.z))
         syncDisc()
+    }
+
+    /// One `TeamAI` per side, from `config.sideStyles`.
+    ///
+    /// Called once per point by `stagePoint`, **and again by `considerTimeout`** — because
+    /// a `TeamAI` carries the plan, not the bodies: stack slots, matchups, the defensive
+    /// scheme and each cutter's live cut with the state it is in. None of that changes
+    /// because play stopped, so a timeout that only paused the clock handed the offence
+    /// back exactly the beaten shape it called the timeout to escape. Rebuilding is the
+    /// huddle: same fourteen people, same disc on the same blade of grass, new plan.
+    ///
+    /// `epoch` keeps a mid-point rebuild from replaying the point's opening noise. It is
+    /// derived — the two teams' `timeoutsUsed` added together — rather than stored, so
+    /// there is no counter to forget to clear, and it is zero for every rebuild that
+    /// happens at a point boundary of a match with no timeouts in it. Which is what makes
+    /// this refactor bit-identical for such a match.
+    func buildTeamAIs() {
+        let styles = config.sideStyles
+        let epoch = game.teamStats(0).timeoutsUsed + game.teamStats(1).timeoutsUsed
+        ai = (0..<2).map { t in
+            var cfg = DEFAULT_TEAM_CONFIG
+            // The reference's `1 + t + 2 * point`, plus a stride per stoppage that is wide
+            // enough not to collide with the next point's pair.
+            cfg.seed = 1 + t + 2 * game.point + 4096 * epoch
+            let style = styles[t % styles.count]
+            cfg.formation = style.formation
+            cfg.force = style.force
+            // `aggression` is the engine's exposed knob; the reference's per-side values
+            // are folded into it rather than overriding it, so setting it still means
+            // something and the two sides stay distinguishable.
+            cfg.aggression = aggression * style.aggressionScale
+            cfg.zoneBias = style.zoneBias
+            return TeamAI(
+                team: t, dir: dirFor(t), rng: rng, cfg: cfg, field: format.field)
+        }
     }
 
     /// The player who pulls this point: the first name on the pulling team's line.
@@ -202,21 +224,93 @@ extension Engine {
     func autoPull() {
         guard let p = player(puller) else { return }
         let dir = Double(dirFor(game.pullingTeam))
-        let landZ = dir * format.field.goalLine * 0.6
-        let flat = Vec3d(-p.pos.x, 0, landZ - p.pos.z)
+        let target = Vec3d(0, 0, dir * format.field.goalLine * 0.6)
+        let from = Vec3d(p.pos.x, 1.25, p.pos.z)
 
+        // AIM AT THE SPOT, THEN AIM AT WHERE THE MISS SAYS TO AIM.
+        //
+        // A pull drifts. It drifts because a backhand fades, and it drifts a great deal
+        // more because the wind pushes it — and this aimed straight at the target and
+        // accepted whatever came of that. On the minis pitch, which is 18 m wide, a 1.5 m/s
+        // crosswind is enough to put the pull out the side: measured at **0.27 goal lines of
+        // carry** on one of `EngineSeamTests`' four seeds, because the out-of-bounds spot is
+        // where the pull resolved. The reference does not have this bug — `Game.ts` offsets
+        // its aim by a `PULL_DRIFT` constant for exactly this reason, with the comment "this
+        // is what a player does: pick a target, account for the curve."
+        //
+        // A constant is the wrong instrument here, because the drift is mostly the weather
+        // and the weather is not a constant. `probeThrow` integrates the very flight that is
+        // about to happen, wind and all, and reports where it lands — so the aim is
+        // corrected by the miss it predicts. One iteration is enough: the correction is
+        // perpendicular to the throw, so it barely changes the range the power was solved
+        // for, and a second pass moves the landing by centimetres.
+        var aimAt = target
+        var req = pullRequest(from: from, at: aimAt, dir: dir)
+        // **ONLY IN A WIND**, and the deadband is the same 2 m/s `pullAngle` uses. A calm
+        // day's drift is the backhand's own fade, which is a metre and was there before any
+        // of this; correcting it on a calm day would change the opening throw of nine
+        // matches in ten and every per-seed statistic downstream of it, to fix a problem
+        // those matches do not have. See `Playbook.drawWeather` for the same argument about
+        // draw order.
+        let windSpeed = (wind.x * wind.x + wind.z * wind.z).squareRoot()
+        guard windSpeed > 2 else {
+            releasePull(req)
+            return
+        }
+        let probe = disc.probeThrow(req, catchY: 0.15)
+        let line = Vec3d(aimAt.x - from.x, 0, aimAt.z - from.z)
+        let len = (line.x * line.x + line.z * line.z).squareRoot()
+        // A probe that did not resolve — `probeThrow` gives up after six seconds — reports
+        // wherever the disc happened to be, and correcting off that is worse than not
+        // correcting at all. The cap is the same argument one step further out: a correction
+        // is a metre or three of drift, so anything past a third of the pitch is a sign the
+        // probe is describing a different throw from the one about to be made.
+        if len > 1e-9, probe.dist > 1 {
+            let ux = line.x / len, uz = line.z / len
+            // The miss, with its along-the-throw component removed — that half is
+            // `solvePower`'s job and it has already done it.
+            let mx = probe.x - target.x, mz = probe.z - target.z
+            let along = mx * ux + mz * uz
+            let cap = format.field.width * 0.35
+            let fixX = Swift.min(cap, Swift.max(-cap, -(mx - along * ux)))
+            let fixZ = Swift.min(cap, Swift.max(-cap, -(mz - along * uz)))
+            aimAt = Vec3d(aimAt.x + fixX, 0, aimAt.z + fixZ)
+            req = pullRequest(from: from, at: aimAt, dir: dir)
+        }
+        releasePull(req)
+    }
+
+    /// The pull as a throw request: aimed at `at`, lofted unless it is into a wind, and
+    /// powered by whatever `solvePower` says reaches that far.
+    private func pullRequest(from: Vec3d, at: Vec3d, dir: Double) -> ThrowRequest {
+        let flat = Vec3d(at.x - from.x, 0, at.z - from.z)
         var req = ThrowRequest(
             type: .backhand,
-            from: Vec3d(p.pos.x, 1.25, p.pos.z),
+            from: from,
             aim: flat.lengthSq < 1e-9 ? Vec3d(0, 0, dir) : flat.normalized,
             power: 1,
             // A pull is hucked up. The hang is what gives the receiving team the time to
             // read it, and it is the difference between a pull and a long pass.
-            angle: 0.30,
+            angle: pullAngle(into: flat),
             spin: 0.9,
-            hand: p.handed == .left ? .left : .right)
+            hand: player(puller)?.handed == .left ? .left : .right)
         req.power = solvePower(req, wantRange: flat.length)
-        releasePull(req)
+        return req
+    }
+
+    /// Launch angle for a pull thrown along `flat`, flattened by any headwind.
+    ///
+    /// 0.30 rad of loft with nothing on it, falling by 0.022 rad for every metre per second
+    /// of headwind past the first two, floored at 0.10 — flat and driven, which is what a
+    /// puller does in a gale. A tailwind is left alone: extra hang downwind is a gift to
+    /// the pulling team and the reason a captain takes that end.
+    func pullAngle(into flat: Vec3d) -> Double {
+        let len = (flat.x * flat.x + flat.z * flat.z).squareRoot()
+        guard len > 1e-9 else { return 0.30 }
+        // Positive is a tailwind: the wind pushing the disc the way it is going.
+        let along = (wind.x * flat.x + wind.z * flat.z) / len
+        let headwind = Swift.max(0, -along - 2)
+        return Swift.max(0.10, 0.30 - 0.022 * headwind)
     }
 
     /// The release power that puts a throw down about `wantRange` metres away.

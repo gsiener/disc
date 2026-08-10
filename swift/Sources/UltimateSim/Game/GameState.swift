@@ -120,6 +120,10 @@ public final class GameState {
     public private(set) var lastScore: ScoreRecord?
     private var lastScoringTeam: TeamId?
     private var pointReceivingTeam: TeamId = 0
+    /// The team that received the pull this point, so a goal for them is a hold and a goal
+    /// against them is a break. Read-only to the outside: it is set by `beginPoint` and by
+    /// nobody else, and a caller that could write it could rewrite the hold/break column.
+    public var pointReceiver: TeamId { pointReceivingTeam }
     private var travelFlagged = false
     private var hardCapPointIsLast = false
 

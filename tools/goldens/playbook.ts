@@ -31,6 +31,12 @@ import {
   markPoint,
   zoneStations,
   shouldPlayZone,
+  drawWeather,
+  timeoutIntent,
+  SeededRng,
+  WEATHER,
+  TIMEOUT_PLAY,
+  type TimeoutRead,
   type Vec2,
   type Sign,
   type AttackDir,
@@ -388,6 +394,36 @@ export function playbookGoldens() {
     }
   }
 
+  // The weather draw, over enough seeds that both modes are represented. Three
+  // draws deep, so a port that reorders them fails on the first windy seed.
+  const weatherCases: Array<{
+    seed: number; wind: Vec2; speed: number; windy: boolean;
+  }> = [];
+  for (let seed = 1; seed <= 64; seed++) {
+    const w = drawWeather(new SeededRng(seed >>> 0));
+    weatherCases.push({ seed, wind: w.wind, speed: w.speed, windy: w.windy });
+  }
+
+  const timeoutCases: Array<TimeoutRead & { want: string }> = [];
+  for (const stall of [0, 1, 2, 2.5, 6.9, 7, 8, 9.5]) {
+    for (const remaining of [0, 1, 2]) {
+      for (const throwsThisPoint of [0, 1]) {
+        for (const receiving of [true, false]) {
+          for (const stoppedThisPossession of [false, true]) {
+          // ours/theirs pairs: early, mid, a tight endgame, a blowout endgame.
+          for (const [ours, theirs] of [[0, 0], [3, 2], [5, 5], [5, 4], [4, 5], [6, 2]]) {
+            const r: TimeoutRead = {
+              stall, stallMax: 10, remaining, throwsThisPoint, receiving,
+              stoppedThisPossession, ours, theirs, toWin: 7,
+            };
+            timeoutCases.push({ ...r, want: timeoutIntent(r) });
+          }
+          }
+        }
+      }
+    }
+  }
+
   return {
     note:
       'Playbook geometry from src/sim/Playbook.ts. Pure arithmetic throughout, so '
@@ -415,5 +451,16 @@ export function playbookGoldens() {
     markPointCases,
     zoneStationsCases,
     shouldPlayZoneCases,
+    weather: {
+      windyChance: WEATHER.windyChance,
+      calmAcross: WEATHER.calmAcross,
+      calmAlong: WEATHER.calmAlong,
+      windyMin: WEATHER.windyMin,
+      windyMax: WEATHER.windyMax,
+      panicBefore: TIMEOUT_PLAY.panicBefore,
+      setPlayStall: TIMEOUT_PLAY.setPlayStall,
+    },
+    weatherCases,
+    timeoutCases,
   };
 }

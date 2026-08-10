@@ -268,6 +268,8 @@ public final class Engine {
             // the config says otherwise.
             r.halftimeAt = config.halftimeAt ?? (goal + 1) / 2
             r.halftimeDuration = config.halftimeSeconds
+            // Seventy seconds of dead frame is what the rule says; see the property doc.
+            r.timeoutDuration = config.timeoutSeconds
             // The match clock. Both default to nil, which leaves the rules' own 0 —
             // "no clock" — in place, so an unconfigured engine is untimed exactly as it
             // has always been.
@@ -296,16 +298,15 @@ public final class Engine {
         }
         self.game = GameState(opts)
 
-        // A light, steady breeze — enough that hucks bend and zone becomes a real call, not
-        // enough that the flight model becomes unreadable.
+        // The day this match is played on. Still forked from its own salt so the draw does
+        // not shift any other stream; the distribution and the argument for it now live in
+        // `Playbook.drawWeather`, reached through `EngineConfig` so a mode can pin it.
         //
-        // It was `.zero`, which is not a neutral default: `Playbook.shouldPlayZone` needs
-        // `windSpeed` to clear its threshold, so with no wind at all it could never return
-        // true and the whole zone defence, the upwind force flip in `pickScheme` and the
-        // wind term in `maxThrowRange` were unreachable code. Forked from its own salt so
-        // adding it does not shift any other stream.
+        // It was `.zero` once, and then a ±1.5 m/s breeze — neither of which
+        // `Playbook.shouldPlayZone` can ever clear, so the zone defence, the upwind force
+        // flip in `pickScheme` and the wind term in `maxThrowRange` were all unreachable.
         let w = rng.fork(salt: 0x117d)
-        wind = Vec3d(w.range(-1.5, 1.5), 0, w.range(-1.1, 1.1))
+        wind = config.wind(from: w)
         disc.wind = wind
 
         buildRoster()
@@ -452,7 +453,19 @@ public final class Engine {
         switch game.phase {
         case .prePull: .setup
         case .pullInFlight, .livePossession, .discInFlight, .turnoverDead, .check: .live
-        case .pointScored, .timeout, .halftime, .gameOver: .dead
+        // A TIMEOUT IS NOT A LINE-UP, and calling it `.dead` emptied the field.
+        //
+        // `TeamAI.update` sends every body to its own goal line for `.setup`, `.pull` and
+        // `.dead` — right for a pull, catastrophic here. A timeout leaves the disc where it
+        // was and the thrower on his pivot; the machine resumes at `.check` with the same
+        // possession. Line the teams up for it and the whole offence, thrower included,
+        // jogs twenty metres downfield during the stoppage and the possession teleports on
+        // the check. `.live` is the honest answer to "is there a disc on this field in
+        // somebody's hand" — and nothing can be thrown during the stoppage regardless,
+        // because `releaseThrow` is gated on `.livePossession`. So both sides re-form
+        // around the disc and neither can act, which is what the timeout is buying.
+        case .timeout: .live
+        case .pointScored, .halftime, .gameOver: .dead
         }
     }
 
@@ -584,7 +597,14 @@ public final class Engine {
         // pivot — which is a foul in the rules and free yardage in the sim: possession
         // advancing without a throw, the one thing the sport forbids. `anchored` is
         // honoured by both `Separation` and the contact resolver, and was never set.
-        let anchorId = game.phase == .livePossession ? game.thrower : nil
+        // …and through a TIMEOUT, which is mapped to a `.live` AI phase so both teams
+        // re-form around the disc rather than lining up. The thrower must not join in: he
+        // is still holding it and the pivot is still his. Unanchored he walks to whatever
+        // stack slot the fresh plan gave him, measured at 83 m of drift over a twelve-second
+        // timeout — not a drift, a possession carried the length of the field.
+        let holding =
+            game.phase == .livePossession || game.phase == .timeout || game.phase == .check
+        let anchorId = holding ? game.thrower : nil
         for p in players {
             loco.get(p.id)?.anchored = p.id == anchorId
         }

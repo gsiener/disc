@@ -34,6 +34,20 @@ final class CallState {
     /// Per defender: what he was doing when the obstruction on him began, and whether he
     /// has already called it. Cleared when the obstruction clears.
     var pickWatch: [Int: Engine.PickWatch] = [:]
+
+    /// Team attempts at the moment the current point began, and which point that was.
+    ///
+    /// The one thing `Engine.considerTimeout` needs that is not derivable from the
+    /// machine: "has this team thrown yet this point", which is what separates a set play
+    /// called off the pull from one called in the middle of a possession. Lives here rather
+    /// than as a new stored property on `Engine` because a stoppage is a stoppage — this
+    /// object already holds the state of the other four.
+    var pointAttempts: (Int, Int) = (0, 0)
+    var attemptsPoint = -1
+
+    /// `(team, that team's possession count)` for the last timeout called, so
+    /// `Playbook.TimeoutRead.stoppedThisPossession` is derivable. `-1` is "never".
+    var timeoutPossession: (TeamId, Int) = (-1, -1)
 }
 
 extension Engine {
@@ -143,6 +157,10 @@ extension Engine {
     ///
     /// Ported from `Game.ts:policeCalls`.
     func policeCalls() {
+        // The other thing somebody has to say out loud. It rides this hook rather than
+        // getting its own line in `Engine.step` because the tick belongs to `Engine` and
+        // this is the tick a stoppage is decided on; see `considerTimeout`.
+        considerTimeout()
         guard game.phase == .livePossession,
             let throwerId = game.thrower,
             let thrower = loco.get(throwerId)

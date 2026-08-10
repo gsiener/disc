@@ -872,4 +872,192 @@ public struct Playbook: Sendable {
         let leadPull = scoreDiff >= 3 && pointsPlayed > 6 ? 0.35 : 0
         return windPull + leadPull + bias > 0.5
     }
+
+    // MARK: weather
+
+    /// THE DAY THE MATCH IS PLAYED ON.
+    ///
+    /// `shouldPlayZone` above is a smoothstep whose foot is at 4.5 m/s and whose midpoint
+    /// is therefore 7.75 — a real number for the sport, where zone is a strong-wind call
+    /// and not a mood. The match's wind used to be drawn uniformly from ±1.5 m/s across
+    /// and ±1.1 along, which tops out at 1.86 m/s. The zone was arithmetically
+    /// unreachable: not rare, not unlikely, *impossible*, and the 3-2-2 cup, the upwind
+    /// force flip in `pickScheme` and the wind term in `maxThrowRange` were all dead code
+    /// behind it.
+    ///
+    /// The fix is the weather, not the threshold. A windy day is the thing that should be
+    /// rare; the tactic is the ordinary response to it. So this is a two-mode draw rather
+    /// than a wider uniform:
+    ///
+    ///  - **A still day, nine in ten.** Literally the old draw: ±1.5 m/s across the field
+    ///    and ±1.1 along it — the same two `range` calls in the same order, so nine matches
+    ///    in ten are played in exactly the conditions every golden and every telemetry band
+    ///    in this repo was measured under. The anisotropy matters and is not decoration: the
+    ///    old draw's ALONG-field component never exceeded 1.1 m/s, and a pull is thrown
+    ///    along the field. An isotropic 1.9 m/s calm circle was tried first and it pushed
+    ///    the shortest pull in `tools/test-game.ts` from 55.4 m to 54.6 m, through a
+    ///    headwind the old draw could not produce.
+    ///  - **A blow, one match in ten.** 8–11 m/s, which is 18–27 mph: the conditions in which every
+    ///    team in the sport plays zone. The band starts at 8 rather than at the 4.5 the
+    ///    smoothstep's foot sits at because the smoothstep's MIDPOINT is 7.75, and it is
+    ///    the midpoint that decides the call. Choosing the windy band to be the band where
+    ///    the tactic is the right answer is the honest version of this; moving the
+    ///    threshold down to meet a gentler band would have been the dishonest one, because
+    ///    4.5 m/s is a real number and a 4.5 m/s day is not a zone day.
+    ///
+    /// Widening the uniform instead would have done the opposite of what was wanted: it
+    /// would have made every match slightly windy — moving completion percentage, huck
+    /// range and drop rate on all of them — while still almost never reaching the number
+    /// the tactic keys off.
+    public struct Weather: Equatable, Sendable {
+        /// Wind on the field plane, m/s.
+        public var wind: Vec2d
+        /// Its magnitude, which is what every consumer actually asks for.
+        public var speed: Double
+        /// True when this match drew the windy mode. Telemetry and tests; no logic reads it.
+        public var windy: Bool
+
+        public init(wind: Vec2d, speed: Double, windy: Bool) {
+            self.wind = wind
+            self.speed = speed
+            self.windy = windy
+        }
+    }
+
+    /// Fraction of matches played in a real blow, and the two speed bands.
+    public static let windyChance = 0.10
+    /// A calm day, across the field and along it — the draw this game has always used.
+    public static let calmAcross = 1.5
+    public static let calmAlong = 1.1
+    public static let windySpeed = (min: 8.0, max: 9.5)
+
+    /// THE CALM DRAW COMES FIRST, AND THAT IS THE WHOLE TRICK.
+    ///
+    /// Reading the two calm values *before* rolling for the day means a calm day consumes
+    /// exactly the two draws the old inline code consumed, in the same order, and therefore
+    /// produces **the same wind vector today's engine produces**. Nine matches in ten are
+    /// consequently bit-identical to the version of this game that had no weather model at
+    /// all — every golden, every telemetry band and every per-seed reachability check in the
+    /// repo is untouched by them.
+    ///
+    /// The first version rolled the day first. That is the obvious order and it costs one
+    /// draw at the front, which shifts the two range calls by one and therefore changes the
+    /// wind on *every* match by a metre or so a second. Nothing about that is wrong, and it
+    /// re-rolled the entire suite: twelve assertions in three suites that touch neither wind
+    /// nor weather went red, because they are per-seed statistics of a match and the match
+    /// had been resampled.
+    ///
+    /// A windy day pays two extra draws for its speed and bearing. It has already changed
+    /// the match beyond recognition, so it has nothing left to preserve.
+    ///
+    /// Callers hand this a fork of their own stream, so even the windy branch cannot move
+    /// anybody else's numbers. A blow's direction is uniform over the full circle: along the
+    /// field is the classic upwind/downwind point, but a crosswind is the one `pickScheme`
+    /// flips its force for, and neither deserves a thumb on the scale.
+    public static func drawWeather(_ rng: Rng) -> Weather {
+        let calm = Vec2d(rng.range(-calmAcross, calmAcross), rng.range(-calmAlong, calmAlong))
+        if rng.next() >= windyChance {
+            // `Math.hypot` in the reference, `Foundation.hypot` here — same convention as
+            // `dist2` above, so the two agree to within hypot's unspecified last bit.
+            return Weather(wind: calm, speed: Foundation.hypot(calm.x, calm.z), windy: false)
+        }
+        let speed = rng.range(windySpeed.min, windySpeed.max)
+        let bearing = rng.range(-Double.pi, Double.pi)
+        return Weather(
+            wind: Vec2d(cos(bearing) * speed, sin(bearing) * speed), speed: speed, windy: true)
+    }
+
+    // MARK: timeouts
+
+    /// What a timeout would be *for*. `none` means do not call one.
+    public enum TimeoutIntent: String, Equatable, Sendable {
+        case none
+        case stallReset = "stall-reset"
+        case setPlay = "set-play"
+    }
+
+    /// Everything the decision below is allowed to see.
+    public struct TimeoutRead: Equatable, Sendable {
+        /// The count on the thrower right now.
+        public var stall: Double
+        /// The count at which the disc turns over — `RuleSet.stallMax`, normally 10.
+        public var stallMax: Double
+        /// Timeouts this team has left in this half.
+        public var remaining: Int
+        /// Throws this team has made since the point began. Zero is straight off the pull.
+        public var throwsThisPoint: Int
+        /// True when this team received the pull this point, so a goal here is a hold.
+        public var receiving: Bool
+        /// True when this possession has already been stopped for a timeout.
+        ///
+        /// Without it the feature spends both timeouts inside two ticks. A panic timeout at
+        /// 7 resumes the count at 8, and 8 still satisfies "nearly up" — so the very next
+        /// frame of live play calls the second one, which resumes at 9, which is the
+        /// desperation throw the first one was taken to avoid. Measured as a phase trace
+        /// reading `LIVE_POSSESSION@2874 TIMEOUT@2875`: one tick.
+        ///
+        /// One per possession is also the sport. A team that has already stopped this
+        /// possession has had its look; the second timeout is for the next mess.
+        public var stoppedThisPossession: Bool
+        public var ours: Int
+        public var theirs: Int
+        /// Goals that win the match.
+        public var toWin: Int
+
+        public init(
+            stall: Double, stallMax: Double, remaining: Int, throwsThisPoint: Int,
+            receiving: Bool, stoppedThisPossession: Bool, ours: Int, theirs: Int, toWin: Int
+        ) {
+            self.stoppedThisPossession = stoppedThisPossession
+            self.stall = stall
+            self.stallMax = stallMax
+            self.remaining = remaining
+            self.throwsThisPoint = throwsThisPoint
+            self.receiving = receiving
+            self.ours = ours
+            self.theirs = theirs
+            self.toWin = toWin
+        }
+    }
+
+    /// How far short of the turnover the panic call is made, in stall counts.
+    ///
+    /// Three, not two, and the reason is `resumeStallCount`: play restarts at the count
+    /// reached **plus one**, capped at 9. Take it at 8 and the offence comes back on a 9
+    /// count, which is past the 8.5 at which `TeamAI` abandons its standards and throws
+    /// the best thing available — so the timeout buys the desperation throw and nothing
+    /// else. Take it at 7 and the count resumes at 8, still inside the window where the
+    /// offence is allowed to want something.
+    public static let timeoutPanicBefore = 3.0
+    /// A set play is called off the catch, before the count means anything.
+    public static let timeoutSetPlayStall = 2.0
+
+    /// WHEN A TEAM CALLS ITS TIMEOUT.
+    ///
+    /// Two situations, both of which a watcher can read off the screen without being
+    /// told, and both of which change what happens next:
+    ///
+    ///   **`stallReset`** — the count is nearly up and nothing is open. The possession is
+    ///   broken and the alternative is a throw nobody wanted. The offence gets its shape
+    ///   back and comes on at a count one higher.
+    ///
+    ///   **`setPlay`** — a must-hold point late in a tight game, called at the top of the
+    ///   possession while the count is still nothing. This is the timeout teams keep in
+    ///   their pocket all match, and it is deliberately allowed to spend the last one:
+    ///   the endgame is what it was being kept for.
+    ///
+    /// The endgame test reserves the last timeout for that: while either side is within
+    /// two of the game and the margin is one or less, a count of 7 is not worth the
+    /// timeout that is being saved for the point that decides it.
+    public static func timeoutIntent(_ r: TimeoutRead) -> TimeoutIntent {
+        if r.remaining <= 0 || r.stoppedThisPossession { return .none }
+        let endgame = max(r.ours, r.theirs) >= r.toWin - 2 && abs(r.ours - r.theirs) <= 1
+        if endgame && r.receiving && r.throwsThisPoint == 0 && r.stall <= timeoutSetPlayStall {
+            return .setPlay
+        }
+        if r.stall >= r.stallMax - timeoutPanicBefore && (r.remaining >= 2 || !endgame) {
+            return .stallReset
+        }
+        return .none
+    }
 }

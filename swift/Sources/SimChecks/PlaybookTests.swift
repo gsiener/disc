@@ -221,6 +221,36 @@ enum PlaybookTests {
         let want: Bool
     }
 
+    struct WeatherConstants: Decodable {
+        let windyChance: Double
+        let calmAcross: Double
+        let calmAlong: Double
+        let windyMin: Double
+        let windyMax: Double
+        let panicBefore: Double
+        let setPlayStall: Double
+    }
+
+    struct WeatherCase: Decodable {
+        let seed: UInt32
+        let wind: V2
+        let speed: Double
+        let windy: Bool
+    }
+
+    struct TimeoutCase: Decodable {
+        let stall: Double
+        let stallMax: Double
+        let remaining: Int
+        let throwsThisPoint: Int
+        let receiving: Bool
+        let stoppedThisPossession: Bool
+        let ours: Int
+        let theirs: Int
+        let toWin: Int
+        let want: String
+    }
+
     struct File: Decodable {
         let note: String
         let constants: Constants
@@ -245,6 +275,9 @@ enum PlaybookTests {
         let markPointCases: [MarkPointCase]
         let zoneStationsCases: [ZoneCase]
         let shouldPlayZoneCases: [ZoneCallCase]
+        let weather: WeatherConstants
+        let weatherCases: [WeatherCase]
+        let timeoutCases: [TimeoutCase]
     }
 
     // MARK: - tolerance
@@ -524,6 +557,53 @@ enum PlaybookTests {
                 c.want,
                 "shouldPlayZone(wind \(c.windSpeed), diff \(c.scoreDiff), "
                     + "points \(c.pointsPlayed), bias \(c.bias))")
+        }
+
+        // ---- the weather ------------------------------------------------------
+        //
+        // The distribution's five constants, then sixty-four days drawn from the shared
+        // generator. Three draws deep on either branch, so a port that reorders them — or
+        // that takes the windy branch on the wrong side of the comparison — fails on the
+        // first seed whose day disagrees.
+        Check.bitEqViaJSON(Playbook.windyChance, g.weather.windyChance, "WEATHER.windyChance")
+        Check.bitEqViaJSON(Playbook.calmAcross, g.weather.calmAcross, "WEATHER.calmAcross")
+        Check.bitEqViaJSON(Playbook.calmAlong, g.weather.calmAlong, "WEATHER.calmAlong")
+        Check.bitEqViaJSON(Playbook.windySpeed.min, g.weather.windyMin, "WEATHER.windyMin")
+        Check.bitEqViaJSON(Playbook.windySpeed.max, g.weather.windyMax, "WEATHER.windyMax")
+        Check.bitEqViaJSON(
+            Playbook.timeoutPanicBefore, g.weather.panicBefore, "TIMEOUT_PLAY.panicBefore")
+        Check.bitEqViaJSON(
+            Playbook.timeoutSetPlayStall, g.weather.setPlayStall, "TIMEOUT_PLAY.setPlayStall")
+
+        for c in g.weatherCases {
+            let got = Playbook.drawWeather(Rng(seed: c.seed))
+            let at = "drawWeather(seed \(c.seed))"
+            Check.eq(got.windy, c.windy, "\(at).windy")
+            Check.bitEqViaJSON(got.wind.x, c.wind.x, "\(at).wind.x")
+            Check.bitEqViaJSON(got.wind.z, c.wind.z, "\(at).wind.z")
+            // The speed is `Math.hypot` on a calm day and a raw `range` draw on a windy
+            // one, so only the first of those needs the ulp envelope.
+            if got.windy {
+                Check.bitEqViaJSON(got.speed, c.speed, "\(at).speed")
+            } else {
+                nearUlp(got.speed, c.speed, "\(at).speed")
+            }
+        }
+
+        // ---- the timeout decision --------------------------------------------
+        for c in g.timeoutCases {
+            let got = Playbook.timeoutIntent(
+                Playbook.TimeoutRead(
+                    stall: c.stall, stallMax: c.stallMax, remaining: c.remaining,
+                    throwsThisPoint: c.throwsThisPoint, receiving: c.receiving,
+                    stoppedThisPossession: c.stoppedThisPossession,
+                    ours: c.ours, theirs: c.theirs, toWin: c.toWin))
+            Check.eq(
+                got.rawValue, c.want,
+                "timeoutIntent(stall \(c.stall), left \(c.remaining), "
+                    + "throws \(c.throwsThisPoint), recv \(c.receiving), "
+                    + "stopped \(c.stoppedThisPossession), "
+                    + "\(c.ours)-\(c.theirs) to \(c.toWin))")
         }
     }
 

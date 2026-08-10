@@ -493,6 +493,15 @@ enum EngineSeamTests {
                         case .pullCaught(_, _, let pos): landed = landed ?? pos
                         case .pullLanded(let pos): landed = landed ?? pos
                         case .pullOutOfBounds(let pos): landed = landed ?? pos
+                        // A DROPPED PULL IS ALSO A RESOLVED PULL, and it was the one
+                        // resolution this switch did not have a case for — so a receiver
+                        // who bobbled it made the whole measurement report "the pull never
+                        // resolved". It went unnoticed because the four seeds here happened
+                        // not to drop one; re-drawing the match wind was enough to make
+                        // minis/s11 drop one, and the pull it dropped had carried 1.77 goal
+                        // lines. The disc is where the disc is, however it got there.
+                        case .turnover(.pullDrop, _, _, _, _, let pos):
+                            landed = landed ?? pos
                         default: break
                         }
                     }

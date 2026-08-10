@@ -54,5 +54,10 @@ of hours, because writing entries worked and reading them did not.
 | minor | `20260809162502-no-launch-argument` | No launch argument shortens a match, so verifying anything at full time costs ~10 minutes of Simulator wall time |
 | minor | `20260809174419-swift-build-c` | swift build -c release cannot verify your own work while a peer is mid-edit in another target |
 | major | `20260809174439-a-locomotion-replaced` | A Locomotion replaced at each point silently drops its LocoHost, and nothing in the suite notices |
-| major | `20260810015209-xcuitest-gestures-are` | XCUITest: gestures are main-thread-only, and one accessibility read costs as long as a HUD plate lives |
 | minor | `20260809175052-registering-a-simchecks` | Registering a SimChecks suite means committing Harness.swift, which peers add lines to at the same time |
+| major | `20260809222131-enginetests-deep-game` | EngineTests'' deep-game bands are per-seed maxima over a handful of hucks, so any unrelated change flips them |
+| minor | `20260810-per-seed-bands-again` | Per-seed telemetry bands broke in two more suites, and the entry that predicted it was ten hours old |
+| minor | `20260810-pivot-deleted-at-check` | Locomotion deletes the pivot the moment `anchored` goes false, so every check hands the thrower a fresh grace budget |
+| major | `20260810-teamai-lines-up` | TeamAI lines every body up on the goal line for any phase that is not live, so a mid-point stoppage cannot be expressed |
+| major | `20260810-throwsolver-wind-blind` | The throw solver takes no wind term, so a windy day is 21% throwaways rather than a harder game |
+| major | `20260810015209-xcuitest-gestures-are` | XCUITest: gestures are main-thread-only, and one accessibility read costs as long as a HUD plate lives |

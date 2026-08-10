@@ -342,6 +342,13 @@ export class GameState {
   lastScore: { team: TeamId; playerId: PlayerId; assistId: PlayerId | null; score: [number, number]; point: number } | null = null;
   private lastScoringTeam: TeamId | null = null;
   private pointReceivingTeam: TeamId = 0;
+  /**
+   * The team that received the pull this point, so a goal for them is a hold and
+   * a goal against them is a break. Read-only to the outside: it is set by
+   * `beginPoint` and by nobody else, and a caller that could write it could
+   * rewrite the hold/break column.
+   */
+  get pointReceiver(): TeamId { return this.pointReceivingTeam; }
   private travelFlagged = false;
   private hardCapPointIsLast = false;
 

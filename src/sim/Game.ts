@@ -9,7 +9,10 @@ import {
   type GamePhase, type PlayerAction, type PlayerIntent as AIIntent, type TeamAI,
   type ThrowType as AIThrowType,
 } from './AI.ts';
-import { laneOf, markPoint, PLAY, type CutRoute, type LaneKey, type Sign } from './Playbook.ts';
+import {
+  drawWeather, laneOf, markPoint, timeoutIntent, PLAY,
+  type CutRoute, type LaneKey, type Sign, type Weather,
+} from './Playbook.ts';
 import { Locomotion, type DesiredMove, type LocoPlayer } from './Locomotion.ts';
 import { createGameState, GameState, type Phase } from './GameState.ts';
 import {
@@ -314,6 +317,12 @@ export class GameSystem implements System {
   private rng!: Rng;
   private seed = 0;
   private wind = new THREE.Vector3();
+  /**
+   * The day, drawn once per match. `wind` above is the same vector in the form
+   * the flight model wants; this keeps the speed and the windy/calm flag that
+   * telemetry and the zone showcase read.
+   */
+  weather: Weather = { wind: { x: 0, z: 0 }, speed: 0, windy: false };
   private world!: AIWorld;
   private aiDisc: AIDiscState = {
     pos: { x: 0, y: 0, z: 0 }, vel: { x: 0, y: 0, z: 0 },
@@ -440,10 +449,20 @@ export class GameSystem implements System {
     this.discRuntime.groundAt = ground;
     this.discRuntime.wind = this.wind;
 
-    // A light, steady breeze — enough that hucks bend and zone becomes a real
-    // call, not enough that the flight model becomes unreadable.
+    /**
+     * The day this match is played on. See `Playbook.drawWeather` for the
+     * distribution and for why widening the old uniform was the wrong fix.
+     *
+     * This used to be `w.range(-1.5, 1.5), 0, w.range(-1.1, 1.1)` — a breeze that
+     * tops out at 1.86 m/s, against a zone trigger whose smoothstep does not
+     * leave the floor until 4.5. Zone was not rare, it was unreachable.
+     *
+     * Still forked from its own salt, and still three draws — one more than the
+     * two it replaced, which is why the goldens moved.
+     */
     const w = ctx.rand.fork(0x117d);
-    this.wind.set(w.range(-1.5, 1.5), 0, w.range(-1.1, 1.1));
+    this.weather = drawWeather(w);
+    this.wind.set(this.weather.wind.x, 0, this.weather.wind.z);
 
     this.buildRoster(ctx);
 
@@ -560,20 +579,35 @@ export class GameSystem implements System {
   /**
    * `TeamAI` binds its attacking direction at construction, and the direction
    * flips after every point — so the pair is rebuilt whenever it moves. The rng
-   * is forked from a fixed seed plus the point number, which keeps the whole
-   * match reproducible.
+   * is forked from a fixed seed plus the point number and the rebuild epoch,
+   * which keeps the whole match reproducible.
+   *
+   * **A TIMEOUT REBUILDS THEM TOO, and that is what a timeout is for.** A
+   * `TeamAI` carries the plan: stack slots, matchups, and each cutter's live cut
+   * with the state it is in. None of that changes because play stopped, so a
+   * timeout that only paused the clock handed the offence back exactly the beaten
+   * shape it called the timeout to escape — measured as a *worse* possession than
+   * not calling one, since the count comes back one higher. Rebuilding is the
+   * huddle: same bodies, same disc, new plan.
+   *
+   * The rebuild epoch keeps the fork from replaying the point's opening noise. It
+   * is DERIVED — the two teams' `timeoutsUsed` added together — rather than
+   * stored, so there is no counter to forget to clear, and it is zero throughout
+   * a match with no timeouts in it.
    */
   private rebuildAI(): void {
     const d0 = this.gs.attackDir[0];
     const d1 = this.gs.attackDir[1];
     this.aiDir = [d0, d1];
-    const r = new Rng((this.seed ^ (this.gs.point * 0x9e3779b9)) >>> 0);
-    // Both sides defend person, on purpose. Ultimate is only legible to someone
-    // who knows it if the shapes on the field are the shapes they know: a
-    // stack, a force, a matchup. A zone renders as fourteen bodies with no
-    // relationship to each other, which is exactly what "players scattered with
-    // no visible structure" looks like — so the zone bias is pushed well
-    // negative rather than left at the AI's default.
+    const epoch = this.gs.teamStats(0).timeoutsUsed + this.gs.teamStats(1).timeoutsUsed;
+    const r = new Rng(
+      (this.seed ^ (this.gs.point * 0x9e3779b9) ^ (epoch * 0x85ebca6b)) >>> 0);
+    // Both sides defend person unless the day says otherwise. Ultimate is only
+    // legible to someone who knows it if the shapes on the field are the shapes
+    // they know: a stack, a force, a matchup. That is why the bias below is zero
+    // rather than positive — nobody plays zone here for taste. It is also why it
+    // is no longer NEGATIVE: at -0.55 it was arithmetically impossible, since
+    // `shouldPlayZone`'s wind term maxes at 1.0.
     //
     // THE TWO SIDES DEFEND DIFFERENTLY. Team 0 forces backhand — a fixed side
     // for the whole point. Team 1 forces MIDDLE, which is positional: the mark
@@ -623,8 +657,19 @@ export class GameSystem implements System {
     // it. That was written down as the open question at the time, and it was
     // the right question.
     this.ai = [
-      createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: -0.55, seed: 11 }),
-      createTeamAI(1, d1, r, { formation: 'horizontal', force: 'middle', aggression: 0.95, zoneBias: -0.45, seed: 29 }),
+      // THE ZONE BIASES ARE ZERO, and they used to be -0.55 and -0.45.
+      //
+      // They were pushed well negative when a zone rendered as bodies with no
+      // visible relationship to each other, which is a rendering verdict on a
+      // tactic. It has since cost more than it bought: `shouldPlayZone` maxes its
+      // wind term at 1.0, so a bias of -0.55 demanded a wind term above 1.05 and
+      // no wind on earth could reach it. The two negative numbers were a second,
+      // hidden reason zone could never be called, underneath the weather.
+      //
+      // At zero, the wind and the scoreboard decide it and nothing else does —
+      // which is the whole content of `shouldPlayZone`.
+      createTeamAI(0, d0, r, { formation: 'vertical', force: 'forehand', aggression: 1.05, zoneBias: 0, seed: 11 }),
+      createTeamAI(1, d1, r, { formation: 'horizontal', force: 'middle', aggression: 0.95, zoneBias: 0, seed: 29 }),
     ];
   }
 
@@ -664,7 +709,27 @@ export class GameSystem implements System {
     // Anchor the thrower before anyone steps: the soft separation tier runs
     // after locomotion and would otherwise let a crowding marker walk him off
     // his own pivot, which is a foul in the rules and free yardage in the sim.
-    const anchorId = this.gs.phase === 'LIVE_POSSESSION' ? this.gs.thrower : null;
+    /**
+     * THE THROWER IS ANCHORED THROUGH A TIMEOUT TOO.
+     *
+     * `TIMEOUT` is mapped to a `live` AI phase — see `gamePhaseFor` — so the two
+     * teams re-form around the disc during the stoppage instead of jogging to
+     * the goal line. The thrower must not join in: he is still holding it, the
+     * pivot is still his, and unanchored he walks to whatever stack slot the
+     * fresh plan gave him. Measured at **83 metres** of thrower drift over a
+     * twelve-second timeout — which is not a drift, it is a possession being
+     * carried the length of the field.
+     *
+     * `CHECK` is in the list for the same reason and it was always missing.
+     * `Locomotion.stepPivot` keys the pivot constraint off `anchored`, and it
+     * DELETES the pivot the moment that goes false — so every check dropped the
+     * constraint and the next `LIVE_POSSESSION` frame opened a fresh grace budget
+     * with a fresh few metres of run in it. A check is a disc in a hand on a
+     * chosen spot; it is the most anchored moment in the sport.
+     */
+    const holding = this.gs.phase === 'LIVE_POSSESSION' || this.gs.phase === 'TIMEOUT'
+      || this.gs.phase === 'CHECK';
+    const anchorId = holding ? this.gs.thrower : null;
     for (const e of this.roster) e.loco.anchored = e.id === anchorId;
     for (const it of this.intents) {
       const e = this.byId.get(it.id);
@@ -2056,11 +2121,81 @@ export class GameSystem implements System {
       && gs.phase === 'LIVE_POSSESSION' && gs.thrower === thrower.id) {
       this.callTravel(thrower, pivotFoot, markerId);
     }
+    this.considerTimeout();
     this.policeCalls();
   }
 
   /** Set once the machine has been told where this thrower's pivot is. */
   private pivotOwner = -1;
+
+  /* ------------------------------------------------------------- timeouts */
+
+  /** Team attempts at the moment this point began, so "throws this point" is derivable. */
+  private pointAttempts: [number, number] = [0, 0];
+  private attemptsPoint = -1;
+  /**
+   * `[team, that team's possession count]` for the last timeout called, so
+   * `stoppedThisPossession` is derivable. `-1` is "never".
+   */
+  private timeoutPossession: [number, number] = [-1, -1];
+
+  /**
+   * THE TIMEOUT NOBODY WAS CALLING.
+   *
+   * `GameState.callTimeout` has been complete and correct since it was written —
+   * two per half, only the team in possession, never while the disc is in the
+   * air, the count resuming at reached-plus-one — and had no caller anywhere
+   * outside the test fixtures. This is that caller. It decides nothing itself:
+   * `Playbook.timeoutIntent` owns when and why, so the decision is a pure
+   * function with goldens rather than a condition buried in the tick.
+   *
+   * Called every tick and cheap: everything before the intent is a field read.
+   * The machine refuses a timeout it may not grant, and a refusal here is not an
+   * error — the phase can change between the read and the call.
+   */
+  private considerTimeout(): void {
+    const gs = this.gs;
+    if (gs.phase !== 'LIVE_POSSESSION') return;
+    const team = gs.possession;
+    if (team === null) return;
+    /**
+     * NOT FOR THE HUMAN'S SIDE, and it took a measurement to get there. A
+     * timeout is a captain's call and there is no interface for making one, so
+     * having the machine take them for both sides looked like the generous
+     * reading. It is not: the count reaching seven is not evidence of anything
+     * when the side holding the disc is a person. A human aiming for eight
+     * seconds is aiming, and spending his timeout on it takes the disc out of his
+     * hands, destroys whatever cut he had commanded — `rebuildAI` rebuilds the
+     * plan, and a called cut lives in the plan — and hands him a stoppage he did
+     * not ask for. Measured in the port's `HumanCutTests` as a commanded cut's
+     * throw coming out at 2.9 m where it wants 4-16.
+     */
+    if (team === this.humanTeam) return;
+    if (this.attemptsPoint !== gs.point) {
+      this.attemptsPoint = gs.point;
+      this.pointAttempts = [gs.teamStats(0).attempts, gs.teamStats(1).attempts];
+    }
+    const ts = gs.teamStats(team);
+    const intent = timeoutIntent({
+      stall: gs.stallCount,
+      stallMax: gs.rules.stallMax,
+      remaining: ts.timeoutsRemaining,
+      throwsThisPoint: ts.attempts - this.pointAttempts[team],
+      receiving: gs.pointReceiver === team,
+      stoppedThisPossession: this.timeoutPossession[0] === team
+        && this.timeoutPossession[1] === ts.possessions,
+      ours: gs.score[team],
+      theirs: gs.score[1 - team as TeamId],
+      toWin: gs.rules.gameTo,
+    });
+    if (intent === 'none') return;
+    if (!gs.callTimeout(team, gs.thrower ?? undefined).ok) return;
+    this.timeoutPossession = [team, ts.possessions];
+    // The huddle. Both sides get a new plan out of it, not just the one that
+    // called it — the defence has a stoppage to re-mark and re-pick its scheme
+    // too. See `rebuildAI` for why a timeout without this made things worse.
+    this.rebuildAI();
+  }
 
   /**
    * A travel, called and resolved.
@@ -3773,6 +3908,25 @@ function gamePhaseFor(p: Phase): GamePhase {
     // is the AI's `ground` branch, not its line-up branch.
     case 'TURNOVER_DEAD': return 'live';
     case 'CHECK': return 'live';
+    /**
+     * A TIMEOUT IS NOT A LINE-UP, and mapping it to one emptied the field.
+     *
+     * `TeamAI.update` sends every body to its own goal line for `setup`, `pull`
+     * and `dead` — which is right for a pull and catastrophic here. A timeout
+     * leaves the disc exactly where it was and the thrower standing on his
+     * pivot; the machine resumes at `CHECK` with the same possession and a count
+     * one higher. Line the teams up for it and the whole offence, thrower
+     * included, jogs twenty metres downfield during the stoppage and the
+     * possession teleports on the check.
+     *
+     * `live` is the honest answer to "is there a disc on the field in somebody's
+     * hand" — it is, and the bodies belong around it. Nothing is thrown during
+     * the stoppage regardless: every release path is gated on
+     * `LIVE_POSSESSION`, so the offence reshapes and the defence resets its mark
+     * for the duration and neither can act. That reshaping is what the timeout
+     * buys, and it is the whole reason `Playbook.timeoutIntent` calls one.
+     */
+    case 'TIMEOUT': return 'live';
     default: return 'setup';
   }
 }
