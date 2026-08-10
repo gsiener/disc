@@ -279,7 +279,7 @@ jobs:
       # *compiled*: a stale file had reverted another change's additions. A masked job
       # reports success for a compile error, which is strictly worse than a red job,
       # because a red job gets fixed and a green lie does not. If the runner turns out
-      # to be genuinely too slow even at `UITEST_SLOWDOWN: 4`, the answer is to say so here
+      # to be genuinely too slow even at the multiplier set below, the answer is to say so here
       # and skip the job deliberately — not to let it pass while failing.
       #
       # There is no `continue-on-error` step left in this job at all: the one that had it,
@@ -300,12 +300,40 @@ jobs:
       # a boolean, fixes both: every wait in the suite is a multiple of it, and the multiplier
       # is reviewable here.
       #
-      # 4 is measured, not guessed: the runner has no GPU and falls back to a software
-      # renderer, and the durations this suite reports are about four times their local values.
+      # **`TEST_RUNNER_` prefix, and without it none of the above was true.**
+      #
+      # `xcodebuild` does not forward the host environment into the test process, which runs in
+      # the simulator. Set as a bare `UITEST_SLOWDOWN`, the variable reached `xcodebuild` and
+      # stopped there: `MatchDriver.slowdown` read nothing, fell back to its clamp, and every
+      # run of this job since the knob was introduced has been at **×1**. Run 31396301991 says
+      # so in its own log — `UITEST TIMING: slowdown ×1.0` — under a step that sets 4.
+      #
+      # `TEST_RUNNER_<NAME>` is the documented mechanism: `xcodebuild` strips the prefix and
+      # passes the rest to the test runner. Verified locally by reading the announce line back.
+      #
+      # This is the third spelling of one mistake — `CI: "true"` was invisible to the tests'
+      # timeout literals, the literals were invisible to `UITEST_SLOWDOWN`, and
+      # `UITEST_SLOWDOWN` was invisible to the simulator. Each time the job looked tuned and
+      # was not. `announce()` printing the multiplier is what finally caught it, which is the
+      # argument for printing configuration rather than trusting it.
+      #
+      # **2, and this number now has a measurement behind it.** It was 4, described as measured
+      # when nothing had measured it. Comparing the eleven tests at ×1 on this runner against
+      # ×1 locally (run 31396301991 vs. a local pass in 135 s):
+      #
+      #   median ratio 1.17 — worst 3.05 (`testDragBackToTheOrigin`), then 2.37
+      #
+      # and the two large ones are *retries*, not slower waits: every individual wait was
+      # satisfied at ×1, and those tests took longer because `withTheDisc` spent more attempts,
+      # each paying a full budget. So the waits need roughly 1.2–1.4× and 2 is the headroom.
+      #
+      # 4 is not free, either: `samplingCap` is the one duration this suite genuinely pays, and
+      # the sampler was already cap-bound at ×1 (11 taps against a `wanted` of 12). Raising it
+      # to 240 s buys a twelfth tap for up to three more minutes of runner time.
       - name: Run the touch tests
         working-directory: ios
         env:
-          UITEST_SLOWDOWN: "4"
+          TEST_RUNNER_UITEST_SLOWDOWN: "2"
         run: >
           xcodebuild test-without-building
           -project Ultimate.xcodeproj

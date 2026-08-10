@@ -144,8 +144,19 @@ struct MatchDriver {
     /// regression that a tight local run fails on. Nothing sets `UITEST_SLOWDOWN` by accident;
     /// `.github/workflows/ci.yml` sets it explicitly, and the number it sets is reviewable.
     ///
+    /// **Set it as `TEST_RUNNER_UITEST_SLOWDOWN`, not as `UITEST_SLOWDOWN`.** This code runs in
+    /// the simulator, and `xcodebuild` does not forward the host environment there — it forwards
+    /// exactly the variables prefixed `TEST_RUNNER_`, stripping the prefix. A bare
+    /// `UITEST_SLOWDOWN=4` reaches `xcodebuild` and dies there, which is what CI did from the
+    /// day this was introduced until 2026-08-10: every run took the fallback of 1 under a job
+    /// that said 4.
+    ///
+    ///     TEST_RUNNER_UITEST_SLOWDOWN=2 xcodebuild test-without-building …
+    ///
     /// Clamped, because an unparseable or absurd value should be a local run rather than a
     /// silently infinite one, and echoed by `announce()` so every run says which regime it took.
+    /// That echo is the only reason the broken plumbing was ever found — the tests passed the
+    /// whole time, because the runner turned out to be fast enough at ×1.
     static let slowdown: Double = {
         guard let raw = ProcessInfo.processInfo.environment["UITEST_SLOWDOWN"],
             let v = Double(raw), v >= 1, v <= 20
