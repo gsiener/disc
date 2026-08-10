@@ -1072,9 +1072,8 @@ public final class Engine {
         else { return false }
 
         let at = s.pos
-        // Stamp the grade on whatever the machine is about to emit. Set here rather than
-        // read out of `CatchDecision.Result`, which does not carry it — see `CatchGrade`.
-        sink.catchGrade = Engine.grade(taker: d.takerId, at: at, bodies: bodies)
+        // Stamp the grade on whatever the machine is about to emit — see `Engine.grade`.
+        sink.catchGrade = Engine.grade(d, at: at, bodies: bodies)
         defer { sink.catchGrade = nil }
         switch d.outcome {
         case .none:
@@ -1103,17 +1102,35 @@ public final class Engine {
 
     /// How hard the catch the contest just resolved was.
     ///
-    /// The two expressions are `CatchDecision.decide`'s own, on the same `Body` array it
-    /// was handed: `laidOut` is its `b.state == "layout" || (b.prone && b.airborne)`, and
-    /// the contest is its `contestCount`, which is the term that pushes `difficulty` up.
-    /// Re-derived rather than returned because widening `Result` would change a struct
-    /// that is differed against the reference fixture, and this layer does not own it.
+    /// **`laidOut` is read off the decision now, and the second expression turned out not
+    /// to be a copy of anything.** This function used to write out both of `decide`'s own
+    /// locals a second time, off the same body array, with a comment claiming they were
+    /// `decide`'s: "`laidOut` is its `b.state == "layout" || (b.prone && b.airborne)`, and
+    /// the contest is its `contestCount`, which is the term that pushes `difficulty` up."
+    /// The first half was true and is now simply a field on `Result`. The second half was
+    /// not: `decide` prices difficulty with `catchContest`, which is gated on whether a
+    /// defender is actually playing the disc, and this asked `contestCount`, which is not
+    /// gated at all. The two were one function once and were split precisely because they
+    /// answer different questions; the grade was left on the wrong side of the split and
+    /// the comment was left describing the other one.
+    ///
+    /// So the fix is not to point this at `Result.contest`. Measured over four minis
+    /// matches, `contest > 0` on **none** of 55 catches while the crowd question was true
+    /// on 40 of them — because by the time a disc arrives the defender is usually beaten,
+    /// and a beaten defender is exactly who `catchContest` excludes. `contest` prices the
+    /// roll and must exclude him; a grade describes what the moment LOOKED like, and a
+    /// defender arriving a body-width late is what the crowd calls a contested catch. That
+    /// is `contestCount`, the reference's own "did it come down in a crowd", and it is
+    /// asked here deliberately rather than by accident. `Result.contest` is carried out and
+    /// differed all the same, so the decision's term can no longer drift unseen.
     ///
     /// Layout outranks contested: a full-stretch grab with a defender on it is a layout,
     /// and that is the one the crowd stands up for.
-    static func grade(taker: Int, at: Vec3d, bodies: [CatchDecision.Body]) -> CatchGrade {
-        guard let b = bodies.first(where: { $0.id == taker }) else { return .routine }
-        if b.state == "layout" || (b.prone && b.airborne) { return .layout }
+    static func grade(_ d: CatchDecision.Result, at: Vec3d, bodies: [CatchDecision.Body])
+        -> CatchGrade
+    {
+        if d.laidOut { return .layout }
+        guard let b = bodies.first(where: { $0.id == d.takerId }) else { return .routine }
         return CatchDecision.contestCount(at.x, at.z, b.team, bodies) > 0 ? .contested : .routine
     }
 

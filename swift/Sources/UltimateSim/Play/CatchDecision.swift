@@ -105,6 +105,19 @@ public enum CatchDecision {
         /// so the fixture pins the numbers and not just the branch.
         public let difficulty: Double
         public let p: Double
+        /// Whether the taker was at full stretch — `state == "layout"`, or prone and in
+        /// the air. The flag that decided which reach and which floor applied above.
+        public let laidOut: Bool
+        /// The contest term that priced `difficulty`: `catchContest` capped at two and
+        /// scaled by 0.30, so zero means nobody was playing the disc but the taker.
+        ///
+        /// **These last two are carried out because `Engine.grade` was re-deriving them by
+        /// hand.** It had the same body array and it wrote the same two expressions —
+        /// which is the shape that produced this project's worst bugs, and it had already
+        /// drifted: the grade asked `contestCount`, "did the disc come down in a crowd",
+        /// while its own comment claimed it was asking the difficulty term. One of these
+        /// is what the decision actually decided, and it is this one.
+        public let contest: Double
     }
 
     /// The decision. `nil` means nobody was in a position to play the disc at all.
@@ -164,7 +177,9 @@ public enum CatchDecision {
         let r = roll()
 
         func result(_ o: Outcome) -> Result {
-            Result(takerId: taker.id, outcome: o, difficulty: difficulty, p: p)
+            Result(
+                takerId: taker.id, outcome: o, difficulty: difficulty, p: p,
+                laidOut: bestLaidOut, contest: contest)
         }
 
         if taker.team != offence {

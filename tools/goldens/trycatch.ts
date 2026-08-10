@@ -66,7 +66,7 @@ function scratch(b: Body): AIPlayer {
 function decide(
   disc: { x: number; y: number; z: number; vx: number; vy: number; vz: number },
   pull: boolean, offence: number | null, bodies: Body[], roll: number,
-): { taker: number; outcome: string; difficulty: number; p: number } | null {
+): { taker: number; outcome: string; difficulty: number; p: number; laidOut: boolean; contest: number } | null {
   let best: Body | null = null;
   let bestScore = Infinity;
   let bestHigh = 0;
@@ -120,7 +120,7 @@ function decide(
   let p = catchProbability(scratch(best), difficulty);
   if (best.team !== offence) p *= 0.62;
 
-  const r = (outcome: string) => ({ taker: best.id, outcome, difficulty, p });
+  const r = (outcome: string) => ({ taker: best.id, outcome, difficulty, p, laidOut: bestLaidOut, contest });
   if (best.team !== offence) {
     if (pull) return r(roll < p ? 'pull-touch' : 'none');
     if (roll < p * 0.55) return r('interception');
@@ -329,6 +329,13 @@ export function tryCatchGoldens(): unknown {
         taker: first ? first.taker : null,
         difficulty: first ? first.difficulty : null,
         p: first ? first.p : null,
+        // The two facts `decide` knows and used not to hand out. `Engine.grade` on the
+        // Swift side re-derived both by hand off the same body array, which is how the
+        // grade came to be asking `contestCount` — a different question — while its own
+        // comment claimed it was asking this one. Recorded here so the port cannot drift
+        // from the decision again without a golden moving.
+        laidOut: first ? first.laidOut : null,
+        contest: first ? first.contest : null,
         outcomes: ROLLS.map((roll) => {
           const d = decide(s.disc, s.pull, s.offence, s.bodies, roll);
           return d ? d.outcome : 'no-taker';

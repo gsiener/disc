@@ -49,6 +49,8 @@
       "taker": 1,
       "difficulty": 0.12,
       "p": 0.963772,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -98,6 +100,8 @@
       "taker": 1,
       "difficulty": 0.67,
       "p": 0.8733519999999999,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -147,6 +151,8 @@
       "taker": 1,
       "difficulty": 0.6340253683791346,
       "p": 0.8792662294384702,
+      "laidOut": true,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -196,6 +202,8 @@
       "taker": 1,
       "difficulty": 1.0121152684856947,
       "p": 0.8171082498609517,
+      "laidOut": true,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -260,6 +268,8 @@
       "taker": 1,
       "difficulty": 0.5568721461187216,
       "p": 0.8919502191780821,
+      "laidOut": true,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -309,6 +319,8 @@
       "taker": null,
       "difficulty": null,
       "p": null,
+      "laidOut": null,
+      "contest": null,
       "outcomes": [
         "no-taker",
         "no-taker",
@@ -373,6 +385,8 @@
       "taker": null,
       "difficulty": null,
       "p": null,
+      "laidOut": null,
+      "contest": null,
       "outcomes": [
         "no-taker",
         "no-taker",
@@ -422,6 +436,8 @@
       "taker": null,
       "difficulty": null,
       "p": null,
+      "laidOut": null,
+      "contest": null,
       "outcomes": [
         "no-taker",
         "no-taker",
@@ -471,6 +487,8 @@
       "taker": 9,
       "difficulty": 0.12000000000000013,
       "p": 0.5975386399999999,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "interception",
         "interception",
@@ -520,6 +538,8 @@
       "taker": null,
       "difficulty": null,
       "p": null,
+      "laidOut": null,
+      "contest": null,
       "outcomes": [
         "no-taker",
         "no-taker",
@@ -569,6 +589,8 @@
       "taker": 9,
       "difficulty": 0.18511145159452302,
       "p": 0.5909019599618734,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "interception",
         "interception",
@@ -633,6 +655,8 @@
       "taker": 1,
       "difficulty": 0.42000000000000015,
       "p": 0.9144519999999999,
+      "laidOut": false,
+      "contest": 0.3,
       "outcomes": [
         "catch",
         "catch",
@@ -697,6 +721,8 @@
       "taker": 9,
       "difficulty": 0.12000000000000013,
       "p": 0.5975386399999999,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "interception",
         "interception",
@@ -791,6 +817,8 @@
       "taker": 1,
       "difficulty": 0.18111111111111117,
       "p": 0.9537253333333332,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -840,6 +868,8 @@
       "taker": 1,
       "difficulty": 0.635472707529555,
       "p": 0.8790282868821411,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -919,6 +949,8 @@
       "taker": 3,
       "difficulty": 0.12,
       "p": 0.963772,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -968,6 +1000,8 @@
       "taker": 1,
       "difficulty": 0.7117808219178083,
       "p": 0.8664832328767123,
+      "laidOut": true,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -1017,6 +1051,8 @@
       "taker": 1,
       "difficulty": 0.4255555555555557,
       "p": 0.8732981666666666,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -1066,6 +1102,8 @@
       "taker": 1,
       "difficulty": 0.4255555555555557,
       "p": 0.9335498666666666,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "catch",
         "catch",
@@ -1115,6 +1153,8 @@
       "taker": 8,
       "difficulty": 0.3033333333333335,
       "p": 0.9336319999999999,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "pull-catch",
         "pull-catch",
@@ -1164,6 +1204,8 @@
       "taker": 2,
       "difficulty": 0.18111111111111117,
       "p": 0.5913097066666666,
+      "laidOut": false,
+      "contest": 0,
       "outcomes": [
         "pull-touch",
         "pull-touch",
@@ -1228,6 +1270,8 @@
       "taker": 1,
       "difficulty": 0.97,
       "p": 0.8240319999999999,
+      "laidOut": false,
+      "contest": 0.3,
       "outcomes": [
         "catch",
         "catch",

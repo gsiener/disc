@@ -56,6 +56,8 @@ enum TryCatchTests {
         let taker: Int?
         let difficulty: Double?
         let p: Double?
+        let laidOut: Bool?
+        let contest: Double?
         let outcomes: [String]
     }
 
@@ -104,6 +106,12 @@ enum TryCatchTests {
                     Check.eq(d.takerId, s.taker ?? -1, "\(s.name): the same body takes it")
                     Check.near(d.difficulty, s.difficulty ?? .nan, 1e-12, "\(s.name): difficulty")
                     Check.near(d.p, s.p ?? .nan, 1e-12, "\(s.name): probability")
+                    // The two facts the decision used to keep to itself. `Engine.grade`
+                    // reads them now instead of writing the same expressions a second
+                    // time, so they are differed here like everything else.
+                    Check.eq(d.laidOut, s.laidOut ?? false, "\(s.name): laid out")
+                    Check.bitEqViaJSON(
+                        d.contest, s.contest ?? .nan, "\(s.name): contest term")
                     worst = Swift.max(
                         worst,
                         Swift.max(
