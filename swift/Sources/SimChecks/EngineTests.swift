@@ -595,17 +595,123 @@ enum EngineTests {
         for seed in [UInt32(11), 23, 37] {
             if let sample = playAndMeasure(.sevens, seed: seed) { pool.append(sample) }
         }
-        playAndMeasure(.minis, seed: 11)
+        // **Minis is measured over three seeds too, and it is ASSERTED now.**
+        //
+        // It used to be one seed with the bands switched off and a note saying the game was
+        // still backward. That note was true when it was written and it stopped being true
+        // silently, which is the failure mode a `Check.note` always has. Minis is the format
+        // the pre-game sheet offers by DEFAULT, so it is the first thing a new player sees
+        // and it is the one that has never had a band under it.
+        var minisPool: [SevensSample] = []
+        for seed in [UInt32(11), 3, 7] {
+            if let sample = playAndMeasure(.minis, seed: seed) { minisPool.append(sample) }
+        }
         theDeepGameAndTheHoldShare(pool)
+        minisIsPlayable(minisPool)
     }
 
-    /// One seed's worth of the two numbers that are TAILS rather than rates.
+    /// One seed's worth of the two numbers that are TAILS rather than rates, plus the
+    /// rates the minis bands are built on.
     private struct SevensSample {
         let seed: UInt32
         let holds: Int
         let breaks: Int
         let longest: Double
         let hucks: Int
+        /// Goals in the fifteen minutes measured.
+        let goals: Int
+        /// Seconds of LIVE_POSSESSION per throw attempt.
+        let cadence: Double
+        /// `completions / attempts` off the rules machine, as a percentage.
+        let passPct: Double
+        let stallOuts: Int
+        /// Throwaways + drops + stall-outs + blocks: every way a possession changed hands
+        /// other than a goal.
+        let turnovers: Int
+        let meanGain: Double
+        /// Did the match reach its target inside the fifteen minutes measured? For minis
+        /// this is the whole of "playable": a game to 7 that does not finish is the bug.
+        let finished: Bool
+    }
+
+    /// **THE DEFAULT GAME MODE, ASSERTED.** Issue #66.
+    ///
+    /// A human-driven minis session on Normal measured possession alternating every ten
+    /// seconds with every possession ending at the stall count, 0-0 after 150 s, and a UI
+    /// test timing out after ninety seconds waiting for its own possession. Nothing in the
+    /// suite failed, because everything in the suite was a sevens band and the one minis
+    /// match was measured and not asserted.
+    ///
+    /// The four numbers below are the ones that were wrong, in the order they were wrong:
+    /// the count reached 8 before anybody released, so almost nothing was thrown, so the
+    /// possession died on the count, so nobody scored. Each is a rate over a hundred-odd
+    /// throws or a dozen-odd points per match and they are pooled across the three seeds,
+    /// because `.agents/friction-log` has two entries about per-seed bands resampling on
+    /// any change that reshuffles the match — and every change to this game reshuffles it.
+    private static func minisIsPlayable(_ pool: [SevensSample]) {
+        guard !pool.isEmpty else { return }
+        let n = Double(pool.count)
+        let goals = pool.reduce(0) { $0 + $1.goals }
+        let stalls = pool.reduce(0) { $0 + $1.stallOuts }
+        let turnovers = pool.reduce(0) { $0 + $1.turnovers }
+        let holds = pool.reduce(0) { $0 + $1.holds }
+        let points = pool.reduce(0) { $0 + $1.holds + $1.breaks }
+        let att = pool.reduce(0.0) { $0 + $1.passPct }
+        let cadence = pool.reduce(0.0) { $0 + $1.cadence } / n
+        let stallShare = turnovers > 0 ? Double(stalls) / Double(turnovers) : 0
+        let holdShare = points > 0 ? Double(holds) / Double(points) : 0
+        Check.note(
+            "minis pooled over \(pool.count) matches: \(goals) goals, "
+                + "\(stalls) stall-outs of \(turnovers) turnovers = "
+                + String(format: "%.0f%%", stallShare * 100)
+                + ", holds \(holds) of \(points) = " + String(format: "%.0f%%", holdShare * 100)
+                + ", mean cadence " + String(format: "%.1f", cadence) + " s, mean completion "
+                + String(format: "%.0f%%", att / n)
+                + " (per seed: "
+                + pool.map {
+                    "s\($0.seed) \($0.goals)g " + String(format: "%.1f", $0.cadence) + "s "
+                        + String(format: "%.0f%%", $0.passPct) + " \($0.stallOuts)so"
+                }.joined(separator: ", ") + ")")
+
+        /// **The count is not how a possession ends.** This is the assertion the whole issue
+        /// is about: measured before the fix, 56-89% of the turnovers in a minis match were
+        /// stall-outs, and with the computer playing both sides the release itself came at
+        /// stall 8 or 9 on two thirds of throws. A stall-out is a real event in the sport and
+        /// the bar is not zero; it is a small minority.
+        Check.ok(
+            stallShare <= 0.25,
+            "minis possessions do not die on the count (\(stalls) stall-outs of "
+                + "\(turnovers) turnovers = " + String(format: "%.0f%%", stallShare * 100) + ")")
+        /// Tempo. Real throwers go every 3-6 s of live play; a 3v3 give-and-go game sits at
+        /// the quick end of that and the sevens band (3.5-7.5) is the slow end of it. Before
+        /// the fix this was 5.4-7.0 s and rising with the stall count that produced it.
+        Check.ok(
+            cadence >= 3.0 && cadence <= 6.5,
+            "the disc moves at a 3v3 tempo (a release every "
+                + String(format: "%.1f", cadence) + " s of live play)")
+        /// Goals happen. A minis game is to 7, so this is also the statement that the default
+        /// mode FINISHES: at this rate a game to 7 takes four to five minutes and a game to 3
+        /// takes under two. The ceiling is here because a scoring rate this high is only
+        /// authentic while the completions are, and the two are asserted together.
+        /// **A game to seven finishes.** This is the plainest statement of the issue: the
+        /// default mode was 0-0 after 150 s of real play and a UI test waited ninety seconds
+        /// for a possession of its own. `Engine(format: .minis, seed:)` plays to 7, and the
+        /// loop above runs for fifteen simulated minutes, so `isOver` is the whole question.
+        Check.ok(
+            pool.allSatisfy(\.finished),
+            "a minis game to 7 finishes inside fifteen minutes "
+                + "(\(pool.filter(\.finished).count) of \(pool.count))")
+        Check.ok(
+            goals >= 7 * pool.count && goals <= 34 * pool.count,
+            "and goals are how it finishes (\(goals) in \(pool.count) matches)")
+        Check.ok(
+            att / n >= 80 && att / n <= 98,
+            "at a completion rate a short-pass game would recognise "
+                + String(format: "%.0f%%", att / n))
+        Check.ok(
+            points >= 12 && holdShare >= 0.30 && holdShare <= 0.90,
+            "and the receiving team holds more often than not, over \(points) points "
+                + "(\(holds) = " + String(format: "%.0f%%", holdShare * 100) + ")")
     }
 
     /// THE TWO NUMBERS THAT CANNOT BE ASSERTED ONE SEED AT A TIME.
@@ -670,17 +776,29 @@ enum EngineTests {
     /// to side all afternoon without ever facing the endzone. So the gain is measured
     /// directly — metres downfield, signed toward the throwing team's attacking end.
     ///
-    /// Running it on **both** formats is what finally located a bug that had been read as
-    /// an engine fault for weeks. At sevens on the regulation pitch the same code scores
-    /// like the sport; at 3v3 on the minis pitch it scores nothing and throws backwards.
-    /// That gap is the finding: `AI.ts` and `Playbook.ts` are ported faithfully, but their
-    /// *shape* constants assume seven players on a hundred metres. `chooseFormation`
-    /// switches to the endzone set inside 13 m of the goal, which on a 12.5 m minis
-    /// half is the entire pitch; the endzone set makes every player a handler, so the
-    /// cutter stack is empty and nobody ever cuts; and every endzone handler station is
-    /// five to six metres *behind* the disc, so a backward throw is the only option the
-    /// scorer is ever offered. `PLAY.stackHold` blocks cuts at a three-player roster in
-    /// the other formation too.
+    /// Running it on **both** formats is what located every minis bug this file has ever
+    /// carried, and the reason both are asserted now rather than one. `AI.ts` and
+    /// `Playbook.ts` are ported faithfully; what was wrong each time was that their *shape*
+    /// and *value* constants assume seven players on a hundred metres.
+    ///
+    ///  - `chooseFormation` switched to the endzone set inside 13 m of the goal, which on a
+    ///    12.5 m minis half is the entire pitch. Scaled off the goal line.
+    ///  - the endzone set made every player a handler and `PLAY.stackHold` blocked every cut
+    ///    at a three-player roster, so nobody ever cut at all. Both proportional to the
+    ///    roster now — `Playbook.handlerCount`, `Playbook.stackHold`.
+    ///  - every downfield offset in `formationStations` and `buildCut` was metres chosen on a
+    ///    32 m half-field: the vertical stack's five stations span 27.8 m, which is nine
+    ///    metres past the minis END LINE, so all five clamped into the back of the endzone
+    ///    and stood on each other. `Playbook.depthScale` / `widthScale`.
+    ///  - `possessionValue`'s 64 and 18 are the regulation goal-to-goal length and endzone
+    ///    depth, so the whole minis pitch fitted inside the flat top of the value curve: a
+    ///    completion that gained a quarter of the field was priced at +0.04 while the
+    ///    turnover it risked still cost a full-size 0.46. A rational thrower held, the count
+    ///    ran to 8, and 56-89% of every turnover in a minis match was a stall-out.
+    ///
+    /// Each of those was invisible at sevens, and each is invisible again the moment a scale
+    /// is 1.0 — which it is, exactly, on the regulation field. That is what makes it safe:
+    /// every sevens number in this file, to the last digit, is unchanged by the whole set.
     ///
     /// The reference's own headless harness (`node tools/test-game.ts`) is the outside
     /// number to hold this against: 8 points, 109 throws, 86 completions in 600 s of 7v7.
@@ -888,18 +1006,22 @@ enum EngineTests {
             // seeds by `theDeepGameAndTheHoldShare` — see there for why neither survives
             // being asserted one match at a time.
             Check.ok(points >= 8, "and a match is a match (\(points) points)")
-            sample = SevensSample(
-                seed: seed, holds: holds, breaks: breaks,
-                longest: completedDists.max() ?? 0, hucks: hucksAttempted)
             Check.ok(
                 cadence >= 3.5 && cadence <= 7.5,
                 "the disc moves at a human tempo (a release every "
                     + String(format: "%.1f", cadence) + " s of live play)")
-        } else if mean <= 0 {
-            Check.note(
-                "minis is still a backward game — see playAndMeasure; the AI's shape "
-                    + "constants are seven-a-side constants")
         }
+        // The sample is built for BOTH formats. It used to be built only inside the sevens
+        // branch, with the minis arm of the `if` printing a note that the game was still
+        // backward — so the format the pre-game sheet offers by default had no pooled
+        // measurement to assert and no band to fail. `minisIsPlayable` asserts these; the
+        // sevens tails go to `theDeepGameAndTheHoldShare`.
+        sample = SevensSample(
+            seed: seed, holds: holds, breaks: breaks,
+            longest: completedDists.max() ?? 0, hucks: hucksAttempted,
+            goals: goals, cadence: cadence, passPct: passPct, stallOuts: stalls,
+            turnovers: aways + drops + stalls + e.stats.blocks, meanGain: mean,
+            finished: e.isOver)
         return sample
     }
 

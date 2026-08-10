@@ -96,7 +96,16 @@ extension TeamAI {
         // Value of simply keeping the disc where it is, and how much a turnover is worth
         // avoiding. Risk aversion rises when backed up and when protecting a lead, and
         // falls for an aggressive team or one that is chasing.
-        let holdValue = possessionValue(pb.yardsToGoal(disc.pos.z, dir))
+        // Possession value on THIS pitch. `pv` is `possessionValue` with the field's own
+        // goal-to-goal length and endzone depth rather than the regulation 64 and 18 —
+        // see the doc on `possessionValue`. On the regulation field it is the identical
+        // function, defaults and all.
+        let central = pb.field.centralLength
+        let endzoneD = pb.field.endzoneDepth
+        func pv(_ yards: Double) -> Double {
+            possessionValue(yards, central: central, endzone: endzoneD)
+        }
+        let holdValue = pv(pb.yardsToGoal(disc.pos.z, dir))
         let behindBy = Double(world.score[1 - team] - world.score[team])
         let risk = clamp(
             (1 / cfg.aggression)
@@ -201,9 +210,11 @@ extension TeamAI {
                 let isGoal = pb.inAttackEndzone(aim.z, dir)
                 let isReset = gain < 0
                 let newYards = pb.yardsToGoal(aim.z, dir)
-                let gainValue = isGoal ? 1.0 : possessionValue(newYards)
+                let gainValue = isGoal ? 1.0 : pv(newYards)
                 // A turnover here hands the opponent the disc facing the other way.
-                let loss = possessionValue(64 - clamp(newYards, 0, 64)) * risk
+                // Where the opponent gets it: `yards` from YOUR goal is
+                // `central - yards` from theirs. The reference writes the regulation 64.
+                let loss = pv(central - clamp(newYards, 0, central)) * risk
                 let value = gainValue
 
                 // ---- explicit deep-shot valuation — `src/sim/AI.ts` evaluateOptions.
@@ -251,7 +262,7 @@ extension TeamAI {
                     /// bad hucks on top of good ones: at 0.30 completion falls to 84.4%, outside
                     /// the sport's band, for a deep game that 0.24 delivers anyway. The pin is
                     /// real and it stays; it is no longer the reason to throw.
-                    let pin = 1 - possessionValue(64 - clamp(newYards, 0, 64))
+                    let pin = 1 - pv(central - clamp(newYards, 0, central))
                     ev = completion * gainValue
                         + (1 - completion) * (0.24 * pin - loss * 0.55)
                         - holdValue

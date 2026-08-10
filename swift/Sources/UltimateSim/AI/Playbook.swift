@@ -301,6 +301,45 @@ public struct Playbook: Sendable {
     /// letting a 17.6 m band leak onto a 9 m half-width.
     var fieldBand: Double { field.sideline - edgeMargin }
 
+    // MARK: - pitch scale
+
+    /// **The pitch every shape constant in this file was measured on.**
+    ///
+    /// `Playbook.ts` has one field and therefore no need to say this. Here it is the
+    /// denominator of the two scales below, and it is `FieldConstants.standard` rather
+    /// than a copy of its numbers so the two can never drift.
+    public static let referenceField = FieldConstants.standard
+
+    /// **How much of a regulation half-field of PLAYING FIELD this pitch has.**
+    ///
+    /// Every downfield offset in this file — the stack lead and its spacing, how far
+    /// behind the disc a handler stands, how far in front of it an under resolves, how
+    /// far a deep cut reaches — is an absolute number of metres chosen on a pitch whose
+    /// goal line sits 32 m from the centre. On the minis pitch the goal line is at 12.5,
+    /// so those numbers do not describe a shape any more: `stackLead + 4 * stackSpacing`
+    /// is 27.8 m, which is nine metres PAST the minis end line. Measured, all five
+    /// vertical-stack cutter stations clamped into the back of the endzone and stood on
+    /// each other; the horizontal set's cutter row (15 m downfield, ±13.5 m wide) clamped
+    /// into the same corner from the other direction.
+    ///
+    /// So the shape is expressed as a fraction of the pitch and multiplied back out. At
+    /// regulation this is `32 / 32`, which is exactly 1.0, so every product below is
+    /// bit-identical to the constant it replaced and `tools/goldens/playbook.ts` does not
+    /// move. That is the whole reason it is written as a ratio of two field numbers
+    /// rather than as a hand-entered 0.39.
+    public var depthScale: Double { field.goalLine / Playbook.referenceField.goalLine }
+
+    /// The same argument laterally: 18.5 m of half-width becomes 9 on minis, so a
+    /// handler row spanning ±10 m and a side-stack column at ±12.5 are both off the pitch.
+    public var widthScale: Double { field.sideline / Playbook.referenceField.sideline }
+
+    /// `RESET_BAND`, `SWING_BAND` and `PIN_MARGIN` on the pitch actually being played.
+    /// The raw constants stay as the regulation spelling — they are what the reference
+    /// says and what the goldens assert — and these are what the shapes read.
+    var resetBand: Double { Playbook.RESET_BAND * widthScale }
+    var swingBand: Double { Playbook.SWING_BAND * widthScale }
+    var pinMargin: Double { Playbook.PIN_MARGIN * depthScale }
+
     // MARK: - maths
 
     public static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double {
@@ -466,10 +505,21 @@ public struct Playbook: Sendable {
     /// the same line without guessing.
     ///
     /// Reads no field dimension in the reference either — the 12.5 and the +/-5 clamp
-    /// are absolute metres — so it stays `static`.
+    /// are absolute metres — so the reference spelling stays `static` and is what
+    /// `tools/goldens/playbook.ts` asserts.
     public static func stackColumnX(_ name: FormationName, _ a: Vec2d, _ openSign: Sign) -> Double {
         if name == .side { return Double(-openSign) * 12.5 }
         return clamp(a.x * 0.3, -5, 5)
+    }
+
+    /// The same column, on the pitch being played. `12.5` is the regulation BREAK
+    /// SIDELINE minus a stride; on a pitch 9 m wide it is four metres into the crowd,
+    /// and `clampToField` turns "stand on the break line" into "stand on the line
+    /// wherever the disc is", which is not a side stack, it is a wall.
+    public func stackColumnX(_ name: FormationName, _ a: Vec2d, _ openSign: Sign) -> Double {
+        let w = widthScale
+        if name == .side { return Double(-openSign) * 12.5 * w }
+        return clamp(a.x * 0.3, -5 * w, 5 * w)
     }
 
     /// Where the seven offensive players want to stand, given the disc position. The
@@ -493,13 +543,18 @@ public struct Playbook: Sendable {
         // Real handlers pinned deep go LATERAL, not backward — a swing, not a dump.
         // Cutter stations are `a.z + dir * ...` and always downfield, so this floor
         // never touches them.
-        let floorZ = Double(-dir) * (field.goalLine - Playbook.PIN_MARGIN)
+        let floorZ = Double(-dir) * (field.goalLine - pinMargin)
 
         func push(_ x: Double, _ z: Double, _ role: StationRole, _ depth: Int) {
             let zz = dir > 0 ? Swift.max(z, floorZ) : Swift.min(z, floorZ)
             let p = clampToField(Vec2d(x, zz))
             out.append(Station(x: p.x, z: p.z, role: role, depth: depth))
         }
+
+        // Every offset below is a FRACTION OF THE PITCH, spelled as the regulation number
+        // times the scale. Both are exactly 1.0 on the regulation field. See `depthScale`.
+        let dz = depthScale
+        let wx = widthScale
 
         switch name {
         case .vertical:
@@ -515,15 +570,17 @@ public struct Playbook: Sendable {
             // Coached reset geometry is 45 degrees behind the thrower at about 9 m: the
             // measured mean distance was already right at 8.80 m, so this is 8.8 m at
             // exactly 45.
-            let vReset = Double(openSign) * 4.5
-            let vSwing = Double(brk) * 6.5
+            let vReset = Double(openSign) * 4.5 * wx
+            let vSwing = Double(brk) * 6.5 * wx
             let vs = Playbook.rowShift(
-                a.x, Swift.min(vReset, vSwing), Swift.max(vReset, vSwing), Playbook.RESET_BAND)
-            push(vs + vReset, a.z - Double(dir) * 6.5, .handler, 0)
-            push(vs + vSwing, a.z - Double(dir) * 3.5, .handler, 1)
-            let sx = Playbook.stackColumnX(.vertical, a, openSign)
+                a.x, Swift.min(vReset, vSwing), Swift.max(vReset, vSwing), resetBand)
+            push(vs + vReset, a.z - Double(dir) * 6.5 * dz, .handler, 0)
+            push(vs + vSwing, a.z - Double(dir) * 3.5 * dz, .handler, 1)
+            let sx = stackColumnX(.vertical, a, openSign)
             for i in 0..<5 {
-                push(sx, a.z + Double(dir) * (PLAY.stackLead + PLAY.stackSpacing * Double(i)),
+                push(
+                    sx,
+                    a.z + Double(dir) * (PLAY.stackLead + PLAY.stackSpacing * Double(i)) * dz,
                     .cutter, i)
             }
 
@@ -535,7 +592,7 @@ public struct Playbook: Sendable {
             //
             // The full playing surface, not a reset band: the ho handler row IS the
             // width of the set, so the only limit on it is the field.
-            let hs = Playbook.rowShift(a.x, -10.0, 10.0, fieldBand)
+            let hs = Playbook.rowShift(a.x, -10.0 * wx, 10.0 * wx, fieldBand)
             // STATION 0 IS THE RESET, and it must be on the OPEN side. The AI fills
             // these in order and treats station 0 as the dump. The horizontal set once
             // had station 0 on the BREAK side, so the moment ho was enabled the offence
@@ -544,23 +601,25 @@ public struct Playbook: Sendable {
             // disc in 84.6% of held frames against 90.0% for vert.
             //
             // Open side, centre, break side. The break-side handler is the swing.
-            push(hs + Double(openSign) * 10.0, a.z - Double(dir) * 5.5, .handler, 0)
-            push(hs, a.z - Double(dir) * 4.0, .handler, 1)
-            push(hs + Double(brk) * 10.0, a.z - Double(dir) * 5.5, .handler, 2)
+            push(hs + Double(openSign) * 10.0 * wx, a.z - Double(dir) * 5.5 * dz, .handler, 0)
+            push(hs, a.z - Double(dir) * 4.0 * dz, .handler, 1)
+            push(hs + Double(brk) * 10.0 * wx, a.z - Double(dir) * 5.5 * dz, .handler, 2)
             let xs = [-13.5, -4.5, 4.5, 13.5]
-            for i in 0..<4 { push(xs[i], a.z + Double(dir) * 15, .cutter, i) }
+            for i in 0..<4 { push(xs[i] * wx, a.z + Double(dir) * 15 * dz, .cutter, i) }
 
         case .side:
             // 5 cutters stacked on the break sideline, isolating the whole open side.
-            let sReset = Double(openSign) * 4.0
-            let sSwing = Double(brk) * 6.0
+            let sReset = Double(openSign) * 4.0 * wx
+            let sSwing = Double(brk) * 6.0 * wx
             let ss = Playbook.rowShift(
-                a.x, Swift.min(sReset, sSwing), Swift.max(sReset, sSwing), Playbook.RESET_BAND)
-            push(ss + sReset, a.z - Double(dir) * 6.5, .handler, 0)
-            push(ss + sSwing, a.z - Double(dir) * 3.0, .handler, 1)
-            let lx = Playbook.stackColumnX(.side, a, openSign)
+                a.x, Swift.min(sReset, sSwing), Swift.max(sReset, sSwing), resetBand)
+            push(ss + sReset, a.z - Double(dir) * 6.5 * dz, .handler, 0)
+            push(ss + sSwing, a.z - Double(dir) * 3.0 * dz, .handler, 1)
+            let lx = stackColumnX(.side, a, openSign)
             for i in 0..<5 {
-                push(lx, a.z + Double(dir) * (9 + PLAY.stackSpacing * Double(i)), .cutter, i)
+                push(
+                    lx, a.z + Double(dir) * (9 + PLAY.stackSpacing * Double(i)) * dz,
+                    .cutter, i)
             }
 
         case .endzone:
@@ -569,20 +628,20 @@ public struct Playbook: Sendable {
             // not against the back line: pinned to the back line they are 25 m from a
             // disc 12 m out, and the team reads as two disconnected knots of people.
             // Symmetric about the middle handler, so the extremes are +/-6.5 either way.
-            let es = Playbook.rowShift(a.x, -6.5, 6.5, Playbook.RESET_BAND)
-            push(es + Double(openSign) * 6.5, a.z - Double(dir) * 5.0, .handler, 0)
-            push(es, a.z - Double(dir) * 6.5, .handler, 1)
-            push(es + Double(brk) * 6.5, a.z - Double(dir) * 5.0, .handler, 2)
+            let es = Playbook.rowShift(a.x, -6.5 * wx, 6.5 * wx, resetBand)
+            push(es + Double(openSign) * 6.5 * wx, a.z - Double(dir) * 5.0 * dz, .handler, 0)
+            push(es, a.z - Double(dir) * 6.5 * dz, .handler, 1)
+            push(es + Double(brk) * 6.5 * wx, a.z - Double(dir) * 5.0 * dz, .handler, 2)
             // The row stays CONNECTED TO THE DISC. Pinned to an absolute depth it sat
             // 26.4 m ahead of the disc at the exact moment the endzone call fired.
             // Making it disc-relative tightens it smoothly as the disc advances instead
             // of snapping.
             let ez = Double(dir) * clamp(
-                Double(dir) * a.z + 12,
-                field.goalLine + 3,
+                Double(dir) * a.z + 12 * dz,
+                field.goalLine + 3 * dz,
                 field.goalLine + field.endzoneDepth * 0.55)
             let xs = [-11.0, -4.0, 4.0, 11.0]
-            for i in 0..<4 { push(xs[i], ez, .cutter, i) }
+            for i in 0..<4 { push(xs[i] * wx, ez, .cutter, i) }
         }
 
         return out
@@ -649,9 +708,10 @@ public struct Playbook: Sendable {
         // Scaled off the goal line rather than left absolute, because 13 m is a fifth of
         // a regulation half and the WHOLE of a minis one — `yardsToGoal <= 13` is true
         // everywhere on a pitch whose goal line is at 12.5 m, so the minis game was
-        // permanently in its endzone set, from the pull onwards. At regulation this is
-        // 13 exactly.
-        if yardsToGoal(disc.z, dir) <= 13 * (field.goalLine / 32) { return .endzone }
+        // permanently in its endzone set, from the pull onwards. `depthScale` is exactly
+        // 1.0 at regulation, so this is 13 there; it was spelled `field.goalLine / 32`
+        // before that scale existed and is the same number.
+        if yardsToGoal(disc.z, dir) <= 13 * depthScale { return .endzone }
         // The side stack is called when the disc is genuinely trapped on a line. At
         // 11.5 m it was firing on a third of possessions, and every call moved the whole
         // column across the field.
@@ -666,14 +726,35 @@ public struct Playbook: Sendable {
         //
         // So the trigger asks for both: near a line, AND the open side pointing back
         // into the field.
-        if abs(disc.x) > 14.0 && disc.x * Double(openSign) < 0 { return .side }
+        // 14 m from the middle is "trapped on a line" on a pitch 18.5 m to the sideline;
+        // on the minis pitch the sideline is at 9, so the call could never fire at all.
+        if abs(disc.x) > 14.0 * widthScale && disc.x * Double(openSign) < 0 { return .side }
         if windSpeed > 7.5 { return .vertical }
         return prefer == .endzone ? .vertical : prefer
     }
 
     // MARK: - cuts
 
-    /// Classify a point into the lane it occupies, relative to the disc.
+    /// Classify a point into the lane it occupies, on the pitch being played.
+    ///
+    /// The 16 m under/deep boundary is a regulation-field number: on the minis pitch it
+    /// is larger than the whole distance from the disc to the back of the endzone, so
+    /// EVERY cut classified as an under and the two deep lanes were unreachable — which
+    /// makes `liveLanes` a two-lane table instead of a six-lane one and collides cuts
+    /// that are nowhere near each other. The 1.5 m behind-the-disc threshold is a stride,
+    /// not a fraction of a field, and stays absolute.
+    public func laneOf(
+        _ x: Double, _ z: Double, _ disc: Vec2d, _ dir: Dir, _ openSign: Sign
+    ) -> LaneKey {
+        let downfield = Double(dir) * (z - disc.z)
+        let open = (x - disc.x) * Double(openSign) >= 0
+        if downfield < 1.5 { return open ? .resetOpen : .resetBreak }
+        if downfield < 16 * depthScale { return open ? .openUnder : .breakUnder }
+        return open ? .openDeep : .breakDeep
+    }
+
+    /// The reference spelling, on the regulation field. Asserted by
+    /// `tools/goldens/playbook.ts`; the instance method above is what the AI reads.
     public static func laneOf(
         _ x: Double, _ z: Double, _ disc: Vec2d, _ dir: Dir, _ openSign: Sign
     ) -> LaneKey {
@@ -706,16 +787,22 @@ public struct Playbook: Sendable {
         let sd = Double(side)
         let bd = Double(brk)
         let od = Double(openSign)
+        // Targets are field geometry and scale with the pitch; the SETUP STEP is a
+        // stride, so it does not. See `depthScale`.
+        let dz = depthScale
+        let wx = widthScale
 
         switch kind {
         case .under:
             // Sell deep first, then come back to the disc on the open side.
             setup = Vec2d(from.x + sd * 1.2, from.z + d * 3.0)
-            target = Vec2d(disc.x + sd * (6 + 3 * j), disc.z + d * (5.5 + 4 * j))
+            target = Vec2d(
+                disc.x + sd * (6 + 3 * j) * wx, disc.z + d * (5.5 + 4 * j) * dz)
 
         case .breakUnder:
             setup = Vec2d(from.x + bd * 0.8, from.z + d * 2.6)
-            target = Vec2d(disc.x + bd * (7 + 3 * j), disc.z + d * (3 + 2.5 * j))
+            target = Vec2d(
+                disc.x + bd * (7 + 3 * j) * wx, disc.z + d * (3 + 2.5 * j) * dz)
 
         case .deep:
             // Sell the under first, plant, and attack the space behind.
@@ -728,18 +815,28 @@ public struct Playbook: Sendable {
             // 3.8 m BACKWARDS. Only 3 of 73 throws in a match gained over 20 m.
             setup = Vec2d(from.x - sd * 1.0, from.z - d * 2.8)
             let ahead = d * (from.z - disc.z)
-            let reach = Swift.min(38, Swift.max(24 + 8 * j, ahead + 13 + 6 * j))
-            target = Vec2d(disc.x + sd * (4 + 5 * j), disc.z + d * reach)
+            // The scale multiplies each TERM, not the sum: `ahead + 13 * dz + 6 * j * dz`
+            // keeps the reference's `(ahead + 13) + 6 * j` association, and `a + b * 1.0`
+            // is `a + b` for every double. Bracketing it as `ahead + (13 + 6 * j) * dz`
+            // would round differently, which is exactly the kind of silent drift the
+            // goldens exist to catch.
+            let reach = Swift.min(
+                38 * dz, Swift.max((24 + 8 * j) * dz, ahead + 13 * dz + 6 * j * dz))
+            target = Vec2d(disc.x + sd * (4 + 5 * j) * wx, disc.z + d * reach)
             maxTime = PLAY.deepCutTime
 
         case .strike:
             setup = Vec2d(from.x - sd * 1.6, from.z + d * 1.2)
-            target = Vec2d(disc.x + sd * (4 + 3 * j), d * (field.goalLine + 2 + 4 * j))
+            // Term by term for the same association reason as `deep` above.
+            target = Vec2d(
+                disc.x + sd * (4 + 3 * j) * wx,
+                d * (field.goalLine + 2 * dz + 4 * j * dz))
             maxTime = 1.8
 
         case .upLine:
             setup = Vec2d(from.x - od * 1.6, from.z - d * 1.0)
-            target = Vec2d(disc.x + od * (2.0 + 1.5 * j), disc.z + d * (5 + 2 * j))
+            target = Vec2d(
+                disc.x + od * (2.0 + 1.5 * j) * wx, disc.z + d * (5 + 2 * j) * dz)
             maxTime = 1.6
 
         case .dump:
@@ -752,16 +849,16 @@ public struct Playbook: Sendable {
             // The setup sells the up-line hard the other way.
             setup = Vec2d(from.x + bd * 2.4, from.z + d * 2.8)
             target = Vec2d(
-                clamp(disc.x + od * (6.5 + 2.5 * j),
-                    -Playbook.RESET_BAND - 2, Playbook.RESET_BAND + 2),
-                disc.z - d * (7.5 + 2 * j))
+                clamp(disc.x + od * (6.5 + 2.5 * j) * wx,
+                    -resetBand - 2 * wx, resetBand + 2 * wx),
+                disc.z - d * (7.5 + 2 * j) * dz)
             maxTime = 2.0
 
         case .swing:
             setup = Vec2d(from.x - od * 1.4, from.z - d * 1.2)
             target = Vec2d(
-                clamp(disc.x + od * (8 + 2 * j), -Playbook.SWING_BAND, Playbook.SWING_BAND),
-                disc.z - d * (2 + 2 * j))
+                clamp(disc.x + od * (8 + 2 * j) * wx, -swingBand, swingBand),
+                disc.z - d * (2 + 2 * j) * dz)
             maxTime = 1.8
         }
 
@@ -777,7 +874,7 @@ public struct Playbook: Sendable {
         // The ground the floor takes away comes back as WIDTH: pinned deep, handlers
         // swing across the field instead of dumping backwards.
         if kind == .dump || kind == .swing {
-            let floor = Double(-dir) * (field.goalLine - Playbook.PIN_MARGIN)
+            let floor = Double(-dir) * (field.goalLine - pinMargin)
             let rawZ = target.z
             // ALIAS SITE (2). Reference: `target.z = ...` mutates the literal in place.
             target.z = dir > 0 ? Swift.max(rawZ, floor) : Swift.min(rawZ, floor)
@@ -790,8 +887,7 @@ public struct Playbook: Sendable {
                 let away: Sign = (signed == 0) ? openSign : signed
                 // ALIAS SITE (3). Reference: `target.x = ...`, same literal.
                 target.x = clamp(
-                    target.x + Double(away) * lost * 0.8,
-                    -Playbook.SWING_BAND, Playbook.SWING_BAND)
+                    target.x + Double(away) * lost * 0.8, -swingBand, swingBand)
             }
         }
 
@@ -801,7 +897,7 @@ public struct Playbook: Sendable {
         let t = clampToField(target)
         return CutRoute(
             kind: kind,
-            lane: Playbook.laneOf(t.x, t.z, disc, dir, openSign),
+            lane: laneOf(t.x, t.z, disc, dir, openSign),
             setup: clampToField(setup),
             target: t,
             side: side,
@@ -838,10 +934,16 @@ public struct Playbook: Sendable {
     ) -> [ZoneStation] {
         let brk: Sign = -openSign
         let m = Playbook.markPoint(disc, dir, brk, PLAY.markDistance)
+        // The cup is a ring of three bodies round the disc: a body's reach, not a
+        // fraction of the pitch. Everything outside the cup is field geometry.
         let cupR = 4.4
-        let deepX = deepThreat.map { clamp($0.x * 0.55, -9, 9) } ?? 0
-        var deepZ = disc.z + Double(dir) * 26
-        if Double(dir) * deepZ > field.goalLine + 5 { deepZ = Double(dir) * (field.goalLine + 5) }
+        let dz = depthScale
+        let wx = widthScale
+        let deepX = deepThreat.map { clamp($0.x * 0.55, -9 * wx, 9 * wx) } ?? 0
+        var deepZ = disc.z + Double(dir) * 26 * dz
+        if Double(dir) * deepZ > field.goalLine + 5 * dz {
+            deepZ = Double(dir) * (field.goalLine + 5 * dz)
+        }
 
         let d = Double(dir)
         let raw: [ZoneStation] = [
@@ -849,10 +951,12 @@ public struct Playbook: Sendable {
             ZoneStation(role: .cupLeft, x: disc.x - cupR * 0.88, z: disc.z + d * cupR * 0.6),
             ZoneStation(role: .cupRight, x: disc.x + cupR * 0.88, z: disc.z + d * cupR * 0.6),
             ZoneStation(
-                role: .wingOpen, x: disc.x + Double(openSign) * 10.5, z: disc.z + d * 7.5),
+                role: .wingOpen, x: disc.x + Double(openSign) * 10.5 * wx,
+                z: disc.z + d * 7.5 * dz),
             ZoneStation(
-                role: .wingBreak, x: disc.x + Double(brk) * 10.5, z: disc.z + d * 7.5),
-            ZoneStation(role: .shortDeep, x: disc.x * 0.4, z: disc.z + d * 15),
+                role: .wingBreak, x: disc.x + Double(brk) * 10.5 * wx,
+                z: disc.z + d * 7.5 * dz),
+            ZoneStation(role: .shortDeep, x: disc.x * 0.4, z: disc.z + d * 15 * dz),
             ZoneStation(role: .deep, x: deepX, z: deepZ),
         ]
         // The reference's `.map` builds a new object per station rather than writing

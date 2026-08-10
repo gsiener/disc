@@ -61,3 +61,5 @@ of hours, because writing entries worked and reading them did not.
 | major | `20260810-teamai-lines-up` | TeamAI lines every body up on the goal line for any phase that is not live, so a mid-point stoppage cannot be expressed |
 | major | `20260810-throwsolver-wind-blind` | The throw solver takes no wind term, so a windy day is 21% throwaways rather than a harder game |
 | major | `20260810015209-xcuitest-gestures-are` | XCUITest: gestures are main-thread-only, and one accessibility read costs as long as a HUD plate lives |
+| major | `20260810-every-shape-constant` | Every shape and value constant in the AI port is a metre count measured on 100 x 37 m, and the minis pitch inherits all of them silently |
+| major | `20260810-waittothrow-waits-for` | MatchDriver.waitToThrow waits for OUR player to hold, which with no input happens once per point — 47-96 s against a 90 s timeout, at both formats |

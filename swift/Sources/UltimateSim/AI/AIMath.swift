@@ -178,9 +178,23 @@ public func shouldBid(
 /// swing. Clamping at 64 priced eighteen metres deep in your own endzone identically to
 /// standing on your own goal line, and an offence could walk itself backwards over its
 /// own line one locally-rational reset at a time.
-public func possessionValue(_ yards: Double) -> Double {
-    let core = 0.40 + 0.42 * (1 - clamp(yards, 0, 64) / 64)
-    return core - 0.42 * clamp((yards - 64) / 18, 0, 1)
+/// **The 64 and the 18 are the regulation pitch**, and on any other pitch they are wrong.
+///
+/// 64 is goal line to goal line and 18 is the endzone depth. On the minis pitch those are
+/// 25 and 6, so the reference's curve compresses the WHOLE playable field into its flat
+/// top: measured, a completion that gained a quarter of the minis pitch was priced at
+/// +0.036 of possession value while the turnover it risked still cost a full-size 0.46,
+/// and the arithmetic told a rational thrower to hold. He held — the count reached 8 on
+/// two thirds of releases and every possession the human did not throw for ended in a
+/// stall-out.
+///
+/// `central` and `endzone` default to the regulation numbers, so `possessionValue(y)` is
+/// bit-for-bit the reference function and `tools/goldens/aimath.ts` does not move.
+public func possessionValue(
+    _ yards: Double, central: Double = 64, endzone: Double = 18
+) -> Double {
+    let core = 0.40 + 0.42 * (1 - clamp(yards, 0, central) / central)
+    return core - 0.42 * clamp((yards - central) / endzone, 0, 1)
 }
 
 /// Max range in metres for a throw type, including the wind along the throw.

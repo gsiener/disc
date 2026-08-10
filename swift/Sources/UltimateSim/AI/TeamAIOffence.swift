@@ -564,7 +564,14 @@ extension TeamAI {
     func laneClearOfLiveTargets(_ cut: Playbook.CutRoute) -> Bool {
         for (_, id) in liveLanes {
             guard let other = m(id).cut else { continue }
-            if Playbook.dist2(cut.target.x, cut.target.z, other.target.x, other.target.z)
+            // 6 m is "far enough apart to be two different cuts" on a pitch 37 m wide
+            // and 100 long. On the minis pitch it is a third of the width, so two cuts to
+            // opposite sidelines read as the same cut: measured, 1,836 candidate routes in
+            // a single match were discarded against a live target that was nowhere near
+            // them. Measured in pitch-fractions instead — identical at regulation.
+            if Playbook.dist2(
+                cut.target.x / pb.widthScale, cut.target.z / pb.depthScale,
+                other.target.x / pb.widthScale, other.target.z / pb.depthScale)
                 < 6.0
             {
                 return false
@@ -620,10 +627,19 @@ extension TeamAI {
 
         // Space: how empty is the target? Accumulated in `world.players` order, because
         // floating-point addition is not associative and this is a running sum.
+        // **Space is a fraction of the pitch, not eight metres.** An 8 m absolute radius
+        // on a pitch 18 m wide counts most of the other team as standing on the target, so
+        // every cut on minis was priced as crowded: mean crowd 1.06 against 0.72 at sevens
+        // on a pitch with eight fewer bodies in it. Distances are taken in pitch-fractions
+        // — dividing each axis by its own scale, which is exactly 1.0 at regulation, so the
+        // reference's arithmetic is untouched there.
+        let cw = pb.widthScale
+        let cd = pb.depthScale
         var crowd = 0.0
         for q in world.players {
             if q.id == p.id { continue }
-            let d = Playbook.dist2(q.pos.x, q.pos.z, cut.target.x, cut.target.z)
+            let d = Playbook.dist2(
+                q.pos.x / cw, q.pos.z / cd, cut.target.x / cw, cut.target.z / cd)
             if d < 8 { crowd += (8 - d) / 8 }
         }
         s -= 0.12 * crowd
@@ -633,7 +649,15 @@ extension TeamAI {
         if deep {
             s += 0.16 * cfg.aggression
             s -= 0.30 * Playbook.smoothstep(3, 8, stall)  // no hucks at stall 8
-            s -= 0.35 * Playbook.smoothstep(30, 12, pb.yardsToGoal(world.disc.pos.z, dir))
+            // 30 and 12 are metres-from-the-goal on the regulation pitch — "do not huck
+            // from inside their half". The minis goal line is at 12.5, so `<= 12` was true
+            // over the whole attacking half and the full -0.35 was charged to every deep
+            // cut from the pull onwards. Scaled off the pitch; exactly the same on the
+            // regulation one.
+            let deepGate = pb.depthScale
+            s -= 0.35
+                * Playbook.smoothstep(
+                    30 * deepGate, 12 * deepGate, pb.yardsToGoal(world.disc.pos.z, dir))
             s += 0.12 * (p.attr.speed / 100) + 0.08 * (p.attr.jumping / 100)
         } else {
             // Part flat, part stall-ramped: a purely stall-gated under vanished from

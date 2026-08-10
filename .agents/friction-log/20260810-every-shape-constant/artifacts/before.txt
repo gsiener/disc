@@ -1,0 +1,13 @@
+== task #66 table, 900 s per match ==
+ minis s11 auto2  goals/15min  17.0  cadence  7.0s  comp 85%  holds 47%  stall-out share 0%  late(>=7) 60%  gain +4.51m  longest 21.8m  | att 94 TO: away 11 drop 4 stall 0 block 10
+ minis s3 auto2  goals/15min  28.0  cadence  5.4s  comp 85%  holds 82%  stall-out share 0%  late(>=7) 33%  gain +7.45m  longest 24.2m  | att 102 TO: away 13 drop 3 stall 0 block 13
+ minis s7 auto2  goals/15min  25.0  cadence  6.2s  comp 88%  holds 72%  stall-out share 0%  late(>=7) 45%  gain +6.48m  longest 23.4m  | att 96 TO: away 9 drop 5 stall 0 block 9
+ minis s17 auto2  goals/15min  24.0  cadence  5.4s  comp 90%  holds 58%  stall-out share 0%  late(>=7) 38%  gain +5.06m  longest 23.3m  | att 109 TO: away 11 drop 3 stall 0 block 11
+ minis s11 auto1  goals/15min  17.0  cadence 11.9s  comp 83%  holds 6%  stall-out share 56%  late(>=7) 76%  gain -0.40m  longest 17.8m  | att 58 TO: away 9 drop 2 stall 25 block 9
+ minis s3 auto1  goals/15min  17.0  cadence 12.4s  comp 90%  holds 6%  stall-out share 76%  late(>=7) 33%  gain -0.59m  longest 23.0m  | att 30 TO: away 3 drop 0 stall 19 block 3
+ minis s7 auto1  goals/15min  17.0  cadence 12.4s  comp 94%  holds 6%  stall-out share 82%  late(>=7) 66%  gain +1.63m  longest 23.1m  | att 32 TO: away 2 drop 0 stall 18 block 2
+ minis s17 auto1  goals/15min  17.0  cadence 14.0s  comp 87%  holds 6%  stall-out share 76%  late(>=7) 35%  gain +4.26m  longest  8.6m  | att 23 TO: away 3 drop 0 stall 19 block 3
+sevens s11 auto2  goals/15min  11.0  cadence  4.9s  comp 83%  holds 18%  stall-out share 0%  late(>=7) 25%  gain +6.76m  longest 22.1m  | att 126 TO: away 18 drop 3 stall 0 block 18
+sevens s23 auto2  goals/15min  12.0  cadence  5.8s  comp 95%  holds 58%  stall-out share 0%  late(>=7) 41%  gain +5.34m  longest 30.7m  | att 107 TO: away 4 drop 1 stall 0 block 4
+sevens s37 auto2  goals/15min  13.0  cadence  5.1s  comp 92%  holds 77%  stall-out share 0%  late(>=7) 33%  gain +5.60m  longest 31.4m  | att 116 TO: away 4 drop 5 stall 0 block 4
+sevens s11 auto1  goals/15min  17.0  cadence  9.0s  comp 93%  holds 6%  stall-out share 77%  late(>=7) 29%  gain +5.49m  longest 21.3m  | att 58 TO: away 2 drop 2 stall 20 block 2

@@ -356,7 +356,7 @@ public final class TeamAI {
     public var openSign: Playbook.Sign { openCommit }
     /// X of the column this team's stack is built on.
     public var stackAxisX: Double {
-        Playbook.stackColumnX(formation, anchor, openCommit)
+        pb.stackColumnX(formation, anchor, openCommit)
     }
 
     /// Cutter ids currently HOLDING the stack, front to back.
