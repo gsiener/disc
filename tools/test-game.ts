@@ -286,8 +286,71 @@ ge(thrown, 25, 'plenty of throws left a hand');
 ge(events.get('disc:caught') ?? 0, 15, 'completions happened');
 ok((events.get('score') ?? 0) === gs.score[0] + gs.score[1], 'one score event per point on the board');
 
+/**
+ * **The completion rate, asserted — and it was not asserted anywhere.**
+ *
+ * Everything above this point is a floor: two points, three pulls, 25 throws,
+ * 15 completions, over a ten-minute match that actually produces 13 points, 126
+ * releases and 102 completions. A build that scored twice and threw 25 times
+ * passed the whole group, and so did one that completed 25 of 25 by swinging the
+ * disc sideways for ten minutes — because the number that separates those two
+ * cases was never computed here at all. `tools/test-ai.ts` has had a completion
+ * band for a long time; the full-match harness had none.
+ *
+ * `completions / attempts` off the RULES MACHINE, which is the sport's own
+ * definition: `thrown` counts the fourteen pulls and every pull also lands as a
+ * turnover or a grounded disc, which is a ten-point hole in any rate computed
+ * from it.
+ *
+ * The band is real ultimate's 85-96% widened by three points each way, and the
+ * widening is for the platform rather than for the seed — the seed is fixed and
+ * this match is deterministic, but the disc integrator runs through `Math.exp`
+ * and `Math.hypot`, and those are the library's, not the language's. This seed
+ * measures 91.1% (102/112).
+ */
+{
+  const att = gs.teams[0].attempts + gs.teams[1].attempts;
+  const comp = gs.teams[0].completions + gs.teams[1].completions;
+  const rate = att > 0 ? comp / att : 0;
+  ok(att >= 40, 'there were passes to rate', `${comp}/${att}`);
+  ok(rate >= 0.82 && rate <= 0.97,
+    'at a completion rate the sport would recognise',
+    `${(rate * 100).toFixed(1)}% (${comp}/${att}), ${gs.teams[0].throwaways + gs.teams[1].throwaways} `
+    + `throwaways, ${gs.teams[0].drops + gs.teams[1].drops} drops, `
+    + `${gs.teams[0].stallOuts + gs.teams[1].stallOuts} stall-outs`);
+}
+
+/**
+ * **And the ceilings the floors above have no notion of.** A floor says the
+ * engine ran; it cannot say the game was ultimate. Ten minutes produces 13
+ * points and 126 releases on this seed, so a match that reports forty points has
+ * stopped playing them out and one that reports four hundred releases is not
+ * throwing at a human tempo. Both bounds sit at roughly 1.7x the measured
+ * figure — loose enough to survive tuning, tight enough that an order of
+ * magnitude cannot hide.
+ */
+ok(FINAL.points >= 4 && FINAL.points <= 22,
+  'and the points are played out rather than handed over', `${FINAL.points} points`);
+ok(thrown <= 260, 'the disc is thrown at something like a human tempo',
+  `${thrown} releases in ${SECONDS}s = one every ${(SECONDS / thrown).toFixed(1)}s`);
+
 group('possession changes hands');
 ge(events.get('turnover') ?? 0, 3, 'turnovers occurred');
+/**
+ * Turnovers PER POINT, which is the ratio that says whether possession changes
+ * hands like the sport rather than merely that it changed hands at all. The bare
+ * floor of 3 above is satisfied by a match with three turnovers in forty points
+ * and by one with three in a single point. This seed runs 10 over 13 points =
+ * 0.77, and the reference's own pooled figure across the eleven matches
+ * `matchdiff` plays is 1.23 — so the band brackets both with room, and it is a
+ * band rather than a floor because "nobody ever turns it over" and "nobody can
+ * complete two in a row" are both failures and only one of them has a floor.
+ */
+{
+  const per = FINAL.points > 0 ? (events.get('turnover') ?? 0) / FINAL.points : 0;
+  ok(per >= 0.3 && per <= 2.5, 'and it changes hands at the sport\'s rate',
+    `${(events.get('turnover') ?? 0)} over ${FINAL.points} points = ${per.toFixed(2)}/point`);
+}
 ok(turnoverReasons.size >= 2, 'turnovers came from more than one cause',
   [...turnoverReasons.keys()].join(','));
 {
@@ -1423,12 +1486,20 @@ group('a match makes progress on every seed, not just the lucky one');
    * single-seed run walked straight past it.
    *
    * So the sweep is part of the suite. It is short on purpose — the failure it
-   * catches shows up in the first few points or not at all — and it asserts the
-   * floor only: the disc moves, somebody scores, nothing wedges.
+   * catches shows up in the first few points or not at all.
+   *
+   * It used to assert the floor only — the disc moves, somebody scores, nothing
+   * wedges — which is the same gap the single-seed group above had: a floor says
+   * the engine ran. Six seeds is also the only pooled sample this file has, and a
+   * pooled completion rate is the one number here stable enough to hold against
+   * the sport's own band rather than against a measurement of ourselves.
    */
   const SWEEP_SEEDS = [20260729, 77777, 54321, 12345, 33333, 99999];
   const SWEEP_S = 420;
-  const results: { seed: number; score: number; throws: number; dead: number }[] = [];
+  const results: {
+    seed: number; score: number; throws: number; dead: number;
+    att: number; comp: number;
+  }[] = [];
 
   for (const seed of SWEEP_SEEDS) {
     const c = makeCtx(seed);
@@ -1446,12 +1517,16 @@ group('a match makes progress on every seed, not just the lucky one');
     }
     results.push({
       seed, score: g.gs.score[0] + g.gs.score[1], throws, dead: dead / n,
+      att: g.gs.teams[0].attempts + g.gs.teams[1].attempts,
+      comp: g.gs.teams[0].completions + g.gs.teams[1].completions,
     });
   }
 
   for (const r of results) {
     console.log(`\x1b[2m  seed ${String(r.seed).padEnd(9)} score ${r.score}`
-      + `  throws ${String(r.throws).padStart(3)}  dead ${(r.dead * 100).toFixed(1)}%\x1b[0m`);
+      + `  throws ${String(r.throws).padStart(3)}  dead ${(r.dead * 100).toFixed(1)}%`
+      + `  passing ${String(r.comp).padStart(3)}/${String(r.att).padStart(3)}`
+      + ` = ${(r.att ? 100 * r.comp / r.att : 0).toFixed(0)}%\x1b[0m`);
   }
 
   const scoreless = results.filter((r) => r.score === 0);
@@ -1464,6 +1539,39 @@ group('a match makes progress on every seed, not just the lucky one');
     quiet.length ? `under 15 throws: ${quiet.map((r) => `${r.seed}(${r.throws})`).join(', ')}` : '');
   ok(wedged.length === 0, 'no seed wedged the match in a dead disc',
     wedged.length ? `dead>25%: ${wedged.map((r) => `${r.seed}(${(r.dead * 100).toFixed(0)}%)`).join(', ')}` : '');
+
+  /**
+   * **The ceilings, and the pooled completion rate.**
+   *
+   * Seven minutes at 7v7 produces four to nine points on these six seeds. A seed
+   * that produces thirty has stopped playing the points out, and no floor in this
+   * function can tell the difference — which is precisely the failure mode the
+   * floors were written after: a match that LOOKS busy while doing something
+   * other than the sport.
+   *
+   * The pooled rate is 415/455 = 91.2% across the six, and the per-seed spread is
+   * 87.5% to 94.8%. So the pool is held to real ultimate's 85-96% — a claim about
+   * the sport, not about this build — and each individual seed to a wider 80-97%,
+   * because 70-odd passes cannot resolve a percentage any finer than that.
+   */
+  const busy = results.filter((r) => r.score > 24);
+  ok(busy.length === 0, 'and no seed scored faster than the points can be played',
+    busy.length ? busy.map((r) => `${r.seed}(${r.score})`).join(', ') : '');
+
+  const pooledComp = results.reduce((a, r) => a + r.comp, 0);
+  const pooledAtt = results.reduce((a, r) => a + r.att, 0);
+  const pooled = pooledAtt > 0 ? pooledComp / pooledAtt : 0;
+  ok(pooledAtt >= 200, 'there were passes to rate across the sweep',
+    `${pooledComp}/${pooledAtt}`);
+  ok(pooled >= 0.85 && pooled <= 0.96,
+    'and the pooled completion rate is real ultimate\'s',
+    `${(pooled * 100).toFixed(1)}% (${pooledComp}/${pooledAtt}) over ${results.length} seeds`);
+  const offBand = results.filter((r) => {
+    const c = r.att > 0 ? r.comp / r.att : 0;
+    return c < 0.80 || c > 0.97;
+  });
+  ok(offBand.length === 0, 'with no single seed outside 80-97%',
+    offBand.map((r) => `${r.seed}(${(100 * r.comp / r.att).toFixed(0)}%)`).join(', '));
 }
 
 /* ---------------------------------------------------------------- summary */
