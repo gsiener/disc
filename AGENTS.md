@@ -30,10 +30,21 @@ contains other people's changes, so a green build there proves nothing about wha
 you committed. Check the commit in isolation:
 
 ```sh
-git worktree add --detach /tmp/verify HEAD
-cd /tmp/verify/swift && swift build -c release && .build/release/SimTests
-git worktree remove --force /tmp/verify
+W=$(mktemp -d)/verify                 # a path no peer can also pick
+git worktree add --detach "$W" HEAD
+cd "$W/swift" && swift build -c release && .build/release/SimTests
+git worktree remove --force "$W"
 ```
+
+**The unique path is the point, not a nicety.** This recipe used to name a fixed
+`/tmp/verify`, and every agent reads this file — so two agents verifying at once
+raced for the same directory. The loser sees
+`input file <SomeFile>.swift was modified during the build` on a file its commit
+does not touch, followed by exit 127, which reads as a broken commit and is a
+peer re-pointing the path mid-build. That cost one agent a full build plus a
+suite run. The session scratchpad has the same property: a `msg.txt` written
+there came back holding a different agent's commit message. Name files uniquely
+or keep them inside your own worktree.
 
 A detached worktree is also the right way to measure a baseline — check out the
 commit you want to compare against, rather than reaching for `git stash`.
