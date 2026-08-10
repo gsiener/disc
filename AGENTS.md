@@ -38,6 +38,21 @@ git worktree remove --force /tmp/verify
 A detached worktree is also the right way to measure a baseline — check out the
 commit you want to compare against, rather than reaching for `git stash`.
 
+**3. Push the SHA you verified, not the branch.** This one is for whoever
+integrates. `git push` publishes wherever `main` points *now*, which in a shared
+checkout is not where it pointed when you started verifying — peers commit while
+you build. That is how a red commit reached `main` here: a commit was verified,
+two more landed during the twelve minutes the suite took, and `git push` sent all
+three.
+
+```sh
+git push origin <verified-sha>:main    # not `git push`
+```
+
+There is no force-push escape hatch afterwards, so the only cheap moment to get
+this right is before the push. If `main` does go red, fix it forward — a revert
+is a commit like any other.
+
 ## Friction log
 
 Managed by [Frog](https://github.com/wevm/frog). Entries live in
