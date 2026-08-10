@@ -88,7 +88,7 @@ enum RulesTests {
     }
     struct ContactCase: Decodable { let a: BodyDTO; let b: BodyDTO; let want: ContactWant }
     struct MarkingFoulCase: Decodable {
-        let marker: BodyDTO; let thrower: BodyDTO; let want: Double
+        let marker: BodyDTO; let thrower: BodyDTO; let age: Double; let want: Double
     }
     struct PickWorthCase: Decodable { let lost: Double; let gained: Double; let want: Bool }
     struct ObstructionCase: Decodable {
@@ -148,6 +148,8 @@ enum RulesTests {
         let isTravelCases: [IsTravelCase]
 
         let markFoulImpact: Double
+        let markSetTime: Double
+        let markSettledSpeed: Double
         let pickSpeedLoss: Double
         let pickGapGain: Double
         let catchFoulImpact: Double
@@ -260,6 +262,8 @@ enum RulesTests {
         // Every threshold below is sampled from both sides in the fixture, and every
         // number is compare-and-arithmetic, so all of it is asserted bit-exact.
         Check.bitEqViaJSON(MARK_FOUL_IMPACT, g.markFoulImpact, "MARK_FOUL_IMPACT")
+        Check.bitEqViaJSON(MARK_SET_TIME, g.markSetTime, "MARK_SET_TIME")
+        Check.bitEqViaJSON(MARK_SETTLED_SPEED, g.markSettledSpeed, "MARK_SETTLED_SPEED")
         Check.bitEqViaJSON(PICK_SPEED_LOSS, g.pickSpeedLoss, "PICK_SPEED_LOSS")
         Check.bitEqViaJSON(PICK_GAP_GAIN, g.pickGapGain, "PICK_GAP_GAIN")
         Check.bitEqViaJSON(CATCH_FOUL_IMPACT, g.catchFoulImpact, "CATCH_FOUL_IMPACT")
@@ -275,7 +279,8 @@ enum RulesTests {
         }
         for (i, c) in g.markingFoulCases.enumerated() {
             Check.bitEqViaJSON(
-                markingFoulImpact(c.marker, c.thrower), c.want, "markingFoulImpact case \(i)")
+                markingFoulImpact(c.marker, c.thrower, c.age), c.want,
+                "markingFoulImpact case \(i)")
         }
         for (i, c) in g.pickWorthCases.enumerated() {
             Check.eq(

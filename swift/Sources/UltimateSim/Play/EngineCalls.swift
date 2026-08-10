@@ -160,7 +160,7 @@ extension Engine {
             if !contactBetween(marker, thrower).touching {
                 calls.markFoulHeld = false
             } else if !calls.markFoulHeld {
-                let impact = markingFoulImpact(marker, thrower)
+                let impact = markingFoulImpact(marker, thrower, game.stallElapsed)
                 if impact > 0 {
                     calls.markFoulHeld = true
                     let at = Vec3d(thrower.pos.x, 0, thrower.pos.z)

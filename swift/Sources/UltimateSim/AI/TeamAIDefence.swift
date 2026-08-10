@@ -572,8 +572,7 @@ extension TeamAI {
                     mode = .jump
                     action = .jump(height: land.y)
                 } else if rec.bidCommit && p.id == onPlay && land.y < 1.85
-                    && shouldBid(
-                        p, short: bidShortfall(p, land), deadline: land.lastT, stakes: stakes)
+                    && wantsBid(p, land, stakes: stakes)
                 {
                     mode = .layout
                     action = .bid(x: land.x, z: land.z, extend: layoutExtend(p))

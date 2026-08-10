@@ -89,6 +89,40 @@ public func arrivalShortfall(_ d: Double, _ t: Double, _ arrival: Double) -> Dou
     d * clamp(1 - arrival / Swift.max(t, 1e-3), 0, 1)
 }
 
+/// HOW FAR SHORT HE IS AT A DEADLINE, RUN AS KINEMATICS RATHER THAN AS A RATIO.
+///
+/// `arrivalShortfall` splits the distance by the ratio of the time he has to the time he
+/// needs, and `timeToReach` — which supplies the denominator — charges a plant and an
+/// acceleration from rest in whole seconds. Over a two-second run that fixed cost is a
+/// rounding error. Over the `BID_LEAD` a bid is decided in, it is most of the number: a man
+/// two metres away with 0.45 s and an 0.82 m reach has to cover 1.18 m, which he does in a
+/// fifth of a second, and the ratio form calls him a metre short of it.
+///
+/// That is not a tuning disagreement, it is the third of the three reach models in this
+/// codebase disagreeing with the other two. `tools/test-ai.ts` measures the same quantity
+/// by sweeping the actual flight — `standingSlack` — and on the first bid the
+/// paired-deadline fix produced it reported **1.07 m of standing slack on a disc the ratio
+/// form said he was 0.9 m short of**, a 1.9 m disagreement about a 0.73 m decision.
+///
+/// So at a short deadline the distance he covers is integrated instead: the component of
+/// his velocity that is already pointed at the spot, then his own acceleration up to his
+/// own top speed, for exactly the seconds he has. The velocity is projected rather than
+/// taken whole, because a player running the wrong way covers none of it — and erring
+/// toward "he cannot reach it" would be the wrong direction for a last resort.
+public func reachShortfall(_ p: AIPlayer, _ x: Double, _ z: Double, _ arrival: Double) -> Double {
+    let dx = x - p.pos.x, dz = z - p.pos.z
+    let d = Foundation.hypot(dx, dz)
+    if d < 1e-6 || arrival <= 0 { return d }
+    let v = Swift.max(0, (p.vel.x * dx + p.vel.z * dz) / d)
+    let top = effectiveMaxSpeed(p)
+    let a = Swift.max(0.1, effectiveAccel(p))
+    let tTop = Swift.max(0, (top - v) / a)
+    let run = arrival <= tTop
+        ? v * arrival + 0.5 * a * arrival * arrival
+        : v * tTop + 0.5 * a * tTop * tTop + top * (arrival - tTop)
+    return d - run
+}
+
 /// How much is riding on this disc, 0…1.
 ///
 /// Symmetric on purpose: the defender covering that endzone reads exactly the same

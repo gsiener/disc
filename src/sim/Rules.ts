@@ -472,13 +472,53 @@ export const PICK_GAP_GAIN = 0.25;
 export const CATCH_FOUL_IMPACT = 1.0;
 
 /**
+ * BEFORE THERE IS A MARK THERE IS NO MARKING FOUL, and this is the whole of it.
+ *
+ * `markerStatus` turns `legal` — and the stall count starts — the instant an
+ * arriving defender crosses `markerRange`. On that same tick he is very often
+ * still inside the body of the man who has *just* caught the disc, because the
+ * two of them ran to the same place. Measured over three fifteen-minute matches:
+ * **42 of the 43 marking fouls in the game were called at stall count 0, with a
+ * median marking age of 0.01 s**, while the contact that happened during an
+ * actual, settled mark — median age 0.41 s, out to 2.6 s — was the contact the
+ * detector let go. Every marking foul in the game was the collision of arrival.
+ *
+ * That is incidental contact between two players legitimately playing the disc,
+ * which is precisely what the rules decline to call, and it is worth being blunt
+ * about why the geometry could not see it: the engine anchors the thrower the
+ * moment he catches, so the contact resolver hands him infinite mass and pushes
+ * the arriving defender back out of him. The detector then reads "a defender who
+ * has to be pushed out of the thrower every tick" — which is the right reading of
+ * a mark leaning on a man standing on his pivot, and a completely wrong reading
+ * of a receiver still running at 2 m/s with his defender alongside.
+ *
+ * So both halves of the premise this detector has always stated are now
+ * required rather than assumed:
+ *
+ *   - `MARK_SET_TIME` — the marking situation has to have existed for long
+ *     enough to be one. Below it the two of them are still arriving.
+ *   - `MARK_SETTLED_SPEED` — the thrower has to be a man who *cannot step out of
+ *     the way*, which is the entire reason contact on him is the marker's fault.
+ *     A thrower still carrying the catch is a party to the collision, not a
+ *     victim of it.
+ */
+export const MARK_SET_TIME = 0.4;
+export const MARK_SETTLED_SPEED = 0.6;
+
+/**
  * WFDF 17.1 / USAU 15.B — the marker may not make contact with the thrower.
  *
  * Returns the impact when there is a call, 0 when there is not. Gated on the
  * marker being the one closing: a thrower who backs into his mark has fouled
- * nobody, and on his pivot he can hardly do even that.
+ * nobody, and on his pivot he can hardly do even that. `markingTime` is how long
+ * this marking situation has existed — `GameState.stallElapsed`, which is the
+ * same clock the count runs on.
  */
-export function markingFoulImpact(marker: ContactBody, thrower: ContactBody): number {
+export function markingFoulImpact(
+  marker: ContactBody, thrower: ContactBody, markingTime: number,
+): number {
+  if (markingTime < MARK_SET_TIME) return 0;
+  if (Math.hypot(thrower.vel.x, thrower.vel.z) > MARK_SETTLED_SPEED) return 0;
   const c = contactBetween(marker, thrower);
   if (!c.touching) return 0;
   if (c.aggressorId !== marker.id) return 0;

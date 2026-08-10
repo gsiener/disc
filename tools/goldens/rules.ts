@@ -30,6 +30,8 @@ import {
   callDoubt,
   callContested,
   MARK_FOUL_IMPACT,
+  MARK_SET_TIME,
+  MARK_SETTLED_SPEED,
   PICK_SPEED_LOSS,
   PICK_GAP_GAIN,
   CATCH_FOUL_IMPACT,
@@ -460,21 +462,34 @@ export function rulesGoldens() {
     { a: body(1, 0, 0, 1.5, 1.5), b: body(2, 0.3, 0.3, -1.1, -0.7) },
   ].map(({ a, b }) => ({ a, b, want: contactBetween(a, b) }));
 
+  const SET = MARK_SET_TIME;
   const markingFoulCases = [
     // Marker standing on a stationary thrower but not moving: contact, no call.
-    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 0) },
+    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 0), age: SET },
     // Exactly at the impact floor.
-    { marker: body(1, 0, 0.4, 0, -MARK_FOUL_IMPACT), thrower: body(2, 0, 0, 0, 0) },
+    { marker: body(1, 0, 0.4, 0, -MARK_FOUL_IMPACT), thrower: body(2, 0, 0, 0, 0), age: SET },
     // A hair under it.
-    { marker: body(1, 0, 0.4, 0, -(MARK_FOUL_IMPACT - 1e-9)), thrower: body(2, 0, 0, 0, 0) },
+    { marker: body(1, 0, 0.4, 0, -(MARK_FOUL_IMPACT - 1e-9)), thrower: body(2, 0, 0, 0, 0), age: SET },
     // Well over it.
-    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0) },
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0), age: SET },
     // The thrower is the one closing: not the marker's foul.
-    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 2.6) },
+    { marker: body(1, 0, 0.4, 0, 0), thrower: body(2, 0, 0, 0, 2.6), age: SET },
     // Out of contact entirely.
-    { marker: body(1, 0, 2.1, 0, -3), thrower: body(2, 0, 0, 0, 0) },
-  ].map(({ marker, thrower }) => ({
-    marker, thrower, want: markingFoulImpact(marker, thrower),
+    { marker: body(1, 0, 2.1, 0, -3), thrower: body(2, 0, 0, 0, 0), age: SET },
+    // THE ARRIVAL. Identical geometry to the "well over it" case above, and the
+    // mark is one tick old: no marking situation, so no marking foul.
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0), age: 0 },
+    // A hair under the age at which the mark counts as set, and a hair over it.
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0), age: SET - 1e-9 },
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 0, 0), age: SET + 1e-9 },
+    // A settled mark, but the thrower is still carrying the catch: he is a party
+    // to the contact, and both sides of the speed gate are pinned.
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, MARK_SETTLED_SPEED, 0), age: 2 },
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, MARK_SETTLED_SPEED + 1e-9, 0), age: 2 },
+    // …and the same, with the thrower's speed spread over both axes.
+    { marker: body(1, 0, 0.4, 0, -2.6), thrower: body(2, 0, 0, 1.4, 1.4), age: 2 },
+  ].map(({ marker, thrower, age }) => ({
+    marker, thrower, age, want: markingFoulImpact(marker, thrower, age),
   }));
 
   const pickWorthCases = [
@@ -594,6 +609,8 @@ export function rulesGoldens() {
     isTravelCases,
 
     markFoulImpact: MARK_FOUL_IMPACT,
+    markSetTime: MARK_SET_TIME,
+    markSettledSpeed: MARK_SETTLED_SPEED,
     pickSpeedLoss: PICK_SPEED_LOSS,
     pickGapGain: PICK_GAP_GAIN,
     catchFoulImpact: CATCH_FOUL_IMPACT,

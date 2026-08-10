@@ -2141,7 +2141,7 @@ export class GameSystem implements System {
       const touching = contactBetween(marker.loco, thrower.loco).touching;
       if (!touching) this.markFoulHeld = false;
       else if (!this.markFoulHeld) {
-        const impact = markingFoulImpact(marker.loco, thrower.loco);
+        const impact = markingFoulImpact(marker.loco, thrower.loco, gs.stallElapsed);
         if (impact > 0) {
           this.markFoulHeld = true;
           const at = { x: thrower.loco.pos.x, y: 0, z: thrower.loco.pos.z };
@@ -2411,6 +2411,18 @@ export class GameSystem implements System {
       this.lineUpForPull();
       this.pullerId = -1;
       this.poseHold = 0;
+      /**
+       * THE FAILURE MODE OF A LATCH IS A LATCH THAT IS NEVER CLEARED, and all
+       * three of these outlive the point they were taken in. `pickWatch` is the
+       * one that can actually lie: it holds the speed and the matchup gap a
+       * defender had when an obstruction began, and the next point puts that
+       * same defender on a line with a completely different baseline. One tick
+       * of contact on the new point then reads as a metre of ground lost to a
+       * pick that happened before the pull.
+       */
+      this.lastContact.clear();
+      this.pickWatch.clear();
+      this.markFoulHeld = false;
     }
     if (to === 'TURNOVER_DEAD' || to === 'POINT_SCORED') {
       this.thrownBy = -1;

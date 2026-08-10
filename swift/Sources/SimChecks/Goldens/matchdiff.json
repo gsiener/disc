@@ -20,30 +20,30 @@
   },
   "matches": 11,
   "turnovers": {
-    "drop": 49,
-    "throwaway": 0,
+    "drop": 40,
+    "throwaway": 1,
     "out-of-bounds": 1,
-    "caught-out-of-bounds": 0,
-    "block": 44,
-    "interception": 71,
+    "caught-out-of-bounds": 2,
+    "block": 61,
+    "interception": 66,
     "stall-out": 0,
-    "pull-drop": 15,
+    "pull-drop": 16,
     "travel-violation": 0,
     "double-touch": 0
   },
   "calls": {
-    "foul": 150,
-    "pick": 10,
-    "strip": 8,
+    "foul": 32,
+    "pick": 8,
+    "strip": 5,
     "travel": 0,
-    "contested": 42
+    "contested": 8
   },
   "totals": {
-    "attempts": 1774,
-    "completions": 1609,
-    "goals": 158,
-    "blocks": 115,
+    "attempts": 1730,
+    "completions": 1559,
+    "goals": 159,
+    "blocks": 127,
     "stallOuts": 0,
-    "points": 168
+    "points": 170
   }
 }

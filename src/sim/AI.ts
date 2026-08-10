@@ -449,6 +449,45 @@ function arrivalShortfall(d: number, t: number, arrival: number): number {
 }
 
 /**
+ * HOW FAR SHORT HE IS AT A DEADLINE, RUN AS KINEMATICS RATHER THAN AS A RATIO.
+ *
+ * `arrivalShortfall` splits the distance by the ratio of the time he has to the
+ * time he needs, and `timeToReach` — which supplies the denominator — charges a
+ * plant and an acceleration from rest in whole seconds. Over a two-second run
+ * that fixed cost is a rounding error. Over the `BID_LEAD` a bid is decided in,
+ * it is most of the number: a man two metres away with 0.45 s and an 0.82 m
+ * reach has to cover 1.18 m, which he does in a fifth of a second, and the ratio
+ * form calls him a metre short of it.
+ *
+ * That is not a tuning disagreement, it is the third of the three reach models
+ * in this codebase disagreeing with the other two. `tools/test-ai.ts` measures
+ * the same quantity by sweeping the actual flight — `standingSlack` — and on the
+ * first bid the paired-deadline fix produced it reported **1.07 m of standing
+ * slack on a disc the ratio form said he was 0.9 m short of**, a 1.9 m
+ * disagreement about a 0.73 m decision.
+ *
+ * So at a short deadline the distance he covers is integrated instead: the
+ * component of his velocity that is already pointed at the spot, then his own
+ * acceleration up to his own top speed, for exactly the seconds he has. The
+ * velocity is projected rather than taken whole, because a player running the
+ * wrong way covers none of it — and erring toward "he cannot reach it" would be
+ * the wrong direction for a last resort.
+ */
+function reachShortfall(p: AIPlayer, x: number, z: number, arrival: number): number {
+  const dx = x - p.pos.x, dz = z - p.pos.z;
+  const d = Math.hypot(dx, dz);
+  if (d < 1e-6 || arrival <= 0) return d;
+  const v = Math.max(0, (p.vel.x * dx + p.vel.z * dz) / d);
+  const top = effectiveMaxSpeed(p);
+  const a = Math.max(0.1, effectiveAccel(p));
+  const tTop = Math.max(0, (top - v) / a);
+  const run = arrival <= tTop
+    ? v * arrival + 0.5 * a * arrival * arrival
+    : v * tTop + 0.5 * a * tTop * tTop + top * (arrival - tTop);
+  return d - run;
+}
+
+/**
  * How much is riding on this disc, 0..1. A disc dropping in or near the endzone
  * is a goal whichever way it goes; one at midfield is a possession. Same idea
  * as `possessionValue`, one step later in the play — and it is symmetric, so
@@ -2494,9 +2533,7 @@ export class TeamAI {
   }
 
   /**
-   * The closest this player can be to the disc at ANY moment it is still
-   * catchable on his feet — the number that decides whether a layout was
-   * necessary at all.
+   * HOW CLOSE THIS PLAYER CAN BE TO THE DISC AT ONE END OF THE CATCH WINDOW.
    *
    * A flight offers a whole window, not an instant: the disc drops into the
    * standing band at the rendezvous and stays in it until `CATCH_DEAD`, and a
@@ -2506,14 +2543,46 @@ export class TeamAI {
    * enough that the best moment is always at one of its two ends, so two
    * `timeToReach` solves settle it — the earliest chance (nearest, least time)
    * and the last one (furthest, most time).
+   *
+   * A CHANCE IS A SHORTFALL **AND** A DEADLINE, and separating them is what
+   * killed the layout.
+   *
+   * `bidShortfall` used to return the better of the two ends of the window and
+   * both call sites then paired it with `land.lastT`, the deadline of the
+   * *late* end. That pairing was harmless while the throw solver was aiming the disc
+   * at the receiver's feet, because a disc diving into the turf reaches the
+   * rendezvous and `CATCH_DEAD` within a tenth of a second of each other and
+   * the two deadlines are the same number.
+   *
+   * The disc flies flat now — 0.9 to 1.3 m for the whole flight — and is
+   * therefore catchable for the whole of it, so `lastT` is a second or more
+   * past the rendezvous and `deadline <= BID_LEAD` is false for every frame in
+   * which a dive would still have reached the disc. By the time it is true the
+   * disc is ten metres downfield and `short < EXTENDED_REACH` is false instead.
+   * Between them the two clauses closed the gate on every bid in the game:
+   * **zero layouts and zero laid-out D's over four measured matches**, offence
+   * and defence alike, which is also the hitstop's only trigger.
+   *
+   * So each end of the window is now asked as its own question, with its own
+   * deadline. That is the same test `shouldBid` always described — "the last
+   * chance falls inside the time the dive is airborne" — asked about a chance
+   * rather than about a mixture of two.
    */
-  private bidShortfall(p: AIPlayer, land: CatchPoint): number {
-    const early = arrivalShortfall(
-      dist2(p.pos.x, p.pos.z, land.x, land.z), this.timeToReach(p, land.x, land.z), land.t);
-    const late = arrivalShortfall(
-      dist2(p.pos.x, p.pos.z, land.lastX, land.lastZ),
-      this.timeToReach(p, land.lastX, land.lastZ), land.lastT);
-    return Math.min(early, late);
+  private bidChance(p: AIPlayer, land: CatchPoint, late: boolean): number {
+    const x = late ? land.lastX : land.x;
+    const z = late ? land.lastZ : land.z;
+    const t = late ? land.lastT : land.t;
+    // The late chance is seconds away and the ratio form is fine there. The
+    // early one is a fraction of a second away, which is where it is worst —
+    // see `reachShortfall`.
+    return late
+      ? arrivalShortfall(dist2(p.pos.x, p.pos.z, x, z), this.timeToReach(p, x, z), t)
+      : reachShortfall(p, x, z, t);
+  }
+
+  private wantsBid(p: AIPlayer, land: CatchPoint, stakes: number): boolean {
+    return shouldBid(p, this.bidChance(p, land, false), land.t, stakes)
+      || shouldBid(p, this.bidChance(p, land, true), land.lastT, stakes);
   }
 
   private timeToReach(p: AIPlayer, x: number, z: number): number {
@@ -2649,7 +2718,7 @@ export class TeamAI {
         if (gap <= 0.15 && land.y > 1.9 && land.y < reachHeight(p) + 0.5) {
           mode = 'jump';
           action = { kind: 'jump', height: land.y };
-        } else if (isTarget && shouldBid(p, this.bidShortfall(p, land), land.lastT, stakes)) {
+        } else if (isTarget && this.wantsBid(p, land, stakes)) {
           // You lay out for a disc you cannot otherwise reach — not for one you
           // can simply run down. `shouldBid` is the whole test; see the block
           // above `STANDING_REACH` for why each of its three clauses is there.
@@ -3159,7 +3228,7 @@ export class TeamAI {
         if (gap <= 0.1 && land.y > 1.85 && land.y < reachHeight(p) + 0.4) {
           mode = 'jump'; action = { kind: 'jump', height: land.y };
         } else if (m.bidCommit && p.id === onPlay && land.y < 1.85
-          && shouldBid(p, this.bidShortfall(p, land), land.lastT, stakes)) {
+          && this.wantsBid(p, land, stakes)) {
           mode = 'layout';
           action = { kind: 'bid', x: land.x, z: land.z, extend: layoutExtend(p) };
         }

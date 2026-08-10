@@ -76,6 +76,13 @@ extension Engine {
         // rebuilt underneath it would be blamed on whoever inherited the id.
         _ = contacts?.drain()
         calls.lastContact.removeAll(keepingCapacity: true)
+        // …and neither is anything the two frame-shaped detectors latched. `pickWatch` is
+        // the one that can actually lie: it holds the speed and the matchup gap a defender
+        // had when an obstruction began, and the next point puts that same defender on a
+        // line with a completely different baseline. One tick of contact on the new point
+        // then reads as a metre of ground lost to a pick that happened before the pull.
+        calls.pickWatch.removeAll(keepingCapacity: true)
+        calls.markFoulHeld = false
         records = []
 
         // Both teams line up on their own goal lines, facing each other. Positions are

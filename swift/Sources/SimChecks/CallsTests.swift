@@ -20,10 +20,22 @@ import UltimateSim
 /// this suite would notice: goals, completions and hold/break rates all survive a game
 /// that is stopped every ten seconds.
 ///
-/// Measured across three fifteen-minute 7v7 matches at the time of writing: 2-5 calls per
-/// match, of which roughly one is a marking foul, one or two are picks, and the rest are
-/// receiving fouls and strips. Travels remain at zero, which is the pivot work's number
-/// and is left alone here.
+/// Measured across three fifteen-minute 7v7 matches: 2-4 calls per match, and over the
+/// eleven-match pool 3.5 — roughly two receiving fouls, one pick and one strip. Travels
+/// remain at zero, which is the pivot work's number and is left alone here.
+///
+/// **THE MARKING FOUL IS NOW ESSENTIALLY ZERO, AND THAT IS THE FINDING.** It used to be
+/// the commonest call in the game by a distance, and when the throw solver was fixed so
+/// that receivers actually arrive at the disc it went to 8.3 calls a match with matches
+/// stopped fifteen times. Measured over three matches at that point: **42 of the 43
+/// marking fouls were called at stall count 0, with a median marking age of 0.01 s**,
+/// while contact during a settled mark — median age 0.41 s — was the contact the detector
+/// let go. Every marking foul in the game was the collision of a receiver and his defender
+/// arriving at the same disc, which the rules call incidental. `markingFoulImpact` now
+/// requires the marking situation to exist (`MARK_SET_TIME`) and the thrower to be a man
+/// who cannot step out of the way (`MARK_SETTLED_SPEED`), and what is left of the mark
+/// leaning on a settled thrower is a call that happens a few times in eleven matches
+/// rather than fourteen times a match.
 enum CallsTests {
 
     static let dt = 1.0 / 120.0
@@ -74,9 +86,11 @@ enum CallsTests {
                     + "(\(e.score[0])-\(e.score[1]) over \(e.game.point - 1) points)")
 
             // The bands. Upper is the one that earns its place: it is the tripwire for a
-            // detector that has become trigger-happy. Moving it up is a decision about
-            // the sport, not a fix for a red check.
-            Check.ok(t.total <= 12, "s\(seed): a match is not stopped more than a dozen times (\(t.total))")
+            // detector that has become trigger-happy, and it has now done that job once —
+            // it is what caught the marking foul firing on every arrival. Moving it up is a
+            // decision about the sport, not a fix for a red check. It came DOWN, from a
+            // dozen to eight, because the measurement it was quoted against came down.
+            Check.ok(t.total <= 8, "s\(seed): a match is not stopped eight times (\(t.total))")
         }
 
         let matches = Double(seeds.count)
@@ -88,7 +102,7 @@ enum CallsTests {
 
         // The ceiling, on the mean rather than the worst seed. The floor lives on the
         // pooled sample below, where it means something.
-        Check.ok(mean <= 8, "calls are not constant (mean \(mean) per match)")
+        Check.ok(mean <= 5, "calls are not constant (mean \(mean) per match)")
 
         // Every kind that has a detector should be reachable, over the wider pool.
         var pooled = totals
@@ -103,8 +117,7 @@ enum CallsTests {
             pooled.travel += t.travel
             pooled.contested += t.contested
             Check.ok(
-                t.total <= 12,
-                "s\(seed): a match is not stopped more than a dozen times (\(t.total))")
+                t.total <= 8, "s\(seed): a match is not stopped eight times (\(t.total))")
         }
         let pool = seeds.count + poolSeeds.count
         Check.note(
@@ -116,7 +129,7 @@ enum CallsTests {
         Check.ok(pooled.foul > 0, "fouls happen")
         Check.ok(pooled.pick > 0, "picks happen — the coach's most common call")
         Check.ok(
-            Double(pooled.total) / Double(pool) <= 8,
+            Double(pooled.total) / Double(pool) <= 5,
             "and the pooled rate is a game, not a stoppage (\(pooled.total) over \(pool))")
 
         // Contested is a judgement, not a coin flip: it must be neither impossible nor

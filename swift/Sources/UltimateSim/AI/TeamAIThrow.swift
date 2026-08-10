@@ -402,8 +402,7 @@ extension TeamAI {
         return clamp(lead + 0.30 * slack, -6, 8)
     }
 
-    /// The closest this player can be to the disc at ANY moment it is still catchable on
-    /// his feet — the number that decides whether a layout was necessary at all.
+    /// HOW CLOSE THIS PLAYER CAN BE TO THE DISC AT ONE END OF THE CATCH WINDOW.
     ///
     /// A flight offers a whole window, not an instant: the disc drops into the standing
     /// band at the rendezvous and stays in it until `CATCH_DEAD`, and a receiver only has
@@ -411,14 +410,45 @@ extension TeamAI {
     /// quarters of the surviving bids diving for discs they went on to catch upright a
     /// tenth of a second later. The window is short enough that the best moment is always
     /// at one of its two ends, so two `timeToReach` solves settle it.
-    func bidShortfall(_ p: AIPlayer, _ land: CatchPoint) -> Double {
-        let early = arrivalShortfall(
-            Playbook.dist2(p.pos.x, p.pos.z, land.x, land.z),
-            timeToReach(p, land.x, land.z), land.t)
-        let late = arrivalShortfall(
-            Playbook.dist2(p.pos.x, p.pos.z, land.lastX, land.lastZ),
-            timeToReach(p, land.lastX, land.lastZ), land.lastT)
-        return Swift.min(early, late)
+    ///
+    /// A CHANCE IS A SHORTFALL **AND** A DEADLINE, and separating them is what killed the
+    /// layout.
+    ///
+    /// `bidShortfall` used to return the better of the two ends of the window and both
+    /// call sites then paired it with `land.lastT`, the deadline of the *late* end. That
+    /// pairing was harmless while the throw solver was aiming the disc at the receiver's
+    /// feet, because a disc diving into the turf reaches the rendezvous and `CATCH_DEAD`
+    /// within a tenth of a second of each other and the two deadlines are the same number.
+    ///
+    /// The disc flies flat now — 0.9 to 1.3 m for the whole flight — and is therefore
+    /// catchable for the whole of it, so `lastT` is a second or more past the rendezvous
+    /// and `deadline <= BID_LEAD` is false for every frame in which a dive would still
+    /// have reached the disc. By the time it is true the disc is ten metres downfield and
+    /// `short < EXTENDED_REACH` is false instead. Between them the two clauses closed the
+    /// gate on every bid in the game: **zero layouts and zero laid-out D's over four
+    /// measured matches**, offence and defence alike, which is also the hitstop's only
+    /// trigger.
+    ///
+    /// So each end of the window is now asked as its own question, with its own deadline.
+    /// That is the same test `shouldBid` always described — "the last chance falls inside
+    /// the time the dive is airborne" — asked about a chance rather than about a mixture
+    /// of two.
+    func bidChance(_ p: AIPlayer, _ land: CatchPoint, late: Bool) -> Double {
+        let x = late ? land.lastX : land.x
+        let z = late ? land.lastZ : land.z
+        let t = late ? land.lastT : land.t
+        // The late chance is seconds away and the ratio form is fine there. The early one
+        // is a fraction of a second away, which is where it is worst — see
+        // `reachShortfall`.
+        return late
+            ? arrivalShortfall(Playbook.dist2(p.pos.x, p.pos.z, x, z), timeToReach(p, x, z), t)
+            : reachShortfall(p, x, z, t)
+    }
+
+    func wantsBid(_ p: AIPlayer, _ land: CatchPoint, stakes: Double) -> Bool {
+        shouldBid(p, short: bidChance(p, land, late: false), deadline: land.t, stakes: stakes)
+            || shouldBid(
+                p, short: bidChance(p, land, late: true), deadline: land.lastT, stakes: stakes)
     }
 
     /// Seconds for this player to reach `(x, z)`, including the cost of turning.
@@ -571,10 +601,7 @@ extension TeamAI {
                 if gap <= 0.15 && land.y > 1.9 && land.y < reachHeight(p) + 0.5 {
                     mode = .jump
                     action = .jump(height: land.y)
-                } else if isTarget
-                    && shouldBid(
-                        p, short: bidShortfall(p, land), deadline: land.lastT, stakes: stakes)
-                {
+                } else if isTarget && wantsBid(p, land, stakes: stakes) {
                     // You lay out for a disc you cannot otherwise reach — not for one you
                     // can simply run down. `shouldBid` is the whole test.
                     mode = .layout
