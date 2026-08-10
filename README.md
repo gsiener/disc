@@ -26,9 +26,9 @@ but it is not where the game lives anymore.
 > every target in [`docs/release-plan.md`](docs/release-plan.md) met. Eleven
 > XCUITest gestures verify the controls with real touches on every push.
 >
-> What is left is in [`docs/backlog.md`](docs/backlog.md), and the largest item
-> cannot be done by an agent: **nobody has played it for fun yet.** The tests
-> prove every control works; they say nothing about whether it feels good.
+> What is left is in [the issues](https://github.com/gsiener/disc/issues), and the
+> largest item cannot be done by an agent: **nobody has played it for fun yet.**
+> The tests prove every control works; they say nothing about whether it feels good.
 
 ## The iOS game
 
@@ -122,7 +122,6 @@ push.
 | `src/sim/` | the TypeScript reference simulation (the oracle) |
 | `tools/` | golden generators, TS test harnesses, capture rigs |
 | `docs/release-plan.md` | the plan to v1, with measurable authenticity targets — all met |
-| `docs/backlog.md` | what is left: findings, not features, with the evidence for each |
 | `docs/gameplay-design.md` | the design-director brief (camera grammar, controls, legibility, feel) |
 | `BRIEF.md` | the original engineering brief — "the reference is FIFA, not Madden" |
 
