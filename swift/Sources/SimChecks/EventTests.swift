@@ -185,11 +185,11 @@ enum EventTests {
         let a = match.game.teamStats(0)
         let b = match.game.teamStats(1)
 
-        Check.note(
-            "stream: \(t.all.count) events over \(Int(match.clock))s, "
-                + "score \(match.score[0])-\(match.score[1]), "
-                + "\(a.attempts + b.attempts) attempts")
-        Check.ok(t.all.count > 40, "a ten-minute match produces a stream worth checking")
+        Check.ok(
+            t.all.count > 40,
+            "a ten-minute match produces a stream worth checking (\(t.all.count) events over "
+                + "\(Int(match.clock))s, score \(match.score[0])-\(match.score[1]), "
+                + "\(a.attempts + b.attempts) attempts)")
         Check.eq(
             t.released[0] + t.released[1], a.attempts + b.attempts,
             "one release event per throw attempt")
@@ -253,10 +253,6 @@ enum EventTests {
             pooled[.contested, default: 0] > 0,
             "contested catches happen — got \(pooled[.contested, default: 0])")
         Check.ok(pooled[.layout, default: 0] > 0, "and so do layouts")
-        Check.note(
-            "catch grades over four matches: routine \(pooled[.routine, default: 0]), "
-                + "contested \(pooled[.contested, default: 0]), "
-                + "layout \(pooled[.layout, default: 0])")
 
         // A grade only ever rides on an event that resolved through a contest. A
         // stall-out has no catch, and must never inherit the previous one.

@@ -182,10 +182,6 @@ enum PivotTests {
                 continue
             }
             let carry = Foundation.hypot(foot.x, foot.z)
-            Check.note(
-                "pivot carry at \(entry) m/s: \(String(format: "%.3f", carry)) m, "
-                    + "brakeMax \(String(format: "%.2f", p.derived.brakeMax)) m/s², "
-                    + "lock at \(String(format: "%.3f", lockT)) s")
             carries.append((entry, carry))
 
             // THE FLOOR, WHICH IS THE HALF THIS CHECK WAS MISSING.
@@ -375,12 +371,6 @@ enum PivotTests {
         for p in e.players { travels += e.game.playerStats(p.id)?.travels ?? 0 }
 
         let pinned = heldFrames > 0 ? 100.0 * Double(pinnedFrames) / Double(heldFrames) : 0
-        Check.note(
-            "pivot: \(travels) travels in fifteen minutes, thrower on an established foot "
-                + String(format: "%.0f%%", pinned) + " of held frames, worst reach "
-                + String(format: "%.2f", worstReach) + " m of "
-                + String(format: "%.2f", Locomotion.PIVOT_R))
-
         Check.ok(travels <= 6, "travels are rare in a clean match (\(travels))")
         Check.ok(
             worstReach <= Locomotion.PIVOT_R + 0.05,

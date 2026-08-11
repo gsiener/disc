@@ -130,8 +130,8 @@ enum TryCatchTests {
         ] {
             Check.ok(branches.contains(want), "the fixture reaches the \(want) branch")
         }
-        Check.note(
-            "tryCatch golden: \(file.scenarios.count) scenarios × \(file.rolls.count) rolls, "
-                + "all branches reached, worst difficulty/p deviation \(worst)")
+        // `worst` is redundant with the report: every sample that could move it already
+        // went through `Check.near(..., 1e-12, ...)` above; scenario/roll coverage is
+        // asserted by the branch-reachability loop just above.
     }
 }

@@ -198,11 +198,6 @@ enum HumanCutTests {
             }
         }
 
-        Check.note(
-            "route from direction over \(seeds.count) seeds: \(reached) reached our "
-                + "possession; \(deepRight)/\(deepAsked) downfield taps read as deep or "
-                + "strike, \(resetRight)/\(resetAsked) backfield taps read as dump or swing"
-                + (wrong.isEmpty ? "" : " — \(wrong.joined(separator: ", "))"))
         Check.eq(reached, seeds.count, "every seed reached a possession of ours")
         Check.eq(
             dirsSeen.count, 2,
@@ -222,10 +217,12 @@ enum HumanCutTests {
             "and a backfield one on half of them (\(resetAsked) of \(reached))")
         Check.eq(
             deepRight, deepAsked,
-            "every tap into the deep space is a deep cut (\(deepRight) of \(deepAsked))")
+            "every tap into the deep space is a deep cut (\(deepRight) of \(deepAsked))"
+                + (wrong.isEmpty ? "" : " — \(wrong.joined(separator: ", "))"))
         Check.eq(
             resetRight, resetAsked,
-            "and every tap behind the disc is a reset (\(resetRight) of \(resetAsked))")
+            "and every tap behind the disc is a reset (\(resetRight) of \(resetAsked))"
+                + (wrong.isEmpty ? "" : " — \(wrong.joined(separator: ", "))"))
     }
 
     /// The commanded body actually goes: it leaves where it was standing and arrives in the
@@ -272,9 +269,6 @@ enum HumanCutTests {
             if closest <= 2.3 { ran += 1 }
         }
 
-        Check.note(
-            "commanded runs over \(seeds.count) seeds: \(reached) orders given, \(ran) "
-                + "arrived, worst closest approach \(String(format: "%.2f", worstApproach)) m")
         // **NEARLY EVERY SEED, NOT EVERY SEED**, and one arrival may miss. Both counts are
         // per-seed statistics of a scenario that has to occur before it can be measured: a
         // possession of ours with a real downfield space in it, on a particular match. An

@@ -114,7 +114,8 @@ enum HumanReleaseTests {
 
         flownAgainstReference(g)
         feel(g)
-        Check.note("worst human-release flight deviation \(worstFlight) m")
+        // `worstFlight` is redundant with the report: every flight that could move it
+        // already went through `Check.near(..., flightTol, ...)`.
     }
 
     // MARK: - the two counterfactual mappings

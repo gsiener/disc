@@ -278,9 +278,13 @@ enum LocomotionTests {
         pair(g)
         claims(g)
 
-        Check.note("worst locomotion deviation \(worst) at \(worstWhat)")
-        Check.note(
-            "locomotion bit-exactness census: \(notBitEqual) of \(compared) "
+        // `worst`/`worstWhat` are redundant with the report: every sample that could
+        // move them went through `near()`, which already asserts `d <= tol` per call.
+        // The bit-exactness census has no direction that is "good" — an envelope
+        // assertion tolerates small differences by design — so it is printed rather
+        // than asserted.
+        print(
+            "  · locomotion bit-exactness census: \(notBitEqual) of \(compared) "
                 + "tolerance comparisons were not bit-identical")
     }
 
@@ -825,7 +829,6 @@ enum LocomotionTests {
         Check.ok(entry > 0 && exit > 0, "the trace contains a completed hard cut")
         if entry > 0 && exit > 0 {
             let kept = exit / entry
-            Check.note("90-degree cut kept \(kept) of entry speed")
             Check.inRange(kept, 0.45, 0.95, "a hard cut costs real speed but not all of it")
         }
 

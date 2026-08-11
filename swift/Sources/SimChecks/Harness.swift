@@ -20,7 +20,6 @@ import Foundation
 public enum Check {
     nonisolated(unsafe) static var passed = 0
     nonisolated(unsafe) static var failures: [String] = []
-    nonisolated(unsafe) static var notes: [String] = []
 
     /// The number of assertions run, so a suite can report that it grew rather than
     /// silently stopped asserting.
@@ -29,13 +28,6 @@ public enum Check {
     static func reset() {
         passed = 0
         failures = []
-        notes = []
-    }
-
-    /// Free-form diagnostics that are not pass/fail — a measured margin, say. Surfaced
-    /// in the report so a number that is drifting is visible before it is a failure.
-    static func note(_ text: String) {
-        notes.append(text)
     }
 
     static func ok(_ condition: Bool, _ label: @autoclosure () -> String) {
@@ -141,6 +133,11 @@ public struct CheckReport: Sendable {
     public let suites: [SuiteResult]
     public let passed: Int
     public let failures: [String]
+    /// Always empty. Kept so `SimTests/main.swift` and the iOS report view — neither
+    /// owned by this file — keep compiling without a change on their side. There is no
+    /// producer left: `Check` had a `note()` case that could not fail, the same call
+    /// shape and home enum as `ok`/`eq`/`near` while asserting nothing, and every call
+    /// site has been promoted to a real assertion or resolved. See issue #20.
     public let notes: [String]
     public let seconds: Double
 
@@ -225,7 +222,7 @@ public func runChecks(only requested: Set<String> = []) -> CheckReport {
         suites: results,
         passed: Check.passed,
         failures: Check.failures,
-        notes: Check.notes,
+        notes: [],
         seconds: Double(DispatchTime.now().uptimeNanoseconds - started.uptimeNanoseconds) / 1e9
     )
 }

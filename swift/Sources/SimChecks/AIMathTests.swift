@@ -142,8 +142,9 @@ enum AIMathTests {
         sheets(g)
         rosters(g)
         claims()
-
-        Check.note("worst AI-math deviation \(worst)")
+        // `worst` (the running max deviation) is redundant with the report: every
+        // sample that could move it went through `near()`, which already asserts
+        // `d <= tol` per call.
     }
 
     // MARK: helpers

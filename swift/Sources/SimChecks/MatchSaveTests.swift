@@ -257,8 +257,11 @@ enum MatchSaveTests {
                 engine.drainEvents().count, 0,
                 "a restored match hands over with an empty event buffer")
 
-            Check.note(
-                "saved match: \(bytes.count) B of JSON for \(played.ticks) ticks and "
+            // A timing measurement, not an assertion: wall-clock restore speed varies by
+            // machine and load, so there is no bound here that would not be either
+            // decorative or flaky. Printed for visibility.
+            print(
+                "  · saved match: \(bytes.count) B of JSON for \(played.ticks) ticks and "
                     + "\(played.inputs.count) inputs, restored in "
                     + "\(String(format: "%.3f", elapsed)) s "
                     + "(\(Int(Double(played.ticks) / Swift.max(elapsed, 1e-9))) ticks/s, so a "
@@ -268,13 +271,14 @@ enum MatchSaveTests {
             Check.ok(false, "a fresh save finishes its restore: \(error)")
         }
 
-        // What the canary costs, since it is paid on the save and on the resume.
+        // What the canary costs, since it is paid on the save and on the resume. Also a
+        // timing measurement rather than an assertion, for the same reason as above.
         let fingerprintStarted = DispatchTime.now()
         _ = SimFingerprint.stamp(salt: salt)
         let fingerprintCost =
             Double(DispatchTime.now().uptimeNanoseconds - fingerprintStarted.uptimeNanoseconds) / 1e9
-        Check.note(
-            "sim fingerprint: \(SimFingerprint.canaryTicks) canary ticks in "
+        print(
+            "  · sim fingerprint: \(SimFingerprint.canaryTicks) canary ticks in "
                 + "\(String(format: "%.1f", fingerprintCost * 1000)) ms")
     }
 
@@ -354,8 +358,8 @@ enum MatchSaveTests {
                 // Not automatically a failure: dropping the last input of a match that
                 // was about to end anyway can leave the checksum's coarse facts intact.
                 // Worth saying out loud rather than asserting either way.
-                Check.note(
-                    "a save missing its last input still satisfied the checksum — the "
+                print(
+                    "  · a save missing its last input still satisfied the checksum — the "
                         + "checksum is the coarse net, the fingerprint is the fine one")
             } catch {
                 Check.ok(true, "a save missing an input is discarded (\(error))")

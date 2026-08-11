@@ -124,7 +124,9 @@ enum GameStateTests {
         minis()
         agreesWithRulesFreeFunctions()
 
-        Check.note("gamestate: \(g.scenarios.count) scenarios, \(replayed) scripted actions replayed")
+        Check.ok(
+            replayed > 0,
+            "gamestate: \(g.scenarios.count) scenarios, \(replayed) scripted actions replayed")
     }
 
     // MARK: replay

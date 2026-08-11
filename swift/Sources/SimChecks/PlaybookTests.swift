@@ -313,7 +313,8 @@ enum PlaybookTests {
         minisPitch()
         minisShape()
 
-        Check.note("worst playbook deviation \(worst) (\(worstUlps) ulp)")
+        // `worst`/`worstUlps` are redundant with the report: every sample that could
+        // move them went through `nearUlp()`, which already asserts `d <= tol` per call.
     }
 
     // MARK: - constants

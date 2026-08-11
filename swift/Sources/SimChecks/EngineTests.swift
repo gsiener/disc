@@ -257,8 +257,12 @@ enum EngineTests {
             xs.isEmpty ? .infinity : xs.sorted()[xs.count / 2]
         }
         for (fraction, xs) in byFraction.sorted(by: { $0.key < $1.key }) {
-            Check.note(
-                "throw solver at \(Int(fraction * 100))% of the AI's believed range: "
+            // Per-bucket detail, kept as a plain print rather than an assertion: the
+            // worst-case and short/mid/long bounds below are the real claims, and eight
+            // buckets would be eight numbers to justify individually for no more
+            // coverage than the three pooled bounds already give.
+            print(
+                "  · throw solver at \(Int(fraction * 100))% of the AI's believed range: "
                     + "median miss " + String(format: "%.2f", median(xs)) + " m, median "
                     + "lateral " + String(format: "%.2f", median(latByFraction[fraction] ?? []))
                     + " m")
@@ -301,28 +305,36 @@ enum EngineTests {
         // through the RNG, and removing this line moved sevens 7 → 3 goals while moving
         // minis 10 → 13. That is chaos, not evidence.
         let short = byFraction.filter { $0.key <= 0.3 }.flatMap(\.value)
+        let mid = byFraction.filter { $0.key > 0.3 && $0.key < 0.9 }.flatMap(\.value)
         let long = byFraction.filter { $0.key >= 0.9 }.flatMap(\.value)
-        Check.note(
-            "throw solver: \(misses.count) flights, worst "
-                + String(format: "%.2f", worst.miss) + " m on \(worst.what)")
         /**
          * **The worst case is BOUNDED now, and it was not before.**
          *
-         * This line was a `Check.note` with no assertion anywhere behind it, and the
-         * number it prints is the one that would have caught the regression this file
-         * spends two screens describing: a solver that answered a 1 m dump with a 19.6 m
-         * bomb moves this figure and nothing else. A note cannot fail, so it did not.
-         * The bound is set a little over half again the measured 6.40 m, which is loose
+         * This was a `Check.note` with no assertion anywhere behind it, and the number
+         * it printed is the one that would have caught the regression this file spends
+         * two screens describing: a solver that answered a 1 m dump with a 19.6 m bomb
+         * moved this figure and nothing else. A note cannot fail, so it did not. The
+         * bound is set a little over half again the measured 6.40 m, which is loose
          * enough to survive a libm difference in the integrator and tight enough that a
-         * bomb — any bomb — trips it.
+         * bomb — any bomb — trips it. `worst.what` now rides in the failure label
+         * itself rather than a separate note, so a red run still names the throw.
          */
         Check.ok(
             worst.miss < 10,
-            "and no solved throw is a bomb (worst \(String(format: "%.2f", worst.miss)) m)")
+            "and no solved throw is a bomb (worst " + String(format: "%.2f", worst.miss)
+                + " m of \(misses.count) flights, on \(worst.what))")
         Check.ok(
             median(short) < 0.82,
             "a solved throw inside a third of the AI's believed range arrives in a catch "
                 + "radius (median \(median(short)) m)")
+        // The five middle buckets (35-70% of believed range), bounded for the same
+        // reason as short and long: measured medians here sit at 0.22-1.61 m, so the
+        // ceiling is set at roughly 2.5x the observed max, tight enough that the
+        // buckets a bare worst-case bound cannot localise still trip their own check.
+        Check.ok(
+            median(mid) < 4.0,
+            "and a mid-range ask (35-70% of believed range) arrives too "
+                + "(median \(median(mid)) m)")
         /**
          * **This assertion used to say the opposite, and it was right to, and it is now
          * right not to.**
@@ -544,7 +556,6 @@ enum EngineTests {
         Check.ok(
             worstOut <= runOff + 1e-9,
             "players stay inside the run-off (worst excursion \(worstOut) m)")
-        Check.note("worst excursion onto the run-off: \(worstOut) m of 2.5")
 
         // Exactly one pull per point, and no point without one. The current point may not
         // have pulled yet, which is the only slack in the identity.
@@ -560,15 +571,21 @@ enum EngineTests {
             Double(longestDead) * dt < 20,
             "a dead disc is always collected (worst wait \(Double(longestDead) * dt)s)")
 
-        Check.note(
-            "engine: \(Int(e.clock))s  score \(e.score[0])-\(e.score[1])  "
+        // Diagnostic dumps, not assertions: a ten-minute match's score, phase mix and
+        // counters vary legitimately by seed, and every property of them that has a
+        // sane bound is already asserted above (finite positions, the count, the
+        // held-disc identity, the run-off, the dead-disc wait). Printed rather than
+        // routed through `Check` so investigating a red run still sees the shape of
+        // the match that produced it.
+        print(
+            "  · engine: \(Int(e.clock))s  score \(e.score[0])-\(e.score[1])  "
                 + "point \(e.game.point)  pulls \(pulls)  "
                 + "throws \(e.stats.throwsMade)  completed \(e.stats.completions)  "
                 + "blocked \(e.stats.blocks)  stalled \(e.stats.stalled)  "
                 + "grounded \(e.stats.grounded)  out \(e.stats.outOfBounds)  "
                 + "airborne seen: \(airborneSeen)")
-        Check.note(
-            "engine phases (s): "
+        print(
+            "  · engine phases (s): "
                 + occupancy.sorted { $0.value > $1.value }
                 .map { "\($0.key) \(Int(Double($0.value) * dt))" }
                 .joined(separator: "  "))
@@ -671,8 +688,12 @@ enum EngineTests {
         let cadence = pool.reduce(0.0) { $0 + $1.cadence } / n
         let stallShare = turnovers > 0 ? Double(stalls) / Double(turnovers) : 0
         let holdShare = points > 0 ? Double(holds) / Double(points) : 0
-        Check.note(
-            "minis pooled over \(pool.count) matches: \(goals) goals, "
+        // The pooled figures below (stallShare, cadence, goals, completion, holdShare)
+        // are all asserted; the per-seed breakdown here is not, by design — see the
+        // friction log entries on per-seed bands resampling on any unrelated change.
+        // Printed rather than asserted so a seed that is quietly off is still visible.
+        print(
+            "  · minis pooled over \(pool.count) matches: \(goals) goals, "
                 + "\(stalls) stall-outs of \(turnovers) turnovers = "
                 + String(format: "%.0f%%", stallShare * 100)
                 + ", holds \(holds) of \(points) = " + String(format: "%.0f%%", holdShare * 100)
@@ -751,8 +772,11 @@ enum EngineTests {
         let deep = pool.reduce(0) { $0 + $1.deepShots }
         let scaledDeep = pool.reduce(0) { $0 + $1.scaledDeepShots }
         let aimed = pool.reduce(0) { $0 + $1.aimedThrows }
-        Check.note(
-            "minis deep shots over \(pool.count) matches: \(scaledDeep) of \(aimed) live "
+        // `deep` (the pre-#28 absolute reading) is deliberately not asserted either
+        // way, same reasoning as `PlaybookTests.minisPitch()`: pinning a historical bug
+        // reading would assert the bug. Printed for the historical comparison only.
+        print(
+            "  · minis deep shots over \(pool.count) matches: \(scaledDeep) of \(aimed) live "
                 + "releases fire the branch as written; the pre-#28 absolute reading "
                 + "(22 m gain / 25 m reach) fires \(deep) — issues #17, #28")
         Check.ok(
@@ -792,8 +816,11 @@ enum EngineTests {
         let points = sevensPool.reduce(0) { $0 + $1.holds + $1.breaks }
         let hucks = sevensPool.reduce(0) { $0 + $1.hucks }
         let holdShare = points > 0 ? Double(holds) / Double(points) : 0
-        Check.note(
-            "sevens pooled over \(sevensPool.count) matches: holds \(holds) of \(points) = "
+        // The pooled figures below are asserted; the per-seed breakdown is not, by
+        // design — see the docstring above. Printed so a seed that is quietly off is
+        // still visible without re-deriving it from the pooled numbers.
+        print(
+            "  · sevens pooled over \(sevensPool.count) matches: holds \(holds) of \(points) = "
                 + String(format: "%.0f%%", holdShare * 100) + ", \(hucks) hucks attempted, "
                 + "longest completion " + String(format: "%.1f", longest) + " m "
                 + "(per seed: "
@@ -999,8 +1026,12 @@ enum EngineTests {
         let breaks = e.game.teamStats(0).breaks + e.game.teamStats(1).breaks
         let meanText = String(format: "%+.2f", mean)
         let longestText = String(format: "%+.1f", gains.max() ?? 0)
-        Check.note(
-            "\(label): \(goals) goals in fifteen minutes, \(holds) holds / \(breaks) breaks, "
+        // Per-seed diagnostics. The pooled/format-level bounds below and in
+        // `theDeepGameAndTheHoldShare`/`minisIsPlayable` are the real claims; per-seed
+        // tails resample on any change that reshuffles the match (see the friction log
+        // on that), so these are printed rather than asserted per seed.
+        print(
+            "  · \(label): \(goals) goals in fifteen minutes, \(holds) holds / \(breaks) breaks, "
                 + "\(gains.count) completions, mean gain \(meanText) m "
                 + "(\(forward) forward / \(back) back), longest \(longestText) m")
 
@@ -1030,22 +1061,22 @@ enum EngineTests {
         let drops = e.game.teamStats(0).drops + e.game.teamStats(1).drops
         let stalls = e.game.teamStats(0).stallOuts + e.game.teamStats(1).stallOuts
         let passPct = att > 0 ? 100.0 * Double(comp) / Double(att) : 0
-        Check.note(
-            "\(label) passing: \(comp)/\(att) = " + String(format: "%.0f%%", passPct)
+        print(
+            "  · \(label) passing: \(comp)/\(att) = " + String(format: "%.0f%%", passPct)
                 + "  (\(aways) throwaways, \(drops) drops, \(stalls) stall-outs); "
                 + "engine counters incl. pulls: \(e.stats.completions) caught  "
                 + "\(e.stats.blocks) blocked  \(e.stats.grounded) grounded  "
                 + "\(e.stats.outOfBounds) out  of \(throwsTotal)")
-        Check.note(
-            "\(label) tempo/hucks: \(throwsTotal) throws, "
+        print(
+            "  · \(label) tempo/hucks: \(throwsTotal) throws, "
                 + String(format: "%.0f%%", compPct) + " completed, release every "
                 + String(format: "%.1f", cadence) + " s of live play, hucks "
                 + "\(hucksAttempted) attempted / \(hucksCompleted) completed >=30 m, "
                 + "longest throw " + String(format: "%.1f", completedDists.max() ?? 0) + " m")
         if !huckOutcomes.isEmpty {
             let lateHucks = huckStalls.filter { $0 >= 7 }.count
-            Check.note(
-                "\(label) huck outcomes: "
+            print(
+                "  · \(label) huck outcomes: "
                     + huckOutcomes.sorted { $0.value > $1.value }
                     .map { "\($0.key) \($0.value)" }.joined(separator: "  ")
                     + "  (\(lateHucks) of \(huckStalls.count) released at stall >= 7)")
@@ -1182,8 +1213,8 @@ enum EngineTests {
         Check.eq(e.score, frozenScore, "and its score")
         Check.eq(e.players.map(\.pos.z), frozenPositions, "and nobody is still running")
 
-        Check.note(
-            "engine: a game to two took \(Int(e.clock))s and "
+        print(
+            "  · engine: a game to two took \(Int(e.clock))s and "
                 + "\(e.game.point - 1) points, halftime included")
     }
 
@@ -1571,9 +1602,6 @@ enum EngineTests {
         Check.ok(
             carries[1] > carries[0] && carries[2] > carries[1],
             "the charge is monotonic: \(carries.map { Int($0) })")
-        Check.note(
-            "human backhand carry by charge: "
-                + carries.map { String(format: "%.1f m", $0) }.joined(separator: "  "))
     }
 
     /// The AI's one-shot actions reach the body, with their target intact.
@@ -1673,8 +1701,6 @@ enum EngineTests {
         var differs = false
         for (x, y) in zip(a, c) where x.bitPattern != y.bitPattern { differs = true }
         Check.ok(differs, "a different seed produces a different match")
-
-        Check.note("engine trace: \(a.count) sampled coordinates, replayed bit-exact")
     }
 }
 

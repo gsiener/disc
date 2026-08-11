@@ -57,11 +57,8 @@ enum CoeffsTests {
         }
 
         physicalProperties(aero)
-
-        let headroom = transcendentalTol / Swift.max(worstDeviation, Double.leastNormalMagnitude)
-        Check.note(
-            "worst sin/tanh deviation \(worstDeviation) (\(worstLabel)) — "
-                + "\(String(format: "%.0f", headroom))× under tolerance")
+        // `worstDeviation`/`worstLabel` are redundant with the report: `near()` already
+        // asserts `d <= transcendentalTol` on every call that could move them.
     }
 
     /// The largest deviation actually seen, so the tolerance above is a measured

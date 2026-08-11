@@ -218,11 +218,6 @@ enum ReplayTests {
             Check.ok(false, "an unattended match replays at all")
         }
 
-        Check.note(
-            "replay: \(tape.durationTicks) ticks, \(tape.inputs.count) inputs, "
-                + "\(after.reals.count) reals and \(after.discrete.count) discrete values "
-                + "bit-identical  (score \(replayed.score[0])-\(replayed.score[1]), "
-                + "\(replayed.stats.throwsMade) throws)")
     }
 
     // MARK: the check that proves the check can fail
@@ -271,13 +266,13 @@ enum ReplayTests {
         }
         Check.ok(seeded(77, [0, 1]) != seeded(78, [0, 1]), "a different seed is a different match")
         Check.ok(seeded(77, [0, 1]) == seeded(77, [0, 1]), "the same seed is the same match")
+        // The seed now reaches the whole engine — the roster draw and both forked
+        // TeamAI streams — so two seeds differ from the opening tick rather than only
+        // at a throw-type coin flip. (Static commentary, not a measured value: the
+        // three assertions just above are what actually establish it.)
         Check.ok(
             seeded(77, [1]) != seeded(78, [1]),
             "the seed separates two matches even with the human's side unautomated")
-        Check.note(
-            "the seed now reaches the whole engine — the roster draw and both forked TeamAI "
-                + "streams — so two seeds differ from the opening tick rather than only at a "
-                + "throw-type coin flip")
     }
 
     // MARK: frame timing
@@ -565,11 +560,10 @@ enum ReplayTests {
         let dumped = tape.durationTicks * a.reals.count
         Check.ok(
             bytes.count < 2048,
-            "a thirty-second recording is a few hundred bytes, not a state dump (\(bytes.count) B)")
-        Check.note(
-            "recording: \(bytes.count) B of JSON for \(tape.durationTicks) ticks and "
-                + "\(tape.inputs.count) inputs — a per-frame dump of the same match would be "
-                + "\(dumped) doubles (~\(dumped * 8 / 1024) KiB before punctuation)")
+            "a thirty-second recording is a few hundred bytes, not a state dump "
+                + "(\(bytes.count) B for \(tape.durationTicks) ticks and "
+                + "\(tape.inputs.count) inputs — a per-frame dump would be \(dumped) doubles, "
+                + "~\(dumped * 8 / 1024) KiB before punctuation)")
     }
 
     /// The doubles inside an input, in a fixed order, for bitwise comparison.
