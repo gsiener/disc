@@ -11,6 +11,7 @@ Baseline for all acceptance numbers is the delivered closeup: head spans
 
 ## 0. What the pixels actually say
 
+<!-- See .agents/friction-log/20260806025738-docs-face-direction/ — these numbers are sRGB-ENCODED luminance; a tool that gamma-decodes before ratioing (as _eyelum.mjs did) will disagree with every threshold below. -->
 Mean luminance, sRGB 0-1, off `shots/faces/closeup.png`:
 
 | Region | L | Note |

@@ -551,6 +551,7 @@ public final class TeamAI {
             rec.switchCd = Swift.max(0, rec.switchCd - dt)
         }
 
+        // See .agents/friction-log/20260810-teamai-lines-up/ — .dead also covers a mid-point stoppage (timeout/contest/check), which this sends to the goal line instead of holding position.
         if world.phase == .setup || world.phase == .pull || world.phase == .dead {
             return lineUp(world, dt)
         }

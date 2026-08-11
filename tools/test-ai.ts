@@ -1098,6 +1098,7 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
           if (p.id === disc.state.thrownBy) continue;
           const act = actionOf.get(p.id);
           const attacking = p.team === world.possession;
+          // See .agents/friction-log/20260806171847-a-layout-s/ — this is a third reach model, distinct from AI.ts's layoutExtend and Game.ts's CATCH_REACH/LAYOUT_REACH; the three do not agree.
           let reach = attacking ? 1.05 : 0.80;
           if (act && act.kind === 'bid' && bidWindow) reach += layoutExtend(p) * 0.60;
           const hd = dist2(p.pos.x, p.pos.z, cur.x, cur.z);

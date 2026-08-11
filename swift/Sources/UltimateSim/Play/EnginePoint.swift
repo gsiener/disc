@@ -224,6 +224,7 @@ extension Engine {
     func autoPull() {
         guard let p = player(puller) else { return }
         let dir = Double(dirFor(game.pullingTeam))
+        // See .agents/friction-log/20260811065754-the-port-s/ — this is not a port of Game.doPull's PULL_TARGET_Z (goalLine + 4); it aims 16.8 m short, which is the turnover:pull-drop gap.
         let target = Vec3d(0, 0, dir * format.field.goalLine * 0.6)
         let from = Vec3d(p.pos.x, 1.25, p.pos.z)
 

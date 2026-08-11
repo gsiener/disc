@@ -334,6 +334,7 @@ function solveElevation(
  * uses it clamped under the release, which is the precondition `probeThrow`'s
  * crossing test needs. See `SOLVE_CATCH_DROP`.
  */
+// See .agents/friction-log/20260810-throwsolver-wind-blind/ — this solver takes no wind term, so every throw is aimed as if the air were still and the wind moves the aimed flight, not the release.
 export function solveRelease(
   probe: ThrowProbe, req: ThrowRequest, heading0: number, want: number, catchY0: number,
 ): ReleaseSolution {
