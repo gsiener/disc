@@ -80,6 +80,7 @@ enum DivergenceTests {
     /// Keys are the *reference's* spelling, because that is what the scrape produces;
     /// several of these are `camelCase` in the port.
     static let mirrored: [String: Double] = [
+        "AIM_HEIGHT": AIM_HEIGHT,
         "BID_HESITATION": BID_HESITATION,
         "BID_LEAD": BID_LEAD,
         "CATCH_CEILING": CATCH_CEILING,
@@ -101,8 +102,10 @@ enum DivergenceTests {
     /// above or writes down here why it has no counterpart.
     static let unmirrored: [String: String] = [
         "CATCH_PLANE_DROP":
-            "declared and never read in the reference either — `flightPath` uses "
-            + "`ThrowSolver.SOLVE_CATCH_DROP`. Porting it would port dead code.",
+            "declared and never read in the reference either — the live number is "
+            + "`ThrowSolver.SOLVE_CATCH_DROP`, which `Game.aiThrow` caps the catch "
+            + "plane with. Porting it would port dead code; `CatchBandTests` asserts "
+            + "the two are still the same 0.25 so the dead copy cannot drift.",
         "LEAD_CUT":
             "ported as `TeamAI.leadCut`, internal to UltimateSim. Covered bit-exact by "
             + "the teamai and throwsolver goldens, which sweep the lead it produces.",

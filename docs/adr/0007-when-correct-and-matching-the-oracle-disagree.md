@@ -40,7 +40,13 @@ carelessness — it is the incentive working exactly as designed.
 The same shape recurs:
 
 - `EngineHuman.swift:437` uses a horizontal contest radius as a height band, under a comment
-  naming `CatchDecision` as its authority (issue #4).
+  naming `CatchDecision` as its authority (issue #4). **Fixed 2026-08-11, and it needed no
+  divergence at all**: `EngineHuman` has no counterpart in `src/sim/`, so there was no
+  oracle to disagree with and the site had been sitting in this list under the wrong
+  diagnosis. The number is now `CATCH_CEILING`, the band's actual ceiling, and
+  `CatchDecision.contestRadius` is named so a radius cannot be mistaken for a height again.
+  Worth recording as a limit of this ADR's own framing: some of the family is not the
+  incentive at all, it is a quantity that was never named.
 - `PlayerAction.bid(extend:)` is computed per player and discarded at `Engine.swift:878`
   (issue #22) — the capability exists, is plumbed, and is unreachable.
 - Issue #5: six ported, validated capabilities with no production caller.

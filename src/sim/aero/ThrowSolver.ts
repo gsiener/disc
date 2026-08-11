@@ -150,14 +150,18 @@ export const SOLVE_HEADING_TRIM = 0.15;
  * every distance from 6 m to 30 m, and grounded throwaways fell from 2.7% of
  * throws to 0.2%.
  *
- * **The clamp is the backstop, not the fix.** It repaired the flight and left the
- * ask wrong: `aimY` stayed at a height no flat throw reaches, so the two disagreed
- * by more than half a metre on every throw in the game and nothing said so. The
- * ask is now `AI.AIM_HEIGHT` = `HAND_HEIGHT - CATCH_PLANE_DROP`, and
- * `SimChecks/CatchBandTests` asserts that it is reachable from the modelled
- * release — that assertion is red at `1.35` and is what makes this bug class a
- * failing test rather than a comment. The clamp stays because a real hand is
- * 1.00-1.11 m rather than the model's 1.05 m, and the residue is its job.
+ * **This clamp is now the BACKSTOP, not the cap.** It repaired the flight and left
+ * the ask wrong: `aimY` stayed at a height no flat throw reaches, so caller and
+ * callee disagreed by more than half a metre on every throw in the game — 1699 of
+ * 1699 over the eleven canonical matches — and nothing anywhere said so. A callee
+ * that silently repairs its caller's input makes the input unobservable, which is
+ * why this took days to find from the other end.
+ *
+ * `Game.aiThrow` caps the plane itself now, against the release height it just
+ * computed, and `SimChecks/CatchBandTests` asserts at that seam that the solver is
+ * never handed a plane the throw cannot descend through. Bit-identical — the plane
+ * used is the plane that was always used — and red for every throw in the game
+ * before the cap moved. The clamp stays for callers that are not `aiThrow`.
  */
 export const SOLVE_CATCH_DROP = 0.25;
 /**

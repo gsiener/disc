@@ -37,6 +37,7 @@ import * as THREE from 'three';
 import { DiscRuntime, type ThrowRequest } from '../../src/entities/Disc.ts';
 import { powerForSpeed } from '../../src/sim/aero/Throws.ts';
 import { solveRelease } from '../../src/sim/aero/ThrowSolver.ts';
+import { STANDING_CATCH_FLOOR } from '../../src/sim/Rules.ts';
 import { maxThrowRange, throwFlightTime, type AIPlayer } from '../../src/sim/AI.ts';
 
 const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
@@ -69,8 +70,8 @@ const HEADINGS = 8;
 
 /**
  * The non-solve half of `Game.ts:aiThrow`, lines 1517-1541. The 1.02 on power,
- * the 0.12 floor, the 0.45/0.55 spin from the arm and the 0.35 m catch-plane
- * floor are the reference's; everything after them is `solveRelease` itself,
+ * the 0.12 floor, the 0.45/0.55 spin from the arm and the
+ * `STANDING_CATCH_FLOOR` catch-plane floor are the reference's; everything after them is `solveRelease` itself,
  * imported.
  */
 function solve(
@@ -82,7 +83,7 @@ function solve(
 
   const spin = clampNum(0.45 + 0.55 * (arm.attr.throwPower / 100), 0, 1);
   const power = clampNum(powerForSpeed(type as never, speed) * 1.02, 0.12, 1);
-  const catchY = Math.max(0.35, aim.y);
+  const catchY = Math.max(STANDING_CATCH_FLOOR, aim.y);
 
   const req = {
     type, from, aim: new THREE.Vector3(), power, angle: 0.02, spin, hand: 'R', bank: 0,

@@ -960,7 +960,17 @@ public final class Engine {
         // The reference derives spin from the arm rather than passing the AI's through.
         let spin = clamp(0.45 + 0.55 * (throwPower / 100), 0, 1)
         let power = clamp(powerForSpeed(type, speed) * 1.02, 0.12, 1)
-        let catchY = max(0.35, aim.y)
+        // **THE CATCH PLANE IS CAPPED HERE, WHERE THE RELEASE HEIGHT IS KNOWN.**
+        //
+        // `probeThrow` reports where a flight DESCENDS through this plane and falls
+        // through to ground contact when that crossing never happens, so a plane above
+        // the release is a different question silently answered with the turf. The AI
+        // asks for `AIM_HEIGHT`, a chest, and no flat throw reaches it: 1699 of 1699
+        // throws over the eleven canonical matches. `ThrowSolver.solve` has clamped it
+        // since August, but two modules from the caller — so the ask stayed wrong and
+        // unobservable. `from.y` is this throw's actual release and this is the only
+        // site that has it. Bit-identical to the clamp downstream; see CatchBandTests.
+        let catchY = clamp(aim.y, CatchDecision.standingFloor, from.y - ThrowSolver.catchDrop)
 
         // Elevation, bank and heading all come out of `Aero/ThrowSolver.swift`, which
         // is the port of `src/sim/aero/ThrowSolver.ts`. It used to be open-coded here,

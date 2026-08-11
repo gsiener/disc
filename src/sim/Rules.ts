@@ -507,6 +507,17 @@ export const STANDING_CATCH_FLOOR = 0.20;
 export const PRONE_CATCH_FLOOR = 0.02;
 
 /**
+ * How close an opponent has to be for a catch to be a contest, m — **horizontal**.
+ *
+ * Named for the same reason the two floors above are: it is 1.9 m, it is a distance
+ * between two bodies on the grass, and the port used it as a height ceiling on a
+ * flight (`EngineHuman.bidPoint`, under a comment naming the catch band as its
+ * authority). A number is not a quantity, and this file is where the difference is
+ * written down.
+ */
+export const CATCH_CONTEST_RADIUS = 1.9;
+
+/**
  * BEFORE THERE IS A MARK THERE IS NO MARKING FOUL, and this is the whole of it.
  *
  * `markerStatus` turns `legal` — and the stall count starts — the instant an

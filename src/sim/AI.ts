@@ -226,7 +226,7 @@ export interface FlightSample { t: number; x: number; y: number; z: number }
  * The two points on a flight anybody in-flight cares about: where to run to,
  * and where the disc stops being playable on your feet. See `predictCatchPoint`.
  */
-interface CatchPoint {
+export interface CatchPoint {
   x: number; y: number; z: number; t: number;
   lastX: number; lastZ: number; lastT: number;
 }
@@ -397,31 +397,41 @@ const LOFT_ARC = 6.4;
 export const CATCH_PLANE_DROP = 0.25;
 
 /**
- * **The height the AI asks a throw to be delivered at, m — and it has to be a
- * height a throw can actually get to.**
+ * **The height the AI would like a throw delivered at, m — a PREFERENCE, and one
+ * that no flat throw in this game can actually meet.**
  *
- * This was `1.35`, a chest, written inline at the one site that produces a throw
- * intent. A chest is where you want the disc; it is not where a disc released at
- * `HAND_HEIGHT` can arrive, because it never rises that high in the first place.
- * `ThrowSolver.probeThrow` reports the distance at which a flight DESCENDS
- * through the asked-for plane and falls through to ground contact when that
- * crossing never happens — so a plane above the release solved every flat throw
- * in the game for the disc to hit the turf at the receiver's feet, and
- * `predictCatchPoint` read that flight back and sent the receiver to meet it
- * nine metres short. Median over 379 completions: aimed 9.9 m, caught at 6.8 m.
+ * A chest is where you want the disc. It is not where a disc released from a
+ * standing hand at `HAND_HEIGHT` can arrive, because a flat throw never rises
+ * that high in the first place, and `ThrowSolver.probeThrow` reports the distance
+ * at which a flight DESCENDS through the plane it is given — falling through to
+ * ground contact when that crossing never happens. So this number handed
+ * unmodified to the solver solved every flat throw in the game for the disc to
+ * reach the turf at the receiver's feet, `predictCatchPoint` read that flight back
+ * and sent the receiver nine metres short, and the median over 379 completions was
+ * aimed 9.9 m, caught at 6.8 m.
  *
- * `SOLVE_CATCH_DROP` closed it by clamping the plane under the release, which
- * left the *ask* wrong and silently repaired. It is no longer wrong: this is
- * `HAND_HEIGHT - CATCH_PLANE_DROP`, the height a disc that left a standing hand
- * has fallen to by the time it reaches the receiver, and it is the reachability
- * invariant `SimChecks/CatchBandTests` asserts. A real body's hand is 1.00–1.11 m
- * (`0.53 * height * 1.10` over a 1.72–1.90 m roster), so the solver's clamp still
- * has the residue to handle — it no longer has the whole error.
+ * **What changed is not this number, it is who caps it.** `SOLVE_CATCH_DROP` used
+ * to clamp the plane inside `solveRelease`, two modules from the caller: the ask
+ * stayed wrong and was silently repaired, 1699 times in 1699 throws over the
+ * eleven canonical matches, with nothing anywhere saying the two disagreed by half
+ * a metre. The cap now happens in `Game.aiThrow`, which is the only place that
+ * knows the release height this throw actually leaves from — `HAND_HEIGHT` is the
+ * AI's *model* of it, and a real hand is 1.00–1.11 m. The clamp in `solveRelease`
+ * stays as a backstop for callers that are not `aiThrow`.
  *
- * It is inside the rendezvous band by construction: above `Rules`'
- * `STANDING_CATCH_FLOOR`, below `CATCH_CEILING`. Both are asserted.
+ * That move is bit-identical — the plane the solver ends up with is the one it
+ * always used — and it is what makes the reachability assertion in
+ * `SimChecks/CatchBandTests` expressible at all: *the solver is never handed a
+ * plane the throw cannot descend through*. Stated at the seam, that assertion is
+ * red for every throw in the game before this change and green after.
+ *
+ * Lowering the number instead was tried and rejected: `0.80`
+ * (`HAND_HEIGHT - CATCH_PLANE_DROP`) makes the ask literally reachable, and costs
+ * 2.3 points of pooled completion — 82.9 % against `tools/test-game.ts`'s 85–96 %
+ * band — because the plane stops tracking the thrower's own body. See the entry
+ * `20260811-the-aim-height-was-repaired`.
  */
-export const AIM_HEIGHT = 0.80;
+export const AIM_HEIGHT = 1.35;
 
 /**
  * Below this the disc is gone: the rules refuse a standing catch under

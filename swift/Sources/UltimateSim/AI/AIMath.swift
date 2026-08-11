@@ -89,31 +89,28 @@ public let CATCH_CEILING = 1.45
 /// is asserted in `CatchBandTests` rather than left to this sentence.
 public let CATCH_DEAD = 0.25
 
-/// **The height the AI asks a throw to be delivered at, m — and it has to be a height a
-/// throw can actually get to.**
+/// **The height the AI would like a throw delivered at, m — a PREFERENCE, and one no flat
+/// throw in this game can meet.**
 ///
-/// This was `1.35`, a chest, written inline at the one site that produces a throw intent.
-/// A chest is where you *want* the disc; it is not where a disc released at `handHeight`
-/// can arrive, because it never rises that high. `ThrowSolver.probeThrow` reports where a
-/// flight descends through the asked-for plane and falls through to ground contact when
-/// that crossing never happens, so a plane above the release solved every flat throw in
-/// the game into the turf at the receiver's feet — median over 379 completions, aimed
-/// 9.9 m and caught at 6.8 m.
+/// A chest is where you *want* the disc. It is not where a disc released from a standing
+/// hand at `handHeight` can arrive, because a flat throw never rises that high, and
+/// `ThrowSolver.probeThrow` reports the distance at which a flight DESCENDS through the
+/// plane it is given — falling through to ground contact when that crossing never happens.
+/// Handed unmodified to the solver, this solved every flat throw in the game into the turf
+/// at the receiver's feet: median over 379 completions, aimed 9.9 m and caught at 6.8 m.
 ///
-/// `ThrowSolver.catchDrop` closed the flight by clamping the plane under the release and
-/// left the ask wrong and silently repaired. This is `handHeight - CATCH_PLANE_DROP`: the
-/// height a disc that left a standing hand has fallen to by the time it arrives. Its
-/// reachability is the invariant `SimChecks/CatchBandTests` asserts, and that assertion
-/// is red at 1.35.
-public let AIM_HEIGHT = 0.80
-
-/// How far a thrown disc has fallen by the catch, m. `AIM_HEIGHT` is `handHeight` less
-/// this, and `CatchBandTests` asserts that it still is.
+/// **What changed is not the number, it is who caps it.** `ThrowSolver.catchDrop` used to
+/// clamp the plane inside the solver, two modules from the caller, so the ask stayed wrong
+/// and silently repaired — 1699 of 1699 throws over the eleven canonical matches. The cap
+/// is now in `Engine.solveThrow`, the only site that knows the release height this throw
+/// leaves from (`handHeight` is the AI's *model* of it; a real hand is 1.00–1.11 m). That
+/// move is bit-identical and it is what makes `SimChecks/CatchBandTests` able to assert
+/// the precondition at the seam — red for every throw in the game before it, green after.
 ///
-/// The reference declares `CATCH_PLANE_DROP` and — until `AIM_HEIGHT` — read it nowhere,
-/// which is why `DivergenceTests.unmirrored` used to classify it as dead code rather than
-/// port it.
-public let CATCH_PLANE_DROP = 0.25
+/// Lowering the number instead was tried and rejected: `0.80` makes the ask literally
+/// reachable and costs 2.3 points of pooled completion, because the plane stops tracking
+/// the thrower's own body. See `20260811-the-aim-height-was-repaired`.
+public let AIM_HEIGHT = 1.35
 
 /// How much further than standing reach a player must be short before believing it.
 /// The noise floor of `arrivalShortfall`, swept at 0.20/0.35/0.40 over five seeds.

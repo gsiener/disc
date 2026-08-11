@@ -19,6 +19,7 @@
     }
   ],
   "referenceConstants": {
+    "AIM_HEIGHT": 1.35,
     "BID_HESITATION": 0.35,
     "BID_LEAD": 0.45,
     "CATCH_CEILING": 1.45,
