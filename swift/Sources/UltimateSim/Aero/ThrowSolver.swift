@@ -57,8 +57,18 @@ public enum ThrowSolver {
     /// only move inside the spec's band cannot make a dump at all.
     public static let speedMin = 9.0
     public static let speedDrops = 2
-    /// Clamp on the residual heading trim, rad.
+    /// Clamp on the residual heading trim, rad — the calm-day case only. See `solve`.
     public static let headingTrim = 0.15
+    /// Crosswind, m/s, below which `solve` runs the calm-day trim above rather than the
+    /// wind secant below. See `solve`'s wind note.
+    public static let windDeadband = 2.0
+    /// Finite-difference step for the heading secant, rad.
+    public static let headingProbe = 0.05
+    /// Most heading one secant step may ask for, rad.
+    public static let headingStep = 0.5
+    /// Total heading offset from the caller's own aim, rad — a sanity ceiling on the
+    /// secant. See the reference for the measured worst case that set this value.
+    public static let headingMax = 1.4
     /// **How far under the throwing hand the solved catch plane is forced to sit, m.**
     ///
     /// `probeThrow` reports the distance at which a flight DESCENDS through the catch
@@ -206,12 +216,28 @@ public enum ThrowSolver {
     /// Solve power, elevation, bank and heading for a throw of `want` m along `heading0`.
     ///
     /// `req` carries the type, origin, power, spin and hand on the way in, and the
-    /// solved angle, bank and aim on the way out.
-    // See .agents/friction-log/20260810-throwsolver-wind-blind/ — this solver takes no wind term, so every throw is aimed as if the air were still and the wind moves the aimed flight, not the release.
+    /// solved angle, bank and aim on the way out. `wind` is the match wind (m/s, world
+    /// frame) — the same `Engine.wind` formation and zone-defence choices already read.
+    /// It defaults to still air, which reproduces every calm-day call bit-for-bit.
+    ///
+    /// -------------------------------------------------------------- the wind term
+    ///
+    /// Ported from `src/sim/aero/ThrowSolver.ts:solveRelease` — see its header for the
+    /// full derivation, and `.agents/friction-log/20260810-throwsolver-wind-blind/` for
+    /// issue #32. In short: the elevation bisection above already probes the real,
+    /// wind-integrated flight (so range came out right even before this fix), but
+    /// heading only ever moved by `headingTrim`'s tight one-shot clamp, sized for the
+    /// disc's own aerodynamic fade and never revisited once the match wind cleared a
+    /// breeze. A second secant, on heading, now runs after bank has settled — gated on
+    /// `windDeadband` so a calm day still takes the old clamped trim bit-identically,
+    /// and reading its error in the FIXED target frame (`worldLat0` below) rather than
+    /// whatever heading is currently being probed, which is what makes a large rotation
+    /// converge instead of reporting zero error while aimed at the wrong point.
     @discardableResult
     public static func solve(
         _ probe: DiscRuntime, _ req: inout ThrowRequest,
-        heading0: Double, want: Double, catchY catchY0: Double
+        heading0: Double, want: Double, catchY catchY0: Double,
+        wind: Vec2d = Vec2d(0, 0)
     ) -> Solution {
         // Both of these are properties of the throw, not of the caller — see `catchDrop`
         // and the loft note in `solveElevation`. The floor is the RULES' floor, read off
@@ -219,6 +245,7 @@ public enum ThrowSolver {
         // solve for, and a bare `0.20` here is how this bug family started.
         let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop)
         let lofted = want >= loftRange
+        let windCross = -wind.x * cos(heading0) + wind.z * sin(heading0)
         var bank = 0.0
         var angle = 0.02
         var lat = 0.0
@@ -282,7 +309,59 @@ public enum ThrowSolver {
         }
 
         var heading = heading0
-        if abs(lat) > latTolerance, want > 1 {
+
+        // Secant on HEADING, the wind's own axis — see `.agents/friction-log/
+        // 20260810-throwsolver-wind-blind/` (issue #32) and this file's header note on
+        // `solve`. Bank, above, corrects the disc's own curve and is left exactly as it
+        // was, at `heading0`, so a calm-day throw solves bit-identically to before this
+        // fix. This phase runs only past `windDeadband` — see the header — because a big
+        // TAILWIND ALONE (no crosswind) already pushes bank to its cap on some throws,
+        // and this secant chasing that same non-wind residual is a real oscillation, not
+        // a convergence (measured on the reference: the worst case went from 10.2 m off
+        // to 35.7 m off). `windCross` is zero for a pure tailwind, so the gate keeps this
+        // phase out of that case entirely.
+        if abs(windCross) > windDeadband {
+            // THE SECANT MUST READ ITS ERROR IN THE TARGET'S FRAME, NOT THE CANDIDATE
+            // HEADING'S OWN FRAME. `solveElevation(..., h, want, ...)` bisects so the
+            // flight covers `want` metres measured ALONG `h` — so its own `lat` is the
+            // residual perpendicular to `h`, whatever `h` currently is. `worldLat0` below
+            // always measures the landing point's sideways offset from the ORIGINAL
+            // target line (`heading0`, `want`), which is the quantity that must go to
+            // zero. It also hands `solveElevation` `want * cos(h - heading0)` rather than
+            // raw `want` — the fixed target's own projection onto `h` — because handing a
+            // rotated `h` the unprojected `want` throws PAST the target by construction
+            // (measured: 19-22 m past a 25-32 m throw at the `headingMax` corner).
+            let ux0 = sin(heading0)
+            let uz0 = cos(heading0)
+            func worldLat0(_ h: Double) -> (lat0: Double, angle: Double) {
+                req.bank = bank
+                let wantAlongH = want * cos(h - heading0)
+                let e2 = solveElevation(
+                    probe, &req, heading: h, want: wantAlongH, catchY: catchY, lofted: lofted)
+                req.angle = e2.angle
+                req.aim = Vec3d(sin(h), 0, cos(h))
+                let r = probe.probeThrow(req, catchY: catchY, maxT: 6)
+                let dx = r.x - req.from.x
+                let dz = r.z - req.from.z
+                return (-dx * uz0 + dz * ux0, e2.angle)
+            }
+
+            var cur = worldLat0(heading)
+            angle = cur.angle
+            var hpass = 0
+            while hpass < passes, abs(cur.lat0) > latTolerance {
+                let trial = worldLat0(heading + headingProbe)
+                let slope = (trial.lat0 - cur.lat0) / headingProbe
+                if abs(slope) < 1e-3 { break }
+                heading = clamp(
+                    heading + clamp(-cur.lat0 / slope, -headingStep, headingStep),
+                    heading0 - headingMax, heading0 + headingMax)
+                cur = worldLat0(heading)
+                angle = cur.angle
+                hpass += 1
+            }
+            lat = cur.lat0
+        } else if abs(lat) > latTolerance, want > 1 {
             heading -= clamp(atan2(lat, want), -headingTrim, headingTrim)
         }
 

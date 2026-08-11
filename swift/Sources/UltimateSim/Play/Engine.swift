@@ -1020,7 +1020,13 @@ public final class Engine {
             spin: spin,
             hand: hand,
             bank: 0)
-        ThrowSolver.solve(disc, &req, heading0: atan2(tx, tz), want: want, catchY: catchY)
+        // See issue #32 / `.agents/friction-log/20260810-throwsolver-wind-blind/`: the
+        // solve needs the actual match wind to aim into it, not just to fly through it.
+        // `disc.wind` is the same vector `probeThrow` already integrates every
+        // candidate flight against.
+        ThrowSolver.solve(
+            disc, &req, heading0: atan2(tx, tz), want: want, catchY: catchY,
+            wind: Vec2d(disc.wind.x, disc.wind.z))
         return req
     }
 
