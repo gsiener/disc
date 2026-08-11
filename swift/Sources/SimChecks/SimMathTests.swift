@@ -75,10 +75,8 @@ enum SimMathTests {
         }
 
         algebraicIdentities()
-
-        Check.note(
-            "worst quaternion-norm deviation \(worstNormDeviation) "
-                + "(sqrt vs 4-arg hypot) — tolerance \(hypotTol)")
+        // `worstNormDeviation` is redundant with the report: every sample that could
+        // move it already went through `Check.near(..., hypotTol, ...)` above.
     }
 
     private static func expectVec(_ got: Vec3d, _ want: [Double], _ what: String) {

@@ -46,7 +46,6 @@ enum StoppageTests {
     /// per-seed floor would be a statement about the weather.
     private static func theTimeoutIsCalled() {
         var called = 0
-        var perMatch: [Int] = []
 
         for match in MatchPool.matches {
             let seed = match.seed
@@ -61,14 +60,10 @@ enum StoppageTests {
                     used <= 4,
                     "s\(seed): team \(t) used no more than four timeouts (\(used))")
             }
-            perMatch.append(here)
             called += here
         }
 
         let mean = Double(called) / Double(seeds.count)
-        Check.note(
-            "timeouts: \(String(format: "%.2f", mean)) per match over \(seeds.count) matches "
-                + "— per match \(perMatch.map(String.init).joined(separator: " "))")
         // THE WHOLE POINT OF THIS SUITE. Before the caller existed this was 0.00, in every
         // match this engine had ever played. Pooled rather than per seed: a windy match
         // barely reaches a count of seven at all, because the offence turns it over first,
@@ -93,8 +88,6 @@ enum StoppageTests {
         }
         Check.ok(!resumed.isEmpty, "some timeout resumed a live possession")
         guard !resumed.isEmpty else { return }
-        Check.note(
-            "resumed counts: \(resumed.map(String.init).joined(separator: " "))")
         for r in resumed {
             Check.inRange(
                 Double(r), 1, 9,
@@ -143,9 +136,6 @@ enum StoppageTests {
         }
         let setPlays = counted.reduce(0) { $0 + $1.0 }
         let panics = counted.reduce(0) { $0 + $1.1 }
-        Check.note(
-            "timeout reasons over \(seeds.count) games to 5: \(setPlays) set plays, "
-                + "\(panics) stall resets")
         Check.ok(setPlays > 0, "the set-play timeout is reachable (\(setPlays))")
         Check.ok(panics > 0, "and the panic timeout still is (\(panics))")
     }
@@ -175,10 +165,6 @@ enum StoppageTests {
 
         Check.ok(timeouts > 0, "there were timeout frames to measure")
         guard timeouts > 0 else { return }
-        Check.note(
-            "timeout frames \(timeouts): worst thrower drift \(String(format: "%.2f", worstDrift)) m, "
-                + "worst team-mate distance from the disc "
-                + "\(String(format: "%.1f", worstSpread)) m")
         // The pivot radius plus the integrator's own step, which is the same bar
         // `PivotTests` holds a live thrower to.
         Check.ok(
@@ -228,8 +214,10 @@ enum StoppageTests {
         let zonePoints = pinned.reduce(0) { $0 + $1.0 }
         let points = pinned.reduce(0) { $0 + $1.1 }
         Check.ok(points > 0, "the pinned-weather matches played points")
-        Check.note("zone: \(zonePoints) of \(points) points on a pinned \(Playbook.windySpeed.min) m/s day")
-        Check.eq(zonePoints, points, "every point of a blow is a zone point")
+        Check.eq(
+            zonePoints, points,
+            "every point of a blow is a zone point (\(zonePoints) of \(points) on a pinned "
+                + "\(Playbook.windySpeed.min) m/s day)")
 
         // …and the mirror image: a calm day is never a zone day off the wind alone.
         var calm = EngineConfig.default
@@ -284,9 +272,10 @@ enum StoppageTests {
             }
         }
         let rate = Double(windy) / Double(n)
-        Check.note("weather: \(windy) of \(n) days are a blow (\(String(format: "%.1f%%", rate * 100)))")
         // A tenth, with the slack a 4000-sample binomial earns.
-        Check.inRange(rate, 0.08, 0.12, "a blow is one day in ten (\(rate))")
+        Check.inRange(
+            rate, 0.08, 0.12,
+            "a blow is one day in ten (\(windy) of \(n) days, \(rate))")
     }
 
     /// A pull is flattened into a headwind, and untouched otherwise.
@@ -334,9 +323,6 @@ enum StoppageTests {
                         continue
                     }
                     let carry = (landed.z - from.z) * dir / format.field.goalLine
-                    Check.note(
-                        "\(label) pull with \(sign * wind) m/s along: "
-                            + "\(String(format: "%.2f", carry)) goal lines")
                     // NOT 0.95, which is `EngineSeamTests`' calm-day bound, and the
                     // difference is physics rather than tuning. Swept at full power over
                     // launch angles 0.05–0.40 into 9.5 m/s of headwind, the best carry the

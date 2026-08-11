@@ -160,7 +160,8 @@ enum MoveTests {
         bodies(g)
         claims()
 
-        Check.note("worst move deviation \(worst)")
+        // `worst` is redundant with the report: every sample that could move it went
+        // through `near()`, which already asserts `d <= tol` per call.
     }
 
     // MARK: - constants

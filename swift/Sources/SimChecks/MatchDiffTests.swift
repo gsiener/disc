@@ -67,8 +67,8 @@ enum MatchDiffTests {
     /// Measured gaps when this landed, worst first: `call:foul` 1.00/match (ref 2.00, port
     /// 3.00), `call:pick` 0.64, `call:contested` 0.46, `turnover:pull-drop` 0.54,
     /// `turnover:drop` 2.00, `turnover:block` 1.00; everything else under 25% of its own
-    /// rate. Every run prints the full table and the worst relative gap as notes, so drift
-    /// toward the band is visible before it is red.
+    /// rate. Every kind's gap is asserted individually below, so the worst of them fails
+    /// on its own rather than needing a separate summary to be read.
     static let rateTolerance = 0.75
     static let rateFloor = 1.35
 
@@ -179,8 +179,10 @@ enum MatchDiffTests {
                 Check.ok(
                     want + got > 0,
                     "\(name) is reachable in at least one engine (ref \(want), port \(got))")
-                Check.note(
-                    "matchdiff: \(name) is below the pool's resolution — ref \(want), "
+                // Deliberately not asserted any more precisely: at this rarity neither a
+                // zero nor a mismatch is evidence of anything. Printed for visibility.
+                print(
+                    "  · matchdiff: \(name) is below the pool's resolution — ref \(want), "
                         + "port \(got) over \(g.matches) matches; neither zero would be "
                         + "evidence, so this pair is reported rather than asserted")
             } else {
@@ -190,9 +192,6 @@ enum MatchDiffTests {
 
         // 2. RATE AGREEMENT — a weaker claim, and it is the one that would have caught the
         //    throw solver bombing 42% of short throws, where the event still happened.
-        var worst = 0.0
-        var worstName = "—"
-        var lines: [String] = []
         for (name, want, got) in compared + g.totals.sorted(by: { $0.key < $1.key }).map({
             ("total:" + $0.key, $0.value, totals[$0.key] ?? 0)
         }) {
@@ -200,13 +199,6 @@ enum MatchDiffTests {
             let portRate = Double(got) / Double(matches)
             let gap = abs(portRate - refRate)
             let allowed = Swift.max(rateFloor, refRate * rateTolerance)
-            if refRate > 0, gap / refRate > worst {
-                worst = gap / refRate
-                worstName = name
-            }
-            lines.append(
-                "\(name) ref \(String(format: "%.2f", refRate))/match vs port "
-                    + "\(String(format: "%.2f", portRate))")
             Check.ok(
                 gap <= allowed,
                 "\(name) happens at the reference's rate — ref "
@@ -225,9 +217,6 @@ enum MatchDiffTests {
         //    directly comparable between the two engines despite everything in the header.
         let refPct = pct(g.totals["completions"] ?? 0, g.totals["attempts"] ?? 0)
         let gotPct = pct(totals["completions"]!, totals["attempts"]!)
-        Check.note(
-            "matchdiff completion %: ref \(String(format: "%.1f", refPct)) vs port "
-                + "\(String(format: "%.1f", gotPct))")
         Check.near(
             gotPct, refPct, 5.0,
             "the port completes passes at the reference's rate, in percentage points")
@@ -239,18 +228,11 @@ enum MatchDiffTests {
         let gotTOs = turnovers.values.reduce(0, +)
         let refPerPoint = Double(refTOs) / Double(Swift.max(1, g.totals["points"] ?? 1))
         let gotPerPoint = Double(gotTOs) / Double(Swift.max(1, totals["points"]!))
-        Check.note(
-            "matchdiff turnovers per point: ref \(String(format: "%.2f", refPerPoint)) vs "
-                + "port \(String(format: "%.2f", gotPerPoint))")
         Check.near(
             gotPerPoint, refPerPoint, 0.6,
             "a possession changes hands as often in the port as in the reference")
-
-        Check.note("matchdiff over \(matches) matches: " + lines.joined(separator: "; "))
-        Check.note(
-            "matchdiff worst relative gap: \(worstName) at "
-                + "\(String(format: "%.0f", worst * 100))% of the reference rate "
-                + "(band is \(String(format: "%.0f", rateTolerance * 100))% or ±"
-                + "\(rateFloor)/match, whichever is larger)")
+        // `lines` and `worst`/`worstName` are redundant with the report: every rate
+        // that feeds them already went through its own `Check.ok(gap <= allowed, ...)`
+        // in the loop above, so the worst of them is the worst of already-asserted gaps.
     }
 }
