@@ -1648,7 +1648,11 @@ export class GameSystem implements System {
     const req: ThrowRequest = {
       type, from: _from, aim: _aim, power, angle: 0.02, spin, hand, bank: 0,
     };
-    solveRelease(this.discRuntime, req, Math.atan2(tx, tz), want, catchY);
+    // See issue #32 / `.agents/friction-log/20260810-throwsolver-wind-blind/`:
+    // the solve needs the actual match wind to aim into it, not just to fly
+    // through it. `this.discRuntime.wind` is the same vector `probeThrow`
+    // already integrates every candidate flight against.
+    solveRelease(this.discRuntime, req, Math.atan2(tx, tz), want, catchY, this.discRuntime.wind);
 
     const vel = this.discRuntime.release(req);
     this.commitRelease(e, type, act.receiverId, vel);

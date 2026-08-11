@@ -88,7 +88,9 @@ function solve(
   const req = {
     type, from, aim: new THREE.Vector3(), power, angle: 0.02, spin, hand: 'R', bank: 0,
   } as unknown as ThrowRequest;
-  solveRelease(rt, req, Math.atan2(tx, tz), want, catchY);
+  // Issue #32: the solve now needs the wind explicitly, the same vector `rt`
+  // already carries and integrates every probe against — see `Game.aiThrow`.
+  solveRelease(rt, req, Math.atan2(tx, tz), want, catchY, rt.wind);
   return req;
 }
 
@@ -222,11 +224,21 @@ export function throwSolverGoldens(): unknown {
       + 'transcribed; probeThrow, release and powerForSpeed are imported too. '
       + 'The short fractions solve below the throw table\'s own speed floor, so '
       + '`solved.speed` is the absolute release speed the solver settled on and is '
-      + 'null wherever it never had to. Two sweeps: still air, and a breeze of the size '
-      + 'the match actually sets, because the solver bisects against the runtime that '
-      + 'carries the wind. Fractions above ~0.35 of maxThrowRange land short on '
-      + 'purpose: the AI range model and the flight model disagree there, in both '
-      + 'languages.',
-    sweeps: [sweep({ x: 0, z: 0 }), sweep({ x: 1.2, z: -0.8 })],
+      + 'null wherever it never had to. Three sweeps: still air, the breeze the match '
+      + 'used to be limited to, and the strong wind issue #20 made reachable and issue '
+      + '#32 found this solver blind to — see the header on `solveRelease`. All three '
+      + 'bisect against the runtime that carries the wind, so range came out right even '
+      + 'before #32; the heading secant the third sweep exercises is what #32 added. '
+      + 'Fractions above ~0.35 of maxThrowRange land short on purpose: the AI range '
+      + 'model and the flight model disagree there, in both languages.',
+    sweeps: [
+      sweep({ x: 0, z: 0 }),
+      sweep({ x: 1.2, z: -0.8 }),
+      // The wind `tools/test-ai.ts`'s own windy run sets (issue #32) — the first
+      // fixture coverage of the strong-crosswind regime this solver used to be
+      // blind to. `windCross` clears `SOLVE_WIND_DEADBAND` for most headings here,
+      // so this sweep is the one that actually exercises the new secant.
+      sweep({ x: 9.5, z: 2.0 }),
+    ],
   };
 }
