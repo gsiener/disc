@@ -69,6 +69,9 @@ enum DivergenceTests {
         let note: String
         let divergences: [Divergence]
         let referenceConstants: [String: Double]
+        /// `PULL_*` out of `src/sim/Game.ts`. Optional per name: `PULL_TARGET_Z` is an
+        /// expression rather than a literal, so its pattern can stop matching.
+        let referencePullConstants: [String: Double?]
     }
 
     // MARK: the Swift side, bound by name to live symbols
@@ -223,6 +226,8 @@ enum DivergenceTests {
                 "\(name) is classified in `unmirrored` but the reference no longer "
                     + "declares it — drop the classification")
         }
+
+        thePullConstantsAreTheReferences(g)
     }
 
     /// Live values for constants that exist in the port and have no same-named
@@ -231,4 +236,63 @@ enum DivergenceTests {
     static let liveDivergent: [String: Double] = [
         "LAYOUT_CEILING": LAYOUT_CEILING
     ]
+
+    /// `Game.ts`'s seven pull constants, bound to the live Swift symbols.
+    ///
+    /// **The port carried none of these and nothing noticed**, because ADR-0007's
+    /// default-equality scrape was wired to `src/sim/AI.ts` and `doPull`'s constants are
+    /// in `src/sim/Game.ts`. `Engine.autoPull` was an independently invented pull aiming
+    /// 16.8 m short of every pull the reference throws, and it survived 2.25 M green
+    /// assertions — the only fixture that could see it was `matchdiff`, where the
+    /// resulting 8-11x `turnover:pull-drop` gap sat under an absolute floor with 0.08
+    /// events a match of headroom. Issue #2.
+    ///
+    /// There is no `unmirrored` escape for this table. Seven names, all seven ported,
+    /// and a new `PULL_*` in the reference should stop the suite until somebody says what
+    /// the port does with it — which is exactly rule 3 of ADR-0007, applied where it was
+    /// missing.
+    static let mirroredPull: [String: Double] = [
+        "PULL_BANK": Engine.PULL_BANK,
+        "PULL_CARRY": Engine.PULL_CARRY,
+        "PULL_DRIFT": Engine.PULL_DRIFT,
+        "PULL_NOSE": Engine.PULL_NOSE,
+        "PULL_SPEED": Engine.PULL_SPEED,
+        "PULL_SPIN": Engine.PULL_SPIN,
+        "PULL_TARGET_Z": Engine.PULL_TARGET_Z,
+    ]
+
+    private static func thePullConstantsAreTheReferences(_ g: File) {
+        Check.ok(
+            !g.referencePullConstants.isEmpty,
+            "the pull-constant scrape found something in src/sim/Game.ts — an empty map "
+                + "would make every check below vacuously true, which is the state the "
+                + "port shipped an invented pull in")
+
+        for (name, want) in g.referencePullConstants.sorted(by: { $0.key < $1.key }) {
+            guard let want else {
+                Check.ok(
+                    false,
+                    "\(name)'s value could not be read out of src/sim/Game.ts — the "
+                        + "pattern in tools/goldens/divergences.ts stopped matching, so "
+                        + "the expression moved or was renamed. Repoint it.")
+                continue
+            }
+            guard let got = mirroredPull[name] else {
+                Check.ok(
+                    false,
+                    "\(name) = \(want) is a pull constant the port does not carry under "
+                        + "that name. `Engine.autoPull` has to say what it does with it "
+                        + "— an unported pull constant is how issue #2 happened.")
+                continue
+            }
+            Check.bitEq(got, want, "\(name) matches the reference")
+        }
+
+        for name in mirroredPull.keys.sorted() where g.referencePullConstants[name] == nil {
+            Check.ok(
+                false,
+                "\(name) is bound in `mirroredPull` but src/sim/Game.ts no longer "
+                    + "declares it — drop the binding")
+        }
+    }
 }
