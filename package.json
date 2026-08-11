@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "tsc --noEmit",
+    "gate": "node tools/gate.mjs",
     "shots": "node tools/capture.mjs",
     "preview": "vite preview --port 4173"
   },

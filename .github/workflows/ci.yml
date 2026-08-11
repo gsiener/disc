@@ -36,6 +36,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Parse every .ts under src/ with vite's own parser. Two tenths of a second on
+  # an ubuntu runner, against 30 minutes of macos-15 for everything below it.
+  #
+  # It exists for one defect: a backtick inside a GLSL comment closes the shader
+  # template literal, `tsc` answers with a hundred-odd errors at lines that are
+  # not the fault, and the friction log has it six times — every time from an
+  # agent who had already read the entry warning about it. A warning cannot
+  # compete with a parser, and this repository has a parser.
+  #
+  # ubuntu-latest, and not a step bolted onto a macos job: it needs no Xcode, no
+  # simulator and no cache, so it is the cheapest verdict in the file and the
+  # first one to come back. No `continue-on-error` — see ADR-0005's companion
+  # rule, a masked job is worse than a red one.
+  syntax-gate:
+    name: Syntax gate (src/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Parse src/
+        run: npm run gate
+
   # The differential suite: SimChecks loads the JSON goldens bundled as package
   # resources and replays ~2.2M assertions against the ported model. It prints a
   # PASS line with the assertion count and exits nonzero on any failure, so a

@@ -97,25 +97,52 @@ capture directory under `shots/` (gitignored entirely — copy the specific PNG)
 Both of these matter and they catch different things:
 
 ```sh
+npm run gate            # 0.2 s — does every .ts under src/ still PARSE?
 npx tsc --noEmit        # must be clean
-node tools/test-game.ts        # 109 assertions — rules, targeting, control
-node tools/test-ai.ts          # 48  — off-ball structure
+node tools/test-game.ts        # 147 assertions — rules, targeting, control
+node tools/test-ai.ts          # 70  — off-ball structure
 node tools/test-locomotion.ts  # 81  — movement model
 node tools/test-move.ts        # 37  — body separation
 node tools/test-anim.ts        # 83  — gait, foot contact
-node tools/test-camera.ts      # 67  — broadcast camera
+node tools/test-camera.ts      # 71  — broadcast camera
 ```
+
+`npm run gate` is first because it is the only one that names the right line for
+the defect this repo actually keeps hitting: a backtick inside a `/* glsl */`
+comment closes the template literal, and `tsc` answers with a cascade of errors
+at lines that are not the fault. Six recurrences, all by agents who had read the
+warning — so it is a parser now rather than a paragraph. Both capture rigs run it
+before they launch Chrome, which is also what turns a peer's half-saved file from
+a 180 s puppeteer `TimeoutError` into a named file and line.
 
 Regenerating goldens rewrites files other agents own, so **name the modules you
 own**: `node --experimental-strip-types tools/gen-goldens.ts rules gamestate`
-rewrites only those two. With no arguments it rewrites all sixteen — which has
-already landed stale fixtures on `main`. Then run the port's own suite:
+rewrites only those two. With no arguments it rewrites **all eighteen** — which
+has already landed stale fixtures on `main`. (`gen-goldens.ts` with an unknown
+module prints the current list; trust that over this sentence, which has been
+wrong twice.) Then run the port's own suite:
 `cd swift && swift run -c release SimTests` must end `PASS` with 0 failures.
 
-`tools/test-camera.ts` has one known failure, `wasted yaw travel p99`. That
-metric is documented in the file as unstable under changes that are not the
-camera's — it scored 8.65, 11.49, 11.51, 12.48 and 14.25 across five successive
-states of `src/sim/AI.ts`. Do not chase it, and do not report it as yours.
+### Seven assertions are red on a clean checkout. None of them is yours.
+
+Measured at `main`. Do not chase these and do not report them as yours:
+
+| suite | red | assertion |
+|---|---|---|
+| `test-game.ts` | 1 | `with no single seed outside 80-97%` — `33333` at 49% |
+| `test-ai.ts` | 4 | windy completion %; reset handler stationed; reset in position at stall; ratings change on-field outcomes |
+| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)`; `marker framed, LIVE_POSSESSION` |
+
+All seven are per-seed or telemetry **bands**, and the friction log records that
+any unrelated change flips them — see `20260809222131-enginetests-deep-game` and
+`20260810-per-seed-bands-again`. `EngineTests` pools its equivalents across three
+seeds for exactly this reason; these have not been pooled yet (issue #30).
+
+**Verify before you believe this table.** It has been wrong before: it previously
+named `wasted yaw travel p99` as the single known failure, and that assertion now
+passes while two other camera assertions do not. A stale exception list is worse
+than none, because it licenses ignoring the wrong thing. Diff against a clean
+worktree rather than trusting this paragraph.
 
 And **look at the pixels**. `tools/capture.mjs` pins the camera and freezes the
 world, which is right for judging a material and useless for judging anything

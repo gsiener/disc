@@ -15,9 +15,11 @@
  */
 import puppeteer from 'puppeteer-core';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createServer } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const CHROME = process.env.CHROME_PATH
   ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -52,6 +54,29 @@ const QUALITY = flag('q', 'ultra');
 const SETTLE = Number(flag('settle', 150));
 const KEEP = argv.includes('--keep-server'); if (KEEP) argv.splice(argv.indexOf('--keep-server'), 1);
 const requested = argv.filter((a) => !a.startsWith('--'));
+
+/* -------------------------------------------------------------- syntax gate
+ *
+ * A third of a second, before three minutes of Chrome.
+ *
+ * If ANY file under `src/` fails to parse — including one belonging to a peer
+ * agent, mid-save, that this rig does not import — vite's transform fails,
+ * `main.ts` never finishes importing, `window.__READY__` never flips, and the
+ * `waitForFunction` below times out after 180 s with a `TimeoutError` whose top
+ * frame is this file. That reads as "the capture rig is flaky" and it has cost
+ * three separate agents three minutes each (friction log `20260805193950`,
+ * `20260805220550`, `20260805221042`).
+ *
+ * tools/gate.mjs answers the same question with vite's own parser and names the
+ * file and line. Running it here is what turns that timeout back into a syntax
+ * error. */
+const GATE = path.join(path.dirname(fileURLToPath(import.meta.url)), 'gate.mjs');
+const gate = spawnSync(process.execPath, [GATE, '--quiet'], { stdio: 'inherit' });
+if (gate.status !== 0) {
+  console.error('\ncapture aborted before launching Chrome. This is the 0.3 s version of');
+  console.error('the 180 s TimeoutError you would otherwise have paid for the same fault.');
+  process.exit(gate.status ?? 1);
+}
 
 /* ------------------------------------------------------------- dev server */
 
