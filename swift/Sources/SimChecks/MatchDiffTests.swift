@@ -192,14 +192,35 @@ enum MatchDiffTests {
 
         // 2. RATE AGREEMENT — a weaker claim, and it is the one that would have caught the
         //    throw solver bombing 42% of short throws, where the event still happened.
+        //
+        //    **The pair closest to its band is printed every run**, which is the fix
+        //    `.agents/friction-log/20260811-matchdiff-pull-drop/` asked for. The note used
+        //    to report the worst *relative* gap, and `turnover:pull-drop` was never the
+        //    worst relative gap because it was being carried by the absolute floor — so
+        //    the one number designed to make drift visible before it went red was blind to
+        //    exactly the kind that was drifting. A pair passing on 0.08/match of headroom
+        //    and one passing on 1.20/match read identically otherwise, and only the first
+        //    is a trap.
+        var tightestName = ""
+        var tightestUsed = -1.0
+        var tightestRef = 0.0
+        var tightestPort = 0.0
+        var tightestAllowed = 0.0
         for (name, want, got) in compared + g.totals.sorted(by: { $0.key < $1.key }).map({
             ("total:" + $0.key, $0.value, totals[$0.key] ?? 0)
         }) {
             let refRate = Double(want) / Double(g.matches)
             let portRate = Double(got) / Double(matches)
             let gap = abs(portRate - refRate)
-            // See .agents/friction-log/20260811-matchdiff-pull-drop/ — the absolute floor has hidden an 8-11x turnover:pull-drop gap here with as little as 0.08/match of headroom; "worst relative gap" below never flags it because it is carried by this floor, not the relative band.
             let allowed = Swift.max(rateFloor, refRate * rateTolerance)
+            let used = allowed > 0 ? gap / allowed : 0
+            if used > tightestUsed {
+                tightestUsed = used
+                tightestName = name
+                tightestRef = refRate
+                tightestPort = portRate
+                tightestAllowed = allowed
+            }
             Check.ok(
                 gap <= allowed,
                 "\(name) happens at the reference's rate — ref "
@@ -207,6 +228,14 @@ enum MatchDiffTests {
                     + "\(String(format: "%.2f", portRate))/match, allowed ±"
                     + "\(String(format: "%.2f", allowed))")
         }
+        let usedPct = String(format: "%.0f", 100 * tightestUsed)
+        let tightRef = String(format: "%.2f", tightestRef)
+        let tightPort = String(format: "%.2f", tightestPort)
+        let tightAllowed = String(format: "%.2f", tightestAllowed)
+        print(
+            "  · matchdiff closest to its band: \(tightestName) at \(usedPct)% of what it "
+                + "is allowed — ref \(tightRef)/match, port \(tightPort)/match, allowed "
+                + "±\(tightAllowed)")
 
         // 3. THE TWO RATIOS — the tight assertions, and the only ones the roster difference
         //    does not blunt.

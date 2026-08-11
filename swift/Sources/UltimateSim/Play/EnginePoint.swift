@@ -19,6 +19,30 @@ import Foundation
 /// that is a fact about the phase machine rather than about the restart.
 
 extension Engine {
+    // MARK: - pull release, fitted against the aero rather than guessed
+
+    /// Ported one-for-one from `src/sim/Game.ts:82-90`. These are a *fit*, not taste:
+    /// 32 m/s, launch 0.10 rad (the backhand spec's own elevation, with `angle: 0` on
+    /// top), bank −0.50, flat nose, spin 0.85 carries 66 m in 5.7 s peaking 7.7 m up —
+    /// into the far endzone, with enough hang for the cover to run under it.
+    ///
+    /// They are **absolute air measurements, not pitch fractions** (ADR-0004): a release
+    /// speed and a bank angle are properties of a thrower and of the air. They do not
+    /// scale, which is exactly why `regulationPull` is gated on the regulation pitch
+    /// rather than applied everywhere.
+    public static let PULL_SPEED = 32.0
+    public static let PULL_BANK = -0.50
+    /// An offset, not an absolute: the backhand spec sits at −0.02 nose and the fit wants
+    /// a flat nose, so this cancels it.
+    public static let PULL_NOSE = 0.02
+    public static let PULL_SPIN = 0.85
+    /// Metres of cross-field fade the aim has to undo, and the carry it fades over.
+    public static let PULL_DRIFT = 8.4
+    public static let PULL_CARRY = 66.0
+    /// Where a pull is aimed: the middle of the field, just inside the far endzone.
+    /// `FIELD.GOAL_LINE + 4` on the regulation pitch.
+    public static let PULL_TARGET_Z = FieldConstants.standard.goalLine + 4
+
     /// Deal both rosters. Called once.
     ///
     /// The rosters are drawn from the RNG in a fixed order, so one seed is one set of
@@ -193,11 +217,23 @@ extension Engine {
         }
     }
 
-    /// The player who pulls this point: the first name on the pulling team's line.
+    /// The player who pulls this point: **the best arm on the pulling team's line.**
     ///
-    /// Fixed rather than chosen, because who pulls is a captain's decision and there is
-    /// nobody here to make it. Deterministic, which is what a replay needs.
-    var puller: PlayerId { game.pullingTeam * format.playersPerSide }
+    /// Ported from `Game.doPull` — `for (const e of line) if (e.ai.attr.throwPower >
+    /// puller.ai.attr.throwPower) puller = e`. Strict `>` over the line in id order, so a
+    /// tie keeps the earlier name and the choice is deterministic, which is what a replay
+    /// needs. This used to be `pullingTeam * playersPerSide`, the first name on the line,
+    /// which meant `arm` in the fitted release below would have been centred on a
+    /// middling thrower rather than on the top one it was fitted against.
+    public var puller: PlayerId {
+        let team = game.pullingTeam
+        var best: AIPlayer? = nil
+        for p in players where p.team == team {
+            guard let b = best else { best = p; continue }
+            if p.attr.throwPower > b.attr.throwPower { best = p }
+        }
+        return best?.id ?? team * format.playersPerSide
+    }
 
     // MARK: - the pull
 
@@ -216,15 +252,107 @@ extension Engine {
         return demand(game.pull(puller, req.from, vel))
     }
 
-    /// The pull the computer throws: downfield, into the middle of the receiving half.
+    /// The pull the computer throws.
+    ///
+    /// **Two implementations, and which one runs is decided by the pitch.**
+    ///
+    /// On the regulation field this is `Game.doPull`, ported (see `regulationPull`). The
+    /// reference is the oracle there — it is the only pitch it can express, and it is the
+    /// pitch `matchdiff` compares on — and the port's own invention aimed 16.8 m short of
+    /// every pull the reference throws, which is issue #2's `turnover:pull-drop` gap.
+    ///
+    /// On minis the solved pull below stays, because **there is no oracle for minis**:
+    /// `src/sim/` has exactly one field. The fitted ballistic is fitted to a 100 m pitch —
+    /// 66 m of carry on a 37 m field is a disc in the car park — so it is not a candidate
+    /// there, and the bisection plus the wind correction is what the small pitch has been
+    /// measured against. This is not a declared divergence under ADR-0007: there is no
+    /// reference value for a minis pull to disagree with.
+    func autoPull() {
+        guard let p = player(puller) else { return }
+        if format.field == .standard {
+            regulationPull(p)
+        } else {
+            solvedPull(p)
+        }
+    }
+
+    /// `Game.doPull`, ported. Regulation pitch only — see `autoPull`.
+    ///
+    /// The reference's own header is worth keeping: *"A PULL IS NOT A BACKHAND, and
+    /// treating it as one is why every pull in this game used to die at midfield —
+    /// measured mean carry 42.9 m, max 46.2 m, against a far goal line 64 m away."* The
+    /// backhand spec tops out at 27 m/s and no amount of `power` reaches the endzone with
+    /// it, because a pull is the one throw in the sport taken with a run-up and a full
+    /// body rotation rather than from a standing pivot with a mark in the face. So it gets
+    /// a release speed of its own — `PULL_SPEED`, overriding `power` through
+    /// `ThrowRequest.speed` — rather than a wider backhand range that every throw in a
+    /// possession would then inherit.
+    ///
+    /// Two findings from the reference's fit that the port inherits rather than re-derives:
+    /// throwing harder made the carry *worse* before it made it better (29 m/s falls to
+    /// 50.1 m with 33 m of drift, because the disc turns over at speed and dives), and the
+    /// lever is hyzer — half a radian of `PULL_BANK` holds the line against that turnover.
+    private func regulationPull(_ p: AIPlayer) {
+        let dir = Double(dirFor(game.pullingTeam))
+        let from = releaseOrigin(p)
+
+        // AIM AT A SPOT, NOT DOWN THE FIELD. The puller lines up wherever the line puts
+        // him — measured, about 15 m off centre, hard against a sideline — so a heading of
+        // "straight downfield plus a correction" starts from the wrong place and finishes
+        // out of bounds. Aiming at the middle of the far endzone is self-correcting for
+        // wherever he happens to stand.
+        //
+        // Then offset that spot by the fade. A hyzer pull drifts `PULL_DRIFT` metres
+        // sideways over `PULL_CARRY` of flight — along the thrower's right in this
+        // coordinate convention, mirrored by hand — so aiming that far the other way lands
+        // it on the spot rather than beside it. Only the aim's *direction* is read by
+        // `throwDisc`, so this pair of lengths is a bearing: atan(8.4 / 66) of correction.
+        let handSign: Double = p.handed == .left ? -1 : 1
+        var hx = -from.x
+        var hz = dir * Engine.PULL_TARGET_Z - from.z
+        let len0 = (hx * hx + hz * hz).squareRoot()
+        // `Math.hypot(hx, hz) || 1` — a zero length divides by one rather than by zero.
+        let len = len0 == 0 ? 1 : len0
+        hx /= len
+        hz /= len
+        let fx = -hz * handSign
+        let fz = hx * handSign
+        let aim = Vec3d(
+            hx * Engine.PULL_CARRY - fx * Engine.PULL_DRIFT,
+            0,
+            hz * Engine.PULL_CARRY - fz * Engine.PULL_DRIFT)
+
+        // Arm and a seeded nudge, so fourteen pulls are not one pull — but kept tight on
+        // purpose. The carry is very sensitive above the fitted speed: 32.6 m/s hangs 4.6 s
+        // and 34.6 m/s hangs 3.2 s, because past the fit the disc turns over and dives. The
+        // puller is always the strongest arm on the line, so `arm` is centred to land on
+        // `PULL_SPEED` for a top arm rather than to exceed it.
+        let arm = 0.94 + 0.06 * (p.attr.throwPower / 100)
+        let jitter = 0.985 + 0.03 * rng.next()
+        let req = ThrowRequest(
+            type: .backhand,
+            from: from,
+            aim: aim,
+            power: 1,
+            angle: 0,
+            spin: Engine.PULL_SPIN,
+            hand: p.handed == .left ? .left : .right,
+            bank: Engine.PULL_BANK,
+            nose: Engine.PULL_NOSE,
+            speed: Engine.PULL_SPEED * arm * jitter)
+        releasePull(req)
+    }
+
+    /// The solved pull: downfield, into the middle of the receiving half. **Minis only.**
     ///
     /// A pull that lands in the middle is the one a receiving team has to come and get.
     /// One aimed at the back of the endzone sails out, which under WFDF 12.4 hands the
-    /// receivers the brick — a worse result for the pulling team than a short pull.
-    func autoPull() {
-        guard let p = player(puller) else { return }
+    /// receivers the brick — a worse result for the pulling team than a short pull. On the
+    /// regulation pitch the oracle disagrees and the oracle wins; on the 37 m minis pitch,
+    /// where there is no oracle, this argument still stands and this code is what the
+    /// small pitch has been measured against.
+    private func solvedPull(_ p: AIPlayer) {
         let dir = Double(dirFor(game.pullingTeam))
-        // See .agents/friction-log/20260811065754-the-port-s/ — this is not a port of Game.doPull's PULL_TARGET_Z (goalLine + 4); it aims 16.8 m short, which is the turnover:pull-drop gap.
         let target = Vec3d(0, 0, dir * format.field.goalLine * 0.6)
         let from = Vec3d(p.pos.x, 1.25, p.pos.z)
 
