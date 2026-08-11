@@ -208,10 +208,6 @@ enum HumanDefenceTests {
         // have been allowed the play without the flag, so there is nothing for the
         // counterfactual to refuse. Measured at the time of writing: 3 seeds reached a
         // commitment, and all 3 scored on all three counters.
-        Check.note(
-            "human bid over \(seeds.count) seeds: \(reached) reached a commitment; "
-                + "considered \(considered), blocked \(blocked), refused without the flag "
-                + "\(refusedWithoutTheFlag)")
         Check.eq(
             reached, seeds.count,
             "every seed in the sweep reached a defensive flight and committed a body to it "
@@ -348,12 +344,6 @@ enum HumanDefenceTests {
         }
         let asWritten = Double(nonRoutine + laidOutD + otherD) / Double(games)
         let shipped = Double(laidOutD) / Double(games)
-        Check.note(
-            "hitstop budget over \(games) full 7v7 games: \(routine) routine and "
-                + "\(nonRoutine) non-routine catches, \(laidOutD) laid-out and \(otherD) "
-                + "standing blocks/interceptions — §5 as written fires "
-                + "\(String(format: "%.1f", asWritten))/game, laid-out D's alone "
-                + "\(String(format: "%.1f", shipped))/game")
         // THE FLOOR IS THE HALF THAT WAS MISSING.
         //
         // This range ran from **zero**, which made it unfailable by the thing it exists to
@@ -375,7 +365,8 @@ enum HumanDefenceTests {
         Check.ok(
             asWritten > 20,
             "and §5 as written is still far outside the broadcast budget, i.e. this "
-                + "narrowing is still needed (\(String(format: "%.1f", asWritten))/game)")
+                + "narrowing is still needed (\(String(format: "%.1f", asWritten))/game, "
+                + "against \(routine) routine catches over \(games) games)")
     }
 
     // MARK: - helpers

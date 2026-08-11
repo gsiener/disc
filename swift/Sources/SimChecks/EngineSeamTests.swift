@@ -526,9 +526,6 @@ enum EngineSeamTests {
         }
         let smallMean = small.reduce(0, +) / Double(small.count)
         let bigMean = big.reduce(0, +) / Double(big.count)
-        Check.note(
-            "pull carry in goal lines: minis \(smallMean) over \(small.count), "
-                + "sevens \(bigMean) over \(big.count)")
 
         // Every pull must clear the halfway line and stop short of the back of the
         // receivers' endzone; both are stated as fractions of the pitch and hold on

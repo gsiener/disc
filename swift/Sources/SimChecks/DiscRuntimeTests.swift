@@ -359,11 +359,8 @@ enum DiscRuntimeTests {
         for (i, s) in g.scuffs.enumerated() { scuff(s, i) }
         for (i, t) in g.trails.enumerated() { trailCase(t, i) }
         proseClaims()
-
-        Check.note(
-            "worst disc-runtime deviation \(worstAbs) — "
-                + "\(String(format: "%.2g", worstRatio * 100))% of the horizon tolerance "
-                + "at \(worstLabel)")
+        // `worstAbs`/`worstRatio`/`worstLabel` are redundant with the report: `within()`
+        // already asserts `d <= tol` on every call that could move them.
     }
 
     // MARK: - defaults and ground

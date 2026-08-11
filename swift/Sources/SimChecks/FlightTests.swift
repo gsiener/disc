@@ -83,11 +83,8 @@ enum FlightTests {
         }
 
         physicalProperties()
-
-        Check.note(
-            "worst flight deviation \(worstPosAbs) m — "
-                + "\(String(format: "%.2g", worstPosRatio * 100))% of the horizon tolerance "
-                + "at \(worstPosLabel)")
+        // `worstPosAbs`/`worstPosRatio`/`worstPosLabel` are redundant with the report:
+        // `compare()` already asserts `d <= tol` on every sample that could move them.
     }
 
     /// Re-run a scenario in Swift from the same release state and compare sample by sample.

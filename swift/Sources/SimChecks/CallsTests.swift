@@ -66,25 +66,17 @@ enum CallsTests {
 
     private static func callsAreRare() {
         var totals = Engine.CallTally()
-        var perMatch: [Int] = []
 
         // The first three of the eleven, off `MatchPool` — the same three matches this loop
         // used to play for itself, and the same three `stoppage` and `matchdiff` measure.
         for match in MatchPool.matches.prefix(seeds.count) {
             let seed = match.seed
             let t = match.calls
-            perMatch.append(t.total)
             totals.foul += t.foul
             totals.pick += t.pick
             totals.strip += t.strip
             totals.travel += t.travel
             totals.contested += t.contested
-
-            Check.note(
-                "calls/s\(seed): \(t.total) in fifteen minutes — "
-                    + "\(t.foul) foul, \(t.pick) pick, \(t.strip) strip, \(t.travel) travel; "
-                    + "\(t.contested) contested, \(t.total - t.contested) accepted "
-                    + "(\(match.score[0])-\(match.score[1]) over \(match.point - 1) points)")
 
             // The band. It is the tripwire for a detector that has become trigger-happy,
             // and it has done that job once — it is what caught the marking foul firing on
@@ -109,10 +101,6 @@ enum CallsTests {
 
         let matches = Double(seeds.count)
         let mean = Double(totals.total) / matches
-        Check.note(
-            "calls: \(String(format: "%.1f", mean)) per match across \(seeds.count) seeds — "
-                + "foul \(totals.foul), pick \(totals.pick), strip \(totals.strip), "
-                + "travel \(totals.travel), contested \(totals.contested) of \(totals.total)")
 
         // The ceiling, on the mean rather than the worst seed. The floor lives on the
         // pooled sample below, where it means something.
@@ -135,12 +123,6 @@ enum CallsTests {
                 t.total <= 12, "s\(seed): a match is not stopped a dozen times (\(t.total))")
         }
         let pool = seeds.count + poolSeeds.count
-        Check.note(
-            "calls over \(pool) matches: foul \(pooled.foul), pick \(pooled.pick), "
-                + "strip \(pooled.strip), travel \(pooled.travel) — "
-                + "\(pooled.contested) contested of \(pooled.total), "
-                + "\(String(format: "%.1f", Double(pooled.total) / Double(pool))) per match")
-
         Check.ok(pooled.foul > 0, "fouls happen")
         Check.ok(pooled.pick > 0, "picks happen — the coach's most common call")
         Check.ok(
@@ -207,11 +189,6 @@ enum CallsTests {
         Check.ok(
             e.game.clock < 400,
             "and it ends near the hard cap rather than running to the score (\(e.game.clock) s)")
-        Check.note(
-            "timed match: soft cap at \(softAt.map { String(format: "%.1f", $0) } ?? "—") s → "
-                + "target \(targetAtSoft), hard cap at "
-                + "\(hardAt.map { String(format: "%.1f", $0) } ?? "—") s, final "
-                + "\(e.score[0])-\(e.score[1]) after \(String(format: "%.1f", e.game.clock)) s")
     }
 
     /// …and off by default, which is why every other golden in the suite is unchanged.
