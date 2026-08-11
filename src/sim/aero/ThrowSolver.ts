@@ -67,7 +67,7 @@ import { throwSpeed } from './Throws.ts';
 export interface ThrowProbe {
   probeThrow(
     req: ThrowRequest, catchY: number, maxT?: number,
-  ): { dist: number; lat: number };
+  ): { dist: number; lat: number; x: number; z: number };
 }
 
 /* ------------------------------------------------------------------ tuning */
@@ -119,10 +119,42 @@ export const SOLVE_POWER_LIFTS = 2;
 export const SOLVE_SPEED_MIN = 9;
 export const SOLVE_SPEED_DROPS = 2;
 /**
- * Residual drift is still worth a heading trim — but a CLAMPED one. Unclamped,
- * this was the whole correction and it was aiming hucks off the field.
+ * Residual drift on a calm or near-calm day is still worth a heading trim —
+ * but a CLAMPED one, unchanged from before issue #32. Unclamped, this was
+ * once the whole correction and it was aiming hucks off the field.
  */
 export const SOLVE_HEADING_TRIM = 0.15;
+/**
+ * Crosswind, m/s, below which `solveRelease` does not run the wind secant at
+ * all and falls back to `SOLVE_HEADING_TRIM`'s calm-day clamp — the same
+ * deadband `EnginePoint.solvedPull` uses for its own wind correction, and the
+ * same reasoning: a calm day's residual is the disc's own fade, which was
+ * there before any of this, and running the wind secant on it would change
+ * the throw solved for every match that does not have a wind problem, to fix
+ * the one axis that does.
+ */
+export const SOLVE_WIND_DEADBAND = 2;
+/**
+ * Finite-difference step for the heading secant, rad. See `solveRelease`'s
+ * wind note — heading runs its own secant, after bank's, on the axis bank
+ * cannot reach (a crosswind's rigid push on the whole flight, as opposed to
+ * the disc's own curve, which bank corrects).
+ */
+export const SOLVE_HEADING_PROBE = 0.05;
+/** Most heading one secant step may ask for, rad — the secant is local. */
+export const SOLVE_HEADING_STEP = 0.5;
+/**
+ * Total heading offset from the caller's own aim, rad — a sanity ceiling on
+ * the secant, not a tuning knob it is expected to reach in ordinary play.
+ * Issue #32's own probe (`tools/_wind_probe.ts`, kept as the friction-log
+ * artifact) converged as far out as 1.35-1.4 rad against a 9.5 m/s crosswind
+ * on a 25-32 m huck — a straight-line ask that, before this fix, left `lat`
+ * (the pre-secant residual) at 37 m on a 32 m throw. 1.0 rad cut that
+ * convergence off early and left several such throws 10-20 m long; this is
+ * set just past what the measured worst case needed, not so wide that a
+ * throw the model cannot make quietly becomes a throw at a different spot.
+ */
+export const SOLVE_HEADING_MAX = 1.4;
 /**
  * **How far under the throwing hand the solved catch plane is forced to sit, m —
  * and the bug it exists to close.**
@@ -333,10 +365,61 @@ function solveElevation(
  * `catchY0` is the height the caller would like the disc delivered at; the solve
  * uses it clamped under the release, which is the precondition `probeThrow`'s
  * crossing test needs. See `SOLVE_CATCH_DROP`.
+ *
+ * `wind` is the match wind (m/s, world frame — the same `world.wind` `AI.ts`
+ * already reads for formation and zone-defence choices). It is optional and
+ * defaults to still air, which reproduces every calm-day call bit-for-bit.
+ *
+ * -------------------------------------------------------------- the wind term
+ *
+ * See `.agents/friction-log/20260810-throwsolver-wind-blind/` — issue #32.
+ * Before `wind` was a parameter, every throw was AIMED as if the air were
+ * still. The elevation bisection already probes the real, wind-integrated
+ * flight through `probe.probeThrow` (so range itself came out right even
+ * before this fix — a tailwind carries, a headwind doesn't), but *heading*
+ * started at the straight line to the target and only ever moved by a
+ * tightly clamped one-shot trim (0.15 rad), sized to mop up the disc's own
+ * aerodynamic fade and never revisited once the match wind grew past a
+ * breeze. Under real wind the two are not remotely the same size: pooled
+ * across four seeds, `tools/test-ai.ts`'s windy run measured **51.6%
+ * completion over 153 throws** against a 70-98% band, and a direct probe of
+ * this solver found `lat` (the pre-trim residual) reaching **37 m on a 32 m
+ * throw** into a crosswind — the old trim was being asked to correct a miss
+ * longer than the throw itself with 0.15 rad of budget.
+ *
+ * The fix is a second secant, on heading, that only runs when there is a real
+ * crosswind to answer. It is gated on `windCross` — the wind's component
+ * perpendicular to `heading0`, the same quantity `AI.ts`'s `chooseFormation`
+ * and `shouldPlayZone` already read off `world.wind` — past a 2 m/s deadband,
+ * the same one `EnginePoint.solvedPull` uses for exactly the same reason: a
+ * calm-day throw's residual is the disc's own fade, a metre or so, and
+ * chasing it with the same tool a crosswind needs changes nine matches in ten
+ * that do not have this problem, for one that does.
+ *
+ * It runs AFTER bank has already settled, with bank held fixed, rather than
+ * jointly with bank inside the per-pass loop above (tried first, on the
+ * theory that curve and wind are just two contributions to the same `lat`).
+ * That version made the worst case WORSE — 35.7 m on a throw that was 10.2 m
+ * off before touching heading at all — because a large *tailwind* alone (no
+ * crosswind) already pushes bank to its cap chasing the disc's own curve at
+ * the flatter angle a tailwind solves for, and letting heading chase that
+ * same stale residual every pass fed a real oscillation, not a convergence.
+ * Fixing bank first and only then chasing whatever crosswind leaves is what
+ * actually converges; the deadband above is what keeps it from ever running
+ * on the tailwind-only case that broke the joint version.
+ *
+ * It is also not a closed-form lead angle (a pilot's `asin(crosswind /
+ * airspeed)` wind-correction angle was tried too). It got the *direction* of
+ * the correction wrong often enough on this disc's curve to make the miss
+ * worse than doing nothing: unlike an aircraft, the disc's own bank already
+ * curves its ground track, so which way the aim needs to move depends on the
+ * interaction between that curve and the wind, not the wind alone, and a
+ * formula that only sees the wind cannot read that off. The secant reads the
+ * sign off the flight the disc is actually going to make, same as bank's.
  */
-// See .agents/friction-log/20260810-throwsolver-wind-blind/ — this solver takes no wind term, so every throw is aimed as if the air were still and the wind moves the aimed flight, not the release.
 export function solveRelease(
   probe: ThrowProbe, req: ThrowRequest, heading0: number, want: number, catchY0: number,
+  wind: { x: number; z: number } = { x: 0, z: 0 },
 ): ReleaseSolution {
   // Both of these are properties of the throw, not of the caller — see
   // `SOLVE_CATCH_DROP` and the loft note in `solveElevation`.
@@ -345,15 +428,17 @@ export function solveRelease(
   // is what makes `probeThrow`'s descending-crossing test fire at all.
   const catchY = clampNum(catchY0, STANDING_CATCH_FLOOR, req.from.y - SOLVE_CATCH_DROP);
   const lofted = want >= SOLVE_LOFT_RANGE;
+  const windCross = -wind.x * Math.cos(heading0) + wind.z * Math.sin(heading0);
   let bank = 0;
   let angle = 0.02;
   let lat = 0;
   let lifts = 0;
   let drops = 0;
+  let heading = heading0;
 
   for (let pass = 0; pass < SOLVE_PASSES; pass++) {
     req.bank = bank;
-    const e = solveElevation(probe, req, heading0, want, catchY, lofted);
+    const e = solveElevation(probe, req, heading, want, catchY, lofted);
     angle = e.angle;
     lat = e.lat;
 
@@ -429,7 +514,7 @@ export function solveRelease(
     // turnover speed without a table of signs.
     req.bank = bank + SOLVE_BANK_PROBE;
     req.angle = angle;
-    req.aim.set(Math.sin(heading0), 0, Math.cos(heading0));
+    req.aim.set(Math.sin(heading), 0, Math.cos(heading));
     const r2 = probe.probeThrow(req, catchY, 6);
     const slope = (r2.lat - lat) / SOLVE_BANK_PROBE;
     req.bank = bank;
@@ -440,8 +525,99 @@ export function solveRelease(
     );
   }
 
-  let heading = heading0;
-  if (Math.abs(lat) > SOLVE_LAT_TOL && want > 1) {
+  /**
+   * Secant on HEADING, the wind's own axis — see `.agents/friction-log/
+   * 20260810-throwsolver-wind-blind/` (issue #32).
+   *
+   * Bank, above, corrects the disc's own curve by changing the flight — right
+   * for that (a thrower banks, per the header above) and left exactly as it
+   * was, at `heading0`, so a calm-day throw solves bit-identically to before
+   * this fix. Bank is the wrong tool for a crosswind's rigid push on the whole
+   * flight, though, which is why it alone left `lat` up to 37 m on a 32 m
+   * throw once the match wind cleared 4.5 m/s (issue #20's zone threshold):
+   * bank pegged at its own cap with the wind's contribution to `lat` still
+   * sitting there afterward, unaddressed by anything.
+   *
+   * This phase runs AFTER bank has settled, with bank held fixed, and closes
+   * whatever `lat` bank left — the calm-day residue `SOLVE_HEADING_TRIM` used
+   * to mop up in one clamped step, and now also the wind's own contribution,
+   * which needed far more than 0.15 rad on the measurements above. It is a
+   * proper secant rather than a closed-form lead angle (a pilot's
+   * `asin(crosswind / airspeed)` wind-correction angle was tried first and got
+   * the *sign* wrong often enough to make the miss worse — it only sees the
+   * wind, not the interaction between the wind and the disc's own bank-driven
+   * curve, which is exactly the part a measured secant does not need to know).
+   * Running it as its OWN loop rather than folding it into the bank secant
+   * above matters: doing both every pass off the same stale `lat` measurement
+   * let the two corrections fight — measured, it made the worst case WORSE
+   * (35.7 m on a throw that was 10.2 m off before touching heading at all).
+   * Fixing bank first and only then chasing the remainder with heading is
+   * what converges. And it only runs past `SOLVE_WIND_DEADBAND` — see the
+   * function header — because a big TAILWIND ALONE (no crosswind at all)
+   * already pushes bank to its cap on some throws, chasing the disc's own
+   * curve at the flatter angle a tailwind solves for, and this secant
+   * chasing that same non-wind residual is exactly the runaway the previous
+   * paragraph describes. `windCross` is zero for a pure tailwind, so the gate
+   * keeps this phase out of that case entirely and it falls through to the
+   * ordinary calm-day trim below instead.
+   */
+  if (Math.abs(windCross) > SOLVE_WIND_DEADBAND) {
+    /**
+     * THE SECANT MUST READ ITS ERROR IN THE TARGET'S FRAME, NOT THE CANDIDATE
+     * HEADING'S OWN FRAME — the bug that made the first version of this loop
+     * actively worse than doing nothing.
+     *
+     * `solveElevation(..., h, want, ...)` bisects so the flight covers `want`
+     * metres MEASURED ALONG `h` — so its own `lat` is the residual PERPENDICULAR
+     * TO `h`, whatever `h` currently is. Rotate `h` by half a radian and that
+     * residual can read as zero while the disc lands 15 m from the receiver,
+     * because "zero" only ever meant "on the line this throw is currently
+     * aimed along," and the line moved. `worldLat0` below fixes that: it always
+     * measures the landing point's sideways offset from the ORIGINAL target
+     * line (`heading0`, `want`), regardless of which heading actually got
+     * probed. That is the quantity that must go to zero, and it is a different
+     * quantity from `solveElevation`'s own `lat` for any `h !== heading0`.
+     */
+    const ux0 = Math.sin(heading0);
+    const uz0 = Math.cos(heading0);
+    const worldLat0 = (h: number): { lat0: number; angle: number } => {
+      req.bank = bank;
+      /**
+       * `solveElevation` bisects so the flight covers ITS `want` ARGUMENT
+       * measured along `h`, not along `heading0`. What has to land at the
+       * FIXED target `T = want·(sin(heading0), cos(heading0))` is the flight
+       * itself, and `T`'s own projection onto `h` is `want·cos(h - heading0)`
+       * — smaller than `want` whenever `h` has rotated away from `heading0`,
+       * which is exactly the case this phase exists for. Handing raw `want`
+       * to a rotated `h` throws PAST `T` by construction (measured: 19-22 m
+       * past a 25-32 m throw at the `SOLVE_HEADING_MAX` corner) — this is
+       * that correction.
+       */
+      const wantAlongH = want * Math.cos(h - heading0);
+      const e2 = solveElevation(probe, req, h, wantAlongH, catchY, lofted);
+      req.angle = e2.angle;
+      req.aim.set(Math.sin(h), 0, Math.cos(h));
+      const r = probe.probeThrow(req, catchY, 6);
+      const dx = r.x - req.from.x;
+      const dz = r.z - req.from.z;
+      return { lat0: -dx * uz0 + dz * ux0, angle: e2.angle };
+    };
+
+    let cur = worldLat0(heading);
+    angle = cur.angle;
+    for (let hpass = 0; hpass < SOLVE_PASSES && Math.abs(cur.lat0) > SOLVE_LAT_TOL; hpass++) {
+      const trial = worldLat0(heading + SOLVE_HEADING_PROBE);
+      const slope = (trial.lat0 - cur.lat0) / SOLVE_HEADING_PROBE;
+      if (Math.abs(slope) < 1e-3) break;
+      heading = clampNum(
+        heading + clampNum(-cur.lat0 / slope, -SOLVE_HEADING_STEP, SOLVE_HEADING_STEP),
+        heading0 - SOLVE_HEADING_MAX, heading0 + SOLVE_HEADING_MAX,
+      );
+      cur = worldLat0(heading);
+      angle = cur.angle;
+    }
+    lat = cur.lat0;
+  } else if (Math.abs(lat) > SOLVE_LAT_TOL && want > 1) {
     heading -= clampNum(Math.atan2(lat, want), -SOLVE_HEADING_TRIM, SOLVE_HEADING_TRIM);
   }
 

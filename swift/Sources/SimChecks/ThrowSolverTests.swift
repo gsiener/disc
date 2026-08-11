@@ -93,7 +93,10 @@ enum ThrowSolverTests {
 
     static func run() throws {
         let file = try Goldens.load(File.self, "throwsolver")
-        Check.eq(file.sweeps.count, 2, "the solver fixture sweeps still air and a breeze")
+        // Three sweeps since issue #32: still air, the breeze the match used to be
+        // limited to, and the strong wind issue #20 made reachable and #32 found this
+        // solver blind to — see the fixture's own note and `ThrowSolver.solve`'s header.
+        Check.eq(file.sweeps.count, 3, "the solver fixture sweeps still air, a breeze, and real wind")
 
         // One engine for `solveRelease`; a separate runtime to fly in.
         let e = Engine(format: .sevens, seed: 1)
