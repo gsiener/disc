@@ -168,9 +168,23 @@ public func reachShortfall(_ p: AIPlayer, _ x: Double, _ z: Double, _ arrival: D
 ///
 /// Symmetric on purpose: the defender covering that endzone reads exactly the same
 /// stakes the receiver does.
-public func discStakes(_ z: Double, _ attackDir: Dir, field: Playbook = .regulation) -> Double
-{
-    clamp(1 - field.yardsToGoal(z, attackDir) / 25, 0, 1)
+///
+/// **The `25` is a regulation ramp and it scales; the `field:` default is gone.** This
+/// function was the worked example in ADR-0004's Consequences of a parameter that reaches
+/// half-way: it took a `field:`, passed it to `yardsToGoal`, and then divided by a bare
+/// regulation `25`, so a caller reading the signature could not tell which half was
+/// honoured. On the minis pitch the largest `yardsToGoal` anywhere is 18.5, so stakes
+/// never fell below 0.26 — and `discStakes` is the `stakes` argument to `shouldBid`,
+/// where it discounts the hesitation a player needs before leaving his feet. Every layout
+/// decision on both sides of the disc was therefore made at inflated stakes on the
+/// default pitch.
+///
+/// `field.depthScale` is exactly 1.0 at regulation, so `25 * 1.0` is `25` and the
+/// `aimath` golden does not move. The default is removed rather than corrected because a
+/// pitch-relative function with a regulation default is the same trap one level down —
+/// ADR-0004 asks for a caller that cannot avoid saying which pitch it means.
+public func discStakes(_ z: Double, _ attackDir: Dir, field: Playbook) -> Double {
+    clamp(1 - field.yardsToGoal(z, attackDir) / (25 * field.depthScale), 0, 1)
 }
 
 /// Should this player leave their feet?
@@ -213,10 +227,16 @@ public func shouldBid(
 /// two thirds of releases and every possession the human did not throw for ended in a
 /// stall-out.
 ///
-/// `central` and `endzone` default to the regulation numbers, so `possessionValue(y)` is
-/// bit-for-bit the reference function and `tools/goldens/aimath.ts` does not move.
+/// **The defaults are gone.** They used to be `central: 64, endzone: 18`, which meant
+/// twelve lines of doc explaining that those numbers are regulation and wrong elsewhere,
+/// followed by a signature that quietly supplied them. A default is not a warning: it is
+/// the behaviour every caller gets by not thinking, and the one caller who did not think
+/// is how the flat top of this curve swallowed the whole minis pitch. Pass the pitch's own
+/// two lengths — `field.centralLength` and `field.endzoneDepth`, which are `64` and `18`
+/// on `FieldConstants.standard`, so the regulation call is bit-for-bit the reference
+/// function and `tools/goldens/aimath.ts` does not move.
 public func possessionValue(
-    _ yards: Double, central: Double = 64, endzone: Double = 18
+    _ yards: Double, central: Double, endzone: Double
 ) -> Double {
     let core = 0.40 + 0.42 * (1 - clamp(yards, 0, central) / central)
     return core - 0.42 * clamp((yards - central) / endzone, 0, 1)

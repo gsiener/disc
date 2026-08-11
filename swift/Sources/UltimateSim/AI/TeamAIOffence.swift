@@ -340,8 +340,18 @@ extension TeamAI {
             }
             // Overflow handler (three handlers, two stations): a deep reset, wide on the
             // open side. Never the back of the stack — that is a cutter's spot.
+            //
+            // The one station in this file its siblings scale and it did not. Every other
+            // station comes out of `pb.formationStations`, which multiplies by the pitch
+            // scales; this one is built here and was bare metres, so on minis it asked for
+            // a handler 11 m off centre on a pitch 9 m to the sideline and 9.5 m behind
+            // the disc on one 12.5 m deep — `clampToField` then pinned him to the corner,
+            // which is how an overflow handler ends up standing on the line he is meant to
+            // reset away from. Both scales are exactly 1.0 at sevens.
             return pb.clampToField(
-                Vec2d(axx + Double(openSign) * 11, azz - Double(dir) * 9.5))
+                Vec2d(
+                    axx + Double(openSign) * 11 * pb.widthScale,
+                    azz - Double(dir) * 9.5 * pb.depthScale))
         }
         let si = stackOrder.contains(p.id) ? stackSlot(p.id) : cutters.count - 1
         // `cutters[clamp(si, 0, cutters.length - 1)]` indexes out of bounds and yields

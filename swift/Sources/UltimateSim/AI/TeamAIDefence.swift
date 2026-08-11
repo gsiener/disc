@@ -11,6 +11,83 @@ import Foundation
 /// insertion order and Swift `Dictionary` does not iterate in any order you may rely on,
 /// so both are `OrderedIntMap`. This is the single most likely place for a port to
 /// produce a different but entirely plausible defence.
+
+/// **The shape constants person defence decides with, named and measured on the
+/// regulation pitch.**
+///
+/// Every number here is a distance across the field, so by ADR-0004 every one of them
+/// scales: the sites below multiply by `pb.depthScale` / `pb.widthScale`, which are the
+/// ratio of this pitch's dimension to regulation's and therefore exactly `1.0` at sevens.
+/// The constants keep their regulation spelling — the same arrangement `Playbook.PLAY`
+/// uses — so the number a reader compares against `src/sim/AI.ts` is still the number
+/// written here, and the scale is visible at the point of use.
+///
+/// They are named rather than left inline for two reasons. `Playbook`'s scaling work
+/// (ADR-0004) left this file untouched, so `grep "pb\." TeamAIDefence.swift` returned
+/// three lines and none of them decided anything: offence read `16 * depthScale` for the
+/// under/deep boundary while defence read a bare `14`, which on the minis pitch is behind
+/// the end line. A literal buried in an expression is invisible to the divergence
+/// registry (ADR-0007) and to issue #18's shape assertions alike; a public name is the
+/// price of being reachable by either.
+///
+/// **What is deliberately NOT here** — the body-scale offsets, which do not scale:
+/// `Playbook.PLAY.shadeOpen`, `deepCushion` and `underGap`, the `2.2` m/s that makes a
+/// cutter "going deep", the `1.0` m a bracket stands off its man, and the `0.8` m a zone
+/// defender shades by. Those are a stance, a stride or a speed — ADR-0004's second
+/// category — and a metre of body is a metre on any pitch.
+public enum DefenceShape {
+    /// How far downfield of the disc a matchup has to be to be read as a DEEP THREAT,
+    /// which buys him `PLAY.deepCushion` instead of `PLAY.underGap`.
+    ///
+    /// This is the defensive twin of `Playbook.laneOf`'s under/deep boundary (`16`), and
+    /// the two disagreeing about which pitch they are on is the headline of issue #17.
+    /// They are not the same number and must not be merged — 14 and 16 are what the
+    /// reference says (`AI.ts:2995`, `Playbook.ts`) and changing either moves sevens —
+    /// but they now agree about the pitch.
+    public static let deepThreatDownfield = 14.0
+
+    /// How far a poaching defender may stray from his own matchup: further when he is
+    /// the designated bracket on a deep threat, less when he is helping underneath.
+    /// Beyond it the help point is pulled back along the line to his man.
+    public static let poachLeashBracket = 7.5
+    public static let poachLeashHelp = 4.5
+
+    /// How far behind the deep threat the bracketing defender sits.
+    public static let bracketDepth = 4.0
+
+    /// The help position underneath: out to the open side of the disc and downfield of
+    /// it — the primary throwing lane. Measured FROM THE DISC, so it is pitch geometry
+    /// rather than a body offset, and on minis an unscaled 7 m put the helper more than
+    /// half way to the goal line.
+    public static let helpLaneOpen = 5.0
+    public static let helpLaneDownfield = 7.0
+
+    /// Where a defender with no matchup at all stands: downfield of the disc.
+    public static let lostMatchupDownfield = 10.0
+
+    /// The fallback zone station when a role has none, downfield of the disc.
+    public static let zoneFallbackDownfield = 12.0
+
+    /// How far from his station a zone defender looks for an offensive body to react to.
+    /// A radius over the pitch: on minis 7.5 m unscaled reaches most of the width.
+    public static let zoneReactRadius = 7.5
+
+    /// A disc landing this close makes a defender break down and set the mark rather than
+    /// run through the catch.
+    public static let markUpRadius = 7.0
+
+    /// `threatOf`'s two distance ramps.
+    ///
+    /// `threatDiscFar` is the one that made the term inert: 42 m is longer than the whole
+    /// minis pitch (37 m end line to end line), so `smoothstep(42, 9, d)` was saturated
+    /// at every point on it and 0.30 of a 1.0 threat score was a constant. Threat gates
+    /// poach engagement, so poach engaged on the noise in the other three terms.
+    public static let threatDiscFar = 42.0
+    public static let threatDiscNear = 9.0
+    public static let threatDeepFar = 30.0
+    public static let threatDeepNear = 6.0
+}
+
 extension TeamAI {
 
     func defence(_ world: AIWorld, _ dt: Double) -> [PlayerIntent] {
@@ -271,7 +348,11 @@ extension TeamAI {
             let oid = matchup[p.id]
             let o: AIPlayer? = oid.flatMap { byId[$0] }
             guard let o else {
-                let c = avoidSidelines(disc.pos.x, disc.pos.z + Double(odir) * 10, p)
+                let c = avoidSidelines(
+                    disc.pos.x,
+                    disc.pos.z
+                        + Double(odir) * DefenceShape.lostMatchupDownfield * pb.depthScale,
+                    p)
                 out.append(
                     intent(
                         p, c.x, c.z, 0, Double(odir), .jog, 0.5, nil,
@@ -301,8 +382,11 @@ extension TeamAI {
             let px = mm.seenX + o.vel.x * lead
             let pz = mm.seenZ + o.vel.z * lead
             let downfield = Double(odir) * (o.pos.z - disc.pos.z)
+            // 2.2 m/s is a running speed and stays absolute; the 14 m is a slice of
+            // field and does not. See `DefenceShape.deepThreatDownfield`.
             let goingDeep = Double(odir) * o.vel.z > 2.2
-            let isDeepThreat = downfield > 14 || goingDeep
+            let isDeepThreat =
+                downfield > DefenceShape.deepThreatDownfield * pb.depthScale || goingDeep
             let depth = isDeepThreat ? Playbook.PLAY.deepCushion : -Playbook.PLAY.underGap
             let skill = 0.65 + 0.35 * (p.attr.defAwareness / 100)
             var tx = px + Double(openSign) * Playbook.PLAY.shadeOpen * skill
@@ -325,21 +409,34 @@ extension TeamAI {
                 mm.poach + (engage ? dt * 2.2 : (disengage ? -dt * 4.0 : -dt * 0.6)), 0, 1)
 
             if mm.poach > 0.05 {
+                // Help geometry is field geometry — see `DefenceShape`. The one number
+                // that stays absolute is the metre a bracket stands off his man's
+                // shoulder, which is a body's width and not a slice of pitch.
+                let hwx = pb.widthScale
+                let hdz = pb.depthScale
                 let isBracket = p.id == deepHelpId && deepThreat != nil
-                let leash = isBracket ? 7.5 : 4.5
+                let leash =
+                    (isBracket
+                        ? DefenceShape.poachLeashBracket : DefenceShape.poachLeashHelp)
                 var hx: Double
                 var hz: Double
                 if isBracket, let deepThreat {
                     hx = deepThreat.pos.x + Double(openSign) * 1.0
-                    hz = deepThreat.pos.z + Double(odir) * 4.0
+                    hz = deepThreat.pos.z + Double(odir) * DefenceShape.bracketDepth * hdz
                 } else {
                     // Help on the under: sit in the primary throwing lane.
-                    hx = disc.pos.x + Double(openSign) * 5.0
-                    hz = disc.pos.z + Double(odir) * 7.0
+                    hx = disc.pos.x + Double(openSign) * DefenceShape.helpLaneOpen * hwx
+                    hz = disc.pos.z + Double(odir) * DefenceShape.helpLaneDownfield * hdz
                 }
                 var nx = Playbook.lerp(tx, hx, mm.poach)
                 var nz = Playbook.lerp(tz, hz, mm.poach)
-                let ld = Playbook.dist2(nx, nz, o.pos.x, o.pos.z)
+                // The leash is measured in PITCH FRACTIONS, the way `scoreCut` measures
+                // its crowding radius: each axis divided by its own scale before the
+                // hypot, because the two scales differ off regulation (minis is 0.39 deep
+                // against 0.49 wide) and a single factor would stretch the circle the
+                // wrong way. Both are exactly 1.0 at sevens, where `x / 1.0` is `x` for
+                // every double, so the distance and the shrink below are bit-identical.
+                let ld = Playbook.dist2(nx / hwx, nz / hdz, o.pos.x / hwx, o.pos.z / hdz)
                 if ld > leash {
                     let s = leash / ld
                     nx = o.pos.x + (nx - o.pos.x) * s
@@ -373,6 +470,15 @@ extension TeamAI {
     }
 
     /// 0…1 — how dangerous this offensive player is right now.
+    ///
+    /// **The two distance terms read the pitch; the two motion terms do not.** `sp` is a
+    /// speed in m/s and `toward` is a normalised dot product, so both are absolute by
+    /// construction. The distance ramps are slices of field: `42` m is longer than the
+    /// whole minis pitch, which left `smoothstep(42, 9, d)` saturated everywhere and
+    /// 0.30 of the score a constant. Since `threat < 0.30` is the poach gate and
+    /// `threat > 0.45` the disengage, a term that cannot vary is not a neutral offset —
+    /// it moves every defender on the pitch to one side of both thresholds and lets the
+    /// remaining terms engage poach on noise.
     func threatOf(_ o: AIPlayer, _ disc: AIDiscState, _ odir: Dir) -> Double {
         let d = Playbook.dist2(o.pos.x, o.pos.z, disc.pos.x, disc.pos.z)
         let sp = Foundation.hypot(o.vel.x, o.vel.z)
@@ -382,11 +488,23 @@ extension TeamAI {
                 / (d * Swift.max(sp, 1e-3))
             : 0
         let downfield = Double(odir) * (o.pos.z - disc.pos.z)
+        // `d` itself is left alone — `toward` divides by it and that ratio is scale-free
+        // — so the radial ramp gets its own pitch-fraction distance, per `scoreCut`.
+        // Anisotropic on purpose: how far away a body is depends on which way it is away.
+        let wx = pb.widthScale
+        let dz = pb.depthScale
+        let dScaled = Playbook.dist2(
+            o.pos.x / wx, o.pos.z / dz, disc.pos.x / wx, disc.pos.z / dz)
         return clamp(
             0.42 * Playbook.smoothstep(0.8, 5.0, sp)
-                + 0.30 * Playbook.smoothstep(42, 9, d)
+                + 0.30
+                    * Playbook.smoothstep(
+                        DefenceShape.threatDiscFar, DefenceShape.threatDiscNear, dScaled)
                 + 0.18 * clamp(toward, 0, 1)
-                + 0.16 * Playbook.smoothstep(30, 6, abs(downfield)),
+                + 0.16
+                    * Playbook.smoothstep(
+                        DefenceShape.threatDeepFar * dz, DefenceShape.threatDeepNear * dz,
+                        abs(downfield)),
             0, 1)
     }
 
@@ -472,7 +590,12 @@ extension TeamAI {
 
         for p in mates {
             let role = zoneRole[p.id] ?? .shortDeep
-            let st = byRole[role] ?? Vec2d(disc.pos.x, disc.pos.z + Double(odir) * 12)
+            let st =
+                byRole[role]
+                ?? Vec2d(
+                    disc.pos.x,
+                    disc.pos.z
+                        + Double(odir) * DefenceShape.zoneFallbackDownfield * pb.depthScale)
             var tx = st.x
             var tz = st.z
 
@@ -498,10 +621,16 @@ extension TeamAI {
 
             // Zone players still react to the nearest offensive body in their area.
             if role != .cupMark {
+                // The search radius is a patch of pitch, so the distances it compares are
+                // taken in pitch fractions — `scoreCut`'s idiom, exact at sevens. The
+                // 0.8 m the defender then shades by is a body and stays absolute.
+                let zwx = pb.widthScale
+                let zdz = pb.depthScale
                 var near: AIPlayer?
-                var nd = 7.5
+                var nd = DefenceShape.zoneReactRadius
                 for o in foes {
-                    let d = Playbook.dist2(o.pos.x, o.pos.z, st.x, st.z)
+                    let d = Playbook.dist2(
+                        o.pos.x / zwx, o.pos.z / zdz, st.x / zwx, st.z / zdz)
                     if d < nd {
                         nd = d
                         near = o
@@ -592,8 +721,14 @@ extension TeamAI {
             // No play on the disc. If it is landing near you, break down and set the mark
             // now rather than running through the catch — that is both the correct read
             // and how a defender avoids fouling into disc space.
-            let toLand = Playbook.dist2(p.pos.x, p.pos.z, land.x, land.z)
-            if toLand < 7 {
+            // "Landing near you" is a patch of pitch, not a reach: 7 m unscaled is more
+            // than a third of the minis width, so every defender on the field broke down
+            // to mark up on every flight. Pitch fractions, per `scoreCut`.
+            let mwx = pb.widthScale
+            let mdz = pb.depthScale
+            let toLand = Playbook.dist2(
+                p.pos.x / mwx, p.pos.z / mdz, land.x / mwx, land.z / mdz)
+            if toLand < DefenceShape.markUpRadius {
                 let mp = Playbook.markPoint(
                     Vec2d(land.x, land.z), odir, brk, Playbook.PLAY.markDistance + 0.30)
                 let c = avoidSidelines(mp.x, mp.z, p)

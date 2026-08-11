@@ -331,10 +331,21 @@ public final class TeamAI {
 
     /// `cfg` is a whole value here where the reference takes a `Partial` spread over
     /// `DEFAULT_TEAM_CONFIG`; pass `DEFAULT_TEAM_CONFIG` and mutate what you mean.
+    ///
+    /// **`field` has no default.** It used to be `.standard`, which made sevens the pitch
+    /// an AI got for not saying — on a game whose DEFAULT format is minis. Every constant
+    /// this class decides with was measured on the regulation field, so an omitted
+    /// argument is not a mild convenience, it is the whole of issue #17 reintroduced by a
+    /// keystroke. Making it required costs each caller five characters and makes the
+    /// recurrence a compile error.
+    ///
+    /// It is still a `FieldConstants` and not a `GameFormat`, so `playersPerSide` cannot
+    /// reach the AI: `Playbook.stackHoldFor` already has to be told the roster size
+    /// separately. Widening it is a larger refactor than this change and is left to #17.
     public init(
         team: TeamId, dir: Dir, rng: Rng,
         cfg: TeamConfig = DEFAULT_TEAM_CONFIG,
-        field: FieldConstants = .standard
+        field: FieldConstants
     ) {
         self.team = team
         self.dir = dir
@@ -872,10 +883,12 @@ func jsSignOr(_ x: Double, _ fallback: Playbook.Sign) -> Playbook.Sign {
 
 // MARK: - public API
 
+/// The reference's factory shape. `field` is required here for the same reason it is
+/// required on `TeamAI.init` — a default would put the sevens pitch back one call away.
 public func createTeamAI(
     team: TeamId, dir: Dir, rng: Rng,
     cfg: TeamConfig = DEFAULT_TEAM_CONFIG,
-    field: FieldConstants = .standard
+    field: FieldConstants
 ) -> TeamAI {
     TeamAI(team: team, dir: dir, rng: rng, cfg: cfg, field: field)
 }

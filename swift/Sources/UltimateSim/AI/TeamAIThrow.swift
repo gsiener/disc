@@ -11,6 +11,42 @@ import Foundation
 ///   - `decide` draws one `gauss()` **per option**, in `evaluateOptions` order, whether
 ///     or not that option wins. Skipping the losers' draws would shift the stream.
 ///   - `release` draws two `gauss()`, x then z.
+
+/// **What makes a throw a DEEP SHOT**, measured on the regulation pitch. Issues #17, #28.
+///
+/// The downfield gain and the throw length that together send `evaluateOptions` into the
+/// separate deep valuation: the jump-ball completion model, the out-of-bounds tax on the
+/// aim point, the halved turnover charge and the credit for pinning the opponent. Both
+/// scale by `Playbook.depthScale` at the site, which is exactly 1.0 at sevens.
+///
+/// ## "Deep" is five tests, and they now agree about the pitch
+///
+/// Issue #17 counts five places this codebase says what deep means. They cannot be one
+/// number, because they do not measure one quantity and because three of them are what
+/// `src/sim/*.ts` says — merging them would move the sevens goldens, which is the one
+/// thing ADR-0004's scaling is designed never to do. What they can share, and now do, is
+/// the answer to "which pitch is this":
+///
+/// | site | what it measures | scales by |
+/// |---|---|---|
+/// | `Playbook.laneOf` | `16` m — the under/deep LANE boundary from the disc | `depthScale` |
+/// | `Playbook.buildCut` | `24…38` m — how far a deep CUT reaches | `depthScale` |
+/// | `TeamAIOffence.scoreCut` | `smoothstep(30, 12, yardsToGoal)` — do not huck from close in | `depthScale` |
+/// | `DEEP_SHOT_GAIN` / `DEEP_SHOT_REACH` | is this THROW the long one | `depthScale` |
+/// | `ThrowSolver.loftRange` | `25` m — past which a disc must be lofted | **nothing** |
+///
+/// The fifth is the interesting one and it is deliberately absent from the list above.
+/// `loftRange` is a property of the air, not of the field — ADR-0004 names it as the
+/// worked example of a genuinely absolute distance — so a shorter pitch does not make a
+/// disc hang sooner. It shares the number `25` with `DEEP_SHOT_REACH` at regulation by
+/// coincidence of tuning, and they part company everywhere else. Scaling it would be the
+/// mirror of the bug this constant fixes.
+///
+/// `TeamAIDefence.DefenceShape.deepThreatDownfield` (`14`) is a sixth reading of the same
+/// word, on the other side of the disc; it scales too, for the same reason.
+let DEEP_SHOT_GAIN = 22.0
+let DEEP_SHOT_REACH = 25.0
+
 extension TeamAI {
     /// How much of the flight time a receiver is led by.
     ///
@@ -229,7 +265,28 @@ extension TeamAI {
                 // is a discrete switch that flips on the last ulp of a separation
                 // estimate — and its miss is priced as territory: half a turnover
                 // charge, plus credit for the pin.
-                let isDeepShot = gain >= 22 && d >= 25 && !isReset
+                //
+                // **BOTH DISTANCES ARE SLICES OF PITCH AND BOTH SCALE.** They were bare
+                // metres measured on a 32 m goal line, and on the 12.5 m one the branch is
+                // not rare, it is unreachable: counted off `Engine.lastThrowAim` over five
+                // minis seeds and 332 live releases it fired ZERO times, against 33 of 576
+                // at sevens, because the longest a minis offence ever aims at is 18.5 m and
+                // the floor was 22 before the 25 was even reached. So the jump-ball model,
+                // the `pStay` out-of-bounds tax and the pin credit were dead code on the
+                // default pitch, and every deep shot on it was priced by the multiplicative
+                // chain this branch exists to bypass. Issues #17 and #28.
+                //
+                // `d` is a throw length and so is `ThrowSolver.loftRange`, which ADR-0004
+                // names as correctly ABSOLUTE — twenty-five metres of air is twenty-five
+                // metres on any pitch. The two share a number at regulation and are not the
+                // same quantity: `loftRange` is an aerodynamic regime, the gate above is
+                // "is this the long shot on THIS field", and the branch it guards prices
+                // territory — a pin credit measured in goal lines. A gate that no throw on
+                // the pitch can satisfy is not a conservative gate, it is a deleted branch.
+                let deepGate = pb.depthScale
+                let isDeepShot =
+                    gain >= DEEP_SHOT_GAIN * deepGate && d >= DEEP_SHOT_REACH * deepGate
+                    && !isReset
                 let ev: Double
                 if isDeepShot {
                     let def = nearestFoe(r.pos.x, r.pos.z)
