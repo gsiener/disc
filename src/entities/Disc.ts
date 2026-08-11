@@ -4,19 +4,26 @@ import {
   DISC, FIXED_DT, createDiscState, isFiniteState, renderQuaternion, simulate, throwDisc,
   type DiscState, type ThrowOptions, type ThrowType,
 } from '../sim/DiscPhysics.ts';
+import { DiscRuntime as ReferenceDiscRuntime } from '../sim/DiscRuntime.ts';
 import { bake, canvasTexture, heightField, heightToNormal } from '../util/Tex.ts';
 import { clamp, fbm2, hash2, smoothstep, valueNoise2 } from '../util/Noise.ts';
+
+/** @deprecated Import these reference types from `src/sim/DiscRuntime.ts`. */
+export {
+  DiscRuntime,
+  type DiscMode,
+  type ThrowRequest,
+  type TrailSample,
+} from '../sim/DiscRuntime.ts';
 
 /**
  * THE DISC.
  *
  * Two things live in this file.
  *
- * `DiscRuntime` is the headless half: the 6-DOF state, the flight integration,
- * the trail history and the wear ledger. It imports nothing from the renderer,
- * so `src/sim/Game.ts` can own one and `tools/test-game.ts` can run a whole
- * match without a GL context. The game system is the single driver — it decides
- * when the disc is in a hand, in the air or on the grass, and calls `step()`.
+ * `DiscRuntime` is owned by `src/sim/DiscRuntime.ts`. This file consumes it
+ * through `DiscSystem`; the deprecated re-export below is retained temporarily
+ * for external tools while their imports move to the reference boundary.
  *
  * `DiscSystem` is the visual half. It adopts the game's runtime if one exists
  * (`ctx.sys.game.discRuntime`) and otherwise owns its own, so the module is
@@ -510,11 +517,11 @@ function mulberry(seed: number): () => number {
 
 /* ================================================================= runtime */
 
-export type DiscMode = 'held' | 'flight' | 'ground';
+type LegacyDiscMode = 'held' | 'flight' | 'ground';
 
-export interface TrailSample { x: number; y: number; z: number; t: number; speed: number }
+interface LegacyTrailSample { x: number; y: number; z: number; t: number; speed: number }
 
-export interface ThrowRequest {
+interface LegacyThrowRequest {
   type: ThrowType;
   from: THREE.Vector3;
   /** Aim direction (only the horizontal part sets the heading). */
@@ -536,9 +543,9 @@ const _v = new THREE.Vector3();
  * The headless disc. Owns the physics state and everything derived from it that
  * is not a mesh. Safe to construct in Node.
  */
-export class DiscRuntime {
+class LegacyDiscRuntime {
   readonly state: DiscState = createDiscState();
-  mode: DiscMode = 'ground';
+  mode: LegacyDiscMode = 'ground';
   /** Player id holding it, or -1. */
   holderId = -1;
   /** Team of the last thrower — used for trail tint and for the game system. */
@@ -549,7 +556,7 @@ export class DiscRuntime {
   wear = 0;
 
   /** Sampled flight path, newest last. */
-  readonly trail: TrailSample[] = [];
+  readonly trail: LegacyTrailSample[] = [];
   trailCapacity = 72;
   /** Seconds of path kept. Long enough to show a huck's curve, short enough
    *  that the tail is never a bar across the lens. */
@@ -588,7 +595,7 @@ export class DiscRuntime {
   }
 
   /** Launch. Returns the release velocity so callers can log or emit it. */
-  release(req: ThrowRequest): THREE.Vector3 {
+  release(req: LegacyThrowRequest): THREE.Vector3 {
     const opts: ThrowOptions = {
       hand: req.hand ?? 'R',
       bank: req.bank,
@@ -704,7 +711,7 @@ export class DiscRuntime {
    * flew at a completely different one. The solver's whole job is to compare the
    * probe against the flight.
    */
-  probeThrow(req: ThrowRequest, catchY: number, maxT = 6): { dist: number; lat: number; t: number; x: number; z: number } {
+  probeThrow(req: LegacyThrowRequest, catchY: number, maxT = 6): { dist: number; lat: number; t: number; x: number; z: number } {
     const opts: ThrowOptions = {
       hand: req.hand ?? 'R', bank: req.bank, nose: req.nose, speed: req.speed,
       groundY: this.groundAt(req.from.x, req.from.z), out: this.probe,
@@ -750,7 +757,7 @@ export class DiscRuntime {
   }
 
   /** Seed the trail directly — used when a tableau stages a mid-flight disc. */
-  setTrail(samples: readonly TrailSample[]): void {
+  setTrail(samples: readonly LegacyTrailSample[]): void {
     this.trail.length = 0;
     for (const s of samples) this.trail.push({ ...s, t: this.clock - (samples[samples.length - 1].t - s.t) });
   }
@@ -969,7 +976,7 @@ export class DiscSystem implements System {
   readonly order = 7;
 
   /** The runtime this system draws. Adopted from the game when one exists. */
-  rt = new DiscRuntime();
+  rt = new ReferenceDiscRuntime();
   /** True when a peer (the game system) is stepping the runtime for us. */
   private driven = false;
 
@@ -1003,7 +1010,7 @@ export class DiscSystem implements System {
   private uFarLift = { value: 0 };
 
   init(ctx: Ctx): void {
-    const game = ctx.sys['game'] as unknown as { discRuntime?: DiscRuntime } | undefined;
+    const game = ctx.sys['game'] as unknown as { discRuntime?: ReferenceDiscRuntime } | undefined;
     if (game?.discRuntime) { this.rt = game.discRuntime; this.driven = true; }
 
     const tier = ctx.quality.tier;
@@ -1125,7 +1132,7 @@ export class DiscSystem implements System {
   }
 
   /** The game system calls this so we stop double-stepping the physics. */
-  attachRuntime(rt: DiscRuntime): void { this.rt = rt; this.driven = true; }
+  attachRuntime(rt: ReferenceDiscRuntime): void { this.rt = rt; this.driven = true; }
 
   update(dt: number, _ctx: Ctx): void {
     if (!this.driven) this.rt.step(dt);

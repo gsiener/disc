@@ -70,7 +70,7 @@ import {
 } from '../../src/sim/AI.ts';
 import { SOLVE_CATCH_DROP, solveRelease } from '../../src/sim/aero/ThrowSolver.ts';
 import { SeededRng, type AttackDir } from '../../src/sim/Playbook.ts';
-import { DiscRuntime, type ThrowRequest } from '../../src/entities/Disc.ts';
+import { DiscRuntime, type ThrowRequest } from '../../src/sim/DiscRuntime.ts';
 import { powerForSpeed } from '../../src/sim/aero/Throws.ts';
 
 const clampNum = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);

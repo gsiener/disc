@@ -22,7 +22,7 @@ import {
   CATCH_CONTEST_RADIUS, PRONE_CATCH_FLOOR, STANDING_CATCH_FLOOR,
   type ContactBody, type Dir, type TeamId, type Vec3,
 } from './Rules.ts';
-import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
+import { DiscRuntime, type ThrowRequest } from './DiscRuntime.ts';
 import {
   powerForSpeed, throwSpeed, THROW_SPECS, type ThrowType as PhysThrowType,
 } from './DiscPhysics.ts';

@@ -26,7 +26,7 @@
 import * as THREE from 'three';
 import { EventBus, QUALITY_PRESETS, Rng, type Ctx } from '../src/core/Ctx.ts';
 import { GameSystem } from '../src/sim/Game.ts';
-import { DiscRuntime } from '../src/entities/Disc.ts';
+import { DiscRuntime } from '../src/sim/DiscRuntime.ts';
 import { CameraDirector } from '../src/camera/Director.ts';
 import { TELE } from '../src/camera/Tele.ts';
 import { CUTS } from '../src/camera/Cuts.ts';

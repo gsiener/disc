@@ -34,7 +34,7 @@
  */
 
 import * as THREE from 'three';
-import { DiscRuntime, type ThrowRequest } from '../../src/entities/Disc.ts';
+import { DiscRuntime, type ThrowRequest } from '../../src/sim/DiscRuntime.ts';
 import { powerForSpeed } from '../../src/sim/aero/Throws.ts';
 import { solveRelease } from '../../src/sim/aero/ThrowSolver.ts';
 import { STANDING_CATCH_FLOOR } from '../../src/sim/Rules.ts';

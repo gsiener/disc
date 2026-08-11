@@ -59,7 +59,7 @@
  * variable is the angle.
  */
 
-import type { ThrowRequest } from '../../entities/Disc.ts';
+import type { ThrowRequest } from '../DiscRuntime.ts';
 import { STANDING_CATCH_FLOOR } from '../Rules.ts';
 import { throwSpeed } from './Throws.ts';
 

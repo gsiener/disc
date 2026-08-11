@@ -6,13 +6,14 @@ underneath; the simulation won. Today the repository is two things:
 1. **The product: a native iOS game** (`ios/` + `swift/`) — SwiftUI + RealityKit,
    playable on an iPhone. Drag to throw, a cone picks your receiver, real WFDF
    rules run the match, and the AI plays a force and a stack.
-2. **The reference: the TypeScript simulation** (`src/sim/`) — frozen as the
-   oracle. Every Swift system is a port of a TS system, validated differentially:
+2. **The development-time reference: the TypeScript simulation** (`src/sim/`) —
+   not shipped and never loaded by the iOS app. It is retained only as an
+   independent oracle. Every Swift system is a port of a TS system, validated differentially:
    `tools/gen-goldens.ts` runs the reference and writes JSON fixtures, and the
    Swift suite replays them — **2.2 million assertions, bit-exact where the maths
    allows and inside a stated envelope where libm differs by an ulp.**
 
-The Three.js build still deploys as a renderer preview
+The Three.js build still deploys as an unsupported renderer preview
 ([gsiener.github.io/disc](https://gsiener.github.io/disc/)),
 but it is not where the game lives anymore.
 
@@ -119,24 +120,24 @@ push.
 | `swift/Sources/SimChecks/` | the differential suite + goldens (runs on device and in terminal) |
 | `swift/Sources/FlightUI/` | SwiftUI + RealityKit match view, HUD, overlays |
 | `ios/` | XcodeGen project for the app shell |
-| `src/sim/` | the TypeScript reference simulation (the oracle) |
-| `tools/` | golden generators, TS test harnesses, capture rigs |
+| `src/sim/` | development-only TypeScript reference simulation (the oracle) |
+| `tools/` | reference generators/tests plus legacy web capture rigs |
 | `docs/adr/` | architecture decisions that are load-bearing and already made — read before proposing a restructure |
 | `docs/release-plan.md` | the plan to v1, with measurable authenticity targets — all met |
 | `docs/gameplay-design.md` | the design-director brief (camera grammar, controls, legibility, feel) |
 | `BRIEF.md` | the original engineering brief — "the reference is FIFA, not Madden" |
 
-## The Three.js build
+## Legacy Three.js preview
 
-The original web build remains as the deployed renderer preview and the home of
-the reference sim. Its zero-binary-assets constraint (every mesh, texture,
+The original web build remains only as a renderer preview. It is not a product
+target and does not participate in the iOS app. Its zero-binary-assets constraint (every mesh, texture,
 environment map and sound generated in code), deterministic screenshot rig
 (`tools/capture.mjs`), and blind-review process are documented in
 [`BRIEF.md`](BRIEF.md) and [`docs/reviews/`](docs/reviews/).
 
 ```bash
-npm install && npm run dev    # http://localhost:5173 — camera/renderer preview
-npm run check                 # tsc --noEmit
+npm install && npm run web:dev            # http://localhost:5173 — renderer preview
+npm run reference:check                    # typecheck the reference tooling
 node --experimental-strip-types tools/test-game.ts   # headless reference match
 ```
 
