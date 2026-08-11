@@ -434,9 +434,23 @@ extension Engine {
         guard discInFlight else { return nil }
         let path = disc.predictPath(horizon: 4, step: 1.0 / 60)
         guard let last = path.last else { return nil }
-        // `1.9` is `CatchDecision`'s standing band, near enough: below it the disc is
-        // takeable by somebody on their feet, and above it this is a jump, not a dive.
-        for s in path where s.t > 0.05 && s.y <= 1.9 {
+        /**
+         * `CATCH_CEILING` is the top of the band a rendezvous may be picked in — the
+         * same number `AI.predictCatchPoint` scans for, doing the same job.
+         *
+         * It was `1.9`, under a comment claiming that was "`CatchDecision`'s standing
+         * band, near enough". It is not the standing band and it is not near enough:
+         * 1.9 m is `CatchDecision.contestRadius`, a HORIZONTAL distance between two
+         * bodies, and the only thing it shares with a height is the unit. A height band
+         * half a metre too tall takes the first sample under it, which on a descending
+         * huck is metres earlier than the point a body can actually play — so the human
+         * bid was aimed short of where the AI would have aimed for the same flight.
+         * ADR-0007 names this site; issue #4 is the family it belongs to.
+         *
+         * Swift-only code: `EngineHuman` has no counterpart in `src/sim/`, so there is
+         * no oracle to diverge from and nothing to declare.
+         */
+        for s in path where s.t > 0.05 && s.y <= CATCH_CEILING {
             return Vec3d(s.x, s.y, s.z)
         }
         return Vec3d(last.x, last.y, last.z)

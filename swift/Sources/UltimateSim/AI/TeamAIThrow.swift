@@ -611,7 +611,7 @@ extension TeamAI {
         let aimZ = clamp(o.aim.z + ez, -pb.field.endLine - 1.5, pb.field.endLine + 1.5)
         return .throw(
             throwType: o.type,
-            aim: Vec3d(aimX, 1.35, aimZ),
+            aim: Vec3d(aimX, AIM_HEIGHT, aimZ),
             // Release speed and arrival time are separate models now — see
             // `throwFlightTime`. Dividing the distance by the lead time was the coupling
             // that forced one curve to do both jobs.

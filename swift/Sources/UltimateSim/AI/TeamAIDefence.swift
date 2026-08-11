@@ -767,7 +767,12 @@ extension TeamAI {
     /// `last*` is a second, later point on the same flight — where the disc drops out of
     /// the standing band entirely. Running to the rendezvous is what a receiver DOES;
     /// beating the last chance to it is the only thing that makes a layout necessary.
-    func predictCatchPoint(_ world: AIWorld) -> CatchPoint {
+    /// Public so `SimChecks/CatchBandTests` can assert the invariant on it directly.
+    /// `SimChecks` links `UltimateSim` and reads public symbols rather than source —
+    /// ADR-0002 puts the same assertions on a phone, where there is no checkout to
+    /// instrument. The reference reaches its own private copy through a cast in
+    /// `tools/goldens/catchband.ts`; access control is the only asymmetry.
+    public func predictCatchPoint(_ world: AIWorld) -> CatchPoint {
         locoRef = world.locomotion
         if let peer = world.discPeer, !discPeerFailed {
             // The peer is PROBED, not trusted: a sibling module may expose a
@@ -786,7 +791,13 @@ extension TeamAI {
                         && ((s.y <= CATCH_CEILING && path[i - 1].y > CATCH_CEILING)
                             || s.y <= CATCH_FLOOR)
                     {
-                        met = s
+                        // Clamped, exactly as the glide branch below already clamps. This
+                        // branch reported the raw height of the first sample under the
+                        // floor, which at a 1/30 s step on a diving disc is well below it:
+                        // 47% of 536k rendezvous over eleven reference matches, down to
+                        // 0.013 m, under the height the rules pay a standing catch at.
+                        met = FlightSample(
+                            t: s.t, x: s.x, y: Swift.max(s.y, CATCH_FLOOR), z: s.z)
                     }
                     if s.y <= CATCH_DEAD {
                         dead = path[i - 1]

@@ -180,6 +180,7 @@ let allSuites: [Suite] = [
     Suite(name: "gamestate", run: GameStateTests.run),
     Suite(name: "throwsolver", run: ThrowSolverTests.run),
     Suite(name: "trycatch", run: TryCatchTests.run),
+    Suite(name: "catchband", run: CatchBandTests.run),
     Suite(name: "engine", run: EngineTests.run),
     Suite(name: "engineseam", run: EngineSeamTests.run),
     Suite(name: "events", run: EventTests.run),

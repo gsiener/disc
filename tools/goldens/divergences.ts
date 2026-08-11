@@ -105,11 +105,20 @@ const REGISTRY: Divergence[] = [
 
 /* ------------------------------------------------------------------- the scraping */
 
-/** Every module-scope `const NAME = <number>;` in a reference file. */
+/**
+ * Every module-scope `const NAME = <number>;` in a reference file, exported or not.
+ *
+ * `export ` is optional in the pattern and that is load-bearing rather than tidy. It
+ * used to be absent, which made **adding an `export` to a constant delete it from this
+ * map** — the constant would vanish from `referenceConstants`, and the binding in
+ * `DivergenceTests.mirrored` would then fail with "the reference no longer declares it"
+ * for a constant that had not moved an inch. A registry whose coverage depends on a
+ * keyword unrelated to the value is a registry with a hole in it.
+ */
 function moduleConstants(file: string): Record<string, number> {
   const src = readFileSync(join(ROOT, file), 'utf8');
   const out: Record<string, number> = {};
-  const re = /^const ([A-Z][A-Z_0-9]*) = (-?\d+(?:\.\d+)?);/gm;
+  const re = /^(?:export )?const ([A-Z][A-Z_0-9]*) = (-?\d+(?:\.\d+)?);/gm;
   for (const m of src.matchAll(re)) out[m[1]!] = Number(m[2]!);
   // Sorted, so the fixture's diff is about values rather than about declaration order.
   return Object.fromEntries(Object.entries(out).sort(([a], [b]) => (a < b ? -1 : 1)));

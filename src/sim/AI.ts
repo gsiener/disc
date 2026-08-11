@@ -226,7 +226,7 @@ export interface FlightSample { t: number; x: number; y: number; z: number }
  * The two points on a flight anybody in-flight cares about: where to run to,
  * and where the disc stops being playable on your feet. See `predictCatchPoint`.
  */
-interface CatchPoint {
+export interface CatchPoint {
   x: number; y: number; z: number; t: number;
   lastX: number; lastZ: number; lastT: number;
 }
@@ -362,14 +362,21 @@ const EXTENDED_REACH = 1.55;
 
 /**
  * The height band a rendezvous with the disc is allowed to be picked in, in
- * metres. Game.ts takes a standing catch between `groundY + 0.20` and the
- * player's reach; `CATCH_FLOOR` sits above the bottom of that with a stride of
- * margin, and `CATCH_CEILING` is chest height on a descending disc. See
- * `predictCatchPoint` for what happens when the floor is set below the band the
- * rules engine will actually pay out on.
+ * metres.
+ *
+ * The floor is `Rules.STANDING_CATCH_FLOOR` — the height the rules engine will
+ * actually pay a standing catch out at — plus a stride of margin, and the
+ * relationship is asserted rather than remembered: see `catchBandGoldens` and
+ * `SimChecks/CatchBandTests`, which fail if this floor ever drops to or below the
+ * rules'. `CATCH_CEILING` is chest height on a descending disc, and it is the
+ * ceiling of the *rendezvous*, not of the catch: the rules' ceiling is the body's
+ * own `reachAt`, which is taller and which varies per player.
+ *
+ * See `predictCatchPoint` for what this cost when the floor was 0.12 m and
+ * nothing tied it to the number two hundred lines away that pays the catch.
  */
-const CATCH_FLOOR = 0.85;
-const CATCH_CEILING = 1.45;
+export const CATCH_FLOOR = 0.85;
+export const CATCH_CEILING = 1.45;
 
 /**
  * Where a thrown disc leaves the hand and how far it has fallen by the catch, m.
@@ -378,7 +385,7 @@ const CATCH_CEILING = 1.45;
  * flight the solver is actually going to make rather than one starting at the
  * thrower's feet.
  */
-const HAND_HEIGHT = 1.05;
+export const HAND_HEIGHT = 1.05;
 
 /**
  * How much longer a lofted deep throw hangs than the line drive the flat model
@@ -387,17 +394,55 @@ const HAND_HEIGHT = 1.05;
  */
 const LOFT_FLIGHT = 1.75;
 const LOFT_ARC = 6.4;
-const CATCH_PLANE_DROP = 0.25;
+export const CATCH_PLANE_DROP = 0.25;
 
 /**
- * Below this the disc is gone: Game.ts refuses a standing catch under
- * `groundY + 0.20`, and this leaves a frame of margin on top of that. The point
+ * **The height the AI would like a throw delivered at, m — a PREFERENCE, and one
+ * that no flat throw in this game can actually meet.**
+ *
+ * A chest is where you want the disc. It is not where a disc released from a
+ * standing hand at `HAND_HEIGHT` can arrive, because a flat throw never rises
+ * that high in the first place, and `ThrowSolver.probeThrow` reports the distance
+ * at which a flight DESCENDS through the plane it is given — falling through to
+ * ground contact when that crossing never happens. So this number handed
+ * unmodified to the solver solved every flat throw in the game for the disc to
+ * reach the turf at the receiver's feet, `predictCatchPoint` read that flight back
+ * and sent the receiver nine metres short, and the median over 379 completions was
+ * aimed 9.9 m, caught at 6.8 m.
+ *
+ * **What changed is not this number, it is who caps it.** `SOLVE_CATCH_DROP` used
+ * to clamp the plane inside `solveRelease`, two modules from the caller: the ask
+ * stayed wrong and was silently repaired, 1699 times in 1699 throws over the
+ * eleven canonical matches, with nothing anywhere saying the two disagreed by half
+ * a metre. The cap now happens in `Game.aiThrow`, which is the only place that
+ * knows the release height this throw actually leaves from — `HAND_HEIGHT` is the
+ * AI's *model* of it, and a real hand is 1.00–1.11 m. The clamp in `solveRelease`
+ * stays as a backstop for callers that are not `aiThrow`.
+ *
+ * That move is bit-identical — the plane the solver ends up with is the one it
+ * always used — and it is what makes the reachability assertion in
+ * `SimChecks/CatchBandTests` expressible at all: *the solver is never handed a
+ * plane the throw cannot descend through*. Stated at the seam, that assertion is
+ * red for every throw in the game before this change and green after.
+ *
+ * Lowering the number instead was tried and rejected: `0.80`
+ * (`HAND_HEIGHT - CATCH_PLANE_DROP`) makes the ask literally reachable, and costs
+ * 2.3 points of pooled completion — 82.9 % against `tools/test-game.ts`'s 85–96 %
+ * band — because the plane stops tracking the thrower's own body. See the entry
+ * `20260811-the-aim-height-was-repaired`.
+ */
+export const AIM_HEIGHT = 1.35;
+
+/**
+ * Below this the disc is gone: the rules refuse a standing catch under
+ * `groundY + STANDING_CATCH_FLOOR`, and this leaves a frame of margin on top of
+ * that — the relationship is asserted in `catchBandGoldens`. The point
  * where the flight crosses it is the player's LAST CHANCE on his feet, and that
  * — not the rendezvous — is the deadline a layout has to beat. Measured: with
  * the rendezvous as the deadline, three quarters of the surviving bids were for
  * discs the player went on to catch standing anyway a tenth of a second later.
  */
-const CATCH_DEAD = 0.25;
+export const CATCH_DEAD = 0.25;
 
 /**
  * How much further than his standing reach a player has to be short before he
@@ -2665,7 +2710,7 @@ export class TeamAI {
     const aimZ = clamp(o.aim.z + ez, -FIELD.halfLength - 1.5, FIELD.halfLength + 1.5);
     return {
       kind: 'throw', throwType: o.type,
-      aimX, aimY: 1.35, aimZ,
+      aimX, aimY: AIM_HEIGHT, aimZ,
       // Release speed and arrival time are separate models now — see
       // `throwFlightTime`. Dividing the distance by the lead time was the coupling
       // that forced one curve to do both jobs.
@@ -3268,18 +3313,25 @@ export class TeamAI {
    * Where and when the disc becomes catchable. Uses the disc peer if present.
    *
    * The floor matters more than it looks. Most throws in this game never rise
-   * above `CATCH_CEILING` at all — the release is at ~1.35 m and a flat forehand
-   * stays under it for its whole flight — so the descending-through-the-ceiling
-   * branch never fires and the whole rendezvous falls through to the floor.
-   * With the floor at 0.12 m that made the target THE POINT WHERE THE DISC HITS
-   * THE TURF, which Game.ts will not award a standing catch at (`bot` there is
-   * ground + 0.20 m). Measured: 80% of all layouts were bids for a disc whose
-   * predicted catch point was below 0.2 m. The offence was not diving because
-   * it was beaten; it was diving because it had been sent to meet the disc on
-   * the floor, and only a body already prone can catch it there.
+   * above `CATCH_CEILING` at all — a flat forehand stays under it for its whole
+   * flight — so the descending-through-the-ceiling branch never fires and the
+   * whole rendezvous falls through to the floor. With the floor at 0.12 m that
+   * made the target THE POINT WHERE THE DISC HITS THE TURF, which Game.ts will
+   * not award a standing catch at (`bot` there is ground +
+   * `Rules.STANDING_CATCH_FLOOR`). Measured: 80% of all layouts were bids for a
+   * disc whose predicted catch point was below 0.2 m. The offence was not diving
+   * because it was beaten; it was diving because it had been sent to meet the
+   * disc on the floor, and only a body already prone can catch it there.
    *
    * `CATCH_FLOOR` is the lowest the rendezvous is allowed to be: shin height,
    * comfortably inside the standing band, with room left for the last stride.
+   * **Both branches below clamp to it, and that is new.** The glide integrator
+   * always did (`Math.max(y, CATCH_FLOOR)`); the peer-path branch took the first
+   * sample at or under the floor and reported its raw height, which at a 1/30 s
+   * step on a diving disc is well below the floor the comment above claims — 48 %
+   * of 249 k rendezvous over five matches, down to 0.58 m, and to 0.013 m once
+   * the aim plane came down to a height a throw can reach. Two branches of one
+   * function disagreeing about the same band is how this bug family starts.
    *
    * `last*` is a second, later point on the same flight — where the disc drops
    * out of the standing band entirely. Running to the rendezvous is what a
@@ -3305,7 +3357,7 @@ export class TeamAI {
         for (let i = 1; i < path.length; i++) {
           const s = path[i];
           if (!met && ((s.y <= CATCH_CEILING && path[i - 1].y > CATCH_CEILING)
-            || s.y <= CATCH_FLOOR)) met = s;
+            || s.y <= CATCH_FLOOR)) met = { ...s, y: Math.max(s.y, CATCH_FLOOR) };
           if (s.y <= CATCH_DEAD) { dead = path[i - 1]; break; }
         }
         const m = met ?? dead;
