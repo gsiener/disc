@@ -64,12 +64,19 @@ public func effectiveDecision(_ p: AIPlayer) -> Double {
 
 /// Horizontal reach for a standing catch and for a full extension, metres.
 ///
-/// Both are quoted from the rules engine's own catch and block radii, and the engine's
-/// extension is a flat 1.55 m. **A dive therefore converts exactly 0.73 m of reach.**
-/// Inside 0.82 m you run it down on your feet; past 1.55 m you do not reach it lying
-/// down either, and you pay two seconds on the turf to find that out.
-public let STANDING_REACH = 0.82
-public let EXTENDED_REACH = 1.55
+/// Bound to the rules engine's own catch and block radii rather than re-quoted, so the
+/// two cannot drift the way the height band did (issue #4): `CatchDecision` and
+/// `AIMath` are the same Swift module, and a within-module reference to
+/// `catchReach`/`layoutReach` is bit-identical to the literals it replaces — no golden
+/// moves. See issue #3, which named this the "free" half of reconciling the port's
+/// reach models; the height band (`CATCH_FLOOR`/`CATCH_CEILING` below) is the half that
+/// costs a divergence declaration and stays separate on purpose.
+///
+/// The engine's extension is a flat 1.55 m, so **a dive converts exactly 0.73 m of
+/// reach.** Inside 0.82 m you run it down on your feet; past 1.55 m you do not reach it
+/// lying down either, and you pay two seconds on the turf to find that out.
+public let STANDING_REACH = CatchDecision.catchReach
+public let EXTENDED_REACH = CatchDecision.layoutReach
 
 /// The height band a rendezvous with the disc may be picked in, metres.
 ///
