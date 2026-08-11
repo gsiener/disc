@@ -692,18 +692,24 @@ enum EngineTests {
         // are all asserted; the per-seed breakdown here is not, by design — see the
         // friction log entries on per-seed bands resampling on any unrelated change.
         // Printed rather than asserted so a seed that is quietly off is still visible.
+        // Built as separate statements, not one chained `+` expression: the
+        // latter type-checked in reasonable time on some machines and not
+        // others, failing CI while passing locally (see friction log).
+        let stallPct = String(format: "%.0f%%", stallShare * 100)
+        let holdPct = String(format: "%.0f%%", holdShare * 100)
+        let cadenceStr = String(format: "%.1f", cadence)
+        let completionPct = String(format: "%.0f%%", att / n)
+        let perSeed: [String] = pool.map {
+            let seedCadence = String(format: "%.1f", $0.cadence)
+            let seedPct = String(format: "%.0f%%", $0.passPct)
+            return "s\($0.seed) \($0.goals)g \(seedCadence)s \(seedPct) \($0.stallOuts)so"
+        }
         print(
             "  · minis pooled over \(pool.count) matches: \(goals) goals, "
-                + "\(stalls) stall-outs of \(turnovers) turnovers = "
-                + String(format: "%.0f%%", stallShare * 100)
-                + ", holds \(holds) of \(points) = " + String(format: "%.0f%%", holdShare * 100)
-                + ", mean cadence " + String(format: "%.1f", cadence) + " s, mean completion "
-                + String(format: "%.0f%%", att / n)
-                + " (per seed: "
-                + pool.map {
-                    "s\($0.seed) \($0.goals)g " + String(format: "%.1f", $0.cadence) + "s "
-                        + String(format: "%.0f%%", $0.passPct) + " \($0.stallOuts)so"
-                }.joined(separator: ", ") + ")")
+            + "\(stalls) stall-outs of \(turnovers) turnovers = \(stallPct)"
+            + ", holds \(holds) of \(points) = \(holdPct)"
+            + ", mean cadence \(cadenceStr) s, mean completion \(completionPct)"
+            + " (per seed: \(perSeed.joined(separator: ", ")))")
 
         /// **The count is not how a possession ends.** This is the assertion the whole issue
         /// is about: measured before the fix, 56-89% of the turnovers in a minis match were
