@@ -359,39 +359,46 @@ export function formationStations(
    * So the backfield stations get a floor a couple of metres in front of the
    * line, and the reset flattens into a lateral option exactly when it should.
    *
-   * PIN_MARGIN IS A STAND-OFF FROM WHATEVER THE BACKFIELD IS PINNED AGAINST,
-   * and until issue #29 only one of the two things it can be pinned against was
-   * written down.
+   * THE FLOOR IS THE BACKFIELD'S, AND IT RUNS OUT OF ROOM BEFORE THE PITCH
+   * DOES. Two separate things, both wrong until issue #29, and the sentence
+   * above is the contract they are both meant to serve.
    *
-   * *It is the BACKFIELD's floor, so it is applied by role.* Cutter stations
-   * are `a.z + dir * ...`, so they are always downfield OF THE DISC — which
-   * keeps them clear of a floor fixed at the goal line for exactly as long as
-   * the disc is in front of it, and no longer. Behind the line the disc is
-   * itself below the floor, so the floor stops being a floor and becomes a
-   * magnet, dragging the front of the stack forward until two stations arrive
-   * as the same point. Measured off this builder, disc on the centre line,
-   * dir +1: the side stack's front two cutters coincide from z = -43.2 and the
-   * vertical stack's from z = -45.2 (minis: -16.875 and -17.65625). `buildCut`
-   * draws this line by role already — its floor is on `dump` and `swing` only,
-   * never on a downfield cut.
+   * *It is the BACKFIELD's, so it is applied by role.* Cutter stations are
+   * `a.z + dir * ...`, so they are always downfield OF THE DISC — which keeps
+   * them clear of a floor fixed at the goal line for exactly as long as the
+   * disc is in front of it, and no longer. Behind the line the disc is itself
+   * below the floor, so the floor stops being a floor and becomes a magnet,
+   * dragging the front of the stack forward until two stations arrive as the
+   * same point. Measured off this builder, disc on the centre line, dir +1: the
+   * side stack's front two cutters coincide from z = -43.2 and the vertical
+   * stack's from z = -45.2 (minis: -16.875 and -17.65625). `buildCut` draws
+   * this line by role already — its floor is on `dump` and `swing` only, never
+   * on a downfield cut. `PIN_MARGIN` is untouched by this and keeps its one
+   * meaning: how far in front of its own goal line the BACKFIELD sets up.
    *
-   * *And the floor is a stand-off from the DISC too, once the disc is the thing
-   * the backfield is pinned against.* On the line the two readings are the same
-   * number: the disc is at -32, the floor is at -30, and the handlers stand two
-   * metres in front of the thrower. Thirteen metres deeper into the endzone the
-   * absolute floor stops describing that at all — it stands the backfield
-   * fifteen metres in front of the thrower, which is not a backfield, it is a
-   * second cutter row. And that is literally what it collided with: the ho
-   * cutter row is `a.z + dir * 15`, so with the disc at z = -45 both rows are
-   * at -30 and a handler and a cutter come back as ONE POINT, exactly, at
-   * x = -5.5.
+   * *And a floored handler is mirrored rather than pinned to the line.* The
+   * floor is an absolute z while every other offset in the set is disc-
+   * relative, so past a certain depth the two rows cross. The ho cutter row is
+   * `a.z + dir * 15`: with the disc at z = -45 the floored handler row is at
+   * -30 and so is the cutter row, and at x = -5.5 a handler and a cutter come
+   * back as ONE POINT, exactly. Clamping every handler to the same floor is the
+   * z-axis version of the mistake `rowShift` exists to avoid on x, and it has
+   * the same symptom: the row loses its shape and its members land on top of
+   * something.
    *
-   * So the backfield stands `PIN_MARGIN` in front of its own goal line or
-   * `PIN_MARGIN` in front of the disc, whichever is deeper. The second clause
-   * is inert whenever the disc is in front of its own goal line — `a.z +
-   * PIN_MARGIN >= floorZ` there by construction — so nothing on the playing
-   * field proper moves, and `PIN_MARGIN` keeps the meaning `buildCut` already
-   * relies on.
+   * So a handler that cannot stand `off` behind the disc stands `off` in FRONT
+   * of it instead — `2 * a.z - z` — and the goal-line floor still applies on
+   * top. That keeps the row's own spacing, keeps every handler a real distance
+   * from the thrower rather than parked on the mark, and is INERT until the
+   * mirror is itself past the floor: `a.z + off < -(goalLine - PIN_MARGIN)`,
+   * which needs the disc more than two metres inside its own endzone. Nothing
+   * on the playing field proper moves, and the golden case pinned exactly on
+   * the goal line does not move either.
+   *
+   * The alternative was capping the floor at the disc plus `PIN_MARGIN`, and it
+   * was measured and rejected: two metres in front of a pinned thrower is where
+   * the MARK stands, and `tools/test-ai.ts` went from `marker respects 1 m disc
+   * space  closest approach 1.75m` to `0.70m`.
    *
    * All of it is in bounds, so no `clampToField` check can see any of it. The
    * property that does is `PlaybookTests.minisShape`'s pairwise-distinct sweep,
@@ -399,12 +406,13 @@ export function formationStations(
    * line.
    */
   const floorZ = -dir * (FIELD.goalLine - PIN_MARGIN);
-  const backZ = dir > 0
-    ? Math.min(floorZ, a.z + PIN_MARGIN)
-    : Math.max(floorZ, a.z - PIN_MARGIN);
   const push = (x: number, z: number, role: 'handler' | 'cutter', depth: number): void => {
-    const zz = role !== 'handler' ? z
-      : dir > 0 ? Math.max(z, backZ) : Math.min(z, backZ);
+    let zz = z;
+    if (role === 'handler') {
+      const mirrored = 2 * a.z - z;
+      const back = dir > 0 ? Math.min(floorZ, mirrored) : Math.max(floorZ, mirrored);
+      zz = dir > 0 ? Math.max(z, back) : Math.min(z, back);
+    }
     const p = clampToField({ x, z: zz });
     out.push({ x: p.x, z: p.z, role, depth });
   };
