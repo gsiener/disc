@@ -97,7 +97,8 @@ enum ThrowsTests {
         }
 
         vocabularyAndPhysics()
-        Check.note("worst throw-flight deviation \(worstPos) m")
+        // `worstPos` is redundant with the report: every sample that could move it
+        // already went through `Check.ok(abs(d) <= tol, ...)` above.
     }
 
     private static func expect(

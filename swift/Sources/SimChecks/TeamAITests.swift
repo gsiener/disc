@@ -274,12 +274,14 @@ enum TeamAITests {
         replay(g)
         claims(g)
 
-        Check.note(
-            "teamai: \(g.frames.count) frames, worst deviation \(worst) on \(worstWhat)")
-        Check.note(
-            "teamai: \(approxExact) of \(approxTotal) tolerance comparisons were bit-identical")
-        Check.note(
-            "teamai: \(staminaFlips) of \(staminaChecks) tickStamina load-branch flips")
+        // `worst`/`worstWhat` are redundant with the report: every sample that could
+        // move them went through `approx()`, which already asserts `d <= traceTol` per
+        // call via `record()`. The bit-exactness census has no pass/fail direction of
+        // its own — an envelope assertion tolerates small differences by design — so
+        // it is printed rather than asserted.
+        print(
+            "  · teamai: \(g.frames.count) frames tested"
+                + " — \(approxExact) of \(approxTotal) tolerance comparisons were bit-identical")
         // A handful is conditioning. Thousands would be a port that computes energy
         // differently, and that must not be excusable by the same mechanism.
         Check.ok(
@@ -359,8 +361,9 @@ enum TeamAITests {
 
         for (fi) in g.frames.indices {
             if failed >= FAIL_BUDGET {
-                Check.note(
-                    "teamai: stopped replaying at frame \(fi) after \(failed) failures")
+                // Early-exit notice, not a new claim: every failure counted in `failed`
+                // already went through `Check.ok(false, ...)` via `record()`.
+                print("  · teamai: stopped replaying at frame \(fi) after \(failed) failures")
                 return
             }
             let f = g.frames[fi]

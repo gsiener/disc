@@ -209,10 +209,9 @@ enum ThrowSolverTests {
 
         Check.eq(skipped, 0, "every throw type in the fixture exists in the aero table")
         Check.ok(total > 200, "the solver fixture has cases (\(total))")
-        Check.note(
-            "throw solver golden: \(total) cases, worst solve deviation "
-                + "\(worstSolve), worst release velocity \(worstVel), worst flown "
-                + "\(worstFlight)")
+        // `worstSolve`/`worstVel`/`worstFlight` are redundant with the report: every
+        // sample that could move them already went through its own `Check.near` above,
+        // each at a stated tolerance (1e-9 / 1e-6).
 
         shortAsksStayShort()
     }
