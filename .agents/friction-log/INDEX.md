@@ -74,3 +74,5 @@ of hours, because writing entries worked and reading them did not.
 | minor | `20260810-adr-0007-named-three-sites` | ADR-0007 and issue #24 name three call sites for LAYOUT_CEILING; two of them are JUMP gates where the same number does the opposite job |
 | minor | `20260810165706-the-friction-log` | The friction log''s own proposed esbuild gate is stale: esbuild is not installed, and vite 8''s rolldown/oxc parser is a better gate anyway |
 | major | `20260811-matchdiff-pull-drop` | matchdiff has hidden an 8-11x engine gap on pull-drop under its absolute floor, with 0.08 events a match of headroom |
+| major | `20260811065754-the-port-s` | The port''s autoPull is not a port of Game.doPull — it aims 16.8 m short, and that is the pull-drop gap |
+| major | `20260811070423-a-golden-regenerated` | A golden regenerated at the commit that wrote it does not reproduce on another machine — and matchdiff turns 1 ULP into 35% of its counts |
