@@ -207,6 +207,7 @@ public enum ThrowSolver {
     ///
     /// `req` carries the type, origin, power, spin and hand on the way in, and the
     /// solved angle, bank and aim on the way out.
+    // See .agents/friction-log/20260810-throwsolver-wind-blind/ — this solver takes no wind term, so every throw is aimed as if the air were still and the wind moves the aimed flight, not the release.
     @discardableResult
     public static func solve(
         _ probe: DiscRuntime, _ req: inout ThrowRequest,

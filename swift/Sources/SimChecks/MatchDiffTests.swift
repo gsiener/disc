@@ -199,6 +199,7 @@ enum MatchDiffTests {
             let refRate = Double(want) / Double(g.matches)
             let portRate = Double(got) / Double(matches)
             let gap = abs(portRate - refRate)
+            // See .agents/friction-log/20260811-matchdiff-pull-drop/ — the absolute floor has hidden an 8-11x turnover:pull-drop gap here with as little as 0.08/match of headroom; "worst relative gap" below never flags it because it is carried by this floor, not the relative band.
             let allowed = Swift.max(rateFloor, refRate * rateTolerance)
             if refRate > 0, gap / refRate > worst {
                 worst = gap / refRate

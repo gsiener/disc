@@ -144,6 +144,7 @@ export function matchDiffGoldens(): unknown {
     }
   }
 
+  // See .agents/friction-log/20260811070423-a-golden-regenerated/ — this fixture is chaotic enough that a regeneration on a different machine/Node build changes every count (1 ULP moved turnover:pull-drop from 23 to 15 across platforms), so it is not safe to regenerate off this machine.
   return {
     spec: { seeds: SEEDS, seconds: SECONDS, dt: DT, format: 'sevens', playersPerSide: 7 },
     matches,

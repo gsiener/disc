@@ -679,6 +679,7 @@ export class GameSystem implements System {
   update(dt: number, ctx: Ctx): void {
     this.resolveIdentity(ctx);
     if (this.posed) {
+      // See .agents/friction-log/20260804165649-tools-capture-mjs/ — ctx.capture holds this pose forever, so capture.mjs freezes anything that should move.
       if (!ctx.capture) {
         this.poseHold -= dt;
         if (this.poseHold <= 0) this.posed = false;
@@ -739,6 +740,7 @@ export class GameSystem implements System {
         this.actionOf.set(it.id, this.humanAction(human, e));
         // A body the human is not moving still has to collect a dead disc —
         // see `idleCollector`. Everything else about him stays human-driven.
+        // See .agents/friction-log/20260805213329-capture-live-mjs/ — capture-live.mjs publishes no input, so the human-controlled thrower is a statue for this whole branch during LIVE_POSSESSION.
         const d = this.idleCollector(human, e)
           ? this.loco.intentToDesired(e.loco, it)
           : this.humanDesired(human, e);
