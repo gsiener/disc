@@ -212,7 +212,9 @@ enum CatchBandTests {
 
         // --- 2. predictCatchPoint never aims under the rules' floor -------------------
 
-        let ai = TeamAI(team: 0, dir: 1, rng: Rng(seed: 4040))
+        // `field:` is explicit because #17 removed the sevens default — this check
+        // is about catch heights, which do not scale, so the pitch is arbitrary.
+        let ai = TeamAI(team: 0, dir: 1, rng: Rng(seed: 4040), field: .standard)
         var worstY = Double.infinity
         for c in g.rendezvous {
             let path = syntheticPath(y0: c.y0, vy: c.vy, vz: c.vz, step: c.step)
