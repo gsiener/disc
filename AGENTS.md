@@ -123,20 +123,30 @@ module prints the current list; trust that over this sentence, which has been
 wrong twice.) Then run the port's own suite:
 `cd swift && swift run -c release SimTests` must end `PASS` with 0 failures.
 
-### Seven assertions are red on a clean checkout. None of them is yours.
+### Six assertions are red on a clean checkout. None of them is yours.
 
-Measured at `main`. Do not chase these and do not report them as yours:
+Measured at `main`. Do not chase these and do not report them as yours — but note
+**this table names a cause per row, not just "flaky."** #30 found that most of
+these are not noise: pooling `windy completion %` across four seeds *confirmed*
+the defect (51.6% over 153 throws) instead of making it go away, and two of the
+others are real regressions with their own issues. Only the camera pair remains
+genuinely uninvestigated.
 
-| suite | red | assertion |
-|---|---|---|
-| `test-game.ts` | 1 | `with no single seed outside 80-97%` — `33333` at 49% |
-| `test-ai.ts` | 4 | windy completion %; reset handler stationed; reset in position at stall; ratings change on-field outcomes |
-| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)`; `marker framed, LIVE_POSSESSION` |
+| suite | red | assertion | cause |
+|---|---|---|---|
+| `test-game.ts` | 2 | `with no single seed outside 80-97%` (`33333`); `changes hands at the sport's rate` | regression introduced by #29's commit, bisected — see #35 |
+| `test-ai.ts` | 2 | `windy completion % stays sane` (pooled, still red) | throw solver has no wind term — #32 |
+| `test-ai.ts` | 2 | `ratings change on-field outcomes` (pooled over 3 seeds, still red) | elite roster loses to weak roster — #36, pre-existing |
+| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)`; `marker framed, LIVE_POSSESSION` | not yet investigated |
 
-All seven are per-seed or telemetry **bands**, and the friction log records that
-any unrelated change flips them — see `20260809222131-enginetests-deep-game` and
-`20260810-per-seed-bands-again`. `EngineTests` pools its equivalents across three
-seeds for exactly this reason; these have not been pooled yet (issue #30).
+The friction log's rule from `20260810-per-seed-bands-again` still applies where
+it's genuinely noise — *"a bound whose value came from a measurement of one seed
+is a bound on that seed; either pool it or set it where a re-roll can't reach
+it"* — and `test-ai.ts`'s windy and ratings gates are pooled for exactly that
+reason now. **Pooling is a way to find out whether a failure is noise, not a way
+to make one pass.** If pooling a red assertion doesn't make the number move
+toward the band, that's a real defect wearing a flaky-band costume — file it,
+don't widen it.
 
 **Verify before you believe this table.** It has been wrong before: it previously
 named `wasted yaw travel p99` as the single known failure, and that assertion now

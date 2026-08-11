@@ -1376,6 +1376,38 @@ async function main(): Promise<void> {
     recv2 = (r.scoredBy === null ? (1 - recv2) : (1 - r.scoredBy)) as 0 | 1;
   }
 
+  /**
+   * A SEPARATE POOL FOR THE COMPLETION-RATE GATE (issue #30).
+   *
+   * This started as a hypothesis that the single-seed gate below was just
+   * noise: a 5-point windy run is ~40-50 throws, and at a true rate of 80%
+   * the binomial SD on 45 trials is ~6 points, which is wide enough that one
+   * bad seed proves nothing on its own. Pooling four independent wind seeds
+   * (~180-200 throws) was meant to settle that.
+   *
+   * It settled it the other way. Pooled: 51.6% (79/153). Single-seed
+   * readings on two different builds were 47.9% and 58.3% -- all three
+   * cluster around one number instead of spreading around 80%, which is
+   * what noise would do. **This is a real, reproducible defect, not a
+   * flaky sample**, and pooling is what proved that rather than hid it.
+   * It is the throw solver taking no wind term -- see #32, which this
+   * measurement now cites directly. The gate below stays failing on
+   * purpose; do not widen it to make this pass.
+   */
+  let windyThrows = 0;
+  let windyComp = 0;
+  for (const wseed of [777001, 314159, 271828, 161803]) {
+    const w = buildSim(wseed, { x: 9.5, z: 2.0 });
+    let wr: 0 | 1 = (wseed % 2) as 0 | 1;
+    for (let i = 1; i <= 5; i++) {
+      const r = runPoint(w, i, wr, false);
+      restBetweenPoints(w.world.players, 45);
+      wr = (r.scoredBy === null ? (1 - wr) : (1 - r.scoredBy)) as 0 | 1;
+    }
+    windyThrows += w.totals.throws;
+    windyComp += w.totals.completions;
+  }
+
   /* ------------------------------------------------------------ assertions */
   const T = sim.totals;
   const comp = T.throws ? T.completions / T.throws : 0;
@@ -1558,10 +1590,15 @@ async function main(): Promise<void> {
   ok('heavy wind triggers zone', windy.totals.zonePoints >= 1,
     `${windy.totals.zonePoints}/5 windy points had a zone; ` +
     `calm run had ${T.zonePoints}/10`);
-  const wcomp = windy.totals.throws ? windy.totals.completions / windy.totals.throws : 0;
-  // A zone concedes short throws, so completion % rises while yardage falls.
+  const wcomp = windyThrows ? windyComp / windyThrows : 0;
+  const wcompSingle = windy.totals.throws ? windy.totals.completions / windy.totals.throws : 0;
+  // A zone concedes short throws, so completion % rises while yardage falls
+  // -- once the solver has a wind term to concede anything WITH. Gated on
+  // the pool (#30); band is the intended range, not a fitted one. Known red
+  // until #32 (throw solver is wind-blind) lands -- see the comment above.
   ok('windy completion % stays sane', wcomp >= 0.70 && wcomp <= 0.98,
-    `${pct(wcomp)} in wind vs ${pct(comp)} calm (${windy.totals.completions}/${windy.totals.throws})`);
+    `${pct(wcomp)} pooled over 4 wind seeds (${windyComp}/${windyThrows}) vs ${pct(comp)} calm; `
+    + `logged seed alone: ${pct(wcompSingle)} (${windy.totals.completions}/${windy.totals.throws})`);
   ok('wind run also keeps the marker legal',
     windy.totals.markSamples === 0
     || windy.totals.markInside3 / windy.totals.markSamples >= 0.99,
