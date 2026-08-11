@@ -225,65 +225,176 @@ enum HumanCutTests {
                 + (wrong.isEmpty ? "" : " — \(wrong.joined(separator: ", "))"))
     }
 
+    /// What one seed contributed. Recorded rather than asserted, because the seeds are
+    /// played concurrently and `Check` is shared mutable state — see `MatchPool`.
+    struct CutSample: Sendable {
+        var seed: UInt32 = 0
+        var possession = false
+        /// The shape offered a downfield space to point at. A fact about where seven
+        /// bodies were standing, not about the input path — see `probe`.
+        var space = false
+        var ordered = false
+        /// How far the route had to run, and the closest the ordered body came to its end.
+        var start = 0.0
+        var closest = 0.0
+        var endedEarly = false
+    }
+
     /// The commanded body actually goes: it leaves where it was standing and arrives in the
     /// space it was sent to.
     ///
-    /// The bar is `Playbook`'s own arrival test — `tickCutters` retires a cut at 1.3 m from
-    /// the target — with a metre of slack, because a cut can also be retired by its
-    /// `maxTime` with the runner a stride short. What it will not tolerate is a body that
-    /// never went: the ordered player's closest approach is measured against where he
-    /// *stood when the order was given*, so an implementation that armed a route nobody ran
-    /// scores a closing distance of zero.
+    /// **Thirty-two seeds and a rate, because eight seeds and a count was a bound on the
+    /// RNG stream.** This was `ran >= reached - 1` over eight matches, and it flipped twice
+    /// in two days on changes that touched no line of the command path — issue #20's
+    /// timeouts, then the pull port — each time re-stated one seed lower rather than
+    /// re-measured (`.agents/friction-log/20260811-the-same-two-per-seed-checks`). A third
+    /// `- 1` would have made it vacuous. Pooled over 32 seeds instead, and the pooling was
+    /// done as a *measurement* first: 27 of 30 arrivals (90.0 %) at `fb085ad` against 21 of
+    /// 25 (84.0 %) at `d25c992`, its parent — the same command path byte for byte. The
+    /// per-seed flip was resampling, and the alarming `worst 10.30 m` on the branch is a
+    /// smaller tail than the 13.29 m the parent produced.
+    ///
+    /// The claim is asserted in two halves, and neither is the old one weakened:
+    ///
+    ///   - **a rate**, over a denominator of thirty, for *arriving*: the bar is `Playbook`'s
+    ///     own arrival test — `tickCutters` retires a cut at 1.3 m from the target — with a
+    ///     metre of slack, because a cut can also be retired by its `maxTime` with the
+    ///     runner a stride short;
+    ///   - **an exact per-seed floor** for *going*, which is the half a rate cannot make.
+    ///     Every ordered body either arrives or closes a real distance on the space it was
+    ///     sent to, with no exceptions allowed — so an implementation that armed a route
+    ///     nobody ran, which scores a closing distance of zero, fails on the first seed
+    ///     rather than being absorbed by a rate.
+    ///
+    /// The three seeds that miss the arrival bar all ran the full four seconds without the
+    /// possession ending, and all three were sent more than 21 m: they are bodies that went
+    /// and had further to go than the window allows, not bodies sent to the wrong place.
     private static func theCommandedReceiverRunsIt() {
-        var ran = 0
-        var reached = 0
+        let samples = MatchPool.concurrently(cutSeeds, cutSample)
+
+        var possessions = 0
+        var spaces = 0
+        var ordered = 0
+        var arrived = 0
+        var wentAnyway = 0
         var worstApproach = 0.0
-        let seeds: [UInt32] = [5, 13, 23, 29, 41, 57, 71, 83]
-
-        for seed in seeds {
-            guard let e = ourPossession(seed: seed), let at = probe(e, downfield: true)
-            else { continue }
-            guard let called = e.humanCallCut(atX: at.x, atZ: at.z) else {
-                Check.ok(false, "seed \(seed): a tap at a real downfield space was taken")
-                continue
+        var worstClosing = Double.infinity
+        for s in samples {
+            if s.possession { possessions += 1 }
+            if s.space { spaces += 1 }
+            guard s.ordered else { continue }
+            ordered += 1
+            worstApproach = Swift.max(worstApproach, s.closest)
+            let closed = s.start - s.closest
+            if s.closest <= arrivalBar {
+                arrived += 1
+                wentAnyway += 1
+            } else if closed >= closingFloor {
+                wentAnyway += 1
+                worstClosing = Swift.min(worstClosing, closed)
             }
-            reached += 1
-
-            let start = Foundation.hypot(
-                called.target.x - called.from.x, called.target.z - called.from.z)
-            var closest = start
-            // The route's own clock plus the plant and setup either side of it. Beyond this
-            // the cut has been retired and the body is clearing, so a later arrival is not
-            // the order being run.
-            for _ in 0..<Int(4.0 / dt) {
-                e.step(dt: dt)
-                guard let p = e.players.first(where: { $0.id == called.receiver }) else { break }
-                closest = Swift.min(
-                    closest,
-                    Foundation.hypot(called.target.x - p.pos.x, called.target.z - p.pos.z))
-                // Stop measuring once the disc has moved: a route abandoned because the
-                // possession ended is not a route that failed.
-                if e.carrier == nil || e.possession != 0 { break }
-            }
-            worstApproach = Swift.max(worstApproach, closest)
-            if closest <= 2.3 { ran += 1 }
         }
+        let n = cutSeeds.count
+        let rate = ordered == 0 ? 0 : Double(arrived) / Double(ordered)
 
-        // **NEARLY EVERY SEED, NOT EVERY SEED**, and one arrival may miss. Both counts are
-        // per-seed statistics of a scenario that has to occur before it can be measured: a
-        // possession of ours with a real downfield space in it, on a particular match. An
-        // unrelated stoppage — the opposing AI's timeouts, issue #20 — took the space away
-        // from one seed of the eight and the runner short on another, with nothing in the
-        // command path touched. The floor is what the feature claims: a tap commands a run,
-        // on the seeds that can be asked, nearly always.
+        // THE DENOMINATORS FIRST. "0 wrong out of 1 asked" is not a result, and the two
+        // rates below are only readable against a stated one.
+        Check.eq(
+            possessions, n, "every seed reached a possession of ours (\(possessions) of \(n))")
+        // A floor, not an equality: whether a shape offers a downfield space is a fact
+        // about where seven bodies stood. Measured 30 of 32 at fb085ad and 25 of 32 at
+        // d25c992 — the spread between two runs of identical code is why this is 20.
         Check.ok(
-            reached >= seeds.count - 1,
-            "nearly every seed took an order (\(reached) of \(seeds.count))")
-        Check.ok(
-            ran >= reached - 1,
-            "and every ordered body but at most one arrived in the space it was sent to "
-                + "(\(ran) of \(reached), worst \(String(format: "%.2f", worstApproach)) m "
-                + "against the 1.3 m the AI's own arrival test uses)")
+            spaces >= 20,
+            "and most of them had a real downfield space to point at (\(spaces) of \(n))")
+        // This one IS an equality, and it is stricter than the `reached >= seeds.count - 1`
+        // it replaces: a tap at a space the probe found is a tap that must be taken, which
+        // is a statement about the input path rather than about the match. 30 of 30 at
+        // fb085ad, 25 of 25 at d25c992.
+        Check.eq(
+            ordered, spaces,
+            "every tap at a real downfield space was taken (\(ordered) of \(spaces))")
+
+        // AND THEN THE TWO HALVES OF THE CLAIM.
+        //
+        // The labels are assembled from named `let`s rather than one chained `+`
+        // expression: a long chain of interpolated fragments exceeded the Swift
+        // type-checker's budget on GitHub's runner earlier today and broke all three CI
+        // build jobs while building fine locally. See `d25c992`.
+        let ratePct = String(format: "%.1f", rate * 100)
+        let floorPct = String(format: "%.0f", arrivalRate * 100)
+        let worstStr = String(format: "%.2f", worstApproach)
+        let rateHead = "ordered bodies arrive in the space they were sent to"
+        let rateGot = "(\(arrived) of \(ordered), \(ratePct) % against a \(floorPct) % floor;"
+        let rateWas = "90.0 % at fb085ad, 84.0 % at d25c992;"
+        let rateWorst = "worst approach \(worstStr) m against the 1.3 m the AI's own arrival"
+        Check.ok(rate >= arrivalRate, "\(rateHead) \(rateGot) \(rateWas) \(rateWorst) test uses)")
+
+        let closingLabel =
+            worstClosing.isFinite ? String(format: "%.2f", worstClosing) + " m" : "n/a"
+        let wentHead = "and every ordered body went — it either arrived or closed at least"
+        let wentBar = "\(closingFloor) m of the distance it was sent across"
+        let wentGot = "(\(wentAnyway) of \(ordered); the shortest closing run by a body that"
+        let wentTail = "did not arrive was \(closingLabel), against 5.16 m measured across"
+        Check.eq(
+            wentAnyway, ordered, "\(wentHead) \(wentBar) \(wentGot) \(wentTail) both commits)")
+    }
+
+    /// Thirty-two seeds, so the rates above have a denominator a single re-roll cannot
+    /// move. They are played concurrently; at eight, serially, this loop was the suite.
+    static let cutSeeds: [UInt32] = [
+        3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59,
+        61, 67, 71, 73, 79, 83, 89, 97, 101, 103, 107, 109, 113, 127, 131, 137,
+    ]
+
+    /// `Playbook.tickCutters` retires a cut at 1.3 m from its target; a metre of slack on
+    /// top, because `maxTime` can retire one with the runner a stride short.
+    static let arrivalBar = 2.3
+
+    /// The floor on arrivals, pooled. Measured 90.0 % at `fb085ad` and 84.0 % at `d25c992`
+    /// — two runs of identical command-path code — so the floor sits two runs' worth of
+    /// spread below the lower of them. What it exists to catch takes this to zero.
+    static let arrivalRate = 0.70
+
+    /// How far a body that did not arrive must still have closed for the order to count as
+    /// run. The smallest such run measured over both commits is 5.16 m; this is a third
+    /// below that, and a route nobody ran closes 0 m.
+    static let closingFloor = 3.0
+
+    /// One seed: play to a possession of ours, point at the deep space, and watch the body
+    /// that was sent.
+    private static func cutSample(_ seed: UInt32) -> CutSample {
+        var s = CutSample(seed: seed)
+        guard let e = ourPossession(seed: seed) else { return s }
+        s.possession = true
+        guard let at = probe(e, downfield: true) else { return s }
+        s.space = true
+        guard let called = e.humanCallCut(atX: at.x, atZ: at.z) else { return s }
+        s.ordered = true
+
+        // Measured against where he *stood when the order was given*, so an implementation
+        // that armed a route nobody ran scores a closing distance of zero.
+        let start = Foundation.hypot(
+            called.target.x - called.from.x, called.target.z - called.from.z)
+        var closest = start
+        // The route's own clock plus the plant and setup either side of it. Beyond this the
+        // cut has been retired and the body is clearing, so a later arrival is not the order
+        // being run.
+        for _ in 0..<Int(4.0 / dt) {
+            e.step(dt: dt)
+            guard let p = e.players.first(where: { $0.id == called.receiver }) else { break }
+            closest = Swift.min(
+                closest, Foundation.hypot(called.target.x - p.pos.x, called.target.z - p.pos.z))
+            // Stop measuring once the disc has moved: a route abandoned because the
+            // possession ended is not a route that failed.
+            if e.carrier == nil || e.possession != 0 {
+                s.endedEarly = true
+                break
+            }
+        }
+        s.start = start
+        s.closest = closest
+        return s
     }
 
     /// An order is a play, not a mode. The AI retires the route on its own clock, releases
