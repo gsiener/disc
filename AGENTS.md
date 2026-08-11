@@ -134,9 +134,10 @@ genuinely uninvestigated.
 
 | suite | red | assertion | cause |
 |---|---|---|---|
-| `test-game.ts` | 2 | `with no single seed outside 80-97%` (`33333`); `changes hands at the sport's rate` | regression introduced by #29's commit, bisected — see #35 |
+| `test-game.ts` | 1 | `with no single seed outside 80-97%` (`33333`, now ~66%) | pre-existing outlier, predates #29 — #35 fixed the OTHER row this table used to carry here (`changes hands at the sport's rate`, #29's mirror bug) and moved seed 33333 off the 58% #29 put it at, back toward its original, still-unexplained 49-67% |
 | `test-ai.ts` | 2 | `windy completion % stays sane` (pooled, still red) | throw solver has no wind term — #32 |
 | `test-ai.ts` | 2 | `ratings change on-field outcomes` (pooled over 3 seeds, still red) | elite roster loses to weak roster — #36, pre-existing |
+| `test-ai.ts` | 1 | `no out-of-bounds across seeds` (26 player-ticks, seed 31415, `#13` sprinting `attack-disc` at the sideline) | new since #35's fix — a `Playbook.ts` change that legitimately reshuffles match trajectories exposed a pre-existing sprint-overshoot risk near the sideline that the old (buggy) mirror never happened to trigger for this seed; movement/targeting near the boundary, not `formationStations` — not yet investigated |
 | `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)`; `marker framed, LIVE_POSSESSION` | not yet investigated |
 
 The friction log's rule from `20260810-per-seed-bands-again` still applies where

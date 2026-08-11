@@ -78,3 +78,4 @@ of hours, because writing entries worked and reading them did not.
 | major | `20260811070423-a-golden-regenerated` | A golden regenerated at the commit that wrote it does not reproduce on another machine — and matchdiff turns 1 ULP into 35% of its counts |
 | minor | `20260811-the-same-two-per-seed-checks` | The same two per-seed human-input checks flipped again, one day after they were re-stated for exactly this reason |
 | minor | `20260811-a-four-second-window` | HumanCutTests scored "had further to run" as "never went", so its arrival count was a bound on how far the probe pointed |
+| major | `20260811183614-simtests-25-failure` | SimTests' 25-failure print cap silently hides a targeted assertion behind unrelated golden mismatches |

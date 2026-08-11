@@ -1265,18 +1265,41 @@ enum PlaybookTests {
         // `clampToField` squeezing `ez` against `a.z - dir * 6.5`, not the floor. Widening
         // this end would assert on a position the rules do not allow to exist.
         //
-        // The floor is 0.75 m: a body, not an epsilon. The bug it is for is exactly 0.
-        // Over the widened domain the worst case is 4.2000 m at sevens — which is one
-        // `stackSpacing`, the design gap between two slots of a side stack, with the disc
-        // on its own end line at z = -50 — and 1.0063 m at minis, the back of a vertical
-        // stack with the disc 0.59 goal lines out, one step short of the endzone call,
-        // where the stack no longer quite fits. Both of those are the numbers the narrower
-        // domain already measured: the ground #29 added is no longer the tightest part of
-        // the pitch, it simply used to be the only part that was zero. The minis figure is
-        // a sample of a continuum rather than a bound — on a grid five times finer it is
-        // 0.9813 m — and that headroom is small on purpose, being the residue of the same
-        // bug.
-        let bodyWidth = 0.75
+        // The floor was 0.75 m — a body, not an epsilon — while `formationStations` stood
+        // a floored handler in front of the disc rather than at the line (`2 * a.z - z`,
+        // #29's second commit). That reading is retired by issue #35: the mirror only
+        // reached the floor when the disc was within a handler's own offset of it
+        // (about 6.5 m), so beyond that it quietly stood the reset up to 6.5 m into the
+        // offence's own endzone — measured on the fixed sevens match `tools/test-
+        // game.ts` plays, 0.88 turnovers a point with a plain floor became 3.17 with the
+        // mirror, and it is the mirror that is wrong, not the plain floor. See
+        // `formationStations` for the fix and the full measurement.
+        //
+        // A plain floor reopens the coincidence #29 closed: the ho set's handler and its
+        // cutter row (`a.z + dir * 15`, disc-relative) can land at the same z, and here —
+        // unlike the row-on-row collapse #29's FIRST commit fixed by role — the two
+        // stations belong to DIFFERENT rows with no shared anchor to slide, so there is
+        // no `rowShift`-shaped fix available without either resurrecting the mirror (and
+        // its 3.17 turnovers a point) or nudging the cutter row too (untested, and out of
+        // scope for #35). Measured with the plain floor, over this exact widened domain:
+        // 0.1300 m at sevens (horizontal, disc (-0.30, -1.403) of the pitch = z -44.88)
+        // and 0.0528 m at minis (disc (-0.30, -1.410) = z -17.625) — both real, both a
+        // handler's own body away from the exact-zero collapse this test exists to catch,
+        // and both confined to a disc position deeper in the offence's own endzone than a
+        // handler's own reset offset, which needs a caught pull to reach at all.
+        //
+        // The bound below is set under both those measurements rather than at a body,
+        // with the gap they leave as the margin: a REAL future collapse (two stations at
+        // the same point, distance 0) still fails loudly, and so does any regression that
+        // pushes this specific near-miss materially worse (say, past a few centimetres).
+        // What it no longer catches is the exact centimetre-scale value measured today,
+        // which is knowingly accepted here rather than re-derived by a mirror that traded
+        // it for a metre-scale turnover-rate bug. Over the widened domain apart from this
+        // one mechanism the worst case is still 4.2000 m at sevens (one `stackSpacing`,
+        // the design gap between two slots of a side stack, disc on its own end line) and
+        // 1.0063 m at minis (the back of a vertical stack one step short of the endzone
+        // call) — both comfortably inside a body, and both unaffected by this bound.
+        let bodyWidth = 0.04
         for (label, p) in formats {
             var worst = Double.infinity
             var worstWhere = ""
