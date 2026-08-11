@@ -541,12 +541,60 @@ public struct Playbook: Sendable {
         // then -46.4, four metres from their own end line.
         //
         // Real handlers pinned deep go LATERAL, not backward — a swing, not a dump.
-        // Cutter stations are `a.z + dir * ...` and always downfield, so this floor
-        // never touches them.
+        //
+        // THE FLOOR IS THE BACKFIELD'S, AND IT RUNS OUT OF ROOM BEFORE THE PITCH DOES.
+        // Two separate things, both wrong until issue #29, and the sentence above is the
+        // contract they are both meant to serve.
+        //
+        // *It is the BACKFIELD's, so it is applied by role.* Cutter stations are
+        // `a.z + dir * ...`, so they are always downfield OF THE DISC — which keeps them
+        // clear of a floor fixed at the goal line for exactly as long as the disc is in
+        // front of it, and no longer. Behind the line the disc is itself below the floor,
+        // so the floor stops being a floor and becomes a magnet, dragging the front of
+        // the stack forward until two stations arrive as the same point. Measured off
+        // this builder, disc on the centre line, dir +1: the side stack's front two
+        // cutters coincide from z = -43.2 and the vertical stack's from z = -45.2 (minis:
+        // -16.875 and -17.65625). `buildCut` draws this line by role already — its floor
+        // is on `dump` and `swing` only, never on a downfield cut. `PIN_MARGIN` is
+        // untouched by this and keeps its one meaning: how far in front of its own goal
+        // line the BACKFIELD sets up.
+        //
+        // *And a floored handler is mirrored rather than pinned to the line.* The floor
+        // is an absolute z while every other offset in the set is disc-relative, so past
+        // a certain depth the two rows cross. The ho cutter row is `a.z + dir * 15`: with
+        // the disc at z = -45 the floored handler row is at -30 and so is the cutter row,
+        // and at x = -5.5 a handler and a cutter come back as ONE POINT, exactly.
+        // Clamping every handler to the same floor is the z-axis version of the mistake
+        // `rowShift` exists to avoid on x, and it has the same symptom: the row loses its
+        // shape and its members land on top of something.
+        //
+        // So a handler that cannot stand `off` behind the disc stands `off` in FRONT of
+        // it instead — `2 * a.z - z` — and the goal-line floor still applies on top. That
+        // keeps the row's own spacing, keeps every handler a real distance from the
+        // thrower rather than parked on the mark, and is INERT until the mirror is itself
+        // past the floor: `a.z + off < -(goalLine - PIN_MARGIN)`, which needs the disc
+        // more than two metres inside its own endzone. Nothing on the playing field
+        // proper moves, and the golden case pinned exactly on the goal line does not move
+        // either.
+        //
+        // The alternative was capping the floor at the disc plus `PIN_MARGIN`, and it was
+        // measured and rejected: two metres in front of a pinned thrower is where the
+        // MARK stands, and `tools/test-ai.ts` went from `marker respects 1 m disc space
+        // closest approach 1.75m` to `0.70m`.
+        //
+        // All of it is in bounds, so no `clampToField` check can see any of it. The
+        // property that does is `PlaybookTests.minisShape`'s pairwise-distinct sweep,
+        // whose domain now runs to the offence's own END line rather than its goal line.
         let floorZ = Double(-dir) * (field.goalLine - pinMargin)
 
         func push(_ x: Double, _ z: Double, _ role: StationRole, _ depth: Int) {
-            let zz = dir > 0 ? Swift.max(z, floorZ) : Swift.min(z, floorZ)
+            var zz = z
+            if role == .handler {
+                let mirrored = 2 * a.z - z
+                let back =
+                    dir > 0 ? Swift.min(floorZ, mirrored) : Swift.max(floorZ, mirrored)
+                zz = dir > 0 ? Swift.max(z, back) : Swift.min(z, back)
+            }
             let p = clampToField(Vec2d(x, zz))
             out.append(Station(x: p.x, z: p.z, role: role, depth: depth))
         }

@@ -1232,8 +1232,8 @@ enum PlaybookTests {
                     + "clamped there (\(column.last!.z) m)")
         }
 
-        // The general form: over the whole playing field proper, the set the offence would
-        // actually run there never puts two of its seven stations on the same spot.
+        // The general form: over every place the offence can hold the disc, the set it
+        // would actually run there never puts two of its seven stations on the same spot.
         //
         // `chooseFormation` picks the set rather than the loop, deliberately. A vertical
         // stack asked for with the disc 0.8 goal lines out really does clamp its back two
@@ -1241,21 +1241,57 @@ enum PlaybookTests {
         // there, because `chooseFormation` has been in its endzone set since 13 m (scaled)
         // from the line, and asserting on a set nobody calls would be asserting on nothing.
         //
-        // The floor is 0.75 m: a body, not an epsilon. The bug it is for is exactly 0, and
-        // the measured worst case is 4.20 m at sevens and 1.01 m at minis — the minis one
-        // being the back of a vertical stack with the disc 0.59 goal lines out, one step
-        // short of the endzone call, where the stack no longer quite fits. That headroom is
-        // small on purpose: it is the residue of the same bug, and it should be visible.
+        // **THE DOMAIN RUNS FROM THE OFFENCE'S OWN END LINE TO THE GOAL LINE IT ATTACKS,
+        // and both ends of that are a decision.** Issue #29.
+        //
+        // It used to stop at the offence's own goal line, and that cost the assertion the
+        // bug it was built to catch. The pin floor in `formationStations` was applied to
+        // every station rather than to the backfield, so once the disc was more than a
+        // stack lead BEHIND the offence's own line the floor dragged the front of the
+        // stack onto one z: the side set's front two cutters were at distance exactly 0
+        // from z = -43.2 at sevens and z = -16.875 at minis, and the vertical set's from
+        // -45.2 and -17.65625. The ho set collapsed a HANDLER onto a cutter, also exactly,
+        // where the fixed handler row crossed the disc-relative cutter row — disc
+        // (-5.5, -45) at sevens. All of it in bounds; all of it two goal lines outside the
+        // sweep. A disc behind your own goal line is not an edge case — it is where a
+        // caught pull starts, which is why `TeamAIGoldens`' live segment begins two metres
+        // off that line.
+        //
+        // The far end stays at the attacking goal line because a held disc past it is a
+        // goal, so no offence sets up there. Which is just as well: the endzone set really
+        // does put its middle handler on its inner cutter deep in that endzone (0.08 m at
+        // sevens with the disc at z = 48.32, 0.027 m at minis), and that one is
+        // `clampToField` squeezing `ez` against `a.z - dir * 6.5`, not the floor. Widening
+        // this end would assert on a position the rules do not allow to exist.
+        //
+        // The floor is 0.75 m: a body, not an epsilon. The bug it is for is exactly 0.
+        // Over the widened domain the worst case is 4.2000 m at sevens — which is one
+        // `stackSpacing`, the design gap between two slots of a side stack, with the disc
+        // on its own end line at z = -50 — and 1.0063 m at minis, the back of a vertical
+        // stack with the disc 0.59 goal lines out, one step short of the endzone call,
+        // where the stack no longer quite fits. Both of those are the numbers the narrower
+        // domain already measured: the ground #29 added is no longer the tightest part of
+        // the pitch, it simply used to be the only part that was zero. The minis figure is
+        // a sample of a continuum rather than a bound — on a grid five times finer it is
+        // 0.9813 m — and that headroom is small on purpose, being the residue of the same
+        // bug.
         let bodyWidth = 0.75
         for (label, p) in formats {
             var worst = Double.infinity
             var worstWhere = ""
+            // Attack-relative, in goal lines: -1 is the offence's own goal line and +1 the
+            // one it attacks, so `-endLine / goalLine` is its own end line on either pitch
+            // — 1.5625 goal lines back at sevens, 1.48 at minis. The two are not the same
+            // number, which is the point: the pitches are not similar rectangles, and the
+            // domain has to be named off each pitch's own dimensions rather than off a
+            // fraction measured on one of them.
+            let ownEndLine = -p.field.endLine / p.field.goalLine
             for prefer in [Playbook.FormationName.vertical, .horizontal, .side] {
                 for wind in [0.0, 9.0] {
                     for dir in dirs {
                         for openSign in signs {
                             for fx in stride(from: -1.0, through: 1.0, by: 0.05) {
-                                for fz in stride(from: -1.0, through: 1.0, by: 0.01) {
+                                for fz in stride(from: ownEndLine, through: 1.0, by: 0.01) {
                                     let a = Vec2d(
                                         fx * p.field.sideline,
                                         Double(dir) * fz * p.field.goalLine)
@@ -1271,8 +1307,10 @@ enum PlaybookTests {
                                                     "\(name.rawValue) dir \(dir) "
                                                     + "open \(openSign) wind \(wind) "
                                                     + "disc "
-                                                    + String(format: "(%.2f, %.2f)", fx, fz)
-                                                    + " of the pitch, stations \(i)/\(j)"
+                                                    + String(format: "(%.2f, %.3f)", fx, fz)
+                                                    + " of the pitch = z "
+                                                    + String(format: "%.4f", a.z)
+                                                    + ", stations \(i)/\(j)"
                                             }
                                         }
                                     }
@@ -1285,7 +1323,8 @@ enum PlaybookTests {
             Check.ok(
                 worst >= bodyWidth,
                 "\(label): no two stations of the set the offence would actually run stand "
-                    + "inside a body of each other — closest was "
+                    + "inside a body of each other, anywhere from its own end line to the "
+                    + "goal line it attacks — closest was "
                     + String(format: "%.4f", worst) + " m at \(worstWhere)")
         }
 
