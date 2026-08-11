@@ -411,10 +411,22 @@ public func tickStamina(_ p: AIPlayer, _ dt: Double) {
 
 // MARK: - geometry
 
+/// The inset `boundaryRoom` measures room against, in metres. Reference:
+/// `AI.ts`'s `BOUNDARY_ROOM_MARGIN`. Shared with `TeamAI.intent()`'s target
+/// clamp (issue #33) so the two use the literal same value rather than two
+/// constants that can drift apart.
+public let boundaryRoomMargin: Double = 0.55
+
 /// Distance from `(px, pz)` to the playing-surface perimeter along `(dx, dz)`.
 ///
 /// Locomotion turns this into a speed cap, which is what guarantees nobody is steered
 /// over a line: a player is never asked to run faster than they can stop in.
+///
+/// This is a cap on speed as a MAGNITUDE, taken over the whole ray — not on the
+/// outward component alone. A body resting exactly on the inset line and aimed
+/// even slightly further out reads zero room and is capped to zero in every
+/// direction, including the one it needs. `TeamAI.intent()` is the choke point
+/// that keeps that ray from ever being asked for (issue #33).
 ///
 /// The reference reads a module-level `FIELD`; the pitch is a parameter here because
 /// this game is played on two of them. The 0.55 m inset is the reference's own.
@@ -426,8 +438,8 @@ public func boundaryRoom(
     if l < 1e-5 { return 1e3 }
     let ux = dx / l
     let uz = dz / l
-    let bx = field.sideline - 0.55
-    let bz = field.endLine - 0.55
+    let bx = field.sideline - boundaryRoomMargin
+    let bz = field.endLine - boundaryRoomMargin
     var t = 1e3
     if ux > 1e-6 {
         t = Swift.min(t, (bx - px) / ux)

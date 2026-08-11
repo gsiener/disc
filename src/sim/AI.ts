@@ -731,16 +731,31 @@ export function tickStamina(p: AIPlayer, dt: number): void {
 }
 
 /**
+ * The inset `boundaryRoom` measures room against, in metres. Named and shared
+ * with `intent()`'s target clamp (issue #33) so the two use the literal same
+ * value rather than two constants that can drift apart: a target clamped to
+ * any looser inset than this one could still ask a body already resting on
+ * this line for outward reach the line does not have.
+ */
+export const BOUNDARY_ROOM_MARGIN = 0.55;
+
+/**
  * Distance from (px,pz) to the playing-surface perimeter along (dx,dz).
  * Locomotion uses the resulting speed cap to guarantee nobody is steered over
  * a line: a player is never asked to run faster than he can stop in.
+ *
+ * This is a cap on speed as a MAGNITUDE, taken over the whole ray — not on the
+ * outward component alone. A body resting exactly on the inset line and aimed
+ * even slightly further out reads zero room and is capped to zero in every
+ * direction, including the one it needs. `intent()` is the choke point that
+ * keeps that ray from ever being asked for: see the clamp there (issue #33).
  */
 export function boundaryRoom(px: number, pz: number, dx: number, dz: number): number {
   const l = Math.hypot(dx, dz);
   if (l < 1e-5) return 1e3;
   const ux = dx / l, uz = dz / l;
-  const bx = FIELD.halfWidth - 0.55;
-  const bz = FIELD.halfLength - 0.55;
+  const bx = FIELD.halfWidth - BOUNDARY_ROOM_MARGIN;
+  const bz = FIELD.halfLength - BOUNDARY_ROOM_MARGIN;
   let t = 1e3;
   if (ux > 1e-6) t = Math.min(t, (bx - px) / ux);
   else if (ux < -1e-6) t = Math.min(t, (-bx - px) / ux);
@@ -1391,6 +1406,14 @@ export class TeamAI {
        * Send him to the nearest spot he can legally stand on instead. That is
        * inside `PICKUP_RADIUS` of anything resting on the chalk, so the pickup
        * still fires from there.
+       *
+       * `intent()` now clamps every target the same way (issue #33), so this
+       * specific clamp is no longer the only thing standing between a
+       * sideline disc and a frozen collector — `intent()`'s own floor is
+       * already tighter (0.55 m of margin) than the 0.75 m used here. It
+       * stays anyway: 0.75 m is the deliberate number that keeps the pickup
+       * point inside `PICKUP_RADIUS` of a disc resting on the chalk, and the
+       * reasoning above is worth keeping next to the code it explains.
        */
       const cp = clampToField({ x: disc.pos.x, z: disc.pos.z }, 0.75);
       for (const p of this.mates) {
@@ -3414,6 +3437,31 @@ export class TeamAI {
     },
     _dt: number, settle = false,
   ): PlayerIntent {
+    /**
+     * issue #33 — every target reaches a `PlayerIntent` through here, so this
+     * is the one place a target on or beyond `boundaryRoom`'s own perimeter
+     * can be closed off for every call site at once, present or future,
+     * rather than trusting each of them to have clamped generously enough on
+     * its own. One target (the ground-disc pickup, above) already got a
+     * one-off version of exactly this clamp, with a comment explaining why: a
+     * turnover often leaves the disc ON the line, `boundaryRoom`'s cap is on
+     * speed as a magnitude rather than the outward component, and a body
+     * resting on the line with even a sliver of outward aim reads zero room
+     * and freezes in every direction — measured as a collector wedged 103s,
+     * 6.35m from a stationary disc. Clamping here makes that fix a property
+     * of `intent()` instead of a property of one caller.
+     *
+     * The margin matches `boundaryRoom`'s own `BOUNDARY_ROOM_MARGIN` exactly
+     * (same named constant, not a second literal that can drift): once a
+     * target can never ask for more reach than `boundaryRoom` itself grants,
+     * the ray toward it can never demand room the perimeter doesn't have.
+     * Most call sites already clamp tighter than this (0.7-1.6 m of margin)
+     * and are unaffected; the one that clamped looser (0.45 m, an in-flight
+     * disc's landing point) was a narrower, unfired instance of the same
+     * defect and is now closed too.
+     */
+    const safeTarget = clampToField({ x: tx, z: tz }, BOUNDARY_ROOM_MARGIN);
+    tx = safeTarget.x; tz = safeTarget.z;
     const m = this.m(p.id);
     const fl = Math.hypot(fx, fz);
     if (fl > 1e-4) { m.faceX = fx / fl; m.faceZ = fz / fl; }

@@ -819,6 +819,16 @@ public final class TeamAI {
         cutKind: Playbook.CutKind? = nil, cutDepth: Double = -1,
         dt _: Double, settle: Bool = false
     ) -> PlayerIntent {
+        // issue #33 — every target reaches a `PlayerIntent` through here, so this
+        // is the one place a target on or beyond `boundaryRoom`'s own perimeter
+        // can be closed off for every call site at once. Reference: `AI.ts`'s
+        // `intent()`, which has the full rationale (a body resting on the line
+        // and aimed even slightly further out reads zero room and freezes in
+        // every direction). The margin matches `boundaryRoomMargin` exactly, the
+        // same shared constant `boundaryRoom` itself uses.
+        let safeTarget = pb.clampToField(Vec2d(tx, tz), margin: boundaryRoomMargin)
+        let tx = safeTarget.x
+        let tz = safeTarget.z
         let rec = m(p.id)
         let fl = Foundation.hypot(fx, fz)
         // Facing is LATCHED, not defaulted: a body asked to face a zero-length vector
