@@ -608,9 +608,10 @@ enum EngineTests {
         // between matches — holds/breaks moved 3/9 to 6/6 between two tuning runs
         // that differed by one constant — and a lever judged on a single seed is
         // judged on noise.
-        var pool: [SevensSample] = []
-        for seed in [UInt32(11), 23, 37] {
-            if let sample = playAndMeasure(.sevens, seed: seed) { pool.append(sample) }
+        let sevensMatches = Array(MatchPool.matches.prefix(3))
+        let pool = sevensMatches.map { match -> SevensSample in
+            assertCanonicalSevens(match)
+            return sevensSample(match)
         }
         // **Minis is measured over three seeds too, and it is ASSERTED now.**
         //
@@ -625,6 +626,48 @@ enum EngineTests {
         }
         theDeepGameAndTheHoldShare(pool)
         minisIsPlayable(minisPool)
+    }
+
+    /// The same assertions `playAndMeasure` made while it replayed these matches.
+    /// The canonical pool records the state at each score transition, so checks stay
+    /// serial and their count stays unchanged while the simulation is shared.
+    private static func assertCanonicalSevens(_ match: MatchPool.Match) {
+        for event in match.scoreEvents {
+            Check.eq(event.delta, 1, "the score moves by exactly one")
+            Check.ok(event.didNotFall, "the score never falls")
+            Check.ok(event.scorerPresent, "a score is accompanied by a scoring team")
+            Check.ok(event.pointScoredPhase, "and by the machine's POINT_SCORED phase")
+            Check.eq(event.recordMatchesBoard, true, "the goal record carries the new score")
+        }
+        Check.eq(
+            match.score[0] + match.score[1], match.goals,
+            "every point on the board is a goal in the box")
+        let goals = match.scoreEvents.count
+        let meanText = String(format: "%+.2f", match.meanGain)
+        Check.ok(goals >= 8 && goals <= 24, "sevens scores like sevens (\(goals) goals)")
+        Check.ok(
+            match.meanGain >= 3 && match.meanGain <= 14,
+            "and the offence advances (mean \(meanText) m per completion)")
+        Check.ok(
+            match.passPct >= 80 && match.passPct <= 96,
+            "at a completion rate the sport would recognise "
+                + "(\(String(format: "%.0f%%", match.passPct)))")
+        let points = match.holds + match.breaks
+        Check.ok(points >= 8, "and a match is a match (\(points) points)")
+        Check.ok(
+            match.cadence >= 3.5 && match.cadence <= 7.5,
+            "the disc moves at a human tempo (a release every "
+                + String(format: "%.1f", match.cadence) + " s of live play)")
+    }
+
+    private static func sevensSample(_ match: MatchPool.Match) -> SevensSample {
+        .init(
+            seed: match.seed, holds: match.holds, breaks: match.breaks,
+            longest: match.longestCompletion, hucks: match.hucksAttempted,
+            goals: match.scoreEvents.count, cadence: match.cadence, passPct: match.passPct,
+            stallOuts: match.stallOuts, turnovers: match.totalTurnovers, meanGain: match.meanGain,
+            finished: match.finished, deepShots: match.deepShots,
+            scaledDeepShots: match.scaledDeepShots, aimedThrows: match.aimedThrows)
     }
 
     /// One seed's worth of the two numbers that are TAILS rather than rates, plus the
@@ -1133,7 +1176,6 @@ enum EngineTests {
                 "at a completion rate the sport would recognise "
                     + "(\(String(format: "%.0f%%", passPct)))")
             let points = holds + breaks
-            let holdShare = points > 0 ? Double(holds) / Double(points) : 0
             // The hold share and the longest completion are pooled across the three sevens
             // seeds by `theDeepGameAndTheHoldShare` — see there for why neither survives
             // being asserted one match at a time.

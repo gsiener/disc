@@ -349,34 +349,19 @@ enum PivotTests {
     /// above proves that path fires. Anything above a handful here would mean the
     /// constraint is wrong rather than the threshold.
     private static func inAMatch() {
-        let e = Engine(format: .sevens, seed: 11)
-        e.autoTeams = [0, 1]
-
-        var travels = 0
-        var worstReach = 0.0
-        var pinnedFrames = 0
-        var heldFrames = 0
-
-        for _ in 0..<(120 * 900) where !e.isOver {
-            e.step(dt: dt)
-            guard e.game.phase == .livePossession, let id = e.game.thrower else { continue }
-            heldFrames += 1
-            guard let body = e.loco.get(id) else { continue }
-            if let foot = e.loco.pivotOf(id) {
-                pinnedFrames += 1
-                worstReach = Swift.max(
-                    worstReach, Foundation.hypot(body.pos.x - foot.x, body.pos.z - foot.z))
-            }
+        guard let match = MatchPool.matches.first(where: { $0.seed == 11 }) else {
+            Check.ok(false, "the canonical pool contains the pivot match")
+            return
         }
-        for p in e.players { travels += e.game.playerStats(p.id)?.travels ?? 0 }
-
-        let pinned = heldFrames > 0 ? 100.0 * Double(pinnedFrames) / Double(heldFrames) : 0
-        Check.ok(travels <= 6, "travels are rare in a clean match (\(travels))")
+        let pinned = match.heldFrames > 0
+            ? 100.0 * Double(match.pinnedFrames) / Double(match.heldFrames)
+            : 0
+        Check.ok(match.travels <= 6, "travels are rare in a clean match (\(match.travels))")
         Check.ok(
-            worstReach <= Locomotion.PIVOT_R + 0.05,
-            "no thrower is ever further from his foot than his leg is long (\(worstReach) m)")
+            match.worstPivotReach <= Locomotion.PIVOT_R + 0.05,
+            "no thrower is ever further from his foot than his leg is long (\(match.worstPivotReach) m)")
         Check.ok(pinned > 50, "and most held frames are on an established pivot (\(pinned)%)")
-        Check.ok(e.stats.completions > 20, "the offence still completes passes (\(e.stats.completions))")
-        Check.ok(e.stats.goals > 0, "and still scores (\(e.stats.goals))")
+        Check.ok(match.completions > 20, "the offence still completes passes (\(match.completions))")
+        Check.ok(match.goals > 0, "and still scores (\(match.goals))")
     }
 }

@@ -66,6 +66,14 @@ enum MatchPool {
     /// a counter, and a record that exists only for the seeds somebody currently asserts on
     /// is a record the next check has to re-simulate to extend.
     struct Match: Sendable {
+        struct ScoreEvent: Sendable {
+            let delta: Int
+            let didNotFall: Bool
+            let scorerPresent: Bool
+            let pointScoredPhase: Bool
+            let recordMatchesBoard: Bool
+        }
+
         let seed: UInt32
 
         // MARK: stoppage
@@ -84,6 +92,8 @@ enum MatchPool {
         let calls: Engine.CallTally
         let score: [Int]
         let point: Int
+        let holds: Int
+        let breaks: Int
 
         // MARK: matchdiff
         /// Turnovers by `reason.rawValue`, counted off the drained event stream.
@@ -93,6 +103,25 @@ enum MatchPool {
         let goals: Int
         let blocks: Int
         let stallOuts: Int
+
+        // MARK: pivot
+        let travels: Int
+        let pinnedFrames: Int
+        let heldFrames: Int
+        let worstPivotReach: Double
+
+        // MARK: EngineTests sevens telemetry
+        let scoreEvents: [ScoreEvent]
+        let meanGain: Double
+        let longestCompletion: Double
+        let hucksAttempted: Int
+        let cadence: Double
+        let passPct: Double
+        let totalTurnovers: Int
+        let finished: Bool
+        let deepShots: Int
+        let scaledDeepShots: Int
+        let aimedThrows: Int
     }
 
     /// The pool, played on first use and kept. Ordered by `seeds`.
@@ -145,9 +174,74 @@ enum MatchPool {
         var timeoutFrames = 0
         var worstDrift = 0.0
         var worstSpread = 0.0
+        var pinnedFrames = 0
+        var heldFrames = 0
+        var worstPivotReach = 0.0
+        var lastScore = e.score
+        var scoreEvents: [Match.ScoreEvent] = []
+        var heldPos: Vec3d?
+        var heldTeam: TeamId?
+        var gains: [Double] = []
+        var completionsSeen = 0
+        var throwsSeen = 0
+        var releasePos: Vec3d?
+        var flightMax = 0.0
+        var liveTicks = 0
+        var completedDists: [Double] = []
+        var attemptDists: [Double] = []
+        var prevPhase = e.game.phase
+        var deepShots = 0
+        var scaledDeepShots = 0
+        var aimedThrows = 0
 
         for _ in 0..<ticks where !e.isOver {
             e.step(dt: dt)
+
+            if e.game.phase == .livePossession { liveTicks += 1 }
+            if e.stats.throwsMade > throwsSeen {
+                throwsSeen = e.stats.throwsMade
+                if prevPhase == .livePossession, let hand = heldPos, let team = heldTeam,
+                    let aimed = e.lastThrowAim
+                {
+                    aimedThrows += 1
+                    let gain = Double(e.dirFor(team)) * (aimed.aim.z - hand.z)
+                    let reach = Foundation.hypot(aimed.aim.x - hand.x, aimed.aim.z - hand.z)
+                    let scale = e.format.field.goalLine / 32
+                    if gain >= 22 && reach >= 25 { deepShots += 1 }
+                    if gain >= 22 * scale && reach >= 25 * scale { scaledDeepShots += 1 }
+                }
+                releasePos = e.disc.state.pos
+                flightMax = 0
+            }
+            if e.game.phase == .discInFlight, let rp = releasePos {
+                flightMax = Swift.max(flightMax, distXZ(rp, e.disc.state.pos))
+            } else if releasePos != nil, flightMax > 0, e.game.phase != .discInFlight {
+                attemptDists.append(flightMax)
+                releasePos = nil
+                flightMax = 0
+            }
+            if e.stats.completions > completionsSeen, let from = heldPos, let team = heldTeam,
+                let to = e.carrier.flatMap({ id in e.players.first { $0.id == id } })?.pos
+            {
+                gains.append(Double(e.dirFor(team)) * (to.z - from.z))
+                completedDists.append(distXZ(from, to))
+            }
+            completionsSeen = e.stats.completions
+            if let id = e.carrier, let player = e.players.first(where: { $0.id == id }) {
+                heldPos = player.pos
+                heldTeam = player.team
+            }
+            if e.score != lastScore {
+                let delta = (e.score[0] - lastScore[0]) + (e.score[1] - lastScore[1])
+                scoreEvents.append(.init(
+                    delta: delta,
+                    didNotFall: e.score[0] >= lastScore[0] && e.score[1] >= lastScore[1],
+                    scorerPresent: e.justScored != nil,
+                    pointScoredPhase: e.game.phase == .pointScored,
+                    recordMatchesBoard: e.game.lastScore?.score == e.score))
+                lastScore = e.score
+            }
+            prevPhase = e.game.phase
 
             for event in e.drainEvents() {
                 guard case .turnover(let reason, _, _, _, _, _) = event else { continue }
@@ -159,6 +253,16 @@ enum MatchPool {
                 resumed.append(e.game.pendingStallResume)
             }
             wasTimeout = inTimeout
+
+            if e.game.phase == .livePossession, let id = e.game.thrower {
+                heldFrames += 1
+                if let body = e.loco.get(id), let foot = e.loco.pivotOf(id) {
+                    pinnedFrames += 1
+                    worstPivotReach = Swift.max(
+                        worstPivotReach,
+                        Foundation.hypot(body.pos.x - foot.x, body.pos.z - foot.z))
+                }
+            }
 
             guard inTimeout, let id = e.game.thrower,
                 let thrower = e.players.first(where: { $0.id == id })
@@ -179,6 +283,7 @@ enum MatchPool {
         var goals = 0
         var blocks = 0
         var stallOuts = 0
+        var travels = 0
         for team in 0..<2 {
             let ts = e.game.teamStats(team)
             attempts += ts.attempts
@@ -187,6 +292,13 @@ enum MatchPool {
             blocks += ts.blocks
             stallOuts += ts.stallOuts
         }
+        for player in e.players { travels += e.game.playerStats(player.id)?.travels ?? 0 }
+        let forwardGains = gains.reduce(0, +) / Double(Swift.max(1, gains.count))
+        let passAttempts = e.game.teamStats(0).attempts + e.game.teamStats(1).attempts
+        let completed = e.game.teamStats(0).completions + e.game.teamStats(1).completions
+        let throwaways = e.game.teamStats(0).throwaways + e.game.teamStats(1).throwaways
+        let drops = e.game.teamStats(0).drops + e.game.teamStats(1).drops
+        let cadence = throwsSeen > 0 ? Double(liveTicks) * dt / Double(throwsSeen) : .infinity
 
         return Match(
             seed: seed,
@@ -198,12 +310,29 @@ enum MatchPool {
             calls: e.callTally,
             score: e.score,
             point: e.game.point,
+            holds: e.game.teamStats(0).holds + e.game.teamStats(1).holds,
+            breaks: e.game.teamStats(0).breaks + e.game.teamStats(1).breaks,
             turnovers: turnovers,
             attempts: attempts,
             completions: completions,
             goals: goals,
             blocks: blocks,
-            stallOuts: stallOuts
+            stallOuts: stallOuts,
+            travels: travels,
+            pinnedFrames: pinnedFrames,
+            heldFrames: heldFrames,
+            worstPivotReach: worstPivotReach,
+            scoreEvents: scoreEvents,
+            meanGain: forwardGains,
+            longestCompletion: completedDists.max() ?? 0,
+            hucksAttempted: attemptDists.filter { $0 >= 28 }.count,
+            cadence: cadence,
+            passPct: passAttempts > 0 ? 100.0 * Double(completed) / Double(passAttempts) : 0,
+            totalTurnovers: throwaways + drops + stallOuts + blocks,
+            finished: e.isOver,
+            deepShots: deepShots,
+            scaledDeepShots: scaledDeepShots,
+            aimedThrows: aimedThrows
         )
     }
 }
