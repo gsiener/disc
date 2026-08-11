@@ -42,6 +42,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { FIELD } from '../../src/sim/Rules.ts';
 
 const ROOT = join(import.meta.dirname, '..', '..');
 
@@ -174,5 +175,43 @@ export function divergenceGoldens() {
       'that the live Swift symbols agree with `swift`. See ADR-0007.',
     divergences,
     referenceConstants: moduleConstants('src/sim/AI.ts'),
+    referencePullConstants: pullConstants(),
   };
+}
+
+/**
+ * The pull's seven fitted constants, out of `src/sim/Game.ts`.
+ *
+ * **This scrape exists because the port did not carry a single one of them.** ADR-0007's
+ * third rule — equality with the oracle is asserted by default — was wired to `AI.ts`
+ * only, and `doPull`'s constants live in `Game.ts`, so "a reference constant the port
+ * does not carry under that name has to be classified with a reason" never applied to
+ * them. `Engine.autoPull` was consequently an independently invented pull that aimed
+ * 16.8 m short of every pull the reference throws, for the whole life of the feature,
+ * with 2.25 M green assertions either side of it. See issue #2 and
+ * `.agents/friction-log/20260811065754-the-port-s/`.
+ *
+ * Narrow on purpose: `PULL_*`, not all of `Game.ts`. That file is 173 KB of a Three.js
+ * system and most of its constants are about a renderer the port does not have, so
+ * scraping it whole would mean a long `unmirrored` list written in one sitting by
+ * somebody who was not thinking about any of them. Widening this to the rest of
+ * `Game.ts` is its own piece of work.
+ *
+ * `PULL_TARGET_Z` is an *expression* (`FIELD.GOAL_LINE + 4`) rather than a literal, so
+ * `moduleConstants`' pattern cannot see it. It gets its own pattern, tight enough that
+ * editing the expression stops matching — and a name that stops matching lands as `null`
+ * in the fixture and fails on the Swift side, which is where the teeth are.
+ */
+function pullConstants(): Record<string, number | null> {
+  const all = moduleConstants('src/sim/Game.ts');
+  const out: Record<string, number | null> = {};
+  for (const [name, value] of Object.entries(all)) {
+    if (name.startsWith('PULL_')) out[name] = value;
+  }
+  const src = readFileSync(join(ROOT, 'src/sim/Game.ts'), 'utf8');
+  const target = [
+    ...src.matchAll(/^const PULL_TARGET_Z = FIELD\.GOAL_LINE \+ (\d+(?:\.\d+)?);/gm),
+  ];
+  out['PULL_TARGET_Z'] = target.length === 1 ? FIELD.GOAL_LINE + Number(target[0]![1]!) : null;
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => (a < b ? -1 : 1)));
 }

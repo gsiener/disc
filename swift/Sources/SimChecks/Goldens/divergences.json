@@ -35,5 +35,14 @@
     "LOFT_FLIGHT": 1.75,
     "MIN_CUT_RUN": 1.8,
     "STANDING_REACH": 0.82
+  },
+  "referencePullConstants": {
+    "PULL_BANK": -0.5,
+    "PULL_CARRY": 66,
+    "PULL_DRIFT": 8.4,
+    "PULL_NOSE": 0.02,
+    "PULL_SPEED": 32,
+    "PULL_SPIN": 0.85,
+    "PULL_TARGET_Z": 36
   }
 }

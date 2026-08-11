@@ -457,19 +457,25 @@ enum EngineSeamTests {
                 + "assertion in this function")
     }
 
-    /// THE PULL IS SOLVED AGAINST THE PITCH, NOT AGAINST A CONSTANT.
+    /// A PULL CARRIES A PITCH'S WORTH ON EITHER PITCH — by two different mechanisms.
     ///
-    /// `solvePower` bisects the real flight integrator twelve times rather than reading a
-    /// fitted curve, and the reason is measurable: a minis goal line is 12.5 m out and a
-    /// regulation one is 32 m, so full power on the big pitch is a pull and on the small
-    /// one is a disc in the car park.
+    /// **This check used to assert one mechanism and now asserts the property.** It was
+    /// written when `autoPull` was a single `solvePower` bisection on both formats, aiming
+    /// at `dir * goalLine * 0.6` from `-dir * goalLine * 0.95` — 1.55 goal lines of carry
+    /// on either pitch — and it read the agreement between the two formats as the
+    /// bisection working. That agreement is no longer the design: on the regulation pitch
+    /// `autoPull` is `Game.doPull` ported, a fitted ballistic aimed at
+    /// `PULL_TARGET_Z = goalLine + 4`, because the reference is the oracle there and the
+    /// port's own invention aimed 16.8 m short of every pull the reference throws (issue
+    /// #2's `turnover:pull-drop`). Minis keeps the bisection, because `src/sim/` has one
+    /// field and there is no oracle for a 37 m pitch.
     ///
-    /// The assertion is therefore **scale-free**. `autoPull` aims at
-    /// `dir * goalLine * 0.6` from `-dir * goalLine * 0.95`, which is 1.55 goal lines of
-    /// carry on either pitch; so the carry measured *in goal lines* must agree between
-    /// the two formats. Any fixed power constant fails this by construction — it can be
-    /// tuned to hit one pitch's band and then misses the other's by more than the whole
-    /// distance the small pitch has to offer.
+    /// So the two formats now reach a similar fraction of their pitch for unrelated
+    /// reasons, and the mean-agreement clause below is kept only as the loose sanity it
+    /// always was. **The clause with teeth is the per-pull range**, which is stated as a
+    /// fraction of the pitch and holds on either one — and it is what catches a fitted
+    /// constant escaping onto the small pitch, where 66 m of carry is a disc in the car
+    /// park, or a bisection aiming short on the big one.
     ///
     /// Measured where the pull resolves rather than where it was aimed, because a pull is
     /// usually caught on the way down; that costs a little carry on both pitches equally,
@@ -482,8 +488,10 @@ enum EngineSeamTests {
                 let e = Engine(format: format, seed: seed)
                 e.autoTeams = [0, 1]
                 let dir = Double(e.dirFor(e.game.pullingTeam))
-                guard let from = e.body(of: e.game.pullingTeam * format.playersPerSide)?.pos
-                else { continue }
+                // `e.puller`, not `pullingTeam * playersPerSide`: the puller is the best arm
+                // on the line now, as it is in `Game.doPull`, so the first name on the line
+                // is somebody else standing somewhere else.
+                guard let from = e.body(of: e.puller)?.pos else { continue }
 
                 var landed: Vec3d?
                 for _ in 0..<(120 * 30) {
@@ -539,15 +547,15 @@ enum EngineSeamTests {
                         + "(\(c) goal lines)")
             }
         }
-        // THE PROPERTY. Same fraction of the pitch on two pitches 2.56x apart.
+        // The loose clause: a similar fraction of the pitch on two pitches 2.56x apart. It
+        // no longer says "the bisection is working", because only one of the two formats
+        // bisects — but a constant that escaped its format still misses this by more than
+        // a whole goal line, which is what it is kept for. Measured at 1.57 (minis,
+        // bisected) against 1.90 (sevens, `doPull`'s fitted 66 m).
         Check.near(
             smallMean, bigMean, 0.6,
-            "the pull carries the same fraction of the pitch on a 12.5 m goal line as on "
-                + "a 32 m one — which is the bisection working, and which no fixed power "
-                + "constant can produce. Measured at 1.57 against 1.23 goal lines; a "
-                + "constant tuned to either pitch misses the other by more than a whole "
-                + "goal line, so the band is loose against noise and tight against the "
-                + "failure it is for")
+            "the pull carries a similar fraction of the pitch on a 12.5 m goal line as on "
+                + "a 32 m one")
     }
 
     // MARK: - control follows the disc

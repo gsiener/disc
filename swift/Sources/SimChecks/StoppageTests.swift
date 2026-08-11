@@ -278,11 +278,21 @@ enum StoppageTests {
             "a blow is one day in ten (\(windy) of \(n) days, \(rate))")
     }
 
-    /// A pull is flattened into a headwind, and untouched otherwise.
+    /// A pull still reaches the receiving half in the top of the windy band.
     ///
-    /// `solvePower` bisects against the real wind, so the power was never the problem — a
-    /// launch angle is not something power can fix. At 0.30 rad into the top of the windy
-    /// band the disc balloons, stalls and lands 0.27 goal lines away on the minis pitch.
+    /// **On minis** that is `pullAngle` flattening the launch into a headwind, which is
+    /// what this check was written for: `solvePower` bisects against the real wind, so the
+    /// power was never the problem — a launch angle is not something power can fix. At
+    /// 0.30 rad into the top of the windy band the disc balloons, stalls and lands 0.27
+    /// goal lines away on the minis pitch.
+    ///
+    /// **On sevens there is no wind term at all any more**, and that is deliberate rather
+    /// than an oversight: `autoPull` is `Game.doPull` ported there, and the reference has
+    /// no wind adaptation in its pull — one fitted ballistic, thrown into whatever the day
+    /// is doing. The port gave that up to match the oracle (issue #2). So the sevens half
+    /// of this sweep is now measuring whether 32 m/s of fitted hyzer survives 9.5 m/s of
+    /// headwind on a 100 m pitch, unaided. It does, which is the fit being a good one and
+    /// is worth keeping asserted precisely because nothing is compensating any more.
     private static func aPullIsFlattenedIntoAHeadwind() {
         var cfg = EngineConfig.default
         for (label, format) in [("minis", GameFormat.minis), ("sevens", GameFormat.sevens)] {
@@ -294,9 +304,8 @@ enum StoppageTests {
                     let e = Engine(format: format, seed: 11, config: cfg)
                     e.autoTeams = [0, 1]
                     let dir = Double(e.dirFor(e.game.pullingTeam))
-                    guard
-                        let from = e.body(of: e.game.pullingTeam * format.playersPerSide)?.pos
-                    else { continue }
+                    // `e.puller` — the best arm on the line, as `Game.doPull` picks it.
+                    guard let from = e.body(of: e.puller)?.pos else { continue }
 
                     var landed: Vec3d?
                     for _ in 0..<(120 * 30) {
