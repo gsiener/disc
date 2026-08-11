@@ -210,17 +210,32 @@ enum AIMathTests {
         }
     }
 
+    /// `possessionValue` on the pitch this fixture was generated on.
+    ///
+    /// The reference has one field, so every row in `aimath.json` is a regulation row and
+    /// the two lengths are `FieldConstants.standard`'s own — exactly the `64` and `18`
+    /// `src/sim/AI.ts` writes. They used to be Swift-side defaults and are now required
+    /// (issue #17): a curve whose flat top is the length of a pitch may not pick its own
+    /// pitch, so the fixture says which one it means instead of inheriting it.
+    static func regulationPV(_ yards: Double) -> Double {
+        possessionValue(
+            yards,
+            central: FieldConstants.standard.centralLength,
+            endzone: FieldConstants.standard.endzoneDepth)
+    }
+
     private static func possession(_ g: File) {
         for row in g.possession {
             Check.bitEqViaJSON(
-                possessionValue(row.yards), row.want, "possessionValue(\(row.yards))")
+                regulationPV(row.yards), row.want, "possessionValue(\(row.yards))")
         }
     }
 
     private static func stakes(_ g: File) {
         for row in g.stakes {
             Check.bitEqViaJSON(
-                discStakes(row.z, row.dir), row.want, "discStakes(\(row.z), \(row.dir))")
+                discStakes(row.z, row.dir, field: .regulation), row.want,
+                "discStakes(\(row.z), \(row.dir))")
         }
     }
 
@@ -391,12 +406,12 @@ enum AIMathTests {
 
         // "a turnover in your own endzone is a goal against, not a field-position swing"
         Check.ok(
-            possessionValue(82) < possessionValue(64),
+            regulationPV(82) < regulationPV(64),
             "deep in your own endzone is worth less than your own goal line")
         Check.ok(
-            possessionValue(0) > possessionValue(40), "closer to the goal is worth more")
+            regulationPV(0) > regulationPV(40), "closer to the goal is worth more")
         Check.ok(
-            possessionValue(0) > possessionValue(82),
+            regulationPV(0) > regulationPV(82),
             "the endzone you are attacking beats the one you are defending")
 
         // Throw table: a backhand outranges everything, a push outranges nothing.

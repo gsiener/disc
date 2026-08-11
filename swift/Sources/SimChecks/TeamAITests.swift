@@ -544,7 +544,7 @@ enum TeamAITests {
         // nearer than the radius the disc-space guard backs a marker out to, so a marker
         // who had once been too close could never start the count at all.
         let dt = 1.0 / 120
-        let probe = TeamAI(team: 0, dir: 1, rng: Rng(seed: 1))
+        let probe = TeamAI(team: 0, dir: 1, rng: Rng(seed: 1), field: .standard)
         Check.bitEqViaJSON(
             probe.tickStall(0, Playbook.PLAY.markMax, dt), dt,
             "the count starts at exactly markMax, with no margin")
@@ -589,14 +589,16 @@ enum TeamAITests {
         // true for that. `possessionValue` clamped at 64, so eighteen metres deep in your
         // own endzone priced identically to standing on your own line — the model could
         // not see the difference, so the throw was WANTED.
+        // Read on the regulation pitch, whose `centralLength` and `endzoneDepth` ARE the
+        // 64 and 18 quoted above; `possessionValue`'s defaults were removed with issue #17.
         Check.ok(
-            possessionValue(70) < possessionValue(64),
+            AIMathTests.regulationPV(70) < AIMathTests.regulationPV(64),
             "possessionValue keeps falling past the goal line")
         Check.ok(
-            possessionValue(82) < possessionValue(70),
+            AIMathTests.regulationPV(82) < AIMathTests.regulationPV(70),
             "and keeps falling to the back of your own endzone")
         Check.bitEqViaJSON(
-            possessionValue(82), possessionValue(64) - 0.42,
+            AIMathTests.regulationPV(82), AIMathTests.regulationPV(64) - 0.42,
             "a full endzone depth costs exactly the whole second term")
 
         // And the geometry: no reset cut may target ground behind the floor. Checked over
@@ -661,7 +663,8 @@ enum TeamAITests {
                 archetype: Archetype(rawValue: r.archetype)!,
                 energy: 1, role: PlayerRole(rawValue: r.role)!)
         }
-        let ct = TeamAI(team: 0, dir: 1, rng: Rng(seed: 5), cfg: config(g.cfg[0]))
+        let ct = TeamAI(
+            team: 0, dir: 1, rng: Rng(seed: 5), cfg: config(g.cfg[0]), field: .standard)
         let cw = AIWorld(
             players: cplayers,
             disc: AIDiscState(pos: Vec3d(0, 1, 0), state: .held, carrier: 0),

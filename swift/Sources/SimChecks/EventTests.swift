@@ -130,8 +130,16 @@ enum EventTests {
     }
 
     /// Play a match, draining every tick the way the view does, and tally what came out.
-    private static func play(seed: UInt32, ticks: Int) -> (Engine, Tally) {
-        let match = Engine(format: .minis, target: 5, seed: seed)
+    ///
+    /// `target` is what stops the match, and a caller who wants a LENGTH rather than a
+    /// RESULT has to raise it past what the tick budget can reach — the same trick
+    /// `EngineTests.playsWithoutBlowingUp` documents, and for the same reason. A game to
+    /// five ends when somebody scores five, so its stream is as long as the offence is
+    /// inefficient: scaling the AI's pitch constants (issue #17) took this seed from 18
+    /// attempts and 215 s to 10 and 161 s for the identical 0-5 scoreline, and the
+    /// richness gate below went from 54 events to 38 without anything having gone wrong.
+    private static func play(seed: UInt32, ticks: Int, target: Int = 5) -> (Engine, Tally) {
+        let match = Engine(format: .minis, target: target, seed: seed)
         var t = Tally()
         for _ in 0..<ticks {
             if match.isOver { break }
@@ -168,13 +176,19 @@ enum EventTests {
     /// The stream against the box score. If these two ever disagree, one of them is
     /// lying to the player.
     private static func streamReconciles() {
-        // Long enough to reach several points on a minis pitch, which is what puts pulls,
-        // drops, blocks and stall-outs all in the same sample.
-        let (match, t) = play(seed: 0x0e7e_51a1, ticks: 120 * 600)
+        // Ten minutes of ticks, and a target no minis match reaches inside them, so the
+        // sample is a LENGTH of play rather than however long one side took to win five.
+        // That is what puts pulls, drops, blocks and stall-outs in the same stream, and
+        // it is what makes the assertion below say what its message has always claimed.
+        let (match, t) = play(seed: 0x0e7e_51a1, ticks: 120 * 600, target: 99)
 
         let a = match.game.teamStats(0)
         let b = match.game.teamStats(1)
 
+        Check.note(
+            "stream: \(t.all.count) events over \(Int(match.clock))s, "
+                + "score \(match.score[0])-\(match.score[1]), "
+                + "\(a.attempts + b.attempts) attempts")
         Check.ok(t.all.count > 40, "a ten-minute match produces a stream worth checking")
         Check.eq(
             t.released[0] + t.released[1], a.attempts + b.attempts,

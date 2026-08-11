@@ -632,12 +632,14 @@ enum EngineTests {
         /// Did the match reach its target inside the fifteen minutes measured? For minis
         /// this is the whole of "playable": a game to 7 that does not finish is the bug.
         let finished: Bool
-        /// Releases whose aim satisfied `TeamAIThrow`'s deep-shot test *as it is written* —
-        /// `gain >= 22 && d >= 25`, in absolute metres.
+        /// Releases satisfying the deep-shot test read in ABSOLUTE METRES — `gain >= 22 &&
+        /// d >= 25`. This is how `TeamAIThrow` used to be written and is no longer: kept
+        /// as the historical reading so the note below can show what the bug looked like.
+        /// It is unreachable at minis by construction, so nothing asserts it there.
         let deepShots: Int
-        /// The same test with its two distances read as fractions of the pitch rather than
-        /// as metres: `22 * goalLine / 32` and `25 * goalLine / 32`. Identical to
-        /// `deepShots` at sevens, where the factor is exactly 1.
+        /// Releases satisfying the deep-shot test **as `TeamAIThrow` now writes it** —
+        /// `DEEP_SHOT_GAIN * depthScale` and `DEEP_SHOT_REACH * depthScale`. At sevens the
+        /// factor is exactly 1 and this is bit-for-bit `deepShots`, which is asserted.
         let scaledDeepShots: Int
         /// Live releases the aim was recorded for — the denominator of the two above.
         let aimedThrows: Int
@@ -722,44 +724,41 @@ enum EngineTests {
             "and the receiving team holds more often than not, over \(points) points "
                 + "(\(holds) = " + String(format: "%.0f%%", holdShare * 100) + ")")
 
-        /// **THE DEEP GAME EXISTS AT MINIS — read in the pitch's own units.** Issue #18.
+        /// **THE DEEP-SHOT VALUATION IS ENTERED AT MINIS.** Issues #18, #17, #28.
         ///
-        /// `TeamAIThrow.evaluateOptions` prices a huck with a separate model, and enters it
-        /// on `isDeepShot = gain >= 22 && d >= 25` (`TeamAIThrow.swift`, in the
-        /// expected-possession-value block). Both numbers are absolute metres measured on a
-        /// 32 m goal line. **Measured over five minis seeds and 332 live releases, that test
-        /// fires exactly zero times** — 11, 3, 7, 23 and 37 all score 0 — while the three
-        /// sevens seeds asserted above fire it 7, 4 and 6 times a match. The longest a minis
-        /// offence aims at is 18.5 m, and the floor is 22 and 25. The branch is not rare on
-        /// the small pitch, it is unreachable, and so are the jump-ball completion model,
-        /// the out-of-bounds tax and the pin credit behind it. That is issue #17's two
-        /// literals in `TeamAIThrow`, with a number against them.
+        /// `TeamAIThrow.evaluateOptions` prices a huck with a separate model — the jump
+        /// ball, the out-of-bounds tax on the aim point, the halved turnover charge and the
+        /// pin credit — and enters it on `isDeepShot`. That test used to read
+        /// `gain >= 22 && d >= 25` in absolute metres measured on a 32 m goal line, and on
+        /// the 12.5 m one it was not rare, it was **unreachable: zero firings over five
+        /// minis seeds and 332 live releases**, 11/3/7/23/37 all scoring 0, while the three
+        /// sevens seeds fired it 7, 4 and 6 times a match. The longest a minis offence ever
+        /// aims at is 18.5 m and the floor was 22 before the 25 was even reached, so the
+        /// whole huck model was dead code on the DEFAULT pitch.
         ///
-        /// Asserting the absolute test at minis would therefore be a red check about a bug
-        /// this file may not fix, and asserting that it *never* fires would pin the bug —
-        /// `minisPitch()` in `PlaybookTests` carries the scar of a check that did exactly
-        /// that. So what is asserted is the property the pitch scale is supposed to give,
-        /// which is true today and stays true when #17 lands: **read as a fraction of the
-        /// pitch, the deep shot happens.** 22 and 25 m on a 32 m goal line are 0.6875 and
-        /// 0.78125 goal lines; on the minis pitch that is 8.59 and 9.77 m. Measured: 40 such
-        /// releases over the three seeds (14 / 15 / 11), against a floor of two a match.
+        /// It now reads `DEEP_SHOT_GAIN * depthScale` and `DEEP_SHOT_REACH * depthScale` —
+        /// 0.6875 and 0.78125 of a goal line, which on minis is 8.59 and 9.77 m and at
+        /// sevens is exactly 22 and 25. So `scaledDeepShots` IS the branch now, and it is
+        /// asserted at the same two-a-match floor as its sevens twin rather than merely
+        /// noted. `deepShots` — the old absolute reading — is kept beside it in the note
+        /// and deliberately NOT asserted here: it is a historical measurement of a bug,
+        /// and asserting it either way would pin one, which is the scar `minisPitch()` in
+        /// `PlaybookTests` already carries.
         ///
         /// A build that loses the minis deep game — by re-flattening `depthScale`, by
         /// pricing possession on the wrong pitch again, or by shrinking the stack until
-        /// nobody is ever more than a dump away — fails this. The absolute count is not
-        /// asserted; when #17 lands it should be, and the floor above is where to put it.
+        /// nobody is ever more than a dump away — fails this.
         let deep = pool.reduce(0) { $0 + $1.deepShots }
         let scaledDeep = pool.reduce(0) { $0 + $1.scaledDeepShots }
         let aimed = pool.reduce(0) { $0 + $1.aimedThrows }
         Check.note(
-            "minis deep shots over \(pool.count) matches: \(deep) at the regulation "
-                + "threshold (22 m gain / 25 m reach), \(scaledDeep) at the pitch-relative "
-                + "one, of \(aimed) live releases — issue #17")
+            "minis deep shots over \(pool.count) matches: \(scaledDeep) of \(aimed) live "
+                + "releases fire the branch as written; the pre-#28 absolute reading "
+                + "(22 m gain / 25 m reach) fires \(deep) — issues #17, #28")
         Check.ok(
             scaledDeep >= 2 * pool.count,
-            "minis has a deep game when the deep-shot threshold is read as a fraction of "
-                + "the pitch (\(scaledDeep) of \(aimed) live releases over \(pool.count) "
-                + "matches)")
+            "the deep-shot valuation fires at minis (\(scaledDeep) of \(aimed) live "
+                + "releases over \(pool.count) matches)")
     }
 
     /// THE TWO NUMBERS THAT CANNOT BE ASSERTED ONE SEED AT A TIME.
@@ -806,10 +805,10 @@ enum EngineTests {
             hucks >= 2 * sevensPool.count,
             "the deep game exists (\(hucks) huck attempts over \(sevensPool.count) matches)")
         // And the AI's own deep-shot VALUATION is entered, not merely the flight: a huck can
-        // be a mis-solved under, but `gain >= 22 && d >= 25` is the branch that prices a
-        // jump ball and a pin instead of multiplying four probabilities toward zero. If it
-        // stops firing, the whole huck model is dead code and nothing else here would say
-        // so. Pooled, per `.agents/friction-log/20260809222131-enginetests-deep-game`:
+        // be a mis-solved under, but `DEEP_SHOT_GAIN` / `DEEP_SHOT_REACH` is the branch that
+        // prices a jump ball and a pin instead of multiplying four probabilities toward
+        // zero. If it stops firing, the whole huck model is dead code and nothing else here
+        // would say so. Pooled, per `.agents/friction-log/20260809222131-enginetests-deep-game`:
         // measured 17 over the three seeds (7 / 4 / 6), against a floor of two a match.
         let deep = sevensPool.reduce(0) { $0 + $1.deepShots }
         let scaledDeep = sevensPool.reduce(0) { $0 + $1.scaledDeepShots }
@@ -899,12 +898,17 @@ enum EngineTests {
 
         // THE DEEP-SHOT BRANCH, COUNTED FROM OUTSIDE. `TeamAIThrow.evaluateOptions` prices a
         // huck with a different model — the jump ball, the pin, the out-of-bounds tax — and
-        // it enters that branch on `gain >= 22 && d >= 25`. Both numbers are absolute metres
-        // measured on a 32 m goal line, and neither is reachable on a 12.5 m one; issue #17.
-        // The branch is internal, so it is reconstructed here from `lastThrowAim`, which is
-        // the option's own `aim`, against the thrower's position on the tick before he let
-        // go. Pulls are excluded — `evaluateOptions` never runs for one — by requiring the
-        // previous tick to have been live possession.
+        // it enters that branch on `DEEP_SHOT_GAIN` and `DEEP_SHOT_REACH`, both scaled by
+        // the pitch (issues #17, #28). The branch is internal, so it is reconstructed here
+        // from `lastThrowAim`, which is the option's own `aim`, against the thrower's
+        // position on the tick before he let go. Pulls are excluded — `evaluateOptions`
+        // never runs for one — by requiring the previous tick to have been live possession.
+        //
+        // `scale` below is spelled out rather than read off `Playbook.depthScale` on
+        // purpose: reconstructing the predicate independently is what lets this counter
+        // disagree with the AI, which is the only way it can catch the AI being wrong.
+        // `goalLine / 32` is that scale's definition, so the two agree at every format
+        // while neither is derived from the other.
         var prevPhase = e.game.phase
         var deepShots = 0
         var scaledDeepShots = 0
