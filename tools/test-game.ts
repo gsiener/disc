@@ -1560,8 +1560,35 @@ group('a match makes progress on every seed, not just the lucky one');
   const SWEEP_S = 420;
   const results: {
     seed: number; score: number; throws: number; dead: number;
-    att: number; comp: number;
+    att: number; comp: number; worstStall: number; worstStallWho: string;
   }[] = [];
+
+  /**
+   * issue #33, option 3 — "no body is stationary for longer than N seconds
+   * while play is live and it has somewhere to be" is the check that would
+   * have caught the original defect (a collector frozen 103s, 6.35m from a
+   * stationary disc, by `boundaryRoom`'s speed cap reading zero room for a
+   * body resting on the sideline). That fix lives in `src/sim/AI.ts`
+   * (`intent()` now clamps every target inside `boundaryRoom`'s own margin
+   * before it reaches the cap math) — this is the general invariant that
+   * makes a regression of it, or a DIFFERENT way to reach the same freeze,
+   * show up here instead of in a bug report.
+   *
+   * "Somewhere to be" is read off the AI's own intent for that body this
+   * frame — a target more than STALL_FAR_M away — rather than off the phase
+   * alone, because a body legitimately holds still close to where it wants
+   * to be (a settled mark, a stack slot) for seconds at a time and that is
+   * not a freeze. "Stationary" is ground speed under STALL_EPS_MS, which is
+   * below anything a live body drifts at (test-move.ts's resting pairs settle
+   * to exactly 0.000 m/s). Phases where the AI itself sends bodies to a
+   * line-up spot rather than playing the point (`PRE_PULL`, `POINT_SCORED`,
+   * `HALFTIME`, `GAME_OVER`) are excluded — see `gamePhaseFor` in `Game.ts`,
+   * which maps every other phase, including a dead disc and a timeout, to
+   * `live`, on the reasoning that somebody still has to go and get it.
+   */
+  const STALL_FAR_M = 2.0;
+  const STALL_EPS_MS = 0.05;
+  const NOT_LIVE = new Set(['PRE_PULL', 'POINT_SCORED', 'HALFTIME', 'GAME_OVER']);
 
   for (const seed of SWEEP_SEEDS) {
     const c = makeCtx(seed);
@@ -1572,16 +1599,51 @@ group('a match makes progress on every seed, not just the lucky one');
     g.init(c);
     let dead = 0;
     const n = Math.round(SWEEP_S / DT);
+    const stallT = new Map<number, number>();
+    let worstStall = 0;
+    let worstStallWho = '';
     for (let i = 0; i < n; i++) {
       c.time += DT; c.dt = DT; c.frame++;
       g.update(DT, c);
       if (g.gs.phase === 'TURNOVER_DEAD') dead++;
+      if (!NOT_LIVE.has(g.gs.phase)) {
+        const intents = (g as unknown as {
+          intents: { id: number; targetX: number; targetZ: number }[];
+        }).intents;
+        for (const e of g.roster) {
+          const it = intents.find((q) => q.id === e.id);
+          const speed = Math.hypot(e.loco.vel.x, e.loco.vel.z);
+          const far = it
+            ? Math.hypot(it.targetX - e.loco.pos.x, it.targetZ - e.loco.pos.z) > STALL_FAR_M
+            : false;
+          if (far && speed < STALL_EPS_MS) {
+            const t = (stallT.get(e.id) ?? 0) + DT;
+            stallT.set(e.id, t);
+            if (t > worstStall) {
+              worstStall = t;
+              worstStallWho = `#${e.id} at (${e.loco.pos.x.toFixed(2)},${e.loco.pos.z.toFixed(2)}) `
+                + `phase=${g.gs.phase} t=${c.time.toFixed(1)}`;
+            }
+          } else {
+            stallT.set(e.id, 0);
+          }
+        }
+      }
     }
     results.push({
       seed, score: g.gs.score[0] + g.gs.score[1], throws, dead: dead / n,
       att: g.gs.teams[0].attempts + g.gs.teams[1].attempts,
       comp: g.gs.teams[0].completions + g.gs.teams[1].completions,
+      worstStall, worstStallWho,
     });
+  }
+
+  {
+    const worst = results.reduce((a, r) => (r.worstStall > a.worstStall ? r : a), results[0]);
+    console.log(`\x1b[2m  worst stall per seed: `
+      + results.map((r) => `${r.seed}=${r.worstStall.toFixed(1)}s`).join('  ') + '\x1b[0m');
+    ok(worst.worstStall < 8, 'no body sits still for 8s+ with 2m+ still to go, live disc',
+      `worst ${worst.worstStall.toFixed(1)}s, seed ${worst.seed}, ${worst.worstStallWho}`);
   }
 
   for (const r of results) {
