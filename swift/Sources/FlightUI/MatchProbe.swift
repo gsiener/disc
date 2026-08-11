@@ -82,8 +82,9 @@ extension MatchView {
         flag("flight", match.discInFlight)
         flag("cut.ok", match.canCallCut)
         // `humanDefend`'s precondition, minus the "is anybody on their feet" part it can
-        // only answer by asking.
-        flag("def.ok", match.possession != 0 && (match.holder != nil || match.discInFlight))
+        // only answer by asking. `Engine.canDefend` is the engine's own predicate now — see
+        // issue #8 — rather than a reconstruction from `possession`/`holder`/`discInFlight`.
+        flag("def.ok", match.canDefend)
         // Whether the body the player is watching is on the floor. It is the reason a tap can
         // be accepted and *still* not put the call plate on screen: `defenceReadout` gives the
         // rectangle to the "DOWN / BACK UP IN x.xs" line first, because by the time a body is

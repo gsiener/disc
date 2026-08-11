@@ -188,6 +188,41 @@ public final class Engine {
         human.callCooldown <= 0 && game.phase == .livePossession && carrier == controlled
     }
 
+    /// Whether `humanRelease` would attempt a throw right now — everything about *whether*
+    /// a release is legal, nothing about whether the specific aim is far enough away to
+    /// solve (that is `solveRelease`'s question, asked per throw, not a phase question).
+    ///
+    /// **`humanRelease` tests this property itself rather than re-deriving it**, which is
+    /// what makes the two structurally unable to drift apart — the failure mode issue #8
+    /// names: `Engine.phase` folds `check`, `turnoverDead` and `timeout` into `.live`, so a
+    /// caller reading the coarse phase can believe a release is legal, or illegal, when the
+    /// fine phase `humanRelease` actually gates on says the opposite. This reads `game.phase`
+    /// directly — the same fine phase — so it cannot disagree with the function it describes.
+    ///
+    /// A pull is a throw too, and only the player standing on the puller's line gets to make
+    /// it; `releasePull` refuses anybody else, so this does too.
+    public var canRelease: Bool {
+        guard let c = carrier, c == controlled else { return false }
+        switch game.phase {
+        case .prePull: return c == puller
+        case .livePossession: return true
+        default: return false
+        }
+    }
+
+    /// Whether `humanDefend` would commit a defender right now — the situational half only.
+    /// Like `canCallCut`, this does not promise there is anybody to send: `humanDefend` still
+    /// asks that itself, per body, because "is anybody on their feet" is not a phase question.
+    ///
+    /// **`humanDefend` tests this property itself**, for the same no-drift reason as
+    /// `canRelease`: both read `game.phase` directly rather than through `Engine.phase`'s
+    /// four-case fold, which is exactly the coarseness issue #8 exists to fix.
+    public var canDefend: Bool {
+        guard !isOver else { return false }
+        let live = game.phase == .livePossession || game.phase == .discInFlight
+        return live && possession != 0
+    }
+
     /// Calls made this match, by kind, plus how many of them were contested.
     /// Telemetry only — nothing in the simulation reads it.
     public var callTally: CallTally { calls.tally }

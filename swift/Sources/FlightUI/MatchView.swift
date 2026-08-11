@@ -1060,27 +1060,33 @@ public struct MatchView: View {
             let at = Self.groundPoint(tap: point, in: size, camera: camera)
         else { return refuse(.offPitch, at: point) }
 
-        if let called = match.humanCallCut(atX: at.x, atZ: at.z) {
+        // `attemptCallCut` is the engine's own account of why, not something reconstructed
+        // from public state — see `refusedTapReason`. An empty cone (`.noTarget`) is the one
+        // reason worth a second try before it is shown: widen to the half of the pitch the
+        // finger pointed at, and only give up once that has failed too.
+        let primary = match.attemptCallCut(atX: at.x, atZ: at.z)
+        if case .success(let called) = primary {
             return accept(called, aimedAt: at)
         }
+        if case .failure(let reason) = primary, reason != .noTarget {
+            return refuse(refusedTapReason(reason, defending: false), at: point)
+        }
 
-        // Why not. `Engine.canCallCut` is the engine's own answer to the three refusals that
-        // are about the *situation* rather than the direction — so if it says the call was
-        // available, an empty cone is the only thing left, and the widening is worth trying.
-        guard match.canCallCut else { return refuse(situationalRefusal(), at: point) }
         guard let alternative = nearestCutter(toward: at) else {
             return refuse(.nobodyThere, at: point)
         }
         // The team-mate's own position as the aim, which is a heading the cone cannot refuse:
         // zero degrees of angular error against a body it has already been told is available.
         let aim = (x: alternative.pos.x, z: alternative.pos.z)
-        guard let called = match.humanCallCut(atX: aim.x, atZ: aim.z) else {
-            // A body was named and `TeamAI.commandCut` had no route to give them. Rare, and a
-            // different sentence: pointing somewhere else is the fix, waiting is not.
-            return refuse(.noRoute, at: point)
+        switch match.attemptCallCut(atX: aim.x, atZ: aim.z) {
+        case .success(let called):
+            widenedCalls += 1
+            accept(called, aimedAt: aim)
+        case .failure(let reason):
+            // A body was named, so in practice this is always `TeamAI.commandCut` having had
+            // no route for them — `nearestCutter` only ever offers a body the cone accepts.
+            refuse(refusedTapReason(reason, defending: false), at: point)
         }
-        widenedCalls += 1
-        accept(called, aimedAt: aim)
     }
 
     /// Record an accepted call and say who is going.
@@ -1101,25 +1107,30 @@ public struct MatchView: View {
         Feel.play(.commit)
     }
 
-    /// Which of `humanCallCut`'s situational refusals applied, for a tap that got as far as
-    /// the grass and was still turned down.
+    /// Translate the engine's own `CutRefusal` into the HUD's vocabulary.
     ///
-    /// Read off the engine's own public state in the same order the engine tests them, so the
-    /// words on screen cannot claim a reason the engine did not have. It is only ever called
-    /// once `canCallCut` is false, so one of these three is true by construction; the fall
-    /// through is the cooldown, which is the one the engine keeps to itself.
+    /// **This replaced a reconstruction, and the reconstruction was the bug.**
+    /// `situationalRefusal` used to read `canCallCut` plus `Engine.phase` and guess which of
+    /// `humanCallCut`'s guards had failed — and got one case wrong, because `Engine.phase`
+    /// folds `check` and `turnoverDead` into `.live` (issue #8), so a tap during the stoppage
+    /// after a call read TOO SOON when the true reason was NOT IN PLAY. `attemptCallCut` and
+    /// `attemptDefend` build `CutRefusal` from `game.phase` directly — the fine phase — so
+    /// there is nothing left here to reconstruct, only to relabel.
     ///
-    /// **One read is coarser than the engine's own and knowingly so.** `canCallCut` tests
-    /// `GameState`'s fine phase (`livePossession`), and the only phase this side of the package
-    /// boundary is `Engine.phase`, which folds `check` and `turnoverDead` into `.live`. So a
-    /// tap during the stoppage after a call, with the disc back in our hand, reads as TOO SOON
-    /// rather than NOT IN PLAY — the same instruction (wait), a less exact reason. Fixing it
-    /// properly means the engine saying why it refused, which is `EngineHuman`'s to give and
-    /// not this file's to guess: see the report on this change.
-    private func situationalRefusal() -> RefusedTap.Reason {
-        if match.phase != .live { return .notLive }
-        if match.holder != match.controlled { return .notYours }
-        return .tooSoon
+    /// Two cases read differently depending which half of the tap asked, because the same
+    /// engine-level fact wants a different sentence on each side: `.noTarget` is an empty
+    /// cone on offence (`.nobodyThere`) and an empty bench on defence (`.everybodyDown`);
+    /// `.notYours` is a team-mate holding it on offence (`.notYours`) and us holding it, so
+    /// there is nothing to defend, on defence (`.discUnsettled` — the label already written
+    /// for "nothing to chase").
+    private func refusedTapReason(_ reason: CutRefusal, defending: Bool) -> RefusedTap.Reason {
+        switch reason {
+        case .gameOver, .notLive: .notLive
+        case .notYours: defending ? .discUnsettled : .notYours
+        case .tooSoon: .tooSoon
+        case .noTarget: defending ? .everybodyDown : .nobodyThere
+        case .noRoute: .noRoute
+        }
     }
 
     /// The team-mate nearest in heading to the space the player pointed at, within a right
@@ -1190,25 +1201,25 @@ public struct MatchView: View {
     /// your defenders.
     private func defend(at point: CGPoint) {
         guard running else { return }
-        guard let commit = match.humanDefend() else {
-            // Three refusals, in the order `humanDefend` tests them: the point is not running;
-            // the disc is ours or nobody's, so there is nothing to chase and no thrower to
-            // call a cut off; or everybody who could have gone is on the floor.
-            if match.phase != .live { return refuse(.notLive, at: point) }
-            if match.possession == 0 { return refuse(.discUnsettled, at: point) }
-            return refuse(.everybodyDown, at: point)
+        // `attemptDefend` names the reason directly — see `refusedTapReason` — rather than
+        // this file re-deriving it from `match.phase`/`match.possession`, which is the read
+        // that used to be one case short of the engine's own (issue #8/#9).
+        switch match.attemptDefend() {
+        case .success(let commit):
+            refusedTap = nil
+            // A tap that committed somebody is an input; a tap that was refused changed
+            // nothing and is not one. `humanDefend` refuses identically on replay, so either
+            // choice would restore correctly — recording only the taps that did something
+            // keeps the tape a list of what happened.
+            inputs.append(RecordedInput(tick: tickCount, input: .defend))
+            Prefs.defenceUsed = true
+            let slot = match.players.firstIndex { $0.id == commit.defender }
+            defenceCall = DefenceCall(
+                jersey: slot.map(jersey), kind: commit.kind, timeLeft: DefenceCall.duration)
+            Feel.play(.commit)
+        case .failure(let reason):
+            refuse(refusedTapReason(reason, defending: true), at: point)
         }
-        refusedTap = nil
-        // A tap that committed somebody is an input; a tap that was refused changed
-        // nothing and is not one. `humanDefend` refuses identically on replay, so either
-        // choice would restore correctly — recording only the taps that did something
-        // keeps the tape a list of what happened.
-        inputs.append(RecordedInput(tick: tickCount, input: .defend))
-        Prefs.defenceUsed = true
-        let slot = match.players.firstIndex { $0.id == commit.defender }
-        defenceCall = DefenceCall(
-            jersey: slot.map(jersey), kind: commit.kind, timeLeft: DefenceCall.duration)
-        Feel.play(.commit)
     }
 
     /// The pinned gesture `-charge` asks for, if it asked for one. A drag up and to the

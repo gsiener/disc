@@ -36,6 +36,47 @@ final class HumanInput {
     var callCooldown: Double = 0
 }
 
+/// Why `humanCallCut` or `humanDefend` turned a tap down — the engine's own accounting of
+/// a refusal, rather than something a caller reconstructs from public state.
+///
+/// **This is issue #9, and reconstruction is exactly the bug it replaces.** Before this
+/// existed, `MatchView.situationalRefusal` read `canCallCut` plus `Engine.phase` and
+/// guessed which of `humanCallCut`'s guards had failed — and got one case wrong, because
+/// `Engine.phase` (see issue #8) folds `check` and `turnoverDead` into `.live`, so a tap
+/// during the stoppage after a call read TOO SOON when the true reason was NOT IN PLAY.
+/// `attemptCallCut`/`attemptDefend` below build this from the same guards that gate the
+/// action itself — `game.phase` directly, the fine phase, never the coarse projection — so
+/// there is nothing left to reconstruct and nothing left to get wrong.
+///
+/// One enum for both functions rather than two, because the guards line up: `humanCallCut`
+/// uses all six cases (the friction log's five situational reasons, plus `.noRoute` for the
+/// one case its own summary folded into "the cone named nobody" — a body *was* named, but
+/// `TeamAI.commandCut` had no route for it, which is a different sentence for a player);
+/// `humanDefend` uses the four that apply to it — it has no cooldown and no cone, only a
+/// situation and a body to send.
+public enum CutRefusal: Error, Equatable, Sendable {
+    /// The match has ended. `humanCallCut` and `humanDefend` both refuse identically here;
+    /// in practice the view layer stops offering taps before either would report it.
+    case gameOver
+    /// The point is not at a phase this action can happen in. For `humanCallCut`, anything
+    /// but `livePossession`. For `humanDefend`, anything but `livePossession` or
+    /// `discInFlight` — the two phases `canDefend` calls live.
+    case notLive
+    /// Wrong side of the disc. For `humanCallCut`, a team-mate is holding it, so the call is
+    /// theirs to make. For `humanDefend`, WE have it — there is nothing to chase and no
+    /// thrower on the other team to close down.
+    case notYours
+    /// `humanCallCut` only: the last call has not cooled down (`Engine.calledCutInterval`).
+    case tooSoon
+    /// Nobody to send. For `humanCallCut`, the cone named nobody. For `humanDefend`, every
+    /// defender is on the floor (or, in principle, there is no point on the grass worth
+    /// aiming one at — see `attemptDefend`).
+    case noTarget
+    /// `humanCallCut` only: a team-mate WAS named, but `TeamAI.commandCut` had no route to
+    /// give them.
+    case noRoute
+}
+
 extension Engine {
 
     /// Every body as the targeting layer wants them.
@@ -111,7 +152,11 @@ extension Engine {
     public func humanRelease(
         _ type: ThrowType, aim: Vec3d, power: Double, loft: Double = 0, quality: Double = 1
     ) -> Bool {
-        guard let c = carrier, c == controlled, let thrower = player(c) else { return false }
+        // `canRelease` IS this guard, not a copy of it — see issue #8. Binding `c`/`thrower`
+        // here rather than re-testing `carrier == controlled` is what keeps it that way: the
+        // situational question is answered once, by the property, and this only unwraps what
+        // `canRelease` already proved.
+        guard canRelease, let c = carrier, let thrower = player(c) else { return false }
 
         let from = releaseOrigin(thrower)
 
@@ -263,14 +308,39 @@ extension Engine {
     /// Returns the order, or nil when there is nothing to order: the disc is not in our
     /// hand, the point is dead, the cone is empty, or the last call was too recent. A
     /// refused tap changes nothing at all — no draw is consumed on any refusal path.
+    ///
+    /// This is `attemptCallCut` below with the reason dropped, kept for the many callers —
+    /// `Replay`, the checks, `MatchPersistence` — that only ever asked "did it work". A
+    /// caller that wants to know *why not*, which is the whole of issue #9, wants
+    /// `attemptCallCut` instead.
     @discardableResult
     public func humanCallCut(atX: Double, atZ: Double) -> CalledCut? {
-        guard !isOver, game.phase == .livePossession else { return nil }
-        // Our disc, in the hand of the body the player is driving. On defence the same tap
-        // is `humanDefend`, and the two can never both apply: one wants us holding it and
-        // the other wants them holding it.
-        guard let c = carrier, c == controlled, let thrower = player(c) else { return nil }
-        guard human.callCooldown <= 0 else { return nil }
+        switch attemptCallCut(atX: atX, atZ: atZ) {
+        case .success(let called): called
+        case .failure: nil
+        }
+    }
+
+    /// `humanCallCut`, with the refusal reason kept rather than thrown away.
+    ///
+    /// **Every guard lives here exactly once**, gated on `canCallCut` for the three
+    /// situational reasons it already answers, so this cannot report a reason `humanCallCut`
+    /// itself would not have refused for — the drift `MatchView.situationalRefusal` used to
+    /// risk by re-deriving the same question from public state (see `CutRefusal`).
+    @discardableResult
+    public func attemptCallCut(atX: Double, atZ: Double) -> Result<CalledCut, CutRefusal> {
+        guard canCallCut else {
+            // `canCallCut` is one Bool; this recovers which of its three terms was false,
+            // in the same order the friction log named them, from the exact same reads —
+            // `isOver`, `game.phase`, `carrier`/`controlled`, `human.callCooldown` — so the
+            // reason can never claim something `canCallCut` itself did not test.
+            if isOver { return .failure(.gameOver) }
+            if game.phase != .livePossession { return .failure(.notLive) }
+            if carrier != controlled { return .failure(.notYours) }
+            return .failure(.tooSoon)
+        }
+        // `canCallCut` already proved `carrier == controlled`, so this only unwraps it.
+        guard let c = carrier, let thrower = player(c) else { return .failure(.notYours) }
 
         let dx = atX - thrower.pos.x
         let dz = atZ - thrower.pos.z
@@ -278,12 +348,12 @@ extension Engine {
         guard let me = bodies.first(where: { $0.id == c }),
             let picked = coneSelect(dx: dx, dz: dz, thrower: me, bodies: bodies),
             let side = ai.first(where: { $0.team == thrower.team })
-        else { return nil }
+        else { return .failure(.noTarget) }
 
         let d = disc.state.pos
         guard let route = side.commandCut(picked, dx, dz, Vec2d(d.x, d.z)),
             let runner = player(picked)
-        else { return nil }
+        else { return .failure(.noRoute) }
 
         let called = CalledCut(
             receiver: picked, kind: route.kind, lane: route.lane,
@@ -292,7 +362,7 @@ extension Engine {
             timeLeft: Engine.calledCutGhostTime)
         human.calledCut = called
         human.callCooldown = Engine.calledCutInterval
-        return called
+        return .success(called)
     }
 
     /// Burn down the ghost and the call cooldown by one tick.
@@ -373,15 +443,34 @@ extension Engine {
     ///
     /// Returns the commitment, or nil when there was nothing to commit to: we have the
     /// disc, the point is dead, or every defender is already on the floor.
+    ///
+    /// This is `attemptDefend` below with the reason dropped — see `humanCallCut` for why
+    /// there are two.
     @discardableResult
     public func humanDefend() -> DefensiveCommit? {
-        // Only while the other lot have it. Attacking is what the drag is for.
-        guard !isOver else { return nil }
-        let live = game.phase == .livePossession || game.phase == .discInFlight
-        guard live, possession != 0 else { return nil }
+        switch attemptDefend() {
+        case .success(let commit): commit
+        case .failure: nil
+        }
+    }
+
+    /// `humanDefend`, with the refusal reason kept rather than thrown away.
+    ///
+    /// **The situational gate is `canDefend`, not a copy of it** — the same guarantee
+    /// `attemptCallCut` makes for `canCallCut`. Only while `canDefend` is false does this do
+    /// any extra work at all, and even then it is a read-only refinement of the exact facts
+    /// `canDefend` is built from (`isOver`, `game.phase`, `possession`), never a second
+    /// opinion that could disagree with the gate that actually decided.
+    @discardableResult
+    public func attemptDefend() -> Result<DefensiveCommit, CutRefusal> {
+        guard canDefend else {
+            if isOver { return .failure(.gameOver) }
+            let live = game.phase == .livePossession || game.phase == .discInFlight
+            return .failure(live ? .notYours : .notLive)
+        }
 
         let kind: DefensiveCommit.Kind = discInFlight ? .bid : .close
-        guard let aim = kind == .bid ? bidPoint() : holdPoint() else { return nil }
+        guard let aim = kind == .bid ? bidPoint() : holdPoint() else { return .failure(.noTarget) }
 
         // Available only: a body mid-layout or being peeled off the turf cannot be sent
         // anywhere, and pretending otherwise is how an input stops meaning anything.
@@ -395,7 +484,7 @@ extension Engine {
                 best = p.id
             }
         }
-        guard let defender = best else { return nil }
+        guard let defender = best else { return .failure(.noTarget) }
 
         let commit = DefensiveCommit(
             defender: defender, kind: kind, at: aim,
@@ -403,7 +492,7 @@ extension Engine {
         human.commit = commit
         // The commitment is the decision, so the commitment is what you are watching.
         controlled = defender
-        return commit
+        return .success(commit)
     }
 
     /// How long until a body is back in the point, in seconds, or nil while it is already
