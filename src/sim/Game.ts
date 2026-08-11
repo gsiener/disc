@@ -19,6 +19,7 @@ import {
   FIELD, brickMark, callContested, catchContactCall, clampToField, contactBetween, isInBounds,
   markingFoulImpact, obstructionOf, pickIsWorthCalling,
   CATCH_CONTACT_WINDOW, CATCH_FOUL_IMPACT, MARK_FOUL_IMPACT,
+  PRONE_CATCH_FLOOR, STANDING_CATCH_FLOOR,
   type ContactBody, type Dir, type TeamId, type Vec3,
 } from './Rules.ts';
 import { DiscRuntime, type ThrowRequest } from '../entities/Disc.ts';
@@ -1618,7 +1619,15 @@ export class GameSystem implements System {
 
     const spin = clampNum(0.45 + 0.55 * (e.ai.attr.throwPower / 100), 0, 1);
     const power = clampNum(powerForSpeed(type, act.speed) * 1.02, 0.12, 1);
-    const catchY = Math.max(0.35, act.aimY);
+    /**
+     * The floor on the asked-for catch plane is the RULES' floor.
+     *
+     * It was a bare `0.35` here while `solveRelease` clamped the same quantity at
+     * `0.20` — two floors on one number, neither quoting the other, in a family
+     * that has already produced this bug twice. Bit-neutral in play: the AI asks
+     * for `AIM_HEIGHT` (0.80 m) and always has asked for more than either floor.
+     */
+    const catchY = Math.max(STANDING_CATCH_FLOOR, act.aimY);
 
     const req: ThrowRequest = {
       type, from: _from, aim: _aim, power, angle: 0.02, spin, hand, bank: 0,
@@ -1891,7 +1900,9 @@ export class GameSystem implements System {
       const gap = Math.hypot(s.pos.x - lp.pos.x, s.pos.z - lp.pos.z);
       if (gap > reachXZ) continue;
       const top = this.loco.reachAt(lp, 0) + 0.16;
-      const bot = lp.groundY + (laidOut ? 0.02 : 0.20);
+      // The band is the rules layer's, and it is exported so the AI's rendezvous
+      // scan and the throw solver's catch plane can quote it rather than guess.
+      const bot = lp.groundY + (laidOut ? PRONE_CATCH_FLOOR : STANDING_CATCH_FLOOR);
       if (s.pos.y > top || s.pos.y < bot) continue;
       // Defenders only play the disc when they have actually attacked it.
       if (e.team !== offense) {

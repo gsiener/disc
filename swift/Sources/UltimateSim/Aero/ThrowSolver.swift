@@ -63,12 +63,18 @@ public enum ThrowSolver {
     ///
     /// `probeThrow` reports the distance at which a flight DESCENDS through the catch
     /// plane and falls through to the ground contact when that crossing never happens.
-    /// `AI` asks for `aimY = 1.35` — a chest — and the release origin is a standing
-    /// player's hand at `hipHeight * 1.10`, about 1.05 m, so on every flat throw in the
-    /// game the crossing test could not fire and the solver was silently solving for the
-    /// disc to hit the TURF at the receiver's feet. `predictCatchPoint` then read that
-    /// flight back and sent the receiver to the first sample under 0.85 m, which on a
-    /// 22 m pass is nine metres out. See the reference note on `SOLVE_CATCH_DROP`.
+    /// `AI` used to ask for `aimY = 1.35` — a chest — while the release origin is a
+    /// standing player's hand at `hipHeight * 1.10`, about 1.05 m, so on every flat throw
+    /// in the game the crossing test could not fire and the solver was silently solving
+    /// for the disc to hit the TURF at the receiver's feet. `predictCatchPoint` then read
+    /// that flight back and sent the receiver to the first sample under 0.85 m, which on
+    /// a 22 m pass is nine metres out. See the reference note on `SOLVE_CATCH_DROP`.
+    ///
+    /// **The clamp is the backstop, not the fix.** It repaired the flight and left the ask
+    /// wrong by more than half a metre on every throw in the game, with nothing saying so.
+    /// The ask is now `AIM_HEIGHT` = `handHeight - CATCH_PLANE_DROP`, and `CatchBandTests`
+    /// asserts it is reachable from the modelled release — the assertion is red at 1.35.
+    /// The clamp stays because a real hand is 1.00–1.11 m, not the model's 1.05 m.
     public static let catchDrop = 0.25
     /// At and beyond this ask the solver throws the LOFTED root — see `solveElevation`.
     public static let loftRange = 25.0
@@ -207,8 +213,10 @@ public enum ThrowSolver {
         heading0: Double, want: Double, catchY catchY0: Double
     ) -> Solution {
         // Both of these are properties of the throw, not of the caller — see `catchDrop`
-        // and the loft note in `solveElevation`.
-        let catchY = clamp(catchY0, 0.20, req.from.y - catchDrop)
+        // and the loft note in `solveElevation`. The floor is the RULES' floor, read off
+        // `CatchDecision` rather than retyped: under it there is no standing catch to
+        // solve for, and a bare `0.20` here is how this bug family started.
+        let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop)
         let lofted = want >= loftRange
         var bank = 0.0
         var angle = 0.02

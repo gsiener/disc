@@ -60,6 +60,7 @@
  */
 
 import type { ThrowRequest } from '../../entities/Disc.ts';
+import { STANDING_CATCH_FLOOR } from '../Rules.ts';
 import { throwSpeed } from './Throws.ts';
 
 /** The one thing the solver needs from a disc runtime. */
@@ -128,11 +129,11 @@ export const SOLVE_HEADING_TRIM = 0.15;
  *
  * `probeThrow` reports the distance at which a flight DESCENDS through the catch
  * plane (`pos.y <= catchY && prevY > catchY`) and falls through to the ground
- * contact when that crossing never happens. `AI.ts` asks for `aimY = 1.35` — a
- * chest — and `Game.releaseOrigin` puts the disc in a standing player's hand at
- * `hipHeight * 1.10`, about 1.05 m. A throw that is never above 1.35 m cannot
- * descend through 1.35 m, so on every flat throw in the game the crossing test
- * could not fire and the solver was silently solving for the disc to hit the
+ * contact when that crossing never happens. `AI.ts` used to ask for `aimY = 1.35`
+ * — a chest — while `Game.releaseOrigin` puts the disc in a standing player's
+ * hand at `hipHeight * 1.10`, about 1.05 m. A throw that is never above 1.35 m
+ * cannot descend through 1.35 m, so on every flat throw in the game the crossing
+ * test could not fire and the solver was silently solving for the disc to hit the
  * TURF at the receiver's feet.
  *
  * It reads back through the whole offence. `AI.predictCatchPoint` takes the
@@ -148,6 +149,15 @@ export const SOLVE_HEADING_TRIM = 0.15;
  * after the clamp, the same backhand holds 0.9-1.3 m for the whole flight at
  * every distance from 6 m to 30 m, and grounded throwaways fell from 2.7% of
  * throws to 0.2%.
+ *
+ * **The clamp is the backstop, not the fix.** It repaired the flight and left the
+ * ask wrong: `aimY` stayed at a height no flat throw reaches, so the two disagreed
+ * by more than half a metre on every throw in the game and nothing said so. The
+ * ask is now `AI.AIM_HEIGHT` = `HAND_HEIGHT - CATCH_PLANE_DROP`, and
+ * `SimChecks/CatchBandTests` asserts that it is reachable from the modelled
+ * release — that assertion is red at `1.35` and is what makes this bug class a
+ * failing test rather than a comment. The clamp stays because a real hand is
+ * 1.00-1.11 m rather than the model's 1.05 m, and the residue is its job.
  */
 export const SOLVE_CATCH_DROP = 0.25;
 /**
@@ -325,7 +335,10 @@ export function solveRelease(
 ): ReleaseSolution {
   // Both of these are properties of the throw, not of the caller — see
   // `SOLVE_CATCH_DROP` and the loft note in `solveElevation`.
-  const catchY = clampNum(catchY0, 0.20, req.from.y - SOLVE_CATCH_DROP);
+  // The floor is the RULES' floor, imported rather than retyped: under it there is
+  // no standing catch to solve for. The ceiling is the release less the drop, which
+  // is what makes `probeThrow`'s descending-crossing test fire at all.
+  const catchY = clampNum(catchY0, STANDING_CATCH_FLOOR, req.from.y - SOLVE_CATCH_DROP);
   const lofted = want >= SOLVE_LOFT_RANGE;
   let bank = 0;
   let angle = 0.02;

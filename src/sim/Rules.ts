@@ -472,6 +472,41 @@ export const PICK_GAP_GAIN = 0.25;
 export const CATCH_FOUL_IMPACT = 1.0;
 
 /**
+ * **THE BOTTOM OF THE CATCH BAND — the number every other module was guessing at.**
+ *
+ * `Game.tryCatch` awards a catch to a body whose fingertips are on the disc, and
+ * the height test it applies is `groundY + STANDING_CATCH_FLOOR` on his feet,
+ * `groundY + PRONE_CATCH_FLOOR` once he is already horizontal. Below the standing
+ * floor there is no legal catch except a layout; below the prone floor the disc
+ * has hit the turf and the point is over.
+ *
+ * It lives here, in the rules, because the rules are what pay it out — and it has
+ * been rediscovered from the wrong end twice. `AI.predictCatchPoint` shipped with
+ * a `0.12` floor of its own and sent receivers to meet the disc a hand's width off
+ * the grass, where the only legal catch is a dive: 80 % of all bids were for a
+ * disc predicted to arrive under 0.2 m, and the offence laid out four and a half
+ * times a minute. Three days later `ThrowSolver.solveRelease` was found clamping
+ * its catch plane against a bare `0.20` that nothing connected to this, while the
+ * plane it was handed (1.35 m) sat above the release height — so the crossing test
+ * fell through to ground contact and every flat throw in the game was solved to
+ * land at the receiver's ankles. Both are one fact about the rules, written down
+ * three times in three files, and disagreeing each time.
+ *
+ * The consumers are `Game.tryCatch` (which defines it), `ThrowSolver.solveRelease`
+ * (the floor of the solved catch plane) and `AI`'s `CATCH_FLOOR` / `CATCH_DEAD`,
+ * which are this number plus a stride and plus a frame respectively — the AI is
+ * allowed a margin above the floor, it is not allowed a different floor.
+ *
+ * **These are heights, and a catch has other dimensions.** `CATCH_REACH` (0.82 m)
+ * and `LAYOUT_REACH` (1.55 m) are horizontal radii and the 1.9 m in `catchContest`
+ * is a horizontal contest radius; none of the three belongs in a height band, and
+ * `EngineHuman.bidPoint` in the port scanned a flight for `y <= 1.9` under a
+ * comment naming this band as its authority. Different quantity, same clothes.
+ */
+export const STANDING_CATCH_FLOOR = 0.20;
+export const PRONE_CATCH_FLOOR = 0.02;
+
+/**
  * BEFORE THERE IS A MARK THERE IS NO MARKING FOUL, and this is the whole of it.
  *
  * `markerStatus` turns `legal` — and the stall count starts — the instant an

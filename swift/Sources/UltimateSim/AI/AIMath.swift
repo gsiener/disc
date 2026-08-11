@@ -72,13 +72,48 @@ public let STANDING_REACH = 0.82
 public let EXTENDED_REACH = 1.55
 
 /// The height band a rendezvous with the disc may be picked in, metres.
+///
+/// The floor is `CatchDecision.standingFloor` — the height the rules will actually pay a
+/// standing catch out at — plus a stride of margin, and the relationship is asserted
+/// rather than remembered: `SimChecks/CatchBandTests` fails if this floor ever reaches
+/// the rules'. `CATCH_CEILING` is chest height on a *descending* disc, and it is the
+/// ceiling of the rendezvous, not of the catch — the rules' ceiling is the body's own
+/// `reachAt`, which is taller and varies per player. `EngineHuman.bidPoint` wanted this
+/// number and used a horizontal contest radius instead.
 public let CATCH_FLOOR = 0.85
 public let CATCH_CEILING = 1.45
 
 /// Below this the disc is gone. The point where the flight crosses it is the player's
 /// last chance on their feet, and that — not the rendezvous — is the deadline a layout
-/// has to beat.
+/// has to beat. It is `CatchDecision.standingFloor` plus a frame of margin; the identity
+/// is asserted in `CatchBandTests` rather than left to this sentence.
 public let CATCH_DEAD = 0.25
+
+/// **The height the AI asks a throw to be delivered at, m — and it has to be a height a
+/// throw can actually get to.**
+///
+/// This was `1.35`, a chest, written inline at the one site that produces a throw intent.
+/// A chest is where you *want* the disc; it is not where a disc released at `handHeight`
+/// can arrive, because it never rises that high. `ThrowSolver.probeThrow` reports where a
+/// flight descends through the asked-for plane and falls through to ground contact when
+/// that crossing never happens, so a plane above the release solved every flat throw in
+/// the game into the turf at the receiver's feet — median over 379 completions, aimed
+/// 9.9 m and caught at 6.8 m.
+///
+/// `ThrowSolver.catchDrop` closed the flight by clamping the plane under the release and
+/// left the ask wrong and silently repaired. This is `handHeight - CATCH_PLANE_DROP`: the
+/// height a disc that left a standing hand has fallen to by the time it arrives. Its
+/// reachability is the invariant `SimChecks/CatchBandTests` asserts, and that assertion
+/// is red at 1.35.
+public let AIM_HEIGHT = 0.80
+
+/// How far a thrown disc has fallen by the catch, m. `AIM_HEIGHT` is `handHeight` less
+/// this, and `CatchBandTests` asserts that it still is.
+///
+/// The reference declares `CATCH_PLANE_DROP` and — until `AIM_HEIGHT` — read it nowhere,
+/// which is why `DivergenceTests.unmirrored` used to classify it as dead code rather than
+/// port it.
+public let CATCH_PLANE_DROP = 0.25
 
 /// How much further than standing reach a player must be short before believing it.
 /// The noise floor of `arrivalShortfall`, swept at 0.20/0.35/0.40 over five seeds.

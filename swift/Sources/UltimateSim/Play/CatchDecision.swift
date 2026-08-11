@@ -19,6 +19,34 @@ public enum CatchDecision {
     public static let catchReach = 0.82
     /// And at full stretch. `Game.ts:LAYOUT_REACH`.
     public static let layoutReach = 1.55
+
+    /// **THE BOTTOM OF THE CATCH BAND — the number every other module was guessing at.**
+    ///
+    /// `decide` awards the disc to a body whose fingertips are on it, and the height test
+    /// it applies is `groundY + standingFloor` on his feet, `groundY + proneFloor` once he
+    /// is already horizontal. Below the standing floor there is no legal catch except a
+    /// layout; below the prone floor the disc has hit the turf.
+    ///
+    /// It is public because it has been rediscovered from the wrong end twice, both times
+    /// by a consumer inventing its own number. `AI.predictCatchPoint` shipped with a 0.12 m
+    /// floor and sent receivers to meet the disc where only a dive is legal — 80 % of all
+    /// bids were for a disc predicted under 0.2 m. Three days later `ThrowSolver` was found
+    /// clamping the same quantity against a bare `0.20` connected to nothing, under an aim
+    /// plane above the release height, so the descending-crossing test fell through to
+    /// ground contact and every flat throw was solved into the receiver's ankles.
+    /// `Rules.STANDING_CATCH_FLOOR` is the reference's copy; `SimChecks/CatchBandTests`
+    /// asserts that these, the AI's band and the solver's clamp are still one band.
+    ///
+    /// **These are heights.** `catchReach`, `layoutReach` and the 1.9 m in `catchContest`
+    /// are horizontal radii, and `EngineHuman.bidPoint` scanned a flight for `y <= 1.9`
+    /// under a comment naming this type as its authority — a contest radius wearing a
+    /// height band's clothes. Different quantity, same number of metres.
+    public static let standingFloor = 0.20
+    public static let proneFloor = 0.02
+
+    /// How close an opponent must be to make a catch a contest, metres — **horizontal**.
+    /// Named so it stops being mistaken for a height; see `standingFloor`.
+    public static let contestRadius = 1.9
     /// A defender who has not attacked the disc must be this close — a body's width,
     /// not an arm's reach plus a window.
     public static let passiveDefenderGap = 0.55
@@ -145,7 +173,7 @@ public enum CatchDecision {
             let gap = distXZ(b.pos, discPos)
             guard gap <= (laidOut ? layoutReach : catchReach) else { continue }
             let top = b.reachTop + 0.16
-            let bot = b.groundY + (laidOut ? 0.02 : 0.20)
+            let bot = b.groundY + (laidOut ? proneFloor : standingFloor)
             if discPos.y > top || discPos.y < bot { continue }
             if b.team != offence {
                 if !b.attacking, gap > passiveDefenderGap { continue }
@@ -215,7 +243,7 @@ public enum CatchDecision {
         var n = 0.0
         for b in bodies where b.team != team {
             let gap = distXZ(b.pos, Vec3d(x, 0, z))
-            if gap >= 1.9 { continue }
+            if gap >= contestRadius { continue }
             if !b.attacking, gap > passiveDefenderGap { continue }
             n += 1
         }
@@ -226,7 +254,7 @@ public enum CatchDecision {
     static func contestCount(_ x: Double, _ z: Double, _ team: TeamId, _ bodies: [Body]) -> Double {
         var n = 0.0
         for b in bodies where b.team != team {
-            if distXZ(b.pos, Vec3d(x, 0, z)) < 1.9 { n += 1 }
+            if distXZ(b.pos, Vec3d(x, 0, z)) < contestRadius { n += 1 }
         }
         return Swift.min(2, n)
     }
