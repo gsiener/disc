@@ -72,3 +72,4 @@ of hours, because writing entries worked and reading them did not.
 | minor | `20260810-agents-md-recommends` | AGENTS.md tells every agent to verify in the same directory, and the second one clobbers the first mid-build |
 | major | `20260810-the-deep-shot-is-unreachable-at-minis` | isDeepShot is arithmetically unreachable at minis — 0 of 332 live releases — so the whole huck model is dead code on the default pitch |
 | minor | `20260810-adr-0007-named-three-sites` | ADR-0007 and issue #24 name three call sites for LAYOUT_CEILING; two of them are JUMP gates where the same number does the opposite job |
+| minor | `20260810-a-band-on-a-match-bounded-by-score` | A richness band on a match bounded by SCORE fails when the game gets better, and reads as a regression |
