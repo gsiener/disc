@@ -559,23 +559,46 @@ public struct Playbook: Sendable {
         // untouched by this and keeps its one meaning: how far in front of its own goal
         // line the BACKFIELD sets up.
         //
-        // *And a floored handler is mirrored rather than pinned to the line.* The floor
-        // is an absolute z while every other offset in the set is disc-relative, so past
-        // a certain depth the two rows cross. The ho cutter row is `a.z + dir * 15`: with
-        // the disc at z = -45 the floored handler row is at -30 and so is the cutter row,
-        // and at x = -5.5 a handler and a cutter come back as ONE POINT, exactly.
-        // Clamping every handler to the same floor is the z-axis version of the mistake
-        // `rowShift` exists to avoid on x, and it has the same symptom: the row loses its
-        // shape and its members land on top of something.
+        // *#29 also shipped a "mirror": a floored handler stood in front of the disc
+        // (`2 * a.z - z`) rather than at the line, to keep it a real distance from the
+        // thrower instead of parked on the mark. That part reads as it should — `back =
+        // min(floorZ, mirrored)` for dir > 0, so the smaller (deeper) of the two wins. But
+        // a handler's offset off the disc tops out around 6.5 m, so whenever the mirror
+        // actually clears the floor (`a.z + off >= floorZ`), `mirrored >= floorZ` and the
+        // min picks `floorZ` anyway — the mirror was live only in the one regime it should
+        // not have been: a disc more than 6.5 m behind the floor (a real pull can land
+        // inside 6 m of the end line), where the mirror falls SHORT of the floor and the
+        // min then picks `mirrored`, a station behind the floor `PIN_MARGIN` exists to
+        // rule out. `formationStations` never actually mirrored the case it was written
+        // for; it only ever un-floored the case it was written to still floor.
         //
-        // So a handler that cannot stand `off` behind the disc stands `off` in FRONT of
-        // it instead — `2 * a.z - z` — and the goal-line floor still applies on top. That
-        // keeps the row's own spacing, keeps every handler a real distance from the
-        // thrower rather than parked on the mark, and is INERT until the mirror is itself
-        // past the floor: `a.z + off < -(goalLine - PIN_MARGIN)`, which needs the disc
-        // more than two metres inside its own endzone. Nothing on the playing field
-        // proper moves, and the golden case pinned exactly on the goal line does not move
-        // either.
+        // Issue #35: measured on the `SEED=20260729` sevens match `tools/test-game.ts`
+        // plays, turnovers per point went from 0.88 (floor by role alone, no mirror) to
+        // 3.17, and seed 33333's pooled completion rate moved from 67% to 58% — both
+        // outside their bands, and both because the receiving team's backfield was
+        // standing in a genuinely bad spot after a deep pull, not because of an unlucky
+        // roll. Reference first, per ADR-0001: dropping the mirror back to a plain
+        // per-role floor is what `tools/test-game.ts` and `tools/test-ai.ts` measure as
+        // correct — every check both suites had passing before #29's second commit
+        // passes again, including ones the mirror was quietly failing without a band to
+        // catch it: `test-ai.ts`'s `no out-of-bounds across seeds` (26 player-ticks with
+        // the mirror live, 0 without — a defender chasing a mirrored station off the
+        // field) and `a reset handler is stationed behind the disc` (a mirrored handler
+        // stands in FRONT of the disc by definition, which is not behind it by any
+        // distance).
+        //
+        // What the mirror actually bought — avoiding the ho set's handler landing exactly
+        // on its cutter row at disc (-5.5, -45) sevens — was a side effect of the SAME
+        // bug: the un-floored `mirrored` value happens not to equal `a.z + dir * 15`
+        // there, but it bought that by standing the handler anywhere up to 6.5 m into the
+        // offence's own endzone. Dropping the mirror brings the near-miss back, but not
+        // the exact collision it started as: `PlaybookTests.minisShape`'s pairwise-
+        // distinct sweep measures it, with this floor, at 0.1300 m at sevens and 0.0528 m
+        // at minis — both real, both far short of a body, and both confined to the same
+        // narrow case (the horizontal set, disc pinned deeper than a handler's own offset
+        // behind the floor). See that test for why the bound is what it is here rather
+        // than resurrecting a mirror that traded this centimetre-scale near-miss for the
+        // metre-scale one issue #35 is about.
         //
         // The alternative was capping the floor at the disc plus `PIN_MARGIN`, and it was
         // measured and rejected: two metres in front of a pinned thrower is where the
@@ -588,13 +611,7 @@ public struct Playbook: Sendable {
         let floorZ = Double(-dir) * (field.goalLine - pinMargin)
 
         func push(_ x: Double, _ z: Double, _ role: StationRole, _ depth: Int) {
-            var zz = z
-            if role == .handler {
-                let mirrored = 2 * a.z - z
-                let back =
-                    dir > 0 ? Swift.min(floorZ, mirrored) : Swift.max(floorZ, mirrored)
-                zz = dir > 0 ? Swift.max(z, back) : Swift.min(z, back)
-            }
+            let zz = role == .handler ? (dir > 0 ? Swift.max(z, floorZ) : Swift.min(z, floorZ)) : z
             let p = clampToField(Vec2d(x, zz))
             out.append(Station(x: p.x, z: p.z, role: role, depth: depth))
         }
