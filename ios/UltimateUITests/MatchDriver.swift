@@ -116,6 +116,43 @@ struct MatchDriver {
         pitchRect = Probe(probe.label).pitch
     }
 
+    /// Launch into a live match with extra arguments — for the save/restore lifecycle
+    /// (`-savecycle`) and the one-point REMATCH flow (`-points 1`) that issue #43 needs.
+    ///
+    /// Unlike the standard init, this one does not set `-points 9` — the caller picks the
+    /// match length, because a savecycle run wants the default and a REMATCH run wants 1.
+    ///
+    /// Same readiness checks as the standard init: the probe must appear, or the failure
+    /// is a launch diagnostic rather than a gesture assertion.
+    init(extraArgs: [String], receives: Possession = .us) {
+        Self.announce()
+        let app = XCUIApplication()
+        app.launchArguments =
+            ["-setup", "off", "-probe", "on", "-receive", receives.rawValue]
+            + extraArgs
+        app.launch()
+        self.app = app
+
+        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        guard Self.ready(app) else {
+            let device = Self.deviceIdentity()
+            if app.state == .notRunning {
+                XCTFail(
+                    "LAUNCH FAILURE: \(Self.appIdentifier) is not running after launch "
+                        + "(state: \(app.state)) on \(device)")
+            } else {
+                XCTFail(
+                    "LAUNCH FAILURE: \(Self.appIdentifier) launched but the probe never "
+                        + "appeared within \(Int(Self.patience))s "
+                        + "(slowdown ×\(String(format: "%.1f", Self.slowdown))) on \(device) "
+                        + "— was the app launched with `-probe on`?")
+            }
+            pitchRect = nil
+            return
+        }
+        pitchRect = Probe(probe.label).pitch
+    }
+
     /// Wait for a freshly launched app to be ready to be touched: the coach cards dealt with
     /// and the probe on screen. Returns whether it got there.
     ///
@@ -400,6 +437,12 @@ struct MatchDriver {
         /// Seconds until the watched body is back on its feet, or nil while it is.
         var recovery: Double? { double("rec") }
         var isOver: Bool { flag("over") }
+        var paused: Bool { flag("paused") }
+        var sheet: Bool { flag("sheet") }
+        /// The score as `"x-y"`.
+        var score: String { string("score") }
+        /// Which team has possession (0 = us, 1 = them).
+        var poss: Int { int("poss") }
     }
 
     /// Tap, then poll for a counter on the probe to move, and grab a HUD plate the instant it

@@ -28,6 +28,7 @@ enum MatchSaveTests {
 
     static func run() throws {
         savedMatchRestoresExactly()
+        engineConfigParityAfterRestore()
         staleSimIsRejected()
         divergenceIsRejected()
         futureSaveIsRejected()
@@ -280,6 +281,69 @@ enum MatchSaveTests {
         print(
             "  · sim fingerprint: \(SimFingerprint.canaryTicks) canary ticks in "
                 + "\(String(format: "%.1f", fingerprintCost * 1000)) ms")
+    }
+
+    // MARK: - engineConfig parity (VAL-PERSIST-003)
+
+    /// Restore preserves the engineConfig the match was saved under — not merely the
+    /// observable state, but the configuration that produced it.
+    ///
+    /// `savedMatchRestoresExactly` already proves the engine state is bit-identical, which
+    /// implies the configs agreed (a different config would diverge on the first throw).
+    /// This test makes the parity explicit by comparing the key config fields directly, so
+    /// a future change that makes `Engine.config` diverge from the saved config without
+    /// changing the snapshot — say, a field the replay does not read — is caught here
+    /// rather than hoping the snapshot notices.
+    private static func engineConfigParityAfterRestore() {
+        let stamp = SimFingerprint.stamp(salt: salt)
+        let played = play(ticks: 1200)
+
+        let saved = save(played, fingerprint: stamp)
+        guard let bytes = try? JSONEncoder().encode(saved),
+            let reloaded = try? JSONDecoder().decode(SavedMatch.self, from: bytes)
+        else {
+            Check.ok(false, "a saved match encodes to JSON and decodes back for config parity")
+            return
+        }
+
+        // The restore uses the same caller-built engine as the app's `resume` path —
+        // `freshEngine()` here stands in for `Self.engineConfig(played, …)` there, and
+        // both use `config` which is deliberately not `EngineConfig.default`.
+        let restore: MatchRestore
+        do {
+            restore = try MatchRestore(reloaded, fingerprint: stamp, engine: freshEngine())
+        } catch {
+            Check.ok(false, "a fresh save restores for config parity: \(error)")
+            return
+        }
+        restore.advance(ticks: restore.totalTicks)
+
+        do {
+            let engine = try restore.finish()
+
+            // The key config fields that affect replay identity: the cone, the assist
+            // window, the win condition, the halftime break, and the opening pull team.
+            // `EngineConfig` is not `Equatable`, so each field is compared directly.
+            Check.eq(engine.config.selectCone, config.selectCone, "restored selectCone matches saved config")
+            Check.eq(engine.config.assistMax, config.assistMax, "restored assistMax matches saved config")
+            Check.eq(engine.config.pointsToWin, config.pointsToWin, "restored pointsToWin matches saved config")
+            Check.eq(engine.config.halftimeAt, config.halftimeAt, "restored halftimeAt matches saved config")
+            Check.eq(engine.config.startingPullTeam, config.startingPullTeam, "restored startingPullTeam matches saved config")
+
+            // The seed, tick count, and input tape are the replay identity fields —
+            // preserved from the recording, not regenerated.
+            Check.eq(engine.config.aggression, config.aggression, "restored aggression matches saved config")
+            Check.eq(restore.tick, played.ticks, "restored tick count matches the recording")
+            Check.eq(reloaded.recording.seed, seed, "restored seed matches the recording")
+            Check.eq(reloaded.recording.inputs, played.inputs, "restored input tape matches the recording")
+            Check.eq(reloaded.recording.durationTicks, played.ticks, "restored duration ticks match the recording")
+
+            // The event buffer is drained before adoption — a restored match does not
+            // open with a burst of callouts for events that are already on the board.
+            Check.eq(engine.drainEvents().count, 0, "a restored match hands over with an empty event buffer")
+        } catch {
+            Check.ok(false, "a fresh save finishes its restore for config parity: \(error)")
+        }
     }
 
     // MARK: - the three refusals

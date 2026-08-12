@@ -162,11 +162,12 @@ extension MatchView {
 
     /// Take a restored match as the live one.
     ///
-    /// Everything `restart` resets is reset here too, for the same reason: per-match state
-    /// that survives a match change is state that lies. What is *not* reset is the pair
-    /// that makes the restored match saveable again — the tick count and the input list
-    /// come from the recording, so putting the game down a second time writes a tape that
-    /// continues the first rather than starting from the middle.
+    /// The shared per-match reset boundary (`applyPerMatchReset`) clears all presentation
+    /// and interaction state — the seven restart-only fields that were previously omitted
+    /// here (issue #43), plus the already-parallel shared fields. What is *not* reset is
+    /// the pair that makes the restored match saveable again — the tick count and the
+    /// input list come from the recording, so putting the game down a second time writes a
+    /// tape that continues the first rather than starting from the middle.
     private func adopt(_ restored: Engine, from saved: SavedMatch, setup played: MatchSetup) {
         match = restored
         seed = saved.recording.seed
@@ -176,19 +177,21 @@ extension MatchView {
         // before it was put down — not whatever the sheet happens to be showing.
         playedSetup = played
 
-        cancelDrag()
-        scene.invalidate()
-        clock.reset()
-        turnoverFlash = nil
-        assistToast = nil
-        handoff = nil
-        defenceCall = nil
-        lastControlled = restored.controlled
-        clearedAtEnd = false
+        // The shared per-match reset — the same boundary `restart` uses. This clears the
+        // seven restart-only presentation fields (cutCall, refusedTap, offenceTaps,
+        // refusals, widenedCalls, lastRefusal, refusalTally) that were previously omitted
+        // here, plus all already-parallel shared fields (defenceCall, turnoverFlash,
+        // assistToast, handoff, drag, scene, clock, clearedAtEnd, restoring, resumable,
+        // lastControlled). Issue #43.
+        applyPerMatchReset()
 
         hasStarted = true
-        resumable = nil
-        restoring = nil
+        // The save was consumed by a successful adoption — the resume offer is gone.
+        // `resumable` is already nil from `applyPerMatchReset`, but clearing the save
+        // file is the other half: a save that outlived its own restore would be offered
+        // again on the next launch.
+        MatchSave.clear()
+
         // Landing paused, exactly as returning from the background does. A player who has
         // just watched a progress bar is not looking at the pitch yet, and dropping them
         // into a live point mid-stall is how a restore gets blamed for a turnover. One

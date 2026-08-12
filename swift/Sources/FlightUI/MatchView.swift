@@ -1296,11 +1296,8 @@ public struct MatchView: View {
         // offered again on the next launch, which is the app arguing with the last thing
         // the player told it.
         MatchSave.clear()
-        resumable = nil
         restoreNote = nil
         inputs.removeAll()
-        clearedAtEnd = false
-        restoring = nil
 
         // This is the moment, and the only moment besides `adopt`, that a chosen setup
         // becomes the setup a match is being *played* under. See `playedSetup`.
@@ -1310,29 +1307,61 @@ public struct MatchView: View {
         match = Engine(
             format: setup.fieldSpec.gameFormat, seed: seed,
             config: Self.engineConfig(setup, startingPullTeam: startingPullTeam))
-        cancelDrag()
-        // Every render cache the new match invalidates, in one call — see
-        // `MatchScene.invalidate`, and the three-copy reset list it replaced.
-        scene.invalidate()
+
+        // The shared per-match reset — see `applyPerMatchReset`. Both `restart` and
+        // `adopt` go through the same boundary, so a presentation field added to one
+        // cannot silently drift from the other (issue #43).
+        applyPerMatchReset()
+
+        // Restart-specific identity and landing: a fresh tick count and unpaused play.
         tickCount = 0
+        paused = false
+    }
+
+    /// Apply the shared per-match reset boundary — issue #43.
+    ///
+    /// Both `restart(_:)` and `adopt(_:from:setup:)` call this to clear all per-match
+    /// presentation and interaction state, so the two paths cannot drift. The
+    /// `PerMatchReset` value type in `SimChecks` defines the complete set of fields;
+    /// this method applies it to the view's `@State` properties.
+    ///
+    /// **What is not here is deliberate.** The match engine, seed, input tape, tick
+    /// count, and `playedSetup` are identity fields set by each caller before this runs.
+    /// `paused` is a landing-semantics field set by each caller after: `restart` lands
+    /// unpaused, `adopt` lands paused. `hasStarted` is set by the caller. `restoreNote`
+    /// is restart-only (a restore clears it before `adopt` runs).
+    func applyPerMatchReset() {
+        // Gesture and clock — the drag overlay and the charge meter must not survive a
+        // match change, and the frame clock starts fresh.
+        cancelDrag()
+        scene.invalidate()
         clock.reset()
+
+        // Transient overlays — the prior match's announcements are not the new match's.
         turnoverFlash = nil
         assistToast = nil
         handoff = nil
         defenceCall = nil
+
+        // The seven restart-only presentation fields (issue #43). A restored match that
+        // carried the prior match's cut order, refusal message, and tap ledger was not
+        // the match the player put down.
         cutCall = nil
-        // The refusal and the tap ledger belong to the match that was being played, not to the
-        // one starting: a REMATCH that opened with "NOBODY THERE" still on screen would be the
-        // new match answering the old match's tap.
         refusedTap = nil
         offenceTaps = 0
         refusals = 0
         widenedCalls = 0
         lastRefusal = nil
         refusalTally = [:]
+
+        // Lifecycle flags — the new match has not finished, nothing is being restored,
+        // and no save is on offer.
+        clearedAtEnd = false
+        restoring = nil
+        resumable = nil
+
+        // Control tracking — set to the new engine's controlled player, which the caller
+        // has already assigned to `match` before calling this.
         lastControlled = match.controlled
-        // A rematch is a resume: whatever paused the old match has been dealt with by
-        // the time somebody taps a button on the result card.
-        paused = false
     }
 }

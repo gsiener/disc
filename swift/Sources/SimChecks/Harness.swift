@@ -188,6 +188,7 @@ let allSuites: [Suite] = [
     Suite(name: "stoppage", run: StoppageTests.run),
     Suite(name: "replay", run: ReplayTests.run),
     Suite(name: "matchsave", run: MatchSaveTests.run),
+    Suite(name: "permatchreset", run: PerMatchResetTests.run),
     Suite(name: "clock", run: ClockTests.run),
     Suite(name: "boxscore", run: BoxScoreTests.run),
     Suite(name: "matchdiff", run: MatchDiffTests.run),
