@@ -69,6 +69,13 @@ enum DivergenceTests {
         let note: String
         let divergences: [Divergence]
         let referenceConstants: [String: Double]
+        /// Every SHOUTY_CASE module-scope name in `AI.ts`, whatever its initialiser —
+        /// a strict superset of `referenceConstants`' keys. A name here with no entry
+        /// in `referenceConstants` is not a numeric literal: `moduleConstants`'s pattern
+        /// only reads `= <number>;`, and an expression, a reformat, or a non-numeric
+        /// declaration (`DISC_PEER_OK`, a `WeakMap`) all drop out of that map without
+        /// the name having left the file. See #44.
+        let referenceConstantNames: [String]
         /// `PULL_*` out of `src/sim/Game.ts`. Optional per name: `PULL_TARGET_Z` is an
         /// expression rather than a literal, so its pattern can stop matching.
         let referencePullConstants: [String: Double?]
@@ -86,6 +93,10 @@ enum DivergenceTests {
         "AIM_HEIGHT": AIM_HEIGHT,
         "BID_HESITATION": BID_HESITATION,
         "BID_LEAD": BID_LEAD,
+        // `AI.ts:740`. Absent from this fixture until #44's regeneration caught the
+        // staleness — the reference has had this constant all along; nothing had
+        // regenerated `divergences.json` since it was added.
+        "BOUNDARY_ROOM_MARGIN": boundaryRoomMargin,
         "CATCH_CEILING": CATCH_CEILING,
         "CATCH_DEAD": CATCH_DEAD,
         "CATCH_FLOOR": CATCH_FLOOR,
@@ -115,7 +126,19 @@ enum DivergenceTests {
         "LEAD_RUN":
             "ported as `TeamAI.leadRun`, internal to UltimateSim. Same coverage as "
             + "LEAD_CUT.",
+        "DISC_PEER_OK":
+            "not a constant — a `WeakMap<object, boolean>`, the reference's per-frame "
+            + "memo of a peer check. There is no value to mirror or diverge from; the "
+            + "behaviour it memoises is `discruntime`'s coverage. Present only because "
+            + "`moduleConstantNames` matches any SHOUTY_CASE module-scope name, not just "
+            + "numeric ones — see #44.",
     ]
+
+    /// Names in `referenceConstantNames` with no entry in `referenceConstants`: the
+    /// reference still declares them, but the scrape's `= <number>;` pattern cannot read
+    /// the current line. Distinct from "no longer declares it" below, and the fix is the
+    /// opposite: repoint the pattern, don't drop the binding.
+    static let unreadable: Set<String> = ["DISC_PEER_OK"]
 
     // MARK: run
 
@@ -214,17 +237,45 @@ enum DivergenceTests {
 
         // The tables cut both ways: a name that has left the reference must leave here
         // too, or the binding is quietly asserting against a constant nobody has.
+        //
+        // "Missing from `referenceConstants`" is NOT "gone" — an expression, a reformat,
+        // or a rename all drop a name out of that numeric-literal map without moving it
+        // out of the file. `referenceConstantNames` is the superset that answers the
+        // question these checks actually mean to ask, and its own absence is what
+        // "gone" really looks like. This distinction is #44: the friction log recorded
+        // an `export` keyword producing exactly the false "no longer declares it"
+        // message these checks used to emit unconditionally.
+        let names = Set(g.referenceConstantNames)
         for name in mirrored.keys.sorted() where g.referenceConstants[name] == nil {
-            Check.ok(
-                declared.contains(name),
-                "\(name) is bound in `mirrored` but the reference no longer declares it "
-                    + "— drop the binding or declare the divergence")
+            if names.contains(name) {
+                Check.ok(
+                    false,
+                    "\(name) is bound in `mirrored`, but the reference still declares it "
+                        + "and the scrape's numeric pattern can no longer read the line — "
+                        + "repoint the pattern in tools/goldens/divergences.ts, don't drop "
+                        + "the binding")
+            } else {
+                Check.ok(
+                    declared.contains(name),
+                    "\(name) is bound in `mirrored` but the reference no longer declares "
+                        + "it — drop the binding or declare the divergence")
+            }
         }
         for name in unmirrored.keys.sorted() where g.referenceConstants[name] == nil {
-            Check.ok(
-                false,
-                "\(name) is classified in `unmirrored` but the reference no longer "
-                    + "declares it — drop the classification")
+            if unreadable.contains(name) { continue }
+            if names.contains(name) {
+                Check.ok(
+                    false,
+                    "\(name) is classified in `unmirrored`, but the reference still "
+                        + "declares it and the scrape's numeric pattern can no longer "
+                        + "read the line — repoint the pattern, don't drop the "
+                        + "classification")
+            } else {
+                Check.ok(
+                    false,
+                    "\(name) is classified in `unmirrored` but the reference no longer "
+                        + "declares it — drop the classification")
+            }
         }
 
         thePullConstantsAreTheReferences(g)

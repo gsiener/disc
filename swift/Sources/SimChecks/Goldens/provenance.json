@@ -1,4 +1,9 @@
 {
+  "divergences": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "3f85b1b5f60fd2b77788fdfde8542052d7ad3ead"
+  },
   "rng": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",

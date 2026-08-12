@@ -126,6 +126,40 @@ function moduleConstants(file: string): Record<string, number> {
 }
 
 /**
+ * Every module-scope SHOUTY_CASE name in a reference file, whatever is on the right.
+ *
+ * This exists to tell two different failures apart, because the remedy for one of them
+ * destroys coverage. `moduleConstants` reads a *numeric literal*; the moment a constant
+ * becomes an expression — `1.5 + 0.3`, `FIELD.GOAL_LINE + 4`, a reformat across two
+ * lines — it drops out of that map, and the Swift side then reported:
+ *
+ *     MIN_CUT_RUN is bound in `mirrored` but the reference no longer declares it
+ *     — drop the binding or declare the divergence
+ *
+ * which is false, and whose advice would have removed the constant from the registry
+ * permanently while looking like a clean fix. It happened for real when six constants
+ * gained an `export` keyword (`.agents/friction-log/20260811-a-named-constant-is-invisible/`),
+ * and #44 is the issue.
+ *
+ * A name is a name whatever its initialiser, so this pattern cannot be fooled by the
+ * shape of the value. With both maps the Swift side can say *"the constant is still
+ * there and the pattern can no longer read it — repoint the pattern"* instead, which is
+ * the true statement and the one whose remedy keeps the coverage.
+ *
+ * This is the smaller half of what #44 proposed. Reading the declarations from the
+ * module's own **exports** instead of the source text — the obvious robust fix — turns
+ * out to gut the registry: `AI.ts` exports 7 of its 17 module constants and `Game.ts`
+ * exports **none** of its 33, including all six `PULL_*`, which are the family whose
+ * absence caused issue #2. An import sees exports; it cannot see a bare `const`. So the
+ * scrape stays, and what changes is that it can no longer lie about *why* it missed.
+ */
+function moduleConstantNames(file: string): string[] {
+  const src = readFileSync(join(ROOT, file), 'utf8');
+  const re = /^(?:export )?(?:const|let|var) ([A-Z][A-Z_0-9]*)\s*=/gm;
+  return [...new Set([...src.matchAll(re)].map((m) => m[1]!))].sort();
+}
+
+/**
  * Reads a site's literal back out of the reference.
  *
  * Returns `scraped: null` rather than throwing when the pattern stops matching. A
@@ -175,6 +209,10 @@ export function divergenceGoldens() {
       'that the live Swift symbols agree with `swift`. See ADR-0007.',
     divergences,
     referenceConstants: moduleConstants('src/sim/AI.ts'),
+    // Superset of `referenceConstants`' keys: also the names whose initialiser is not a
+    // bare numeric literal, so DivergenceTests can tell "gone" from "unreadable". See
+    // `moduleConstantNames`'s doc comment — this is #44.
+    referenceConstantNames: moduleConstantNames('src/sim/AI.ts'),
     referencePullConstants: pullConstants(),
   };
 }
