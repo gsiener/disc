@@ -8,6 +8,7 @@
     "reference:gate": "node tools/gate.mjs",
     "reference:check": "tsc --noEmit",
     "reference:imports": "node --experimental-strip-types tools/test-imports.ts",
+    "reference:structure": "node --experimental-strip-types tools/test-structure.ts",
     "reference:goldens": "node --experimental-strip-types tools/gen-goldens.ts",
     "web:dev": "vite",
     "web:build": "vite build",

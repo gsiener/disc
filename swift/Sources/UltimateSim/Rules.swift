@@ -95,19 +95,17 @@ public struct FieldConstants: Equatable, Decodable, Sendable {
     )
 }
 
-public let FIELD = FieldConstants.standard
-
-/// The eight cone positions (four field corners + four goal-line corners).
-public let CONES: [Vec3d] = [
-    Vec3d(-FIELD.sideline, 0, -FIELD.endLine),
-    Vec3d(+FIELD.sideline, 0, -FIELD.endLine),
-    Vec3d(-FIELD.sideline, 0, -FIELD.goalLine),
-    Vec3d(+FIELD.sideline, 0, -FIELD.goalLine),
-    Vec3d(-FIELD.sideline, 0, +FIELD.goalLine),
-    Vec3d(+FIELD.sideline, 0, +FIELD.goalLine),
-    Vec3d(-FIELD.sideline, 0, +FIELD.endLine),
-    Vec3d(+FIELD.sideline, 0, +FIELD.endLine),
-]
+/// The pitch is not a module constant.
+///
+/// `FIELD` and `CONES` used to live here, as `FieldConstants.standard` and its eight
+/// cone positions — so every geometry routine below them silently meant "regulation",
+/// on a game whose default format is minis. ADR-0004 calls that the most expensive bug
+/// class in this project's history.
+///
+/// The geometry is now `FieldConstants`' own, reached through `GameFormat.field`, and it
+/// cannot answer without being told which pitch it is asking about. See #45; the
+/// declarations are kept absent by `tools/test-structure.ts`, and the compiler keeps
+/// every call site honest once they are gone.
 
 /// The field is metric; stats are stored in metres. Multiply for a US display.
 public let YARDS_PER_METRE = 1.0936133
@@ -271,110 +269,10 @@ public func distXZ(_ a: Vec3d, _ b: Vec3d) -> Double {
     return (dx * dx + dz * dz).squareRoot()
 }
 
-/// Perimeter lines count as in-bounds for the disc; a point strictly beyond is out.
-public func isInBounds(_ p: Vec3d) -> Bool {
-    abs(p.x) <= FIELD.sideline + G_EPS && abs(p.z) <= FIELD.endLine + G_EPS
-}
-
-/// +1 / -1 if inside that endzone, 0 if between the goal lines. Ignores bounds in X.
-public func endzoneOf(_ z: Double) -> Int {
-    if z >= FIELD.goalLine - G_EPS { return 1 }
-    if z <= -FIELD.goalLine + G_EPS { return -1 }
-    return 0
-}
-
-/// True when p is inside the endzone at the `dir` end and between the sidelines.
-public func isInEndzone(_ p: Vec3d, _ dir: Dir) -> Bool {
-    isInBounds(p) && p.z * Double(dir) >= FIELD.goalLine - G_EPS
-}
-
-/// A goal: an in-bounds catch in the endzone this team attacks.
-public func isGoal(_ p: Vec3d, _ attackDir: Dir) -> Bool { isInEndzone(p, attackDir) }
-
-/// z of the goal line at the `dir` end.
-public func goalLineZ(_ dir: Dir) -> Double { Double(dir) * FIELD.goalLine }
-
-/// The brick mark a team uses when the pull lands out of bounds: on the centre line,
-/// BRICK_IN metres in from the goal line of the endzone they are DEFENDING (WFDF 12.4).
-/// For attackDir = +1 that is z = -14.
-public func brickMark(_ attackDir: Dir) -> Vec3d {
-    Vec3d(0, 0, Double(attackDir) * (FIELD.brickIn - FIELD.goalLine))
-}
-
-public func clampToField(_ p: Vec3d) -> Vec3d {
-    Vec3d(
-        min(FIELD.sideline, max(-FIELD.sideline, p.x)),
-        0,
-        min(FIELD.endLine, max(-FIELD.endLine, p.z))
-    )
-}
-
 public struct Crossing: Equatable, Sendable {
     public let point: Vec3d
     public let edge: Edge
     public let t: Double
-}
-
-/// Where segment a->b leaves the field rectangle. Returns nil when the segment never
-/// exits. Deterministic: ties resolve in sideline-then-endline order.
-public func boundaryCrossing(_ a: Vec3d, _ b: Vec3d) -> Crossing? {
-    var bestT = Double.infinity
-    var bestEdge: Edge? = nil
-
-    func consider(_ num: Double, _ den: Double, _ edge: Edge) {
-        if abs(den) < 1e-12 { return }
-        let t = num / den
-        if t < 0 || t > 1 || t >= bestT { return }
-        let x = a.x + (b.x - a.x) * t
-        let z = a.z + (b.z - a.z) * t
-        if edge == .sidelinePlusX || edge == .sidelineMinusX {
-            if abs(z) > FIELD.endLine + 1e-9 { return }
-        } else if abs(x) > FIELD.sideline + 1e-9 { return }
-        bestT = t
-        bestEdge = edge
-    }
-
-    consider(FIELD.sideline - a.x, b.x - a.x, .sidelinePlusX)
-    consider(-FIELD.sideline - a.x, b.x - a.x, .sidelineMinusX)
-    consider(FIELD.endLine - a.z, b.z - a.z, .endlinePlusZ)
-    consider(-FIELD.endLine - a.z, b.z - a.z, .endlineMinusZ)
-
-    guard let edge = bestEdge else { return nil }
-    return Crossing(
-        point: Vec3d(a.x + (b.x - a.x) * bestT, 0, a.z + (b.z - a.z) * bestT),
-        edge: edge,
-        t: bestT
-    )
-}
-
-/// Where a team putting the disc into play establishes its pivot.
-///
-///  - always on or inside the perimeter (out-of-bounds discs come in at the spot
-///    where they crossed — WFDF 13.2);
-///  - possession gained in the endzone you are ATTACKING, other than by scoring,
-///    is carried to the nearest point on that goal line (USAU 12.B). Mandatory:
-///    "the player in possession must carry the disc directly to, and put it into
-///    play at, the spot on the goal line closest to where the player stopped";
-///  - possession gained in the endzone you are DEFENDING may be walked out to
-///    the nearest point on that goal line (USAU 12.A.2).
-///
-/// THE TWO ARE NOT THE SAME RULE and only the first was here. 12.B is compulsory;
-/// 12.A is a choice between putting it into play on the spot (12.A.1) and walking it
-/// to the line (12.A.2), and the sim always takes the walk — see
-/// `walkOutOfDefendingEndzone`.
-///
-/// Both walk to the goal line of the endzone the disc is IN, which is why the two
-/// branches differ only in sign. `x` never moves: the closest point on a goal line is
-/// straight out of it.
-public func putIntoPlaySpot(_ spot: Vec3d, _ attackDir: Dir, _ rules: RuleSet) -> Vec3d {
-    var p = clampToField(spot)
-    let zone = p.z * Double(attackDir)
-    if rules.walkToGoalLineFromAttackingEndzone && zone >= FIELD.goalLine - G_EPS {
-        p.z = goalLineZ(attackDir)
-    } else if rules.walkOutOfDefendingEndzone && zone <= -(FIELD.goalLine - G_EPS) {
-        p.z = goalLineZ(-attackDir)
-    }
-    return p
 }
 
 // MARK: - stall

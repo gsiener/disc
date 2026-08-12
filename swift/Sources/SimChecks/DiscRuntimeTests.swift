@@ -504,7 +504,7 @@ enum DiscRuntimeTests {
             if tr.watchBounds && leftAtFrame < 0 && !inBounds(rt.state.pos, f) {
                 leftAtFrame = i
                 if let want = tr.crossing {
-                    let c = boundaryCrossing(prev, rt.state.pos)
+                    let c = FieldConstants.standard.boundaryCrossing(prev, rt.state.pos)
                     within(prev.x, want.prev[0], posTol(rt.state.t), "\(tr.name) crossing prev.x")
                     within(prev.z, want.prev[2], posTol(rt.state.t), "\(tr.name) crossing prev.z")
                     within(
@@ -562,7 +562,9 @@ enum DiscRuntimeTests {
         Check.eq(inBounds(s.pos, f), want.inBounds, "\(at) in bounds")
         // Cross-check that the fixture's field really is the one `Rules` carries, so the
         // threaded comparison above and the shared geometry cannot drift apart.
-        Check.eq(isInBounds(s.pos), want.inBounds, "\(at) in bounds agrees with Rules")
+        Check.eq(
+            FieldConstants.standard.isInBounds(s.pos), want.inBounds,
+            "\(at) in bounds agrees with the regulation field")
 
         // Integrated: tolerance that widens with horizon.
         within(s.pos.x, want.pos[0], pT, "\(at) pos.x")

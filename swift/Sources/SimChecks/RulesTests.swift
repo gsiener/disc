@@ -181,8 +181,14 @@ enum RulesTests {
                 r.gameTo = 21
             }, g.makeRulesOverride.want, "makeRules(over) merges onto DEFAULT_RULES")
 
+        // The `rules` fixture comes from `src/sim/Rules.ts`, whose geometry is
+        // regulation and unparameterised. So the differential replay names the pitch it
+        // is replaying: `.standard`. The port's own geometry is `FieldConstants`', and
+        // the minis half of it is asserted by `minisShape()` — see #45, ADR-0004.
+        let field = FieldConstants.standard
+
         for c in g.cones.enumerated() {
-            expectVec(CONES[c.offset], c.element, "cone \(c.offset)")
+            expectVec(FieldConstants.standard.cones[c.offset], c.element, "cone \(c.offset)")
         }
 
         for (i, c) in g.v3Cases.enumerated() {
@@ -195,28 +201,28 @@ enum RulesTests {
             Check.bitEqViaJSON(distXZ(c.a.vec, c.b.vec), c.want, "distXZ case \(i)")
         }
         for (i, c) in g.isInBoundsCases.enumerated() {
-            Check.eq(isInBounds(c.p.vec), c.want, "isInBounds case \(i)")
+            Check.eq(field.isInBounds(c.p.vec), c.want, "isInBounds case \(i)")
         }
         for (i, c) in g.endzoneOfCases.enumerated() {
-            Check.eq(endzoneOf(c.z), c.want, "endzoneOf case \(i)")
+            Check.eq(field.endzoneOf(c.z), c.want, "endzoneOf case \(i)")
         }
         for (i, c) in g.isInEndzoneCases.enumerated() {
-            Check.eq(isInEndzone(c.p.vec, c.dir), c.want, "isInEndzone case \(i)")
+            Check.eq(field.isInEndzone(c.p.vec, c.dir), c.want, "isInEndzone case \(i)")
         }
         for (i, c) in g.isGoalCases.enumerated() {
-            Check.eq(isGoal(c.p.vec, c.dir), c.want, "isGoal case \(i)")
+            Check.eq(field.isGoal(c.p.vec, c.dir), c.want, "isGoal case \(i)")
         }
         for (i, c) in g.goalLineZCases.enumerated() {
-            Check.bitEqViaJSON(goalLineZ(c.dir), c.want, "goalLineZ case \(i)")
+            Check.bitEqViaJSON(field.goalLineZ(c.dir), c.want, "goalLineZ case \(i)")
         }
         for (i, c) in g.brickMarkCases.enumerated() {
-            expectVec(brickMark(c.dir), c.want, "brickMark case \(i)")
+            expectVec(field.brickMark(c.dir), c.want, "brickMark case \(i)")
         }
         for (i, c) in g.clampToFieldCases.enumerated() {
-            expectVec(clampToField(c.p.vec), c.want, "clampToField case \(i)")
+            expectVec(field.clampToField(c.p.vec), c.want, "clampToField case \(i)")
         }
         for (i, c) in g.boundaryCrossingCases.enumerated() {
-            let got = boundaryCrossing(c.a.vec, c.b.vec)
+            let got = field.boundaryCrossing(c.a.vec, c.b.vec)
             switch (got, c.want) {
             case (nil, nil):
                 Check.ok(true, "boundaryCrossing case \(i) is nil")
@@ -231,7 +237,7 @@ enum RulesTests {
             }
         }
         for (i, c) in g.putIntoPlaySpotCases.enumerated() {
-            expectVec(putIntoPlaySpot(c.spot.vec, c.attackDir, c.rules), c.want, "putIntoPlaySpot case \(i)")
+            expectVec(field.putIntoPlaySpot(c.spot.vec, c.attackDir, c.rules), c.want, "putIntoPlaySpot case \(i)")
         }
 
         for (i, c) in g.stallCountForCases.enumerated() {
@@ -340,9 +346,22 @@ enum RulesTests {
     /// the reference and the port made the same sign error.
     private static func properties() {
         // The field's own arithmetic identity: LENGTH = CENTRAL_LENGTH + 2*ENDZONE_DEPTH.
-        Check.bitEq(
-            FIELD.length, FIELD.centralLength + 2 * FIELD.endzoneDepth,
-            "field length is central length plus both endzones")
+        //
+        // Asserted on every format, not just regulation. It used to read the `FIELD`
+        // global and so could only ever describe the regulation pitch — and a shape
+        // property that holds at one format is exactly what ADR-0004 says is not a shape
+        // property. Minis is the default game mode; it gets the same identity.
+        for (name, field) in [("sevens", FieldConstants.standard), ("minis", FieldConstants.minis)] {
+            Check.bitEq(
+                field.length, field.centralLength + 2 * field.endzoneDepth,
+                "\(name): field length is central length plus both endzones")
+            Check.bitEq(
+                field.endLine, field.goalLine + field.endzoneDepth,
+                "\(name): the end line is one endzone beyond the goal line")
+            Check.bitEq(
+                field.brickZ, field.goalLine - field.brickIn,
+                "\(name): the brick mark sits BRICK_IN in from the goal line")
+        }
 
         // USAU 16.G double-team radius is ten feet, not a round number of metres.
         Check.bitEq(DEFAULT_RULES.doubleTeamRange, 3.048, "double-team radius is 10 ft = 3.048 m")
@@ -398,9 +417,9 @@ enum RulesTests {
 
         // Walking out of the defending endzone and carrying out of the attacking endzone
         // move the pivot to opposite goal lines for the same attack direction.
-        let deep = putIntoPlaySpot(Vec3d(3, 0, 40), 1, DEFAULT_RULES) // attacking endzone at +z
-        let shallow = putIntoPlaySpot(Vec3d(3, 0, -40), 1, DEFAULT_RULES) // defending endzone at -z
-        Check.bitEq(deep.z, FIELD.goalLine, "carry from the attacking endzone stops at its own goal line")
-        Check.bitEq(shallow.z, -FIELD.goalLine, "walk from the defending endzone stops at its own goal line")
+        let deep = FieldConstants.standard.putIntoPlaySpot(Vec3d(3, 0, 40), 1, DEFAULT_RULES) // attacking endzone at +z
+        let shallow = FieldConstants.standard.putIntoPlaySpot(Vec3d(3, 0, -40), 1, DEFAULT_RULES) // defending endzone at -z
+        Check.bitEq(deep.z, FieldConstants.standard.goalLine, "carry from the attacking endzone stops at its own goal line")
+        Check.bitEq(shallow.z, -FieldConstants.standard.goalLine, "walk from the defending endzone stops at its own goal line")
     }
 }

@@ -14,12 +14,14 @@ import Foundation
 /// `GameFormat`, every geometric decision goes through `format.field`, and the number
 /// of players on the line comes from `format.playersPerSide` rather than the literal 7.
 ///
-/// `Rules.swift`'s free functions and its `FIELD` global stay exactly as they are —
-/// they are the regulation-field spelling, they are what `tools/goldens/rules.ts`
-/// asserts bit-exactly, and the methods below are required to agree with them for
-/// `FieldConstants.standard`. `GameStateTests` asserts that agreement rather than
-/// assuming it, because a copied-and-edited geometry routine is precisely the kind of
-/// thing that drifts by a sign.
+/// The methods below are now the *only* spelling. `Rules.swift` used to carry free
+/// functions over a `FIELD` global as well, and `GameStateTests` asserted the two agreed
+/// at regulation — the check that said the rewrite from a module constant to a threaded
+/// value changed no behaviour. It did its job, and then outlived it: a regulation-only
+/// path stayed reachable, which is the mechanism ADR-0004 was written about. The
+/// free functions and the global are gone (#45), so the differential replay in
+/// `RulesTests` names `.standard` explicitly, and a caller can no longer ask a question
+/// about the pitch without saying which pitch. `tools/test-structure.ts` keeps them gone.
 
 // MARK: - field presets
 

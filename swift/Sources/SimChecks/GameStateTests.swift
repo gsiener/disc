@@ -122,7 +122,6 @@ enum GameStateTests {
         }
 
         minis()
-        agreesWithRulesFreeFunctions()
 
         Check.ok(
             replayed > 0,
@@ -320,90 +319,5 @@ enum GameStateTests {
             "and that same point really is in bounds under regulation geometry")
         Check.ok(game.format.field.isInBounds(Vec3d(0, 0, 10)), "z=10 is on the minis pitch")
         Check.ok(!game.format.field.isInBounds(Vec3d(10, 0, 0)), "x=10 is over a minis sideline")
-    }
-
-    // MARK: the rewrite must not have changed regulation behaviour
-
-    /// `GameFormat`'s methods are the parameterised rewrite of `Rules.swift`'s free
-    /// functions, which are themselves asserted bit-exactly by the `rules` suite.
-    ///
-    /// So for the regulation field the two must agree exactly. This is the check that
-    /// says the rewrite from a module constant to a threaded value did not change any
-    /// behaviour — a copied-and-edited geometry routine is precisely the kind of thing
-    /// that drifts by a sign and stays plausible.
-    private static func agreesWithRulesFreeFunctions() {
-        let format = GameFormat.sevens
-        var probes: [Vec3d] = []
-        for x in stride(from: -25.0, through: 25.0, by: 6.25) {
-            for z in stride(from: -60.0, through: 60.0, by: 7.5) {
-                probes.append(Vec3d(x, 0, z))
-            }
-        }
-
-        for p in probes {
-            Check.eq(
-                format.field.isInBounds(p), isInBounds(p),
-                "isInBounds agrees at (\(p.x), \(p.z))")
-            Check.eq(
-                format.field.endzoneOf(p.z), endzoneOf(p.z),
-                "endzoneOf agrees at z=\(p.z)")
-            for dir in [1, -1] {
-                Check.eq(
-                    format.field.isInEndzone(p, dir), isInEndzone(p, dir),
-                    "isInEndzone(dir \(dir)) agrees at (\(p.x), \(p.z))")
-                Check.eq(
-                    format.field.isGoal(p, dir), isGoal(p, dir),
-                    "isGoal(dir \(dir)) agrees at (\(p.x), \(p.z))")
-            }
-            let a = format.field.clampToField(p)
-            let b = clampToField(p)
-            Check.bitEqViaJSON(a.x, b.x, "clampToField.x agrees at (\(p.x), \(p.z))")
-            Check.bitEqViaJSON(a.z, b.z, "clampToField.z agrees at (\(p.x), \(p.z))")
-        }
-
-        for dir in [1, -1] {
-            Check.bitEqViaJSON(
-                format.field.goalLineZ(dir), goalLineZ(dir), "goalLineZ(\(dir)) agrees")
-            let m = format.field.brickMark(dir)
-            let n = brickMark(dir)
-            Check.bitEqViaJSON(m.x, n.x, "brickMark(\(dir)).x agrees")
-            Check.bitEqViaJSON(m.z, n.z, "brickMark(\(dir)).z agrees")
-        }
-
-        // Boundary crossings, including segments that stay in, leave sideways, and leave
-        // over an end line — the three shapes the routine branches on.
-        let segments: [(Vec3d, Vec3d)] = [
-            (Vec3d(0, 0, 0), Vec3d(0, 0, 10)),
-            (Vec3d(0, 0, 0), Vec3d(30, 0, 0)),
-            (Vec3d(0, 0, 0), Vec3d(0, 0, 70)),
-            (Vec3d(-10, 0, -40), Vec3d(25, 0, 55)),
-            (Vec3d(19, 0, 0), Vec3d(-19, 0, 0)),
-        ]
-        for (a, b) in segments {
-            let got = format.field.boundaryCrossing(a, b)
-            let want = boundaryCrossing(a, b)
-            Check.eq(got == nil, want == nil, "boundaryCrossing agrees on whether it crossed")
-            if let got, let want {
-                Check.bitEqViaJSON(got.point.x, want.point.x, "crossing.x agrees")
-                Check.bitEqViaJSON(got.point.z, want.point.z, "crossing.z agrees")
-                Check.eq(got.edge, want.edge, "crossing edge agrees")
-            }
-        }
-
-        let rules = DEFAULT_RULES
-        for dir in [1, -1] {
-            for spot in [Vec3d(5, 0, 20), Vec3d(-19, 0, -55), Vec3d(0, 0, 0)] {
-                let got = format.field.putIntoPlaySpot(spot, dir, rules)
-                let want = putIntoPlaySpot(spot, dir, rules)
-                Check.bitEqViaJSON(got.x, want.x, "putIntoPlaySpot.x agrees")
-                Check.bitEqViaJSON(got.z, want.z, "putIntoPlaySpot.z agrees")
-            }
-        }
-
-        Check.eq(format.field.cones.count, CONES.count, "the same number of cones")
-        for (i, c) in format.field.cones.enumerated() {
-            Check.bitEqViaJSON(c.x, CONES[i].x, "cone \(i).x agrees")
-            Check.bitEqViaJSON(c.z, CONES[i].z, "cone \(i).z agrees")
-        }
     }
 }
