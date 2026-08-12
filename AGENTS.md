@@ -123,22 +123,29 @@ module prints the current list; trust that over this sentence, which has been
 wrong twice.) Then run the port's own suite:
 `cd swift && swift run -c release SimTests` must end `PASS` with 0 failures.
 
-### Six assertions are red on a clean checkout. None of them is yours.
+### Twelve assertions are red on a clean checkout. None of them is yours.
 
-Measured at `main`. Do not chase these and do not report them as yours — but note
-**this table names a cause per row, not just "flaky."** #30 found that most of
-these are not noise: pooling `windy completion %` across four seeds *confirmed*
-the defect (51.6% over 153 throws) instead of making it go away, and two of the
-others are real regressions with their own issues. Only the camera pair remains
-genuinely uninvestigated.
+Measured at `1877bd7` and confirmed identical in a detached worktree at `98ac3d1`
+— `test-game` 147/1, `test-ai` 64/6, `test-move` 34/3, `test-camera` 69/2,
+`test-locomotion` and `test-anim` fully green. Do not chase these and do not
+report them as yours.
+
+**This table said six for a while, and `test-move` was missing from it entirely.**
+Two rows it used to carry — `ratings change on-field outcomes` and
+`no out-of-bounds across seeds` — now pass. Where a row below says "cause not
+verified", that is the honest state: the count and the text are measured, the
+attribution is not.
 
 | suite | red | assertion | cause |
 |---|---|---|---|
-| `test-game.ts` | 1 | `with no single seed outside 80-97%` (`33333`, now ~66%) | pre-existing outlier, predates #29 — #35 fixed the OTHER row this table used to carry here (`changes hands at the sport's rate`, #29's mirror bug) and moved seed 33333 off the 58% #29 put it at, back toward its original, still-unexplained 49-67% |
-| `test-ai.ts` | 2 | `windy completion % stays sane` (pooled, still red) | throw solver has no wind term — #32 |
-| `test-ai.ts` | 2 | `ratings change on-field outcomes` (pooled over 3 seeds, still red) | elite roster loses to weak roster — #36, pre-existing |
-| `test-ai.ts` | 1 | `no out-of-bounds across seeds` (26 player-ticks, seed 31415, `#13` sprinting `attack-disc` at the sideline) | new since #35's fix — a `Playbook.ts` change that legitimately reshuffles match trajectories exposed a pre-existing sprint-overshoot risk near the sideline that the old (buggy) mirror never happened to trigger for this seed; movement/targeting near the boundary, not `formationStations` — not yet investigated |
-| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)`; `marker framed, LIVE_POSSESSION` | not yet investigated |
+| `test-game.ts` | 1 | `with no single seed outside 80-97%` (`77777` 98%, `33333` 67%) | tracked in #39 — `33333` is the pre-existing outlier, `77777` arrived with #36 |
+| `test-ai.ts` | 1 | `windy completion % stays sane` (42.0% pooled over 4 wind seeds, 71/169, vs 78.9% calm) | throw solver has no wind term — #32 was closed, this assertion was not; pooling *confirmed* the defect rather than dissolving it |
+| `test-ai.ts` | 1 | `completion holds across seeds (75-92)` (74.2% pooled over 318 throws) | cause not verified |
+| `test-ai.ts` | 1 | `a reset handler is stationed behind the disc` (88.7% of 81,487 held frames) | cause not verified |
+| `test-ai.ts` | 2 | `nobody dives for a disc he could run down`; `a bid that is made is a bid that was needed` | both fire on a sample of **one bid** — a band measured against n=1 is the shape `20260810-per-seed-bands-again` warns about; pool before believing either |
+| `test-ai.ts` | 1 | `and the abort back to the reset is live code` (0 aborts of 2 up-lines) | n=2. Same caveat |
+| `test-move.ts` | 3 | `no pair sits inside 0.80 m for more than 5 s` (longest 5.0 s); `the hard floor still holds — nothing interpenetrates` (min pair 0.524 m); `groundY matches the surface under the body` (worst 9.91 mm) | **absent from this table until 2026-08-12** — nobody had written them down. Cause not verified; the first is exactly on its bound |
+| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)` (95.9% < 97.5%); `marker framed, LIVE_POSSESSION` (99.2% < 99.9%) | not yet investigated |
 
 The friction log's rule from `20260810-per-seed-bands-again` still applies where
 it's genuinely noise — *"a bound whose value came from a measurement of one seed
@@ -149,11 +156,16 @@ to make one pass.** If pooling a red assertion doesn't make the number move
 toward the band, that's a real defect wearing a flaky-band costume — file it,
 don't widen it.
 
-**Verify before you believe this table.** It has been wrong before: it previously
-named `wasted yaw travel p99` as the single known failure, and that assertion now
-passes while two other camera assertions do not. A stale exception list is worse
-than none, because it licenses ignoring the wrong thing. Diff against a clean
-worktree rather than trusting this paragraph.
+**Verify before you believe this table.** It has been wrong three times now, and
+each time in the direction that licenses ignoring the wrong thing. It named
+`wasted yaw travel p99` as the single known failure, and that assertion now
+passes while two other camera assertions do not. It then said six when twelve
+were red, named two rows that had since gone green, and omitted `test-move.ts`
+altogether — so an agent who broke body separation would have found three
+failures, read "none of them is yours", and been wrong. A stale exception list is
+worse than none. Diff against a clean worktree rather than trusting this
+paragraph; the recipe is above, and a fresh worktree needs `node_modules`
+symlinked in before the suites will run.
 
 And **look at the pixels**. `tools/capture.mjs` pins the camera and freezes the
 world, which is right for judging a material and useless for judging anything
