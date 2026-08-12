@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Nightly canary for the two jobs that no longer run on every pull request push (see
+    # their `if:` below) — so a regression that only the Swift differential suite or the
+    # touch tests would catch is still found within a day, not only at the next merge to
+    # `main`. 03:00 UTC: outside US and EU working hours, so a failure is triaged fresh
+    # rather than at the end of someone's day.
+    - cron: '0 3 * * *'
 
 permissions:
   contents: read
@@ -76,10 +83,36 @@ jobs:
   sim-tests:
     name: Swift differential suite (SimTests)
     runs-on: macos-15
+    # Not on `pull_request`: at ~5m45s this was the second-largest piece of the wall clock a
+    # push waits on, and unlike `syntax-gate` / `ios-build` it cannot be made to run faster —
+    # the 2.2M assertions are the point. It still runs on every push to `main` (nothing merges
+    # unverified) and nightly on the schedule above, so a regression is caught within a day
+    # even on a run of PR-only pushes.
+    if: github.event_name != 'pull_request'
     # Generous: release-mode build plus ~2.2M assertions.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # **A cache of build products is only as good as the timestamps the build system trusts,
+      # and `actions/checkout` hands every file the checkout's own mtime.** SwiftPM's
+      # incremental build compares a source file's mtime against what it recorded when it last
+      # compiled that file — so even a byte-identical cache hit below looks, to the build
+      # system, like every source changed a moment ago and needs recompiling. Setting each
+      # tracked file's mtime back to its last commit's time is what a hit actually has to mean
+      # for the cache to do anything; see the Xcode jobs below, which had the same bug and no
+      # fix for it until this was found (`.agents/friction-log` — the reverted DerivedData cache
+      # attempt is what surfaced it).
+      #
+      # One `git log` per file rather than one pass over history, because this repo's history is
+      # small enough that the simplicity is worth more than the constant-factor speedup — and
+      # this only needs to run over the ~30k lines that feed the build, not the whole tree.
+      - name: Restore source mtimes from git history
+        run: |
+          set -euo pipefail
+          git ls-files -z swift | while IFS= read -r -d '' f; do
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
+          done
 
       - name: Swift version
         run: swift --version
@@ -130,12 +163,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See the identical step on `sim-tests` above — same bug (checkout mtimes defeat
+      # incremental builds), same fix, applied here to the app + UltimateSim package instead
+      # of just the package.
+      - name: Restore source mtimes from git history
+        run: |
+          set -euo pipefail
+          git ls-files -z ios swift | while IFS= read -r -d '' f; do
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
+          done
+
       - name: Install xcodegen
         run: brew install xcodegen
 
       - name: Generate Xcode project
         working-directory: ios
         run: xcodegen generate
+
+      # Same pattern as the Swift package's build cache: keyed on the sources that feed this
+      # build (the app target plus the UltimateSim package it links). Only does anything now
+      # that the step above keeps the build system from seeing every source as freshly changed
+      # on a cache hit — see the reverted first attempt at this, which cached without it.
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: ios-release-${{ runner.os }}-${{ hashFiles('ios/project.yml', 'ios/Ultimate/**', 'swift/Package.swift', 'swift/Sources/**/*.swift') }}
+          restore-keys: |
+            ios-release-${{ runner.os }}-
 
       - name: Build for iOS Simulator
         working-directory: ios
@@ -145,6 +200,7 @@ jobs:
           -scheme Ultimate
           -destination 'generic/platform=iOS Simulator'
           -configuration Release
+          -derivedDataPath build
           build
           CODE_SIGNING_ALLOWED=NO
 
@@ -169,9 +225,119 @@ jobs:
   # simulator. `platform=iOS Simulator,OS=latest,name=iPhone 16 Pro` would have the same
   # problem one Xcode later, so the runner is asked to pick: `xcodebuild` resolves
   # `id=` from `simctl list` below, which is the only spelling that cannot go stale.
-  ui-tests:
-    name: Touch tests (XCUITest)
+  # Builds the UI test target exactly once. Split out from `ui-tests` below because that job
+  # is sharded to run test *execution* in parallel, and a naive shard-the-whole-job split (the
+  # first attempt at this) pays the ~220-310 s `build-for-testing` compile again in every
+  # shard — duplicated work that made two shards measure *slower* than one unsharded job
+  # (9m47s vs the 8m46s baseline, run 31592896055). Building once and handing the compiled
+  # product to each shard is the fix: the compile is paid for here, a single time, and each
+  # shard downstream only has to run its slice of the tests.
+  ui-tests-build:
+    name: Touch tests (build for testing)
     runs-on: macos-15
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # See `sim-tests` / `ios-build` above for why this exists: `actions/checkout` stamps
+      # every file with the checkout's own mtime, and Xcode's incremental build keys off
+      # mtimes, so a cache hit below still looked like a full source change until this ran.
+      - name: Restore source mtimes from git history
+        run: |
+          set -euo pipefail
+          git ls-files -z ios swift | while IFS= read -r -d '' f; do
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
+          done
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      # Debug-config counterpart of `ios-build`'s release cache: same sources plus the UI
+      # test target itself, since that's what `build-for-testing` actually compiles here.
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: ios-uitests-debug-${{ runner.os }}-${{ hashFiles('ios/project.yml', 'ios/Ultimate/**', 'ios/UltimateUITests/**', 'swift/Package.swift', 'swift/Sources/**/*.swift') }}
+          restore-keys: |
+            ios-uitests-debug-${{ runner.os }}-
+
+      # A concrete destination rather than `generic/platform=iOS Simulator`: a generic
+      # destination has no single "active" architecture to build for and produces a fat
+      # arm64+x86_64 binary — roughly double the compile for a slice that never runs, since
+      # every simulator this runner can boot is arm64. Which concrete simulator is picked
+      # doesn't matter — the shards below boot their own and any arm64 simulator can run an
+      # arm64-built `.xctest` bundle — so this only exists to pin the architecture.
+      - name: Pick a simulator to build against
+        id: sim
+        run: |
+          set -euo pipefail
+          read -r udid _ < <(xcrun simctl list devices available --json \
+            | python3 -c "import json,sys;d=json.load(sys.stdin)['devices'];rt,x=next((rt,x) for rt in sorted(d) if 'iOS' in rt for x in d[rt] if x['name'].startswith('iPhone'));print(x['udid'],x['name'])")
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+
+      - name: Build for testing
+        working-directory: ios
+        run: >
+          xcodebuild build-for-testing
+          -project Ultimate.xcodeproj
+          -scheme UltimateUITests
+          -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
+          -derivedDataPath build
+          CODE_SIGNING_ALLOWED=NO
+
+      # Everything a shard needs to run tests without rebuilding: the app, the test bundle,
+      # and the `.xctestrun` `build-for-testing` writes describing how to run them. Nothing
+      # under `Intermediates.noindex` — those are compiler scratch files a shard never reads.
+      - name: Upload build products
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-tests-build-products
+          path: ios/build/Build/Products
+          retention-days: 1
+          if-no-files-found: error
+
+  # The touch tests. **This is the only job that verifies the game the way a person plays
+  # it.**
+  #
+  # Everything else in this file checks that the simulation computes the right numbers. This
+  # runs the app on a booted simulator and drives real UIKit gestures at it — a drag that
+  # throws, a held drag that is graded, a tap that sends a cutter, a tap that sends a
+  # defender, a drag that comes home and aborts — and asserts on what the HUD says and what
+  # the match's own input tape records. See ios/UltimateUITests for what each one drives and
+  # for the two things XCUITest turned out not to be able to do.
+  #
+  # It is a separate job rather than a step on `ios-build` because it needs a *booted*
+  # simulator and several minutes of match time, while the build job needs neither and should
+  # stay the fast signal.
+  ui-tests:
+    name: Touch tests (XCUITest, ${{ matrix.shard.name }})
+    needs: ui-tests-build
+    runs-on: macos-15
+    if: github.event_name != 'pull_request'
+    # Two shards, not eleven, split by class rather than by individual test name so that a
+    # test added later lands in a shard automatically instead of silently running in neither.
+    #
+    # The two groups are balanced on one measured run (31552114426): ChargeTests at ~95 s,
+    # RefusalTests + TouchTests at ~115 s — both dominated by the two tests that retry a
+    # possession on an unlucky pull (`testAimingAtTheWindowGetsACleanRelease`,
+    # `testTheOffensiveTapUsuallyMeansSomething`; see `MatchDriver.withTheDisc`), so the actual
+    # split on any given run has real variance around this balance point.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: charge
+            only: -only-testing:UltimateUITests/ChargeTests
+          - name: refusal-touch
+            only: >-
+              -only-testing:UltimateUITests/RefusalTests
+              -only-testing:UltimateUITests/TouchTests
     # **The waiting is the story of this job and it has been cut, not padded.**
     #
     # A UI test used to spend nearly all of its time waiting for the match to hand the human's
@@ -187,30 +353,24 @@ jobs:
     # measurements. Note `samplingCap` among them — at 60 × the slowdown it is the largest
     # single budget in this job, and the one to look at before shortening `timeout-minutes`.
     #
-    # This stays generous against a cold runner, a brew install and two simulator boots. It is
-    # a ceiling on a pathology, not a budget the tests are expected to use.
-    #
-    # **30 and not 20, because the 664 s measurement above predates three of this job's steps.**
-    # It is eleven tests on a warm simulator; it does not include the boot, the
-    # `build-for-testing` compile (3m14s measured on this runner) or the xcodegen install. And
-    # the cost of getting this wrong is asymmetric: a job killed by `timeout-minutes` skips its
-    # remaining steps, so `Upload test results` never runs and the `.xcresult` is lost on
-    # precisely the run that needed it — which is the diagnostic `-derivedDataPath` was made
-    # explicit to keep.
-    timeout-minutes: 30
+    # This stays generous against a cold runner and a simulator boot. It no longer needs to
+    # cover a `brew install` or the `build-for-testing` compile — those moved to
+    # `ui-tests-build` — so it is shorter than the job it replaced.
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install xcodegen
-        run: brew install xcodegen
-
-      - name: Generate Xcode project
-        working-directory: ios
-        run: xcodegen generate
+      # No checkout: this job only runs a prebuilt `.xctestrun`, and nothing here reads a
+      # source file. `Pick a simulator` and `simctl` come from the runner image, not the repo.
+      - name: Download build products
+        uses: actions/download-artifact@v4
+        with:
+          name: ui-tests-build-products
+          path: ios/build/Build/Products
 
       # Any available iPhone, whichever runtime this runner happens to have. Printed as well
       # as captured, because "which simulator did CI actually use" is the first question
-      # about a UI test failure that reproduces nowhere else.
+      # about a UI test failure that reproduces nowhere else. This runner's simulator need not
+      # be — and generally isn't — the same instance `ui-tests-build` picked; only the
+      # architecture had to match, and every simulator here is arm64.
       - name: Pick a simulator
         id: sim
         run: |
@@ -238,41 +398,12 @@ jobs:
       #
       # `bootstatus -b` blocks until the device reports itself booted, so a boot that does
       # not happen fails *as a boot* in a step named for it. See issue #14.
-      #
-      # **Started here and waited for after the compile**, because those are two different
-      # things and only one of them is worth blocking on. `simctl boot` returns as soon as the
-      # boot is *initiated*; `bootstatus -b` is what waits. `build-for-testing` does not need a
-      # booted device, so waiting here would serialise a full boot ahead of a three-minute
-      # compile for nothing. Split, the boot happens during the compile and is merely confirmed
-      # afterwards — and a boot that never completes still fails in a step named for it, which
-      # is the property worth keeping.
       - name: Start the simulator booting
         run: xcrun simctl boot '${{ steps.sim.outputs.udid }}' || true
 
-      # **Compiling is a separate step from testing, and that is the point.**
-      #
-      # These were one `xcodebuild test` invocation, and it hid a real failure: a stale file
-      # broke the suite's compilation, and because the compile happened inside the test step
-      # the run reported a *test* problem. Worse, it is what made `continue-on-error` look
-      # survivable — a masked step reported a compile error as a pass. Split, a compile
-      # error is red here, with the compiler's own message, and never reaches the simulator.
-      #
-      # `-derivedDataPath` is explicit so the warm-up below and the artifact upload can name
-      # the products without guessing at a hashed directory.
-      - name: Build for testing
-        working-directory: ios
-        run: >
-          xcodebuild build-for-testing
-          -project Ultimate.xcodeproj
-          -scheme UltimateUITests
-          -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
-          -derivedDataPath build
-          CODE_SIGNING_ALLOWED=NO
-
-      # The other half of the boot above: confirm it finished, now that the compile has given
-      # it three minutes to do so. Blocking, and the device is printed because "which simulator
-      # did CI actually use" is the first question about a UI test failure that reproduces
-      # nowhere else.
+      # The other half of the boot above: confirm it finished. Blocking, and the device is
+      # printed because "which simulator did CI actually use" is the first question about a
+      # UI test failure that reproduces nowhere else.
       - name: Wait for the simulator
         run: |
           set -euo pipefail
@@ -315,8 +446,6 @@ jobs:
       # There is no `continue-on-error` step left in this job at all: the one that had it,
       # `Warm the app`, was deleted rather than kept as an exception. See the note where it
       # used to be.
-      #
-      # `test-without-building` — the compile already happened, and happened in its own step.
       #
       # **`UITEST_SLOWDOWN` is the one timing knob**, and it is set here rather than sniffed.
       #
@@ -370,26 +499,33 @@ jobs:
       # `RefusalTests` attempts all twelve; the twelfth is simply not visible in the ledger read
       # that follows it. The floor of 8 is what makes that harmless. Do not raise the cap
       # expecting a twelfth tap — the gap is a probe-read ordering artefact, not a budget.
+      #
+      # `-xctestrun` rather than `-project`/`-scheme`/`-derivedDataPath`: this job never ran
+      # `build-for-testing` and has no `.xcodeproj` (no checkout, no xcodegen) — everything
+      # needed to run is inside the downloaded products directory, and the `.xctestrun` is
+      # what tells `xcodebuild` where to find it. Located by glob rather than a hardcoded name
+      # because the filename embeds the SDK version (`UltimateUITests_iphonesimulatorNN.N-*`),
+      # which drifts with the Xcode version the runner image ships.
       - name: Run the touch tests
-        working-directory: ios
         env:
           TEST_RUNNER_UITEST_SLOWDOWN: "2"
-        run: >
-          xcodebuild test-without-building
-          -project Ultimate.xcodeproj
-          -scheme UltimateUITests
-          -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
-          -derivedDataPath build
-          CODE_SIGNING_ALLOWED=NO
+        run: |
+          set -euo pipefail
+          xctestrun=$(find ios/build/Build/Products -maxdepth 1 -name '*.xctestrun')
+          xcodebuild test-without-building \
+            -xctestrun "$xctestrun" \
+            -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}' \
+            -resultBundlePath "ios/build/Results-${{ matrix.shard.name }}.xcresult" \
+            ${{ matrix.shard.only }}
 
       # The gestures, the probe readings and the failure screenshots, which are the only way
-      # to tell a real regression from a simulator that never booted.
+      # to tell a real regression from a simulator that never booted. Named per shard — two
+      # matrix jobs uploading `ui-test-results` would collide.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-test-results
-          path: |
-            ios/build/Logs/Test/*.xcresult
+          name: ui-test-results-${{ matrix.shard.name }}
+          path: ios/build/Results-${{ matrix.shard.name }}.xcresult
           retention-days: 7
           if-no-files-found: ignore
