@@ -111,7 +111,7 @@ jobs:
         run: |
           set -euo pipefail
           git ls-files -z swift | while IFS= read -r -d '' f; do
-            touch -d "$(git log -1 --format=%cI -- "$f")" "$f"
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
           done
 
       - name: Swift version
@@ -170,7 +170,7 @@ jobs:
         run: |
           set -euo pipefail
           git ls-files -z ios swift | while IFS= read -r -d '' f; do
-            touch -d "$(git log -1 --format=%cI -- "$f")" "$f"
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
           done
 
       - name: Install xcodegen
@@ -247,7 +247,7 @@ jobs:
         run: |
           set -euo pipefail
           git ls-files -z ios swift | while IFS= read -r -d '' f; do
-            touch -d "$(git log -1 --format=%cI -- "$f")" "$f"
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
           done
 
       - name: Install xcodegen
