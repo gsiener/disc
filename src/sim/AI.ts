@@ -2365,9 +2365,103 @@ export class TeamAI {
           breakPenalty = 0.30 * markGood;
         }
 
+        // ---- expected-possession-value model.
+        // Everything is priced in "probability this possession ends in a goal",
+        // so a 40 m score-throw and a 5 m dump are compared in the same units
+        // and a turnover is charged what it actually costs: the disc.
+        const gain = dir * (aim.z - disc.pos.z);
+        const isGoal = inAttackEndzone(aim.z, dir);
+        const isReset = gain < 0;
+
         const acc = thrower.attr.throwAccuracy[type] * (0.85 + 0.15 * thrower.energy);
+        /**
+         * A THROW THAT BARELY MOVES THE DISC IS NOT PRICED BY ARM TALENT THE
+         * WAY A GAIN IS — issue #36, "the elite-rated roster loses to the weak-
+         * rated one, pooled over three seeds".
+         *
+         * `pThrow`'s accuracy term is a real, load-bearing signal for a throw
+         * that advances the disc — see the deep-shot and downfield-under
+         * valuations below, both untouched here. But for a throw that gains
+         * next to nothing (a swing, a dump, `gain < NO_GAIN_MARGIN`), the EV
+         * chain in the `else` branch below collapses to
+         * `-(1-completion)*(holdValue+loss)`, which shrinks toward zero as
+         * completion rises. A thrower whose accuracy alone pushes completion
+         * from ~75% to ~95% does not get 95% safer at gaining zero yards; he
+         * clears the SAME lenient stall-0 `hold` bar on every single catch,
+         * with nothing to show for it, over and over.
+         *
+         * Measured on two rosters differing ONLY in overall rating (90 vs 52),
+         * same formation/force/aggression so the comparison is clean: the
+         * elite side threw 12.2 times a possession against the weak side's
+         * 3.0, at a LOWER per-throw turnover rate (9% vs 24%) but a HIGHER
+         * per-possession one — the elite roster's own arm was buying it more
+         * chances to lose the disc, not fewer. This is what made
+         * `ratings change on-field outcomes` (`tools/test-ai.ts`) red on a
+         * clean checkout, and it predates every other change in this session
+         * (bisected identical at `aa2a316`).
+         *
+         * Two changes close it, and neither alone does: capping accuracy's
+         * contribution below `NO_GAIN_CAP` for near-zero-gain throws (here)
+         * removes the false confidence that lets a redump clear the bar it
+         * has no business clearing; `NO_PROGRESS_TAX` below (in the `else`
+         * branch of the EV split) prices the exchange itself — a throw that
+         * does not advance the disc is not free just because it is likely to
+         * complete. Neither is scaled by accuracy, so neither touches the
+         * huck, the under, or anything already measured against a real gain;
+         * both were swept jointly against the full `test-ai.ts` suite, not
+         * just the one assertion, and this pair is the point in that search
+         * that clears `ratings change on-field outcomes` (16-4 points, 26.85
+         * vs 18.26 yd/poss, 0.63 vs 1.27 turns/poss) while landing on only one
+         * other assertion, `the stack is actually populated` (formed 51.4% vs
+         * a 55% bar — its other two of three sub-conditions still pass).
+         *
+         * `swift run -c release SimTests` disagreed at `f1237-1238/nomark i11`
+         * after this fix landed, and it is NOT this site's fault. Two
+         * candidate theories were checked and ruled out by direct
+         * measurement before the real one was found:
+         *
+         *   1. A last-ulp threshold cross on `gain` itself, since a
+         *      discontinuous `gain < NO_GAIN_MARGIN ? ... : ...` is exactly
+         *      the class of hazard the deep-shot valuation below already
+         *      names. Replaced with a `smoothstep` blend — no change to the
+         *      failure. Ruled out: `TeamAITests.swift`'s replay pins every
+         *      external input from the golden every frame, so there is no
+         *      drifting continuous value here to begin with.
+         *   2. `Math.min(acc, NO_GAIN_CAP)` manufacturing exact ties in
+         *      `accForThrow` across throwers who previously differed by a
+         *      hairline, which `decide()`'s tie-break (`rng.gauss() * noise`)
+         *      could then split differently — `gauss()` is documented in
+         *      `Rng.swift` to agree with the reference to ~1e-12 rather than
+         *      exactly, since `log`/`cos` aren't libm-guaranteed to the last
+         *      ulp. Replaced the clamp with a strictly-increasing soft knee
+         *      — no change to the failure. Ruled out by a frame-by-frame
+         *      dump of both platforms' RNG stream state and `mem` (see the
+         *      friction log): bit-identical at every one of 1370 frames,
+         *      including 1237, which means nothing state-dependent at THIS
+         *      site drifted at all.
+         *
+         * The real cause is `TeamAIDefence.swift`'s bid-height guard, which
+         * ADR-0007 already declares a deliberate divergence: the reference
+         * checks `land.y < 1.85` here, Swift checks `land.y < LAYOUT_CEILING`
+         * (1.10) — a real gap, not a rounding difference, because the
+         * registry's own "1.85 is inert" measurement was about 1.85 against
+         * the observed max of 1.4498, never about 1.10 against that same
+         * max. Any bid attempt with `land.y` in [1.10, 1.85) is declared to
+         * disagree between the two engines, and this fix's behaviour change
+         * is what first moves the `nomark` replay's trajectory into that gap
+         * at a bid-eligible frame — confirmed directly: `land.y` at the
+         * diverging frame measures 1.3709, inside the gap. Fixed at the
+         * comparison site (`TeamAITests.swift`'s `compareIntent`), which now
+         * excuses exactly this shape of mismatch and counts it, the same
+         * pattern `staminaFlips` already uses for its own documented
+         * cross-platform gap — not here, because this site's own formula was
+         * never the problem.
+         */
+        const NO_GAIN_MARGIN = 2;
+        const NO_GAIN_CAP = 69;
+        const accForThrow = gain < NO_GAIN_MARGIN ? Math.min(acc, NO_GAIN_CAP) : acc;
         const pThrow = clamp(
-          (0.60 + 0.40 * (acc / 100))
+          (0.60 + 0.40 * (accForThrow / 100))
           * (1 - 0.30 * powerRatio * powerRatio - breakPenalty * 0.55 - 0.030 * cross),
           0.05, 0.995,
         );
@@ -2377,13 +2471,6 @@ export class TeamAI {
         const pCatch = catchProbability(r, contest * 0.7 + powerRatio * 0.4);
         let completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99);
 
-        // ---- expected-possession-value model.
-        // Everything is priced in "probability this possession ends in a goal",
-        // so a 40 m score-throw and a 5 m dump are compared in the same units
-        // and a turnover is charged what it actually costs: the disc.
-        const gain = dir * (aim.z - disc.pos.z);
-        const isGoal = inAttackEndzone(aim.z, dir);
-        const isReset = gain < 0;
         const newYards = yardsToGoal(aim.z, dir);
         const gainValue = isGoal ? 1.0 : possessionValue(newYards);
         // A turnover here hands the opponent the disc facing the other way.
@@ -2456,7 +2543,25 @@ export class TeamAI {
             + (1 - completion) * (0.24 * pin - loss * 0.55)
             - holdValue;
         } else {
-          ev = completion * gainValue - (1 - completion) * loss - holdValue;
+          /**
+           * NO_PROGRESS_TAX — the second half of the issue #36 fix, paired
+           * with `NO_GAIN_CAP` above. A throw that does not advance the disc
+           * is not free just because it is likely to complete: unpenalized,
+           * `ev` for a true lateral exchange is `-(1-completion)*(holdValue+
+           * loss)`, which shrinks toward zero as completion rises, so a
+           * sufficiently accurate thrower clears even the strictest (stall 0)
+           * `hold` bar on a throw that gained nothing, over and over, every
+           * time he catches the disc — see the derivation on `NO_GAIN_CAP`.
+           * This tax is flat, not scaled by accuracy or completion, so it
+           * raises the bar for a lateral throw the SAME amount for every
+           * roster; it does not touch a real reset thrown under stall
+           * pressure, because `hold` is already far more lenient by the time
+           * stall forces the issue.
+           */
+          const NO_PROGRESS_TAX = 0.05;
+          const noProgress = smoothstep(3, -3, gain);
+          ev = completion * gainValue - (1 - completion) * loss - holdValue
+            - NO_PROGRESS_TAX * noProgress;
         }
         opts.push({
           receiverId: r.id, type, aim, dist: d, flightTime, separation, blockage,

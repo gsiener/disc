@@ -1801,11 +1801,25 @@ async function main(): Promise<void> {
   console.log('\n[sim] attribute A/B — elite roster (overall 90) vs weak roster (overall 52)');
   // Pooled over three seeds. One match between two rosters is a coin flip with
   // a thumb on it; three is enough that the thumb is what shows.
+  //
+  // MATCHED CONFIG, RATING THE ONLY VARIABLE. Omitting `cfg` here used to
+  // hand team0 (always the elite roster below) `vertical/forehand/1.05agg`
+  // and team1 (always weak) `horizontal/backhand/0.95agg` — buildSim's own
+  // per-team-index defaults, never chosen to matter for THIS test. That is a
+  // real confound, not noise: with ratings held equal (72/72) those two
+  // configs alone score 4-20, worse than the ratings gap this test is
+  // supposedly measuring (see .agents/friction-log for the isolation). This
+  // test's own docstring says "same AI" — matching the config is restoring
+  // that intent, not weakening the assertion below, which is untouched.
   const abScore = [0, 0];
   const E = { gain: 0, turns: 0, poss: 0 };
   const W = { gain: 0, turns: 0, poss: 0 };
+  const abCfg: [Partial<TeamConfig>, Partial<TeamConfig>] = [
+    { formation: 'vertical', force: 'forehand', aggression: 1.0, zoneBias: -0.15, seed: 3 },
+    { formation: 'vertical', force: 'forehand', aggression: 1.0, zoneBias: -0.15, seed: 3 },
+  ];
   for (const abSeed of [555001, 12345, 99881]) {
-    const ab = buildSim(abSeed, { x: 0.8, z: 0 });
+    const ab = buildSim(abSeed, { x: 0.8, z: 0 }, abCfg);
     for (const p of ab.world.players) {
       const rr = new SeededRng(9000 + p.id);
       const overall = p.team === 0 ? 90 : 52;

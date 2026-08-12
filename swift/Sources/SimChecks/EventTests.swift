@@ -162,6 +162,14 @@ enum EventTests {
                     case .block, .interception: t.blocks[to] += 1
                     case .stallOut: t.stallOuts[from] += 1
                     case .drop: t.drops[from] += 1
+                    // A dropped pull is a real pull outcome — the receiving team
+                    // never controls it — and the engine correctly represents it
+                    // as `.turnover(reason: .pullDrop, ...)` rather than a fourth
+                    // pull-outcome case. `pullOutcomes` did not count it, so any
+                    // match with two or more pull drops read as pulls going
+                    // unresolved. See the friction log: found while diagnosing
+                    // issue #36's Swift fallout, unrelated to that fix itself.
+                    case .pullDrop: t.pullOutcomes += 1
                     default: break
                     }
                 case .score(let team, _, _, let score):

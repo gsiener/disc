@@ -229,9 +229,40 @@ extension TeamAI {
                     breakPenalty = 0.30 * markGood
                 }
 
+                // ---- expected-possession-value model.
+                let gain = Double(dir) * (aim.z - disc.pos.z)
+                let isGoal = pb.inAttackEndzone(aim.z, dir)
+                let isReset = gain < 0
+
                 let acc = (thrower.attr.throwAccuracy[type] ?? 0) * (0.85 + 0.15 * thrower.energy)
+                // A throw that barely moves the disc is not priced by arm talent the
+                // way a gain is — issue #36. See the derivation on the mirror site,
+                // `src/sim/AI.ts`'s `evaluateOptions`: for a near-zero-gain throw the
+                // EV chain collapses to `-(1-completion)*(holdValue+loss)`, which
+                // shrinks toward zero as completion rises, so a sufficiently accurate
+                // thrower clears the strictest (stall 0) `hold` bar on every catch
+                // with nothing to show for it. Capping accuracy's contribution below
+                // `noGainCap` for near-zero-gain throws only (never a throw that
+                // actually progresses the disc) removes the runaway confidence on the
+                // exchanges that manufacture it.
+                //
+                // `SimTests teamai` disagreed at `f1237-1238/nomark i11` after this
+                // fix landed, and it is not this site's fault: a frame-by-frame dump
+                // of both platforms' RNG stream state and `mem` showed them
+                // bit-identical at every one of 1370 replayed frames, including
+                // 1237, which rules out anything state-dependent at this site
+                // drifting. The real cause is `TeamAIDefence.swift`'s bid-height
+                // guard, an existing ADR-0007 divergence (`land.y < LAYOUT_CEILING`
+                // here vs the reference's `land.y < 1.85`) whose gap this fix's
+                // behaviour change is what first exposes. See `src/sim/AI.ts`'s
+                // `evaluateOptions` for the full derivation and the friction log for
+                // the isolation; the fix is at the comparison site in
+                // `TeamAITests.swift`, not here.
+                let noGainMargin = 2.0
+                let noGainCap = 69.0
+                let accForThrow = gain < noGainMargin ? Swift.min(acc, noGainCap) : acc
                 let pThrow = clamp(
-                    (0.60 + 0.40 * (acc / 100))
+                    (0.60 + 0.40 * (accForThrow / 100))
                         * (1 - 0.30 * powerRatio * powerRatio - breakPenalty * 0.55
                             - 0.030 * cross),
                     0.05, 0.995)
@@ -241,10 +272,6 @@ extension TeamAI {
                 let pCatch = catchProbability(r, contest * 0.7 + powerRatio * 0.4)
                 var completion = clamp(pThrow * pSep * pLane * pCatch, 0.01, 0.99)
 
-                // ---- expected-possession-value model.
-                let gain = Double(dir) * (aim.z - disc.pos.z)
-                let isGoal = pb.inAttackEndzone(aim.z, dir)
-                let isReset = gain < 0
                 let newYards = pb.yardsToGoal(aim.z, dir)
                 let gainValue = isGoal ? 1.0 : pv(newYards)
                 // A turnover here hands the opponent the disc facing the other way.
@@ -324,7 +351,15 @@ extension TeamAI {
                         + (1 - completion) * (0.24 * pin - loss * 0.55)
                         - holdValue
                 } else {
+                    // NO_PROGRESS_TAX — second half of the issue #36 fix, mirrors
+                    // `src/sim/AI.ts` `evaluateOptions`. See `accForThrow` above for the
+                    // derivation: unpenalized, a lateral exchange's `ev` shrinks toward
+                    // zero as completion rises and clears even the strictest `hold` bar,
+                    // so this flat (not accuracy-scaled) tax prices the exchange itself.
+                    let noProgressTax = 0.05
+                    let noProgress = Playbook.smoothstep(3, -3, gain)
                     ev = completion * gainValue - (1 - completion) * loss - holdValue
+                        - noProgressTax * noProgress
                 }
                 opts.append(
                     ThrowOption(
