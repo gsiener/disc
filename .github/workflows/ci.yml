@@ -79,6 +79,9 @@ jobs:
       - name: ADR-0004 — a field question cannot be asked without a field
         run: npm run reference:structure
 
+      - name: Reachability — every public UltimateSim func has a caller outside SimChecks
+        run: npm run reference:reachability
+
   # `tsc --noEmit` over the whole tree. Clean at the time of writing, and nothing ran it
   # (#15) — so a type error could reach `main` and only be found by whoever next typed the
   # command locally.

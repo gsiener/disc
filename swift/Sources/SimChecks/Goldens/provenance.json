@@ -4,6 +4,11 @@
     "platform": "darwin/arm64",
     "commit": "98b086e5b1aded4903192dda3697bd60a46a0343"
   },
+  "discruntime": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "1b2c7f21bcba8fc3399526bb63cfb7bf6ec072a4"
+  },
   "divergences": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",

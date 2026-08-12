@@ -208,14 +208,6 @@ enum DiscRuntimeTests {
         let saturation: [Double]?
     }
 
-    struct TrailDecayStep: Decodable {
-        let i: Int
-        let count: Int
-        let age: Double
-        let firstT: Double?
-        let lastT: Double?
-    }
-
     struct TrailCase: Decodable {
         let kind: String
         let now: Double?
@@ -224,8 +216,6 @@ enum DiscRuntimeTests {
         let count: Int?
         let trailSeconds: Double?
         let trailCapacity: Int?
-        let seeded: [[Double]]?
-        let after: [TrailDecayStep]?
         let counts: [Int]?
     }
 
@@ -746,61 +736,14 @@ enum DiscRuntimeTests {
 
     // MARK: - the trail ring buffer
 
+    // `setTrail-from-cold` and `setTrail-then-decay` were here, exercising
+    // `DiscRuntime.setTrail(_:)` — deleted with the method itself (#5): no caller
+    // anywhere outside these two fixture-driven cases, and no FlightUI consumer of
+    // `DiscRuntime.trail` to seed. `tools/goldens/discruntime.ts`'s `trailCases()`
+    // no longer emits either kind.
     private static func trailCase(_ c: TrailCase, _ i: Int) {
         let at = "trail \(i) \(c.kind)"
         switch c.kind {
-        case "setTrail-from-cold":
-            let rt = DiscRuntime()
-            rt.groundAt = ground("flat")
-            var seeded: [TrailSample] = []
-            for k in 0..<10 {
-                let d = Double(k)
-                seeded.append(
-                    TrailSample(
-                        x: d * 0.5, y: 1 + d * 0.1, z: -d * 0.25, t: 100 + d * 0.03,
-                        speed: 12 - d))
-            }
-            rt.setTrail(seeded)
-            Check.bitEqViaJSON(rt.now, c.now!, "\(at) clock")
-            compareTrail(rt, c.trail!, at)
-            Check.bitEqViaJSON(rt.trailAge, c.trailAge!, "\(at) newest sample lands on now")
-
-        case "setTrail-then-decay":
-            let rt = DiscRuntime()
-            rt.groundAt = ground("flat")
-            rt.trailSeconds = c.trailSeconds!
-            rt.trailCapacity = c.trailCapacity!
-            rt.hold(2, Vec3d(0, 1.2, 0), Vec3d(0, 1, 0), 0)
-            for _ in 0..<30 { rt.step(dt: FIXED_DT) }
-            var seeded: [TrailSample] = []
-            for k in 0..<12 {
-                let d = Double(k)
-                seeded.append(TrailSample(x: d, y: 2, z: d * 0.5, t: d * 0.04, speed: d))
-            }
-            rt.setTrail(seeded)
-            Check.eq(
-                rt.trail.count, seeded.count,
-                "\(at) setTrail does not itself decay — the next step does")
-            for k in 0..<seeded.count {
-                Check.bitEqViaJSON(rt.trail[k].x, c.seeded![k][0], "\(at) seeded \(k) x")
-                Check.bitEqViaJSON(rt.trail[k].speed, c.seeded![k][4], "\(at) seeded \(k) speed")
-            }
-            for step in c.after! {
-                rt.step(dt: FIXED_DT)
-                Check.eq(rt.trail.count, step.count, "\(at) count after \(step.i)")
-                Check.bitEqViaJSON(rt.trailAge, step.age, "\(at) age after \(step.i)")
-                if let ft = step.firstT {
-                    Check.bitEqViaJSON(rt.trail.first!.t, ft, "\(at) oldest t after \(step.i)")
-                } else {
-                    Check.eq(rt.trail.isEmpty, true, "\(at) trail emptied by \(step.i)")
-                }
-                if let lt = step.lastT {
-                    Check.bitEqViaJSON(rt.trail.last!.t, lt, "\(at) newest t after \(step.i)")
-                }
-            }
-            Check.bitEqViaJSON(rt.now, c.now!, "\(at) clock")
-            compareTrail(rt, c.trail!, at)
-
         case "capacity-only":
             let rt = DiscRuntime()
             rt.groundAt = ground("flat")
@@ -838,17 +781,6 @@ enum DiscRuntimeTests {
         }
     }
 
-    private static func compareTrail(_ rt: DiscRuntime, _ want: [[Double]], _ at: String) {
-        Check.eq(rt.trail.count, want.count, "\(at) trail length")
-        for (k, w) in want.enumerated() where k < rt.trail.count {
-            let s = rt.trail[k]
-            Check.bitEqViaJSON(s.x, w[0], "\(at) sample \(k) x")
-            Check.bitEqViaJSON(s.y, w[1], "\(at) sample \(k) y")
-            Check.bitEqViaJSON(s.z, w[2], "\(at) sample \(k) z")
-            Check.bitEqViaJSON(s.t, w[3], "\(at) sample \(k) t")
-            Check.bitEqViaJSON(s.speed, w[4], "\(at) sample \(k) speed")
-        }
-    }
 
     // MARK: - the module's prose, asserted as behaviour
 

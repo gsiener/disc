@@ -13,6 +13,18 @@ import Foundation
 /// Deliberately not a way in. There is no setter here and there never should be:
 /// `commandCut` is the one documented entry point and a second one would make the lane
 /// invariant unmaintainable.
+///
+/// **Neither read has a caller outside `SimChecks`, and #5 decided that is correct rather
+/// than an oversight.** FlightUI's tap-a-cut UI — the banner, the grass ghost, the re-call
+/// cooldown — runs on three fixed timers (`CutCall.duration`, `Engine.calledCutGhostTime`,
+/// `Engine.calledCutInterval`) that are deliberately decoupled from whether the AI is
+/// still actually running the order; `HumanCutTests` says so explicitly ("the ghost is a
+/// drawing lifetime … you are meant to watch the execution, not the order"). Wiring
+/// `runningCut` into that UI would fight a documented design decision, not finish one.
+/// What these two ARE load-bearing for is exactly the class of bug #5 is about: without
+/// them, `HumanCutTests` could only assert that a tap updated the ghost, not that
+/// `commandCut` reached the AI's real route state — which is precisely the gap issue #22
+/// found in `PlayerAction.bid(extend:)`. Test-oracle-only is their intended job.
 extension TeamAI {
 
     /// The route this player is running right now, or nil if they are not running one.

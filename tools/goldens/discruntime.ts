@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { DiscRuntime, type ThrowRequest, type TrailSample } from '../../src/sim/DiscRuntime.ts';
+import { DiscRuntime, type ThrowRequest } from '../../src/sim/DiscRuntime.ts';
 import { DISC, FIXED_DT } from '../../src/sim/DiscPhysics.ts';
 import { boundaryCrossing, isInBounds } from '../../src/sim/Rules.ts';
 import type { ThrowType } from '../../src/sim/aero/Throws.ts';
@@ -547,58 +547,13 @@ function scuffCases() {
 function trailCases() {
   const out: unknown[] = [];
 
-  {
-    // setTrail re-bases every sample so the NEWEST lands exactly on `now`.
-    const rt = new DiscRuntime();
-    rt.groundAt = GROUNDS.flat;
-    const seeded: TrailSample[] = [];
-    for (let i = 0; i < 10; i++) {
-      seeded.push({ x: i * 0.5, y: 1 + i * 0.1, z: -i * 0.25, t: 100 + i * 0.03, speed: 12 - i });
-    }
-    rt.setTrail(seeded);
-    out.push({
-      kind: 'setTrail-from-cold',
-      now: rt.now,
-      trail: rt.trail.map((s) => [s.x, s.y, s.z, s.t, s.speed]),
-      trailAge: rt.trailAge,
-    });
-  }
-
-  {
-    // Same seed, but with the clock already advanced, and then decayed by stepping
-    // a held disc — which is the `mode !== 'flight'` branch of step().
-    const rt = new DiscRuntime();
-    rt.groundAt = GROUNDS.flat;
-    rt.trailSeconds = 0.15;
-    rt.trailCapacity = 6;
-    rt.hold(2, new THREE.Vector3(0, 1.2, 0), new THREE.Vector3(0, 1, 0), 0);
-    for (let i = 0; i < 30; i++) rt.step(FIXED_DT);
-    const seeded: TrailSample[] = [];
-    for (let i = 0; i < 12; i++) {
-      seeded.push({ x: i, y: 2, z: i * 0.5, t: i * 0.04, speed: i });
-    }
-    rt.setTrail(seeded);
-    const after: unknown[] = [];
-    for (let i = 0; i < 40; i++) {
-      rt.step(FIXED_DT);
-      after.push({
-        i,
-        count: rt.trail.length,
-        age: rt.trailAge,
-        firstT: rt.trail.length ? rt.trail[0].t : null,
-        lastT: rt.trail.length ? rt.trail[rt.trail.length - 1].t : null,
-      });
-    }
-    out.push({
-      kind: 'setTrail-then-decay',
-      trailSeconds: 0.15,
-      trailCapacity: 6,
-      now: rt.now,
-      seeded: seeded.map((s) => [s.x, s.y, s.z, s.t, s.speed]),
-      after,
-      trail: rt.trail.map((s) => [s.x, s.y, s.z, s.t, s.speed]),
-    });
-  }
+  // `setTrail-from-cold` and `setTrail-then-decay` were here, driving `setTrail(_:)`
+  // against a re-basing edge case. Deleted with the Swift method (#5): it had no caller
+  // outside these two fixture-driven test cases on the port side, and no FlightUI
+  // consumer of `DiscRuntime.trail` to seed. The reference's own `setTrail` stays —
+  // deleting the port's dead capability is not a reason to touch the oracle it mirrors
+  // (see issue #22's resolution for the same call) — it is simply not exercised here
+  // any longer.
 
   {
     // A long flight against a capacity that the seconds budget alone would never

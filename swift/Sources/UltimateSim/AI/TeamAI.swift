@@ -894,15 +894,9 @@ func jsSignOr(_ x: Double, _ fallback: Playbook.Sign) -> Playbook.Sign {
 
 // MARK: - public API
 
-/// The reference's factory shape. `field` is required here for the same reason it is
-/// required on `TeamAI.init` — a default would put the sevens pitch back one call away.
-public func createTeamAI(
-    team: TeamId, dir: Dir, rng: Rng,
-    cfg: TeamConfig = DEFAULT_TEAM_CONFIG,
-    field: FieldConstants
-) -> TeamAI {
-    TeamAI(team: team, dir: dir, rng: rng, cfg: cfg, field: field)
-}
+// `createTeamAI(...)` was here — "the reference's factory shape," a one-line pass
+// through to `TeamAI.init`. Deleted (#5): the one production construction site,
+// `EnginePoint.swift:256`, calls `TeamAI(...)` directly and always has.
 
 /// Produce this fixed step's intents for one team. Call once per team per 1/120 s
 /// step, before locomotion.

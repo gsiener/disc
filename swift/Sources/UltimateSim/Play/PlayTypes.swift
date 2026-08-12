@@ -50,20 +50,11 @@ public struct FieldSpec: Equatable, Sendable {
     public static let minis = FieldSpec(
         length: 37, width: 18, endzoneDepth: 6, teamSize: 3, target: 7)
 
-    public func inBounds(_ p: Vec3d) -> Bool {
-        abs(p.x) <= sideline && abs(p.z) <= endLine
-    }
-
-    /// Is `p` inside the endzone that the team attacking in `dir` is aiming at?
-    public func inAttackingEndzone(_ p: Vec3d, _ dir: Double) -> Bool {
-        inBounds(p) && p.z * dir >= goalLine
-    }
-
-    public func clamped(_ p: Vec3d) -> Vec3d {
-        Vec3d(
-            Swift.min(Swift.max(p.x, -sideline), sideline), p.y,
-            Swift.min(Swift.max(p.z, -endLine), endLine))
-    }
+    // `inBounds(_:)`, `inAttackingEndzone(_:_:)` and `clamped(_:)` were here — all three
+    // zero callers anywhere, including SimChecks. Deleted (#5). `FieldSpec` itself stays:
+    // `sideline`/`endLine` above are read by `PitchScene`, and the type is used as data
+    // (length/width/target/teamSize) across `MatchSetup`, `MatchView`, `Engine` and
+    // `Replay` — only these three methods on it were dead.
 }
 
 // MARK: - how possessions end

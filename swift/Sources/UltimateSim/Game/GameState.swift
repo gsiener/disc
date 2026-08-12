@@ -1246,23 +1246,18 @@ public final class GameState {
 
     public func name(_ id: PlayerId) -> String { playersById[id]?.name ?? "#\(id)" }
 
-    /// The most recent goal, or nil before the first one.
-    public func getLastScore() -> ScoreRecord? { lastScore }
-
-    public func playerStats(_ id: PlayerId) -> PlayerStats? { playersById[id] }
+    // `getLastScore()` and `playerStats(_:)` were here — both zero callers outside
+    // `SimChecks` (`getLastScore`: none at all; `playerStats`: three, since moved to
+    // `allPlayers()`). `Engine.justScored` already reads `lastScore` directly rather
+    // than through the method wrapper. Deleted, #5.
     public func teamStats(_ t: TeamId) -> TeamStats { teams[t] }
     public func allPlayers() -> [PlayerStats] { playerOrder.compactMap { playersById[$0] } }
 
-    /// Seconds remaining on the current stall count (to `stallMax`).
-    public func stallRemaining() -> Double {
-        max(0, Double(rules.stallMax) * rules.stallInterval - stallElapsed)
-    }
-
     /// True when the marker may legally be running the count.
+    ///
+    /// `Engine.markerLegal` is the forwarded read a caller outside `UltimateSim` actually
+    /// uses (see #5) — this is the one place that projects `markerState` to a bool.
     public func markerLegal() -> Bool { markerState == .legal }
-
-    /// Brick mark for the team currently receiving.
-    public func currentBrick() -> Vec3d { format.field.brickMark(attackDir[receivingTeam]) }
 
     public func snapshot() -> GameSnapshot {
         GameSnapshot(
@@ -1281,8 +1276,15 @@ public final class GameState {
         onLog?(entry)
     }
 
+    /// The whole match log, oldest first. Self-capped at `maxLog` by `log(_:)` above; a
+    /// headless engine that runs a whole match without a renderer must not grow a buffer
+    /// nobody will ever read (see `Engine.swift`'s note on this method).
+    ///
+    /// There used to be a `clearLog()` beside this that emptied the buffer outright — with
+    /// no caller anywhere, including tests, and nothing in the lifecycle (a new point, a new
+    /// match) that was supposed to reset it. The design here is that the log persists for the
+    /// whole session; deleted rather than wired, see #5.
     public func getLog() -> [PlayLogEntry] { logBuf }
-    public func clearLog() { logBuf.removeAll() }
 
     /// Human-readable box score, for the HUD or a test harness.
     public func boxScore() -> String {

@@ -587,20 +587,10 @@ public final class DiscRuntime {
 
     // MARK: trail
 
-    /// Seed the trail directly — used when a tableau stages a mid-flight disc.
-    ///
-    /// Re-bases every timestamp so the NEWEST sample lands exactly on `now`, which is what
-    /// makes a staged trail decay at the same rate a flown one does.
-    public func setTrail(_ samples: [TrailSample]) {
-        trail.removeAll()
-        guard let last = samples.last else { return }
-        for s in samples {
-            // The reference spreads `{...s}` and overrides `t`; x, y, z and speed are
-            // carried through untouched.
-            trail.append(
-                TrailSample(x: s.x, y: s.y, z: s.z, t: clock - (last.t - s.t), speed: s.speed))
-        }
-    }
+    // `setTrail(_:)` was here — seeding the trail directly, re-based so the newest
+    // sample lands on `now`. Deleted (#5): no caller anywhere outside two SimChecks
+    // fixture cases, and no FlightUI consumer of `trail` to seed with it. The reference
+    // (`src/sim/DiscRuntime.ts`) still declares its own counterpart, left alone.
 
     private func pushTrail() {
         let s = state

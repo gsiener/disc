@@ -555,6 +555,15 @@ public final class Engine {
     /// count is derived from, which is what a smooth on-screen dial wants.
     public var possessionTime: Double { game.stallElapsed }
 
+    /// Whether `stall` is actually running right now.
+    ///
+    /// `stall` freezes — `GameState.tickStall` returns before `stallElapsed` advances —
+    /// whenever the mark is out of range, in disc space, or a double team, and it resumes
+    /// the instant the mark is legal again with no separate signal that it did either. A
+    /// count sitting at the same number for a second reads identically whether nobody is
+    /// within range or the thrower is simply not being pushed — see #5.
+    public var markerLegal: Bool { game.markerLegal() }
+
     /// The team that just scored, held for `scoreFlash` seconds so a callout can be read.
     ///
     /// Derived from the machine's `POINT_SCORED` phase and its timer rather than latched

@@ -79,8 +79,13 @@ extension MatchView {
             // moment checking whether the small one and the big one agree. The callout
             // is the shout, and this stays the readout.
             if match.holder != nil {
+                // A frozen count and a running one show the same digit, so the reader
+                // needs a second signal to tell "marked and stalling" from "nobody within
+                // range" — dim it rather than add a word; see #5.
                 Text("STALL \(Int(match.stall))")
-                    .foregroundStyle(match.stall > 6 ? .orange : .white.opacity(0.7))
+                    .foregroundStyle(
+                        !match.markerLegal ? .white.opacity(0.35)
+                        : match.stall > 6 ? .orange : .white.opacity(0.7))
             }
 
             Text("first to \(match.fieldSpec.target)")

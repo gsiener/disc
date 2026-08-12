@@ -292,7 +292,8 @@ enum MatchPool {
             blocks += ts.blocks
             stallOuts += ts.stallOuts
         }
-        for player in e.players { travels += e.game.playerStats(player.id)?.travels ?? 0 }
+        let byId = e.game.allPlayers()
+        for player in e.players { travels += byId.first { $0.id == player.id }?.travels ?? 0 }
         let forwardGains = gains.reduce(0, +) / Double(Swift.max(1, gains.count))
         let passAttempts = e.game.teamStats(0).attempts + e.game.teamStats(1).attempts
         let completed = e.game.teamStats(0).completions + e.game.teamStats(1).completions

@@ -305,13 +305,16 @@ enum PivotTests {
         obs.markerPos = .value(Vec3d(pivot.x + 1.5, 0, pivot.z))
         for _ in 0..<Int(4.0 / dt) { game.step(dt, obs) }
         Check.ok(game.stallCount >= 3, "the count runs on a legal mark (\(game.stallCount))")
-        Check.eq(game.playerStats(0)?.travels ?? -1, 0, "and a still pivot is not a travel")
+        Check.eq(
+            game.allPlayers().first { $0.id == 0 }?.travels ?? -1, 0,
+            "and a still pivot is not a travel")
 
         // Now the foot slips a metre.
         let reached = game.stallCount
         obs.pivotFoot = Vec3d(pivot.x, 0, pivot.z + 1.0)
         game.step(dt, obs)
-        Check.ok((game.playerStats(0)?.travels ?? 0) > 0, "a metre of slip is flagged")
+        Check.ok(
+            (game.allPlayers().first { $0.id == 0 }?.travels ?? 0) > 0, "a metre of slip is flagged")
         Check.ok(events.contains("violation"), "and announced")
 
         // Called by the mark and accepted by the thrower.
