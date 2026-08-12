@@ -53,13 +53,54 @@ extension Engine {
     /// The ids are `team * playersPerSide + i`, which is exactly what
     /// `GameState.defaultRoster` builds, so the machine's box score and this roster are
     /// the same fourteen people rather than two coincidentally-sized lists.
-    func buildRoster() {
+    ///
+    /// **issue #2 — `topRng`, not `self.rng`, and sevens matches the reference exactly.**
+    /// `Game.ts`'s `buildRoster` deals from `ctx.rand.fork(0x0a11ce)`, a stream independent
+    /// of `this.rng` — so shuffling the roster deal can never shift a single tick of match
+    /// play, and vice versa. Drawing from `self.rng` here would tie the two together and
+    /// was the port's actual divergence: not just the wrong overalls or the wrong
+    /// archetype order, but the wrong *stream*. Sevens' order, `[76, 74]`, is
+    /// `Game.ts`'s `ARCHETYPES` and `overall` verbatim. Minis has no reference — `src/sim/`
+    /// is sevens-only — so its spread and its 72/72 overalls are the port's own call, kept
+    /// exactly as they were rather than changed to match a reference that cannot express it.
+    func buildRoster(topRng: Rng) {
         players = []
-        let order: [Archetype] = [.handler, .cutter, .deep, .handler, .cutter, .utility, .deep]
+        let sevens: [Archetype] = [.handler, .handler, .handler, .cutter, .cutter, .deep, .utility]
+        let minis: [Archetype] = [.handler, .cutter, .deep]
+        let order = format.playersPerSide == 7 ? sevens : minis
+        let overall: [Double] = format.playersPerSide == 7 ? [76, 74] : [72, 72]
+        let rosterRng = topRng.fork(salt: 0x0a11ce)
         for t in 0..<2 {
             for i in 0..<format.playersPerSide {
                 let id = t * format.playersPerSide + i
-                players.append(makePlayer(id, t, order[i % order.count], rng, overall: 72))
+                players.append(makePlayer(id, t, order[i % order.count], rosterRng, overall: overall[t]))
+                // issue #2 — burned, not used, and only at sevens.
+                //
+                // `Game.ts`'s roster loop draws three more `gauss()` calls right here, per
+                // player, for `Locomotion`'s height/mass/strength (`rng.gauss()*0.045` for
+                // height, `*5` for mass, `*8` for strength — the reference's own formulas,
+                // not repeated here since nothing below reads the results). The port derives
+                // its physical attributes from the rating sheet alone instead
+                // (`fromAIAttributes`/`ratings` in `stagePoint`), and that architecture is
+                // unchanged by this — sevens' bodies look exactly as they did before.
+                //
+                // But `rosterRng` is one shared stream across all fourteen deals. Leaving
+                // these three draws out shifts every player after the first by three
+                // `gauss()` calls relative to the reference: verified directly with a
+                // throwaway probe against `Game.ts`'s own roster for several seeds — player
+                // 0 (nothing yet to desync) matched the reference's full attribute sheet
+                // bit for bit without this line, and player 1 (three calls behind) did not,
+                // off by exactly this count. Burning them here, in the reference's order, is
+                // what "one seed, one sevens roster" requires without building a second,
+                // unused body-physics system to get it.
+                //
+                // Minis has no reference roster to align to — see this function's own
+                // header — so it draws only what `makePlayer` needs.
+                if format.playersPerSide == 7 {
+                    _ = rosterRng.gauss()
+                    _ = rosterRng.gauss()
+                    _ = rosterRng.gauss()
+                }
             }
         }
         checkRosterIsIndexable("buildRoster")
