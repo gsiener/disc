@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Nightly canary for the two jobs that no longer run on every pull request push (see
+    # their `if:` below) — so a regression that only the Swift differential suite or the
+    # touch tests would catch is still found within a day, not only at the next merge to
+    # `main`. 03:00 UTC: outside US and EU working hours, so a failure is triaged fresh
+    # rather than at the end of someone's day.
+    - cron: '0 3 * * *'
 
 permissions:
   contents: read
@@ -76,6 +83,12 @@ jobs:
   sim-tests:
     name: Swift differential suite (SimTests)
     runs-on: macos-15
+    # Not on `pull_request`: at ~5m45s this was the second-largest piece of the wall clock a
+    # push waits on, and unlike `syntax-gate` / `ios-build` it cannot be made to run faster —
+    # the 2.2M assertions are the point. It still runs on every push to `main` (nothing merges
+    # unverified) and nightly on the schedule above, so a regression is caught within a day
+    # even on a run of PR-only pushes.
+    if: github.event_name != 'pull_request'
     # Generous: release-mode build plus ~2.2M assertions.
     timeout-minutes: 30
     steps:
@@ -170,8 +183,34 @@ jobs:
   # problem one Xcode later, so the runner is asked to pick: `xcodebuild` resolves
   # `id=` from `simctl list` below, which is the only spelling that cannot go stale.
   ui-tests:
-    name: Touch tests (XCUITest)
+    name: Touch tests (XCUITest, ${{ matrix.shard.name }})
     runs-on: macos-15
+    # Not on `pull_request`, for the same reason as `sim-tests` above: at ~8m46s this was the
+    # wall clock, and it cannot be shortened enough by sharding alone to be worth paying on
+    # every push to an open PR. Runs on push to `main` and nightly instead.
+    if: github.event_name != 'pull_request'
+    # Two shards, not eleven: each still pays the ~220 s build-for-testing cost in full — that
+    # is unavoidable without a working build cache (see the reverted attempt at one) — so
+    # splitting further would spend more runner-minutes for a wall clock this is already
+    # dominated by the build, not the tests. Split by class rather than by individual test
+    # name so that a test added later lands in a shard automatically instead of silently
+    # running in neither.
+    #
+    # The two groups are balanced on one measured run (31552114426): ChargeTests at ~95 s,
+    # RefusalTests + TouchTests at ~115 s — both dominated by the two tests that retry a
+    # possession on an unlucky pull (`testAimingAtTheWindowGetsACleanRelease`,
+    # `testTheOffensiveTapUsuallyMeansSomething`; see `MatchDriver.withTheDisc`), so the actual
+    # split on any given run has real variance around this balance point.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: charge
+            only: -only-testing:UltimateUITests/ChargeTests
+          - name: refusal-touch
+            only: >-
+              -only-testing:UltimateUITests/RefusalTests
+              -only-testing:UltimateUITests/TouchTests
     # **The waiting is the story of this job and it has been cut, not padded.**
     #
     # A UI test used to spend nearly all of its time waiting for the match to hand the human's
@@ -380,15 +419,17 @@ jobs:
           -scheme UltimateUITests
           -destination 'platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}'
           -derivedDataPath build
+          ${{ matrix.shard.only }}
           CODE_SIGNING_ALLOWED=NO
 
       # The gestures, the probe readings and the failure screenshots, which are the only way
-      # to tell a real regression from a simulator that never booted.
+      # to tell a real regression from a simulator that never booted. Named per shard — two
+      # matrix jobs uploading `ui-test-results` would collide.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-test-results
+          name: ui-test-results-${{ matrix.shard.name }}
           path: |
             ios/build/Logs/Test/*.xcresult
           retention-days: 7
