@@ -143,6 +143,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: TEMP runner spec probe
+        run: |
+          sysctl -n hw.ncpu
+          sysctl -n hw.physicalcpu
+          sysctl -n hw.memsize
+          sysctl -n machdep.cpu.brand_string || true
+
       - name: Install xcodegen
         run: brew install xcodegen
 
