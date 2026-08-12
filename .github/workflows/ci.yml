@@ -73,6 +73,84 @@ jobs:
       - name: Parse src/
         run: npm run gate
 
+      - name: ADR-0008 — the reference does not import the client
+        run: npm run reference:imports
+
+      - name: ADR-0004 — a field question cannot be asked without a field
+        run: npm run reference:structure
+
+  # Regenerate a golden and diff it. The cardinal rule of this repository is that
+  # `src/sim/` is the oracle and the fixtures are its output (ADR-0001), and until now
+  # nothing executable enforced it: a change to the reference with no regeneration
+  # leaves a stale fixture that is green in both engines at once (#15).
+  #
+  # ------------------------------------------------------------------ why one family
+  #
+  # This job checks `rng` and nothing else, and that is a deliberate scope, not an
+  # oversight — so it is stated here rather than left to be discovered.
+  #
+  # A golden regenerated at the commit that wrote it does not reproduce on a different
+  # machine (#41). `coeffs.json` differs in 4 of 2,297 numbers across platforms — one or
+  # two ULP of V8 arithmetic — and `matchdiff.json` moves **35 % of its counts**, because
+  # eleven fifteen-minute matches are ~108,000 chaotic ticks apiece and one ULP anywhere
+  # is enough. A freshness gate over those families would fail for reasons that have
+  # nothing to do with freshness, and its failure would look exactly like a real
+  # behaviour change. That is a gate that gets turned off within a week.
+  #
+  # `rng` is the family that cannot drift: xorshift128 is integer and bitwise operations
+  # plus one division by 2^32, all of which IEEE 754 specifies exactly. No `pow`, `exp`,
+  # `log` or trig anywhere in its call graph, so no libm, so no platform dependence.
+  # It is also the anchor the whole port rests on — the header of `gen-goldens.ts` says
+  # divergence there "means a structural porting bug rather than numeric drift".
+  #
+  # Widen this list only with evidence that the family reproduces across machines, and
+  # record that evidence in #41. The other eighteen families are covered instead by
+  # `Goldens/provenance.json`, which records the Node version, platform and commit that
+  # produced each one, so an agent about to regenerate on the wrong machine can see it.
+  #
+  # `provenance.json` is deliberately NOT diffed: it records the commit, so it changes on
+  # every push by design.
+  #
+  # -------------------------------------------------------------- why ubuntu, not macos
+  #
+  # The committed fixtures are attributed to darwin/arm64. Running the check on a
+  # *different* platform is therefore the stronger test for this family: it asserts
+  # freshness and, incidentally, that `rng` really is platform-independent rather than
+  # merely agreeing with itself. It is also a tenth of the price of a macos runner.
+  #
+  # **This inverts the moment the list widens.** Any libm-sensitive family — anything
+  # whose call graph reaches `pow`, `exp`, `log` or trig — must be regenerated on a
+  # runner matching `provenance.json`, i.e. macos on arm64, or the job fails on platform
+  # drift while reporting staleness. Move this job to `macos-15` at the same time as you
+  # add the first such family, not afterwards.
+  goldens-fresh:
+    name: Goldens are fresh (rng)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # The version the committed fixtures are attributed to, pinned in-repo rather
+      # than only here, so a developer regenerating locally uses the same one.
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Regenerate rng.json
+        run: node --experimental-strip-types tools/gen-goldens.ts rng
+
+      - name: The committed fixture must be what the reference produces
+        run: |
+          if ! git diff --exit-code -- swift/Sources/SimChecks/Goldens/rng.json; then
+            echo "::error::rng.json is stale — src/sim changed without regenerating it."
+            echo "Run: node --experimental-strip-types tools/gen-goldens.ts rng"
+            echo "Never hand-edit a golden (ADR-0001); regenerate it."
+            exit 1
+          fi
+
   # The differential suite: SimChecks loads the JSON goldens bundled as package
   # resources and replays ~2.2M assertions against the ported model. It prints a
   # PASS line with the assertion count and exits nonzero on any failure, so a

@@ -25,7 +25,8 @@
  * colliding — add a module there, add one line to GENERATORS here.
  */
 
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
 import { coeffGoldens } from './goldens/coeffs.ts';
@@ -115,6 +116,85 @@ if (unknown.length) {
   process.exit(1);
 }
 
+/* -------------------------------------------------------------- provenance */
+
+/**
+ * Which machine produced each fixture.
+ *
+ * A golden regenerated at the commit that wrote it does not reproduce on another
+ * machine. Measured: `coeffs.json` differs in 4 of 2,297 numbers across platforms
+ * (one or two ULP of V8 arithmetic), and `matchdiff.json` — eleven fifteen-minute
+ * matches, ~108,000 chaotic ticks apiece — moves **35 % of its counts**, because one
+ * ULP anywhere is enough. See `.agents/friction-log/20260811070423-a-golden-regenerated/`
+ * and #41.
+ *
+ * That makes a regenerated fixture indistinguishable, from the suite's point of view,
+ * from a genuine behaviour change: it silently rebases every band in `MatchDiffTests`
+ * onto whichever machine ran the generator. The friction log records a case where
+ * regenerating turned a red assertion green with nothing about either engine changed.
+ *
+ * So the fixtures now say where they came from. This is a **sidecar** rather than a key
+ * inside each fixture on purpose: adding a field to the fixtures themselves would mean
+ * rewriting all nineteen, which for the chaotic families means committing exactly the
+ * bug this records — and hand-editing a golden is forbidden outright (ADR-0001).
+ *
+ * Entries are per family and merged, so `gen-goldens.ts rng` updates `rng` and leaves
+ * the rest alone. A family with no entry has not been regenerated since this landed,
+ * and "unknown" is the honest thing to say about it.
+ *
+ * No timestamp: it would change on every run and make the sidecar the one file that can
+ * never be byte-reproducible. The commit is the timestamp that matters.
+ */
+interface Provenance {
+  node: string;
+  platform: string;
+  commit: string;
+  /** True when `src/sim/` had uncommitted changes — then `commit` does not describe it. */
+  dirty?: boolean;
+}
+
+function gitOutput(args: string[]): string {
+  try {
+    return execFileSync('git', args, { cwd: join(import.meta.dirname, '..'), encoding: 'utf8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function currentProvenance(): Provenance {
+  const commit = gitOutput(['rev-parse', 'HEAD']) || 'unknown';
+  // Only `src/sim/` matters: it is what the generators read. A dirty `swift/` or a
+  // half-written doc does not make the numbers unattributable, and flagging it would
+  // train people to ignore the flag.
+  const dirty = gitOutput(['status', '--porcelain', '--', 'src/sim']) !== '';
+  const p: Provenance = {
+    node: process.version,
+    platform: `${process.platform}/${process.arch}`,
+    commit,
+  };
+  if (dirty) p.dirty = true;
+  return p;
+}
+
+function recordProvenance(families: string[]): void {
+  const path = join(OUT, 'provenance.json');
+  let existing: Record<string, Provenance> = {};
+  if (existsSync(path)) {
+    try {
+      existing = JSON.parse(readFileSync(path, 'utf8')) as Record<string, Provenance>;
+    } catch {
+      existing = {};
+    }
+  }
+  const now = currentProvenance();
+  for (const f of families) existing[f] = now;
+  // Sorted so the diff of a one-family regeneration is one hunk, not a reordering.
+  const sorted = Object.fromEntries(Object.entries(existing).sort(([a], [b]) => a.localeCompare(b)));
+  writeFileSync(path, JSON.stringify(sorted, null, 2) + '\n');
+  console.log(`  provenance.json  (${now.node} ${now.platform}${now.dirty ? ' DIRTY' : ''})`);
+}
+
 console.log(requested.length ? `goldens (${requested.join(' ')}) →` : 'goldens →');
 for (const [name, gen] of selected) write(name, gen());
+recordProvenance(selected.map(([name]) => name.replace(/\.json$/, '')));
 console.log('done');

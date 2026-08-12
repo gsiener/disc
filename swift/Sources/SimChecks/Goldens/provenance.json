@@ -1,0 +1,7 @@
+{
+  "rng": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "e6ff4d31da9a12ae918795affc7b7be3197792f7"
+  }
+}
