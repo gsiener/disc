@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import type { Rng } from '../sim/Rng.ts';
 
 /**
  * Shared engine context. Every subsystem receives this and may read anything on
@@ -128,29 +129,19 @@ export class EventBus {
 
 /* --------------------------------------------------------------------- rng */
 
-/** xorshift128 — small, fast, deterministic across runs and machines. */
-export class Rng {
-  private a: number; private b: number; private c: number; private d: number;
-  constructor(seed = 0x9e3779b9) {
-    this.a = seed >>> 0; this.b = (seed ^ 0x85ebca6b) >>> 0;
-    this.c = (seed ^ 0xc2b2ae35) >>> 0; this.d = (seed ^ 0x27d4eb2f) >>> 0;
-    for (let i = 0; i < 16; i++) this.next();
-  }
-  next(): number {
-    let t = this.d;
-    const s = this.a;
-    this.d = this.c; this.c = this.b; this.b = s;
-    t ^= t << 11; t ^= t >>> 8;
-    this.a = (t ^ s ^ (s >>> 19)) >>> 0;
-    return this.a / 4294967296;
-  }
-  range(lo: number, hi: number): number { return lo + (hi - lo) * this.next(); }
-  int(lo: number, hi: number): number { return Math.floor(this.range(lo, hi + 1)); }
-  pick<T>(arr: readonly T[]): T { return arr[Math.floor(this.next() * arr.length)]; }
-  /** Box-Muller, mean 0 sigma 1. */
-  gauss(): number {
-    const u = Math.max(1e-7, this.next());
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * this.next());
-  }
-  fork(salt: number): Rng { return new Rng((this.a ^ (salt * 0x9e3779b9)) >>> 0); }
-}
+/**
+ * xorshift128 — small, fast, deterministic across runs and machines.
+ *
+ * The class lives in `src/sim/Rng.ts` and is re-exported here, so the twenty-odd
+ * client systems that `import { Rng } from '../core/Ctx.ts'` keep working. It was
+ * declared here as well until #42: two character-identical copies of the stream
+ * every golden in the repository pins, plus a third in `Playbook.ts` whose comment
+ * said it existed to avoid importing *this* file. A one-constant drift between them
+ * would have invalidated every fixture at once and read as a physics bug.
+ *
+ * The direction is deliberate. ADR-0008 makes the Three.js client a consumer of the
+ * reference model and never its owner, so the client imports the reference's
+ * generator — not the other way round, which is what `src/sim/Rng.ts` importing
+ * nothing at all is there to guarantee.
+ */
+export { Rng } from '../sim/Rng.ts';

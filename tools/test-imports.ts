@@ -203,19 +203,27 @@ for (const edge of GRANDFATHERED) {
  */
 group('one xorshift128, not several');
 
-const referenceFiles = tsFilesUnder(join(ROOT, 'src/sim')).sort();
+/**
+ * Scoped to all of `src/`, not just the reference.
+ *
+ * It was three copies: `core/Ctx.ts` for the client, `Playbook.ts` as a "bit-identical
+ * mirror", and the port mirroring the mirror. `core/Ctx.ts` now re-exports the
+ * reference's, which is what lets this check cover the client too — and the client is
+ * the one that had a copy for longest, because a rule about file ownership kept anyone
+ * from collapsing it (#42, and the rebuttal clause it produced in BRIEF.md).
+ */
 const declarers: string[] = [];
-for (const file of referenceFiles) {
+for (const file of tsFilesUnder(join(ROOT, 'src')).sort()) {
   const src = readFileSync(file, 'utf8');
   // The warm-up loop is the fingerprint: every copy of this generator discards
-  // 16 draws in its constructor, and nothing else in the reference does.
+  // 16 draws in its constructor, and nothing else in `src/` does.
   if (/for\s*\(let i = 0; i < 16; i\+\+\) this\.next\(\)/.test(src)) {
     declarers.push(relative(ROOT, file).replace(/\\/g, '/'));
   }
 }
 ok(
-  declarers.length === 1,
-  'the reference declares the generator once',
+  declarers.length === 1 && declarers[0] === 'src/sim/Rng.ts',
+  'src/ declares the generator exactly once, in the reference',
   `declared in ${declarers.length}: ${declarers.join(', ') || 'nowhere'}`,
 );
 

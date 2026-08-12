@@ -91,6 +91,29 @@ top-tier sports titles generally; see docs/art-direction.md, which commits to
    a stray edit will be clobbered or will clobber them. If you need something
    from a peer system, read it off `ctx.sys[name]` at runtime and degrade
    gracefully when it is absent.
+
+   **The reason is concurrency, so the rule is about concurrency, not about the
+   filenames.** It was written when several agents built the Three.js client at
+   once, and those files are the shared spine they all touched. That layer is now
+   dormant (see "Where the work is"), and a rule whose reason has lapsed but whose
+   wording has not is a rule that blocks correct work while protecting nothing —
+   it left a third copy of the RNG in `src/core/Ctx.ts` for a while after the
+   other two were collapsed into one (#42).
+
+   So: the list above is **presumed** off-limits, and the presumption is
+   rebuttable. You may edit one of those files when all three hold, and you say in
+   the commit message which:
+
+   - the working tree is clean of anyone else's changes (`git status` before you
+     start, and the pathspec rules in [AGENTS.md](AGENTS.md) after);
+   - the change is *removing* a divergence between the client and the reference,
+     not adding client behaviour — deleting a duplicate, redirecting an import;
+   - `npx tsc --noEmit`, `npm run gate` and `npm run build` are all green, because
+     nothing else guards these files.
+
+   Anything else in `src/core/*` — new state on `Ctx`, a change to the system
+   order or the fixed-step accumulator — still needs the owner. Adding a field to
+   `Ctx` is not a rebuttal, it is the case the rule exists for.
 2. **Zero binary assets.** No downloads, no external URLs, no base64 blobs, no
    `.glb`/`.hdr`/`.png` files. Everything is generated in code — geometry,
    textures, environment maps, audio. Use `src/util/Tex.ts` and
