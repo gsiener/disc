@@ -79,6 +79,37 @@ jobs:
       - name: ADR-0004 — a field question cannot be asked without a field
         run: npm run reference:structure
 
+  # `tsc --noEmit` over the whole tree. Clean at the time of writing, and nothing ran it
+  # (#15) — so a type error could reach `main` and only be found by whoever next typed the
+  # command locally.
+  #
+  # Its own job rather than two more steps on `syntax-gate`, because that job's whole
+  # argument is being the cheapest verdict in the file and the first one back — a fifth of
+  # a second against thirty minutes of macos. `tsc` is tens of seconds, which is nothing
+  # next to the Swift suite and is a 100× regression for the gate. Separate jobs run in
+  # parallel, so the fast verdict stays fast and this costs no wall-clock.
+  #
+  # Note the two are not redundant, and the order matters when both fail: `npm run gate`
+  # parses, and it exists because a backtick inside a GLSL comment closes the shader
+  # template literal and makes `tsc` report a hundred errors at lines that are not the
+  # fault. So when both are red, believe the gate and ignore this job until it is green.
+  typecheck:
+    name: Types (tsc --noEmit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run check
+
   # Regenerate a golden and diff it. The cardinal rule of this repository is that
   # `src/sim/` is the oracle and the fixtures are its output (ADR-0001), and until now
   # nothing executable enforced it: a change to the reference with no regeneration
