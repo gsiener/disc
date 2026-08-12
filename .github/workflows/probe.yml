@@ -1,0 +1,13 @@
+name: Probe
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: macos-15
+    steps:
+      - run: |
+          sysctl -n hw.ncpu
+          sysctl -n hw.physicalcpu
+          sysctl -n hw.memsize
+          sysctl -n machdep.cpu.brand_string || true
+          system_profiler SPHardwareDataType || true
