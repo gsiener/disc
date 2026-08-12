@@ -281,7 +281,16 @@ public final class Engine {
         // the config and the checks lean on it.
         let goal = target ?? config.pointsToWin ?? (format.playersPerSide <= 3 ? 7 : 15)
         self.target = goal
-        self.rng = Rng(seed: seed)
+        // issue #2 — the reference's `ctx.rand` is a top-level stream the engine seed,
+        // the weather draw and the roster deal each fork independently from
+        // (`Game.ts:init`/`buildRoster`), not three consumers sharing one stream. `topRng`
+        // here is that stream, built directly from the caller's seed exactly as
+        // `ctx.rand = new Rng(seed)` is in the reference's own headless harness
+        // (`tools/test-game.ts`). `self.rng` mirrors `this.seed = ctx.rand.fork(0x6a3e1c)
+        // .int(0, 0x7fffffff); this.rng = new Rng(this.seed)` — forked, drawn once, and
+        // used to reseed a fresh stream, not used directly as the fork's own generator.
+        let topRng = Rng(seed: seed)
+        self.rng = Rng(seed: UInt32(topRng.fork(salt: 0x6a3e1c).int(0, 0x7fffffff)))
 
         // The emitter is handed to `GameState` at construction, before `self` exists, so
         // the tally it feeds is a separate object rather than a closure over the engine.
@@ -343,11 +352,14 @@ public final class Engine {
         // It was `.zero` once, and then a ±1.5 m/s breeze — neither of which
         // `Playbook.shouldPlayZone` can ever clear, so the zone defence, the upwind force
         // flip in `pickScheme` and the wind term in `maxThrowRange` were all unreachable.
-        let w = rng.fork(salt: 0x117d)
+        // issue #2: forked from `topRng`, matching `ctx.rand.fork(0x117d)` in the
+        // reference — not from `self.rng`, which is now a distinct, already-reseeded
+        // stream and would draw a different `w` than the reference's `ctx.rand` does.
+        let w = topRng.fork(salt: 0x117d)
         wind = config.wind(from: w)
         disc.wind = wind
 
-        buildRoster()
+        buildRoster(topRng: topRng)
         // Locomotion's event stream, for the contact impacts `policeCatch` needs. Only
         // `events` is set: `rand` would fork locomotion's RNG off this engine's and shift
         // every stream in the game, and `field` / `disc` are nil here exactly as they were
