@@ -137,18 +137,6 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
-      # Same pattern as the Swift package's build cache below: keyed on the sources that
-      # feed this build (the app target plus the UltimateSim package it links), so an
-      # unrelated change elsewhere in the repo restores a full hit and a source change is a
-      # miss that still starts from the nearest prior build via restore-keys.
-      - name: Cache the build
-        uses: actions/cache@v4
-        with:
-          path: ios/build
-          key: ios-release-${{ runner.os }}-${{ hashFiles('ios/project.yml', 'ios/Ultimate/**', 'swift/Package.swift', 'swift/Sources/**/*.swift') }}
-          restore-keys: |
-            ios-release-${{ runner.os }}-
-
       - name: Build for iOS Simulator
         working-directory: ios
         run: >
@@ -157,7 +145,6 @@ jobs:
           -scheme Ultimate
           -destination 'generic/platform=iOS Simulator'
           -configuration Release
-          -derivedDataPath build
           build
           CODE_SIGNING_ALLOWED=NO
 
@@ -261,17 +248,6 @@ jobs:
       # is the property worth keeping.
       - name: Start the simulator booting
         run: xcrun simctl boot '${{ steps.sim.outputs.udid }}' || true
-
-      # Debug-config counterpart of the release cache on `ios-build`: same idea, keyed on
-      # the same app/package sources plus the UI test target itself, since that's what
-      # `build-for-testing` below actually compiles for this scheme.
-      - name: Cache the build
-        uses: actions/cache@v4
-        with:
-          path: ios/build
-          key: ios-uitests-debug-${{ runner.os }}-${{ hashFiles('ios/project.yml', 'ios/Ultimate/**', 'ios/UltimateUITests/**', 'swift/Package.swift', 'swift/Sources/**/*.swift') }}
-          restore-keys: |
-            ios-uitests-debug-${{ runner.os }}-
 
       # **Compiling is a separate step from testing, and that is the point.**
       #
