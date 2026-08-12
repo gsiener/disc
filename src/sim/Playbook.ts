@@ -19,6 +19,8 @@
 
 /* ------------------------------------------------------------------ basics */
 
+import type { RandomSource } from './Rng.ts';
+
 export interface Vec2 { x: number; z: number }
 export interface Vec3 { x: number; y: number; z: number }
 
@@ -1004,39 +1006,11 @@ export function timeoutIntent(r: TimeoutRead): TimeoutIntent {
 /* --------------------------------------------------------------------- rng */
 
 /**
- * Bit-identical mirror of `core/Ctx.ts`'s `Rng` (xorshift128). It exists only so
- * the sim can run headless in Node without importing the engine (and therefore
- * three.js). Anything holding a real `ctx.rand` can be passed wherever a
- * `RandomSource` is expected — the shapes match structurally.
+ * The generator moved to `./Rng.ts`, which imports nothing — see #42. It was
+ * declared here as a "bit-identical mirror" of `core/Ctx.ts`'s `Rng`, to keep
+ * the reference runnable headless; `Game.ts` and `Locomotion.ts` then imported
+ * the engine's copy anyway, so the mirror cost a second definition and bought
+ * nothing. Re-exported because nine golden generators and two suites import
+ * `SeededRng` from this module by name.
  */
-export interface RandomSource {
-  next(): number;
-  range(lo: number, hi: number): number;
-  int(lo: number, hi: number): number;
-  gauss(): number;
-  fork(salt: number): RandomSource;
-}
-
-export class SeededRng implements RandomSource {
-  private a: number; private b: number; private c: number; private d: number;
-  constructor(seed = 0x9e3779b9) {
-    this.a = seed >>> 0; this.b = (seed ^ 0x85ebca6b) >>> 0;
-    this.c = (seed ^ 0xc2b2ae35) >>> 0; this.d = (seed ^ 0x27d4eb2f) >>> 0;
-    for (let i = 0; i < 16; i++) this.next();
-  }
-  next(): number {
-    let t = this.d;
-    const s = this.a;
-    this.d = this.c; this.c = this.b; this.b = s;
-    t ^= t << 11; t ^= t >>> 8;
-    this.a = (t ^ s ^ (s >>> 19)) >>> 0;
-    return this.a / 4294967296;
-  }
-  range(lo: number, hi: number): number { return lo + (hi - lo) * this.next(); }
-  int(lo: number, hi: number): number { return Math.floor(this.range(lo, hi + 1)); }
-  gauss(): number {
-    const u = Math.max(1e-7, this.next());
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * this.next());
-  }
-  fork(salt: number): SeededRng { return new SeededRng((this.a ^ (salt * 0x9e3779b9)) >>> 0); }
-}
+export { Rng, SeededRng, type RandomSource } from './Rng.ts';

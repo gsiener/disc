@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Ctx, System } from '../core/Ctx.ts';
-import { Rng } from '../core/Ctx.ts';
+import { Rng } from './Rng.ts';
 import {
   type Attributes, type DesiredMove, type LocoPlayer, type LocoStateName,
   type MoveMode, type Vec2Like, DEFAULT_ATTRS, UNAVAILABLE_STATES, COMMITTED_STATES,

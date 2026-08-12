@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Ctx, System } from '../core/Ctx.ts';
-import { Rng } from '../core/Ctx.ts';
+import { Rng } from './Rng.ts';
 
 import {
   catchProbability, createTeamAI, effectiveMaxSpeed, makePlayer, restBetweenPoints,
