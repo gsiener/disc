@@ -68,7 +68,7 @@ final class RefusalTests: XCTestCase {
         XCTAssertEqual(match.probe().refused, 0)
 
         guard let said = match.tapForRefusal(match.pitchPoint(0.5, 0.45)) else {
-            return XCTFail(
+            return match.fail(
                 "a tap before the pull said nothing at all — probe: \(match.probe().raw)")
         }
         XCTAssertTrue(
@@ -111,7 +111,7 @@ final class RefusalTests: XCTestCase {
         match.waitToAct("our own offence", until: { $0.canCut })
 
         guard let said = match.tapForRefusal(match.pitchPoint(0.012, 0.05)) else {
-            return XCTFail("a tap above the horizon said nothing — probe: \(match.probe().raw)")
+            return match.fail("a tap above the horizon said nothing — probe: \(match.probe().raw)")
         }
         XCTAssertTrue(
             said.contains("OFF THE PITCH") && said.contains("TAP THE GRASS"),
@@ -292,7 +292,7 @@ final class RefusalTests: XCTestCase {
     func testThePitchIsTheRectangleTheTapsAssume() {
         let match = MatchDriver()
         guard let pitch = match.pitchRect else {
-            return XCTFail("the probe never reported a pitch rect — probe: \(match.probe().raw)")
+            return match.fail("the probe never reported a pitch rect — probe: \(match.probe().raw)")
         }
         let window = match.app.frame
         let bottom = window.maxY - pitch.maxY

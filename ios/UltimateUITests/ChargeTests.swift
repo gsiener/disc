@@ -75,7 +75,7 @@ final class ChargeTests: XCTestCase {
             act: { _ in match.drag(hold: hold) },
             resolve: { before, now in now.thrown > before.thrown ? now : nil })
         guard let after else {
-            XCTFail(
+            match.fail(
                 "no drag from our own thrower was accepted as a throw — probe: "
                     + match.probe().raw)
             return (0, "")

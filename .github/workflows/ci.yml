@@ -602,7 +602,10 @@ jobs:
       - name: Wait for the simulator
         run: |
           set -euo pipefail
-          xcrun simctl bootstatus '${{ steps.sim.outputs.udid }}' -b
+          if ! xcrun simctl bootstatus '${{ steps.sim.outputs.udid }}' -b; then
+            echo "BOOT FAILURE: simulator ${{ steps.sim.outputs.udid }} did not finish booting (simctl bootstatus failed)"
+            exit 1
+          fi
           xcrun simctl list devices | grep -F '${{ steps.sim.outputs.udid }}'
 
       # **There used to be a `Warm the app` step here and deleting it is the fix, not a

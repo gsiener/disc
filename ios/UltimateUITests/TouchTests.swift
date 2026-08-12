@@ -53,7 +53,7 @@ final class TouchTests: XCTestCase {
             act: { _ in match.drag(hold: 0.4) },
             resolve: { before, now in now.thrown > before.thrown ? now : nil })
         guard let after else {
-            return XCTFail(
+            return match.fail(
                 "four drags from our own thrower recorded no throw — probe: \(match.probe().raw)")
         }
         XCTAssertEqual(after.dragEnd, "throw", "the drag should have ended as a throw")
@@ -111,7 +111,7 @@ final class TouchTests: XCTestCase {
             }
         }
         guard let said else {
-            return XCTFail("\(tried) taps on the grass sent nobody — probe: \(match.probe().raw)")
+            return match.fail("\(tried) taps on the grass sent nobody — probe: \(match.probe().raw)")
         }
         XCTAssertFalse(
             said.isEmpty,
@@ -161,7 +161,7 @@ final class TouchTests: XCTestCase {
                 plates: ["hud.defence", "hud.recovery"], within: 0.6)
         }
         guard let plates else {
-            return XCTFail("\(tried) taps on defence committed nobody — probe: \(match.probe().raw)")
+            return match.fail("\(tried) taps on defence committed nobody — probe: \(match.probe().raw)")
         }
         let order = plates["hud.defence"]
         let down = plates["hud.recovery"]
@@ -248,7 +248,7 @@ final class TouchTests: XCTestCase {
                 return (before, now)
             })
         guard let resolved else {
-            return XCTFail(
+            return match.fail(
                 "four drags inside the cancel radius were never resolved either way — probe: "
                     + match.probe().raw)
         }

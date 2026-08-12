@@ -16,6 +16,35 @@ struct MatchDriver {
 
     let app: XCUIApplication
 
+    // MARK: - infrastructure attribution
+    //
+    // **Four failure modes must be distinguishable in the test report** (issue #46):
+    // boot failure, launch failure, app-process loss, and a genuine gesture assertion.
+    // The boot step is in the workflow; the other three are detected here. Each has a
+    // distinct message prefix so a reader of the `.xcresult` can tell them apart without
+    // guessing — "BOOT FAILURE", "LAUNCH FAILURE", "PROCESS LOSS", "PACING TIMEOUT".
+
+    /// The app's bundle identifier, for diagnostics that name the app.
+    private static let appIdentifier = "com.grahamsiener.ultimate"
+
+    /// Mutable attribution state held in a reference type so `let match = MatchDriver()`
+    /// in the tests does not need to become `var` — `MatchDriver` is a struct, and
+    /// marking every method `mutating` would be a wider change than the diagnostics
+    /// justify.
+    final class Attribution {
+        /// Set when `poll` or `probe` discovers the app process is gone. A caller that
+        /// would emit a gesture-assertion `XCTFail` checks this first (via `fail`) and
+        /// emits a process-loss diagnostic instead — so a crash is never reported as
+        /// "four drags recorded no throw".
+        var processLost = false
+        /// When the last successful probe read happened, for the pacing-timeout diagnostic.
+        var lastProbeAt: Date?
+        /// The last probe value seen, for the process-loss diagnostic.
+        var lastKnownState = ""
+    }
+
+    private let attribution = Attribution()
+
     /// Launch into a live match with the probe on.
     ///
     /// `-setup off` skips the pre-game sheet, which is the wall a launch argument was
@@ -60,11 +89,27 @@ struct MatchDriver {
         // is still uninitialised at this point and reaching for `self` to read one computed
         // property does not compile. The queries are the same ones.
         let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
-        // If the probe never appeared, nothing below can mean anything — so it is asserted
-        // here rather than being allowed to fail later, somewhere else, as a timeout.
-        XCTAssertTrue(
-            Self.ready(app),
-            "the match probe never appeared — was the app launched with `-probe on`?")
+        // **Launch and readiness are separate diagnostics** (VAL-CI-003). The app not
+        // running after `launch()` is a launch failure — the process never started or died
+        // immediately. The app running but the probe never appearing is a readiness timeout
+        // — the process is alive but never reached a frame. Both are infrastructure, not
+        // gesture assertions, and each names the step and the device.
+        guard Self.ready(app) else {
+            let device = Self.deviceIdentity()
+            if app.state == .notRunning {
+                XCTFail(
+                    "LAUNCH FAILURE: \(Self.appIdentifier) is not running after launch "
+                        + "(state: \(app.state)) on \(device)")
+            } else {
+                XCTFail(
+                    "LAUNCH FAILURE: \(Self.appIdentifier) launched but the probe never "
+                        + "appeared within \(Int(Self.patience))s "
+                        + "(slowdown ×\(String(format: "%.1f", Self.slowdown))) on \(device) "
+                        + "— was the app launched with `-probe on`?")
+            }
+            pitchRect = nil
+            return
+        }
 
         // The rectangle the game is on, taken once, so every tap below can be a fraction of
         // the pitch rather than of the window. See `pitchPoint`.
@@ -96,6 +141,10 @@ struct MatchDriver {
             // that would hit a card instead of the pitch.
             if skip.exists { skip.tap() }
             if probe.exists { return true }
+            // Checked after the probe, not before, so a state that is briefly `.notRunning`
+            // right after `app.launch()` is not a false positive. If the app crashed during
+            // launch, the probe will not exist and `app.state` will confirm it.
+            if app.state == .notRunning { return false }
             usleep(40_000)
         }
         return false
@@ -122,6 +171,7 @@ struct MatchDriver {
     func relaunch() -> Bool {
         app.terminate()
         app.launch()
+        attribution.processLost = false
         return Self.ready(app)
     }
 
@@ -265,7 +315,22 @@ struct MatchDriver {
     // MARK: - reading the match
 
     /// The match state, right now.
-    func probe() -> Probe { Probe(probeElement.label) }
+    ///
+    /// Also the process-loss sentinel: if the app is not running, `processLost` is set and
+    /// the last known state is returned so callers that read the probe in an assertion
+    /// message see something informative rather than an empty string or a hung snapshot.
+    func probe() -> Probe {
+        if app.state == .notRunning {
+            attribution.processLost = true
+            return Probe(attribution.lastKnownState.isEmpty ? "process=lost" : attribution.lastKnownState)
+        }
+        let raw = probeElement.label
+        if !raw.isEmpty {
+            attribution.lastProbeAt = Date()
+            attribution.lastKnownState = raw
+        }
+        return Probe(raw)
+    }
 
     /// One line of `MatchProbe.probeState`, parsed.
     struct Probe {
@@ -358,6 +423,7 @@ struct MatchDriver {
         where_.tap()
         let deadline = Date().addingTimeInterval(within)
         while Date() < deadline {
+            if attribution.processLost { return nil }
             if counter(probe()) > base {
                 var found: [String: String] = [:]
                 for id in plates {
@@ -383,6 +449,7 @@ struct MatchDriver {
     /// Returns the plate's sentence, or nil if every tap left the screen silent.
     func tapForRefusal(_ where_: XCUICoordinate, attempts: Int = 4) -> String? {
         for _ in 0..<attempts {
+            if app.state == .notRunning { attribution.processLost = true; return nil }
             where_.tap()
             let plate = element("hud.refused")
             guard plate.exists else { continue }
@@ -408,9 +475,19 @@ struct MatchDriver {
         file: StaticString = #filePath, line: UInt = #line
     ) -> Probe {
         if let held = poll(for: timeout, until: condition) { return held }
+        // **Process loss and pacing timeout are separate diagnostics** (VAL-CI-004,
+        // VAL-CI-005). `poll` sets `processLost` when the app dies; a pacing timeout
+        // means the app is alive but the simulation never reached the waited state.
+        if attribution.processLost {
+            XCTFail(processLossMessage(), file: file, line: line)
+            return Probe(attribution.lastKnownState)
+        }
         let last = probe()
+        let probeTime = attribution.lastProbeAt.map { String(describing: $0) } ?? "never"
         XCTFail(
-            "timed out after \(Int(timeout))s waiting for \(what) — probe: \(last.raw)",
+            "PACING TIMEOUT: \(what) — budget \(Int(timeout))s "
+                + "(slowdown ×\(String(format: "%.1f", Self.slowdown))) "
+                + "— last probe at \(probeTime): \(last.raw)",
             file: file, line: line)
         return last
     }
@@ -428,6 +505,13 @@ struct MatchDriver {
     func poll<T>(for timeout: TimeInterval, _ transform: (Probe) -> T?) -> T? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
+            // Process loss is infrastructure, not a gesture assertion (VAL-CI-004).
+            // Checking `app.state` before each probe read catches a crash mid-wait
+            // and sets the flag the caller checks to emit the right diagnostic.
+            if app.state == .notRunning {
+                attribution.processLost = true
+                return nil
+            }
             if let found = transform(probe()) { return found }
             // A tenth of the shortest thing worth waiting for. Tighter than this and the
             // accessibility traffic starts costing the app frames.
@@ -493,6 +577,9 @@ struct MatchDriver {
     ) -> T? {
         for attempt in 0..<attempts {
             guard let before = poll(for: Self.possession, until: { $0.canThrow }) else {
+                // If the app died, stop retrying — the caller's `fail` will emit the
+                // process-loss diagnostic, not a gesture assertion.
+                if attribution.processLost { return nil }
                 // This match is not going to give us the disc soon. Take another one — but not
                 // on the last attempt, where a relaunch would only cost time nobody reads.
                 //
@@ -505,8 +592,49 @@ struct MatchDriver {
             }
             act(before)
             if let done = poll(for: Self.settle, { resolve(before, $0) }) { return done }
+            if attribution.processLost { return nil }
         }
         return nil
+    }
+
+    // MARK: - failure attribution
+
+    /// Fail with a process-loss diagnostic if the app died, or with the caller's assertion
+    /// message otherwise.
+    ///
+    /// **This is the seam that keeps a crash from wearing a gesture assertion's label**
+    /// (VAL-CI-004). `withTheDisc` and `poll` set `processLost` when they detect the app
+    /// process is gone; the caller's `guard … XCTFail(…)` is a gesture assertion. Routing
+    /// the failure through here means a crash is reported as "PROCESS LOSS", not as "four
+    /// drags recorded no throw" — which is the misattribution issue #46 describes.
+    func fail(
+        _ message: @autoclosure () -> String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        if attribution.processLost {
+            XCTFail(processLossMessage(), file: file, line: line)
+        } else {
+            XCTFail(message(), file: file, line: line)
+        }
+    }
+
+    /// The process-loss diagnostic: names the app, the last known state, and the loss
+    /// type (VAL-CI-004).
+    private func processLossMessage() -> String {
+        let device = Self.deviceIdentity()
+        let timestamp = attribution.lastProbeAt.map { String(describing: $0) } ?? "never"
+        let state = attribution.lastKnownState.isEmpty ? "no probe reading" : attribution.lastKnownState
+        return "PROCESS LOSS: \(Self.appIdentifier) is not running (state: \(app.state)) "
+            + "on \(device) — last known state at \(timestamp): \(state)"
+    }
+
+    /// The simulator device identity from the environment, for diagnostics that name the
+    /// device. Set by `xcodebuild` in every simulator process.
+    private static func deviceIdentity() -> String {
+        let env = ProcessInfo.processInfo.environment
+        let name = env["SIMULATOR_DEVICE_NAME"] ?? "unknown device"
+        let udid = env["SIMULATOR_UDID"] ?? "no-udid"
+        return "\(name) (\(udid))"
     }
 
     // MARK: - touching
