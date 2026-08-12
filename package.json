@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run reference:gate && npm run reference:check && npm run reference:imports && npm run reference:structure && npm run reference:goldens:test",
     "reference:gate": "node tools/gate.mjs",
     "reference:check": "tsc --noEmit",
     "reference:imports": "node --experimental-strip-types tools/test-imports.ts",
