@@ -115,10 +115,13 @@ jobs:
   # nothing executable enforced it: a change to the reference with no regeneration
   # leaves a stale fixture that is green in both engines at once (#15).
   #
-  # ------------------------------------------------------------------ why one family
+  # ---------------------------------------------------- why one family byte-compared *here*
   #
-  # This job checks `rng` and nothing else, and that is a deliberate scope, not an
-  # oversight — so it is stated here rather than left to be discovered.
+  # This job byte-compares `rng` and nothing else, and that is a deliberate scope, not an
+  # oversight — so it is stated here rather than left to be discovered. The families it
+  # cannot compare are not ignored: `goldens-canonical` below compares them on the one
+  # platform where a comparison means something, and the staleness step in this job says
+  # what a foreign runner *can* say about them.
   #
   # A golden regenerated at the commit that wrote it does not reproduce on a different
   # machine (#41). `coeffs.json` differs in 4 of 2,297 numbers across platforms — one or
@@ -135,12 +138,19 @@ jobs:
   # divergence there "means a structural porting bug rather than numeric drift".
   #
   # Widen this list only with evidence that the family reproduces across machines, and
-  # record that evidence in #41. The other eighteen families are covered instead by
-  # `Goldens/provenance.json`, which records the Node version, platform and commit that
-  # produced each one, so an agent about to regenerate on the wrong machine can see it.
+  # record that evidence in `tools/goldens/families.ts` — which is where the two
+  # classifications now live as data, because this comment and `gen-goldens.ts`'s docstring
+  # used to be the only record and a workflow comment cannot refuse to run a comparison.
+  # `check-goldens.ts freshness` reads that file and exits *before* regenerating if a
+  # family is not measured as reproducible on the platform it is standing on.
+  #
+  # The other eighteen families are covered instead by `Goldens/provenance.json`, which
+  # records the Node version, platform and commit that produced each one, so an agent about
+  # to regenerate on the wrong machine can see it.
   #
   # `provenance.json` is deliberately NOT diffed: it records the commit, so it changes on
-  # every push by design.
+  # every regeneration by design. `check-goldens.ts` scopes its `git diff` to the fixtures
+  # it was asked about, so the sidecar it just rewrote cannot fail the job.
   #
   # -------------------------------------------------------------- why ubuntu, not macos
   #
@@ -149,17 +159,21 @@ jobs:
   # freshness and, incidentally, that `rng` really is platform-independent rather than
   # merely agreeing with itself. It is also a tenth of the price of a macos runner.
   #
-  # **This inverts the moment the list widens.** Any libm-sensitive family — anything
-  # whose call graph reaches `pow`, `exp`, `log` or trig — must be regenerated on a
-  # runner matching `provenance.json`, i.e. macos on arm64, or the job fails on platform
-  # drift while reporting staleness. Move this job to `macos-15` at the same time as you
-  # add the first such family, not afterwards.
+  # The comment this replaced said the job must *move* to macos the moment the list widens.
+  # That was the wrong shape: it would have given up the cross-platform evidence `rng`
+  # provides here in order to gain a comparison for `coeffs`. Two jobs, one per platform
+  # class, keep both — see `goldens-canonical` below.
   goldens-fresh:
-    name: Goldens are fresh (rng)
+    name: Goldens are fresh (rng) and staleness is reported
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The staleness step compares the commit `provenance.json` records against what has
+          # touched `src/sim` since, which the default depth-1 checkout cannot answer — it
+          # would report `history-unavailable` for every family and prove nothing.
+          fetch-depth: 0
 
       # The version the committed fixtures are attributed to, pinned in-repo rather
       # than only here, so a developer regenerating locally uses the same one.
@@ -170,17 +184,89 @@ jobs:
 
       - run: npm ci
 
-      - name: Regenerate rng.json
-        run: node --experimental-strip-types tools/gen-goldens.ts rng
+      # Regenerate, byte-compare, and — on a stale fixture — name the file, the exact command
+      # that fixes it, and ADR-0001's prohibition on hand-editing. This used to be an inline
+      # `git diff` and an `echo`, which meant the one message an agent reads at the moment they
+      # are about to hand-edit a golden existed only inside a workflow nobody can run locally.
+      #
+      # It is also safe to run in a shared checkout, which matters more locally than here: a
+      # passing check hands `provenance.json` back byte-identical rather than leaving its own
+      # regeneration behind for whoever commits next.
+      - name: rng is fresh (regenerate and byte-compare)
+        run: node --experimental-strip-types tools/check-goldens.ts freshness rng
 
-      - name: The committed fixture must be what the reference produces
+      # What a foreign runner can honestly say about `coeffs` and `matchdiff`: provenance and
+      # history, never bytes. `--strict` fails only on the two kinds that cannot be a false
+      # positive — a fixture attributed to a platform other than darwin/arm64, or one generated
+      # from a dirty `src/sim`. History staleness is a warning annotation, because a commit
+      # touching `src/sim` need not touch a given family, and the friction log records a fixture
+      # reported stale by `git log` while being byte-current.
+      - name: Platform-sensitive families report staleness, not byte diffs
+        run: node --experimental-strip-types tools/check-goldens.ts staleness --strict
+
+      # The generator's own contract, as assertions: named runs write only what they name, an
+      # unknown name writes nothing, provenance is a deterministic sidecar with no wall clock,
+      # dirt is `src/sim` dirt, and the refusal paths above actually refuse. Runs in its own
+      # throwaway git worktree, so it needs the full history fetched above.
+      - name: The golden tooling's own contract
+        run: npm run reference:goldens:test
+
+  # The byte comparison the job above cannot make, on the one platform where it means
+  # something.
+  #
+  # `coeffs` and `matchdiff` reach `pow`/`exp`/`log`/trig, and both were *measured* to move
+  # across platforms: `coeffs` by 4 of 2,297 numbers, `matchdiff` by 35 % of its counts
+  # (`tools/goldens/families.ts` carries both measurements). Comparing them on ubuntu would
+  # fail for a reason that is not staleness, and `check-goldens.ts` refuses to try. Comparing
+  # them *here* is the missing half of #41: without it, "the fixtures are the oracle's output"
+  # is enforced for one family out of nineteen, and `matchdiff.json` sat stale across two
+  # `src/sim` behaviour changes with nothing to say so.
+  #
+  # **macos-15 is arm64**, which is what makes it the canonical runner and not merely a mac.
+  # The check asserts that rather than assuming it: if a future runner image is x86_64, the
+  # step refuses instead of quietly comparing bytes that were never going to match.
+  #
+  # ------------------------------------------------------------------- the cost, honestly
+  #
+  # `matchdiff` is eleven fifteen-minute matches — ~2m55s of node on an M-series laptop, and
+  # a macos runner is slower. It runs on pull requests anyway, unlike `sim-tests`: a gate that
+  # only runs after merge cannot stop a stale fixture from being merged, which is the whole
+  # failure this closes. If it becomes the wall clock a push waits on, shard it by family
+  # before reaching for an `if:` — a skipped freshness gate is indistinguishable from a
+  # missing one.
+  #
+  # One thing that can turn this red without anybody changing the reference: a Node minor
+  # bump. `.nvmrc` pins the major, so setup-node resolves the newest 26.x, and a V8 update
+  # can move a libm-sensitive number by a ULP. That is not a false alarm — it is the fixture
+  # genuinely no longer being what this toolchain produces — and the fix is the one the
+  # failure prints: regenerate on the canonical platform and commit the diff.
+  goldens-canonical:
+    name: Goldens are fresh on the canonical platform (coeffs, matchdiff)
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # Printed rather than inferred: "which platform did CI actually regenerate on" is the
+      # first question about a golden that reproduces nowhere else, and this file has already
+      # learned once that a configuration you cannot read back is a configuration you do not
+      # have (see `TEST_RUNNER_UITEST_SLOWDOWN` on the touch job).
+      - name: Runner platform
         run: |
-          if ! git diff --exit-code -- swift/Sources/SimChecks/Goldens/rng.json; then
-            echo "::error::rng.json is stale — src/sim changed without regenerating it."
-            echo "Run: node --experimental-strip-types tools/gen-goldens.ts rng"
-            echo "Never hand-edit a golden (ADR-0001); regenerate it."
-            exit 1
-          fi
+          set -euo pipefail
+          uname -sm
+          node -p "process.platform + '/' + process.arch"
+          node -p "process.version"
+
+      - name: coeffs and matchdiff are fresh (regenerate and byte-compare on darwin/arm64)
+        run: node --experimental-strip-types tools/check-goldens.ts freshness coeffs matchdiff
 
   # The differential suite: SimChecks loads the JSON goldens bundled as package
   # resources and replays ~2.2M assertions against the ported model. It prints a

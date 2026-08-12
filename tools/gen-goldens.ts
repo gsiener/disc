@@ -29,6 +29,15 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 
+import {
+  CANONICAL_PLATFORM,
+  currentPlatform,
+  evidenceFor,
+  isCanonicalPlatform,
+  platformOverride,
+  sensitivity,
+} from './goldens/families.ts';
+
 import { coeffGoldens } from './goldens/coeffs.ts';
 import { aiMathGoldens } from './goldens/aimath.ts';
 import { discRuntimeGoldens } from './goldens/discruntime.ts';
@@ -126,7 +135,9 @@ if (unknown.length) {
  * (one or two ULP of V8 arithmetic), and `matchdiff.json` — eleven fifteen-minute
  * matches, ~108,000 chaotic ticks apiece — moves **35 % of its counts**, because one
  * ULP anywhere is enough. See `.agents/friction-log/20260811070423-a-golden-regenerated/`
- * and #41.
+ * and #41. Which families that has been measured for lives in `goldens/families.ts`,
+ * as data, because `check-goldens.ts` has to make the same distinction and prose in two
+ * places drifts.
  *
  * That makes a regenerated fixture indistinguishable, from the suite's point of view,
  * from a genuine behaviour change: it silently rebases every band in `MatchDiffTests`
@@ -194,7 +205,32 @@ function recordProvenance(families: string[]): void {
   console.log(`  provenance.json  (${now.node} ${now.platform}${now.dirty ? ' DIRTY' : ''})`);
 }
 
+/**
+ * Say so before rewriting a fixture that will not reproduce here.
+ *
+ * A warning rather than a refusal, deliberately: regenerating `matchdiff` on a foreign
+ * machine is the right move when you are investigating whether a *rate* moved, and an
+ * unfiltered run on a developer's Linux box should not become an error. What must never
+ * happen is *committing* the result, and what enforces that is `check-goldens.ts` on the
+ * canonical runner. This is the part a human sees before paying for eleven matches.
+ */
+function warnOffCanonical(families: string[]): void {
+  const override = platformOverride();
+  if (override) console.error(`GOLDENS_PLATFORM override in effect: ${override}`);
+  if (isCanonicalPlatform()) return;
+  const risky = families.filter((f) => sensitivity(f) === 'sensitive');
+  if (!risky.length) return;
+  console.error(
+    `\n⚠︎  ${risky.join(', ')} regenerated on ${currentPlatform()}, not the canonical ${CANONICAL_PLATFORM}.`,
+  );
+  for (const f of risky) console.error(`   ${f}: ${evidenceFor(f)}`);
+  console.error(
+    `   The numbers below are this machine's. Do not commit them: they read as a behaviour change.\n`,
+  );
+}
+
 console.log(requested.length ? `goldens (${requested.join(' ')}) →` : 'goldens →');
+warnOffCanonical(selected.map(([name]) => name.replace(/\.json$/, '')));
 for (const [name, gen] of selected) write(name, gen());
 recordProvenance(selected.map(([name]) => name.replace(/\.json$/, '')));
 console.log('done');

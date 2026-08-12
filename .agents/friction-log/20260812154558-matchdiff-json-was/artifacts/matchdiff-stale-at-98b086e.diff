@@ -1,0 +1,46 @@
+diff --git a/swift/Sources/SimChecks/Goldens/matchdiff.json b/swift/Sources/SimChecks/Goldens/matchdiff.json
+index c7eeff9..ebe9d52 100644
+--- a/swift/Sources/SimChecks/Goldens/matchdiff.json
++++ b/swift/Sources/SimChecks/Goldens/matchdiff.json
+@@ -22,28 +22,28 @@
+   "turnovers": {
+     "drop": 41,
+     "throwaway": 0,
+-    "out-of-bounds": 3,
++    "out-of-bounds": 2,
+     "caught-out-of-bounds": 1,
+-    "block": 50,
+-    "interception": 82,
++    "block": 37,
++    "interception": 73,
+     "stall-out": 0,
+-    "pull-drop": 17,
++    "pull-drop": 21,
+     "travel-violation": 0,
+     "double-touch": 0
+   },
+   "calls": {
+-    "foul": 21,
+-    "pick": 8,
+-    "strip": 9,
++    "foul": 34,
++    "pick": 6,
++    "strip": 8,
+     "travel": 0,
+-    "contested": 4
++    "contested": 13
+   },
+   "totals": {
+-    "attempts": 1672,
+-    "completions": 1495,
+-    "goals": 157,
+-    "blocks": 132,
++    "attempts": 1410,
++    "completions": 1253,
++    "goals": 178,
++    "blocks": 110,
+     "stallOuts": 0,
+-    "points": 167
++    "points": 187
+   }
+ }

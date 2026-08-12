@@ -1,8 +1,18 @@
 {
+  "coeffs": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "98b086e5b1aded4903192dda3697bd60a46a0343"
+  },
   "divergences": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",
     "commit": "3f85b1b5f60fd2b77788fdfde8542052d7ad3ead"
+  },
+  "matchdiff": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "98b086e5b1aded4903192dda3697bd60a46a0343"
   },
   "rng": {
     "node": "v26.7.0",

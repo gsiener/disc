@@ -81,3 +81,4 @@ of hours, because writing entries worked and reading them did not.
 | minor | `20260811172855-closing-boundaryroom-s` | Closing boundaryRoom''s target-clamp gap moved a butterfly-sensitive test-ai.ts assertion |
 | major | `20260811175247-tools-test-ai` | tools/test-ai.ts''s windy completion % gate is unreachable from ThrowSolver.ts, so #32''s real acceptance criterion is a different bug |
 | major | `20260811183614-simtests-25-failure` | SimTests' 25-failure print cap silently hides a targeted assertion behind unrelated golden mismatches |
+| major | `20260812154558-matchdiff-json-was` | matchdiff.json was stale across two src/sim behaviour changes, and only rng had a freshness gate to notice |

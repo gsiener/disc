@@ -123,6 +123,16 @@ module prints the current list; trust that over this sentence, which has been
 wrong twice.) Then run the port's own suite:
 `cd swift && swift run -c release SimTests` must end `PASS` with 0 failures.
 
+**And which machine you regenerate on is part of the answer.** `coeffs` moves 4 of
+its 2,297 numbers across platforms and `matchdiff` moves 35% of its counts, so a
+fixture regenerated on the wrong machine reads as a behaviour change (#41; the
+measurements live in `tools/goldens/families.ts`). The generator warns when you
+are off `darwin/arm64`; `node --experimental-strip-types tools/check-goldens.ts`
+is the executable version — `freshness <family>` regenerates and byte-compares
+where that is meaningful and refuses where it is not, `staleness` reads
+provenance and history instead. `npm run reference:goldens:test` asserts the
+tooling itself, in its own throwaway worktree, in about half a minute.
+
 ### Twelve assertions are red on a clean checkout. None of them is yours.
 
 Measured at `1877bd7` and confirmed identical in a detached worktree at `98ac3d1`
