@@ -219,7 +219,8 @@ extension TeamAI {
 
                 let flightTime = throwFlightTime(thrower, type, d)
                 let path = flightPath(thrower.pos, aim, flightTime, type)
-                let blockage = laneBlockage(path, marker, r)
+                let foeZone = world.scheme[1 - team] == .zone
+                let blockage = laneBlockage(path, marker, r, foeZone)
                 let separation = separationAt(r, aim, flightTime)
 
                 // Break penalty scales with how well the mark is actually positioned.
@@ -414,30 +415,35 @@ extension TeamAI {
         return out
     }
 
-    /// Is a defender's body in the flight path? Samples the first 78% of the flight for
-    /// the receiver's own coverage (the tail is priced as separation) and the WHOLE
-    /// flight for anyone else, and asks whether each defender can get a hand into that
-    /// window.
+    /// Is a defender's body in the flight path? Samples the first 78% of the flight (the
+    /// tail is the receiver's defender, priced as separation) and asks whether each
+    /// defender can get a hand into that window — except against a called ZONE, where the
+    /// tail is sampled in full for every defender who is not the receiver's own coverage.
     ///
-    /// **The 78% cutoff used to apply to every defender, and that was blind to exactly
-    /// the body zone defence is built around.** It assumed the only threat in the last
-    /// 22% of flight is the receiver's own man, already priced by `separationAt` — true
-    /// in person defence, where one body covers one receiver, and false in zone, where a
-    /// help defender who is nobody's "man" closes on the catch point in that same window.
-    /// Issue #57 Phase 1a measured 227 blocked windy throws: 73.6% landed past this
-    /// cutoff, and for the three zone roles built to arrive late — wing-open, short-deep,
-    /// wing-break — it was 97-100%, together 69% of every block in the sample. Cup roles,
-    /// which sit close to the mark from release, were already inside the window 98-100%
-    /// of the time and are untouched by this change.
+    /// **The 78% cutoff was blind to exactly the body zone defence is built around.** It
+    /// assumed the only threat in the last 22% of flight is the receiver's own man,
+    /// already priced by `separationAt` — true in person defence, where one body covers
+    /// one receiver, and false in zone, where a help defender who is nobody's "man" closes
+    /// on the catch point in that same window. Issue #57 Phase 1a measured 227 blocked
+    /// windy throws: 73.6% landed past this cutoff, and for the three zone roles built to
+    /// arrive late — wing-open, short-deep, wing-break — it was 97-100%, together 69% of
+    /// every block in the sample. Cup roles, which sit close to the mark from release,
+    /// were already inside the window 98-100% of the time and are untouched by this
+    /// change.
     ///
-    /// So the cutoff now applies only to the same two candidates `separationAt` already
-    /// prices for THIS receiver — nearest to his current position and nearest to the
-    /// throw's aim point, mirroring its own candidate selection so nothing is charged
-    /// twice for the same body. Every other defender, zone helper included, is sampled
-    /// through to the catch.
-    func laneBlockage(_ path: [FlightSample], _ marker: AIPlayer?, _ receiver: AIPlayer)
-        -> Double
-    {
+    /// The extension is gated on `foeZone` rather than applied everywhere on purpose.
+    /// Trying it unconditionally moved the calm-day and huck numbers too: `onMan`/`onDisc`
+    /// are a good enough proxy for "the receiver's real coverage" for `separationAt`'s own
+    /// late-flight purpose, but they are imperfect stand-ins for it, and applying the
+    /// extension whenever they happened to miss the real man — routine in person defence
+    /// whenever a cut has actually created separation — reached into throws that had
+    /// nothing to do with zone at all and pulled calm-day completion down with them.
+    /// Gating on the opponent's actual scheme call scopes the fix to the mechanism it was
+    /// measured on and leaves every person-defence throw (`foeZone` false) on the exact
+    /// path this function always took.
+    func laneBlockage(
+        _ path: [FlightSample], _ marker: AIPlayer?, _ receiver: AIPlayer, _ foeZone: Bool
+    ) -> Double {
         var worst = 0.0
         let last = path[path.count - 1]
         let cut = last.t * 0.78
@@ -446,11 +452,13 @@ extension TeamAI {
         var bd = 1e9
         var onDisc: AIPlayer?
         var ad = 1e9
-        for f in foes {
-            let d = Playbook.dist2(f.pos.x, f.pos.z, receiver.pos.x, receiver.pos.z)
-            if d < bd { bd = d; onMan = f }
-            let a = Playbook.dist2(f.pos.x, f.pos.z, last.x, last.z)
-            if a < ad { ad = a; onDisc = f }
+        if foeZone {
+            for f in foes {
+                let d = Playbook.dist2(f.pos.x, f.pos.z, receiver.pos.x, receiver.pos.z)
+                if d < bd { bd = d; onMan = f }
+                let a = Playbook.dist2(f.pos.x, f.pos.z, last.x, last.z)
+                if a < ad { ad = a; onDisc = f }
+            }
         }
 
         for f in foes {
@@ -467,7 +475,7 @@ extension TeamAI {
                 // and pretending otherwise is how a reset gets blocked.
                 if isMark {
                     if s.t > 0.42 { continue }
-                } else if isCovered {
+                } else if !foeZone || isCovered {
                     if s.t > cut || s.t < 0.05 { continue }
                 } else if s.t < 0.05 {
                     continue
