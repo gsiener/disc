@@ -23,5 +23,11 @@
     "node": "v26.7.0",
     "platform": "darwin/arm64",
     "commit": "e6ff4d31da9a12ae918795affc7b7be3197792f7"
+  },
+  "teamai": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "430c55f125c5fac7f2766a68967f5d3a59894e6f",
+    "dirty": true
   }
 }

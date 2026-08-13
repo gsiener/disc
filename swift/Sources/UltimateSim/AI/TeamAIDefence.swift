@@ -620,6 +620,16 @@ extension TeamAI {
             }
 
             // Zone players still react to the nearest offensive body in their area.
+            //
+            // The thrower is excluded from this search (issue #39): cup stations are
+            // anchored to the disc, which is to say anchored close to the thrower, so
+            // without the exclusion he was overwhelmingly the "nearest offensive body"
+            // to a cup-left/cup-right station and every non-mark cup member spent the
+            // possession being pulled toward him — USAU 16.G's double team by
+            // construction. `Rules.doubleTeamOffender`'s Swift port already excludes the
+            // thrower from a defender's excusing matchup for the identical reason; this
+            // is the same exclusion one step earlier, in the positioning that puts a
+            // body there at all rather than in the rule that judges it once it is.
             if role != .cupMark {
                 // The search radius is a patch of pitch, so the distances it compares are
                 // taken in pitch fractions — `scoreCut`'s idiom, exact at sevens. The
@@ -629,6 +639,7 @@ extension TeamAI {
                 var near: AIPlayer?
                 var nd = DefenceShape.zoneReactRadius
                 for o in foes {
+                    if let thrower, o.id == thrower.id { continue }
                     let d = Playbook.dist2(
                         o.pos.x / zwx, o.pos.z / zdz, st.x / zwx, st.z / zdz)
                     if d < nd {

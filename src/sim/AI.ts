@@ -3334,9 +3334,23 @@ export class TeamAI {
       }
 
       // Zone players still react to the nearest offensive body in their area.
+      //
+      // The thrower is excluded from this search (issue #39): cup stations are
+      // anchored to the disc, which is to say anchored close to the thrower, so
+      // without the exclusion he was overwhelmingly the "nearest offensive body"
+      // to a cup-left/cup-right station and every non-mark cup member spent the
+      // possession being pulled toward him. That is USAU 16.G's double team by
+      // construction — a second defender inside the ten-foot bubble who is not
+      // also within it of someone else — and measured on a windy, zone-heavy
+      // seed it held for 63% of live-possession time versus under 1.5% on calm
+      // seeds. `doubleTeamOffender` already excludes the thrower from a
+      // defender's *excusing* matchup for the identical reason; this is the same
+      // exclusion one step earlier, in the positioning that puts a body there at
+      // all rather than in the rule that judges it once it is.
       if (role !== 'cup-mark') {
         let near: AIPlayer | null = null; let nd = 7.5;
         for (const o of this.foes) {
+          if (thrower && o.id === thrower.id) continue;
           const d = dist2(o.pos.x, o.pos.z, st.x, st.z);
           if (d < nd) { nd = d; near = o; }
         }
