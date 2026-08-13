@@ -153,7 +153,39 @@ public struct MatchView: View {
     /// be behind it. So coming back is a paused pitch and one tap.
     @State var paused = false
 
-    @State var match: Engine
+    /// The tick-loop composition — the stepped engine, the wall clock, the tick count —
+    /// lifted out of this view and into `MatchDirector` (issue #16, Phase 1). A class,
+    /// and `@State` for the reason `MatchScene` gives below for `scene`: SwiftUI does not
+    /// observe mutations through a class reference, so the view still depends on `frame`
+    /// bumping to redraw, not on this.
+    @State var director: MatchDirector
+
+    /// Forwards to `director.match`. The view has roughly a hundred other
+    /// `match.`-prefixed references — the point of Phase 1 being "mechanical" is that
+    /// none of them had to change to make this move; they read and write through here
+    /// instead. `nonmutating set` because `director` is a class: assigning through this
+    /// mutates the object `@State` already holds, not the `@State` binding itself.
+    var match: Engine {
+        get { director.match }
+        nonmutating set { director.match = newValue }
+    }
+
+    /// Forwards to `director.clock`. Still reached into directly outside the tick loop —
+    /// the charge (`beginCharge`/`endCharge`/`hold`/`charging`) and `reset()` — exactly
+    /// as it was before this property lived on the director instead of as a sibling
+    /// `@State`.
+    var clock: FrameClock {
+        get { director.clock }
+        nonmutating set { director.clock = newValue }
+    }
+
+    /// Forwards to `director.tickCount`. `saveMatch()` and `adopt` both write through
+    /// this outside the tick loop — see `director.tickCount`'s own comment for why.
+    var tickCount: Int {
+        get { director.tickCount }
+        nonmutating set { director.tickCount = newValue }
+    }
+
     @State var drag: DragState? = nil
 
     /// The match settings, as last chosen — length, format, difficulty. Loaded from
@@ -248,20 +280,9 @@ public struct MatchView: View {
     //
     // The sim is advanced only in whole 1/120 s ticks; see the long comment on `body`'s
     // tick driver below and Sources/UltimateSim/Play/Replay.swift:19-56 for why.
-
-    /// The wall clock, and everything measured against it: the frame stamp, the
-    /// accumulator, the charge, the slow motion and its cooldown.
-    ///
-    /// One value type in the sim package rather than six `@State` properties here, and
-    /// deliberately: those five quantities have invariants — the clamp, abandonment,
-    /// real-time slow motion, a charge that must not outlive the thumb — and while they
-    /// were arithmetic scattered through this file no check could reach a single one of
-    /// them. See `FrameClock`, and `ClockTests` for what is now asserted.
-    @State var clock = FrameClock()
-
-    /// Whole simulation ticks executed so far. The trail sampler keys off this, because
-    /// the trail should sample the flight, not the display.
-    @State var tickCount = 0
+    //
+    // The wall clock and the tick count themselves moved to `MatchDirector` in issue
+    // #16's Phase 1 — `clock` and `tickCount` above are this view's passthroughs to it.
 
     /// The one and only step the simulation is advanced by. 1/120 is the regime the
     /// entire validation suite runs at (see `Replay.swift`), so it is the regime the
@@ -325,9 +346,6 @@ public struct MatchView: View {
     @State var assistToast: AssistToast? = nil
     /// The control swap being announced, while there is one.
     @State var handoff: Handoff? = nil
-    /// Who had control at the end of the previous tick, so a change can be noticed.
-    /// `Engine.controlled` moves silently on every catch and every turnover.
-    @State var lastControlled = 0
 
     /// The scene in front of the camera: the entity handles, taken once when it was
     /// built, and the per-frame caches that keep the render pass from allocating.
@@ -396,64 +414,14 @@ public struct MatchView: View {
     /// The pair of numbers themselves live in `FrameClock`, with the accumulator they
     /// scale — see there for why the fuse burns in real seconds, and for the gap that used
     /// to freeze it.
-    private typealias SlowMo = FrameClock.SlowMo
-
-    /// The one place an event turns into a slowed clock.
     ///
-    /// **Time stops for a D you had to dive for, and for nothing else.**
-    ///
-    /// That is §5's own sentence narrowed rather than contradicted: §5 already says the
-    /// block is "the peak moment of the sport on defence" and "the one event allowed the
-    /// full hitstop treatment". What it did not anticipate is how often this simulation
-    /// produces a laid-out *catch* — 41 to 53 of them in a full 7v7 game, because the
-    /// receiver AI bids hard — so "contested or laid-out catch" turned out to be a rule
-    /// that fires on a quarter of all completions. The fix belongs here and not in the
-    /// sim: nothing about what counts as a layout is wrong, only what the screen does
-    /// about it.
-    ///
-    /// Measured over five full 7v7 games (seeds 3, 19, 37, 41, 71), hitstops per game:
-    ///
-    /// | rule | per game |
-    /// |---|---|
-    /// | §5 as written | 86.2 |
-    /// | + only catches in the red zone | 50.6 |
-    /// | + only catches that score or land in the endzone | 25.0 |
-    /// | laid-out D **and** laid-out scoring catch | 9.6 |
-    /// | **laid-out D only (this)** | **3.2** |
-    ///
-    /// Two or three a game, which is the broadcast number, and every one of them is a
-    /// possession changing on a play nobody could have made standing up. The scoring
-    /// layout catch is the one real casualty and it was worth 6.4 a game on its own —
-    /// most goals in this sim are taken at full stretch, so slowing them slows the end of
-    /// most points, which is a metronome again.
-    ///
-    /// Everything dropped from §5 keeps its *other* feedback: a contested or laid-out
-    /// catch still gets `Feel.bigCatch`'s heavier tap, a goal still gets the callout and
-    /// the notification haptic. Only the clock is reserved.
-    ///
-    /// It also gives the new defensive tap the best possible payoff: the one thing the
-    /// game slows down for is exactly the thing `Engine.humanDefend` exists to let you
-    /// do.
-    private static func slowMo(for event: MatchEvent) -> SlowMo? {
-        guard case .turnover(let reason, _, _, _, let grade, _) = event else { return nil }
-        switch reason {
-        // An interception is a catch block and counts. A *standing* block is a good play
-        // and a common one; it gets the heavy haptic and no more.
-        case .block, .interception:
-            return grade == .layout ? SlowMo(scale: 0.35, timeLeft: 0.45) : nil
-        default:
-            return nil
-        }
-    }
-
-    /// The least real time between two hitstops, in seconds.
-    ///
-    /// A second lever, and deliberately a small one: measured, the laid-out D's are spread
-    /// across a twenty-five minute game, so a cooldown removes 0.4 of the 3.2 rather than
-    /// most of them. It is here for the case the rate never averages away — two blocks in
-    /// the same scramble, where the second slow-motion lands on a screen still coming out
-    /// of the first and reads as a dropped frame rather than as a second highlight.
-    private static let slowMoCooldown = 8.0
+    /// **The decision of *which* event starts a hitstop, and the cooldown between two,
+    /// moved to `MatchDirector.slowMo(for:)` and `MatchDirector.slowMoCooldown`** in issue
+    /// #16's Phase 1 — they were a pure function of a drained `MatchEvent` and a
+    /// decision, not a side effect, so they belong with the tick loop that reads events
+    /// rather than with the view that plays haptics off the result. See there for the
+    /// measurements ("time stops for a D you had to dive for, and for nothing else") that
+    /// narrowed §5's rule to this.
 
     /// A drag in progress, in view coordinates plus the throw it currently means.
     struct DragState {
@@ -530,10 +498,11 @@ public struct MatchView: View {
         // sheet is drawn over a pitch and the pitch has to be something. It is the same
         // match the START button keeps if nothing is changed — restart draws a new seed,
         // so the only cost of touching a setting is a different wind.
-        _match = State(
-            initialValue: Engine(
-                format: chosen.fieldSpec.gameFormat, seed: s,
-                config: Self.engineConfig(chosen, startingPullTeam: startingPullTeam)))
+        _director = State(
+            initialValue: MatchDirector(
+                match: Engine(
+                    format: chosen.fieldSpec.gameFormat, seed: s,
+                    config: Self.engineConfig(chosen, startingPullTeam: startingPullTeam))))
     }
 
     /// A seed for a new match, drawn from the clock. The engine stays fully
@@ -796,6 +765,22 @@ public struct MatchView: View {
     /// frame regardless of how many ticks ran — including zero, when a frame arrives
     /// before a full tick's worth of wall time has accrued — so frame rate changes
     /// what you see, never what happens.
+    ///
+    /// **The tick loop itself — stepping, per-tick event drain, hitstop deferral, and
+    /// handoff detection — moved to `MatchDirector.runTicks()` in issue #16's Phase 1.**
+    /// What is left here is exactly the view-only work the plan calls out to stay:
+    /// `bobPhase`, the synthetic fingers (`autoDefend`/`demoCut`/`saveCycle`), applying
+    /// the director's decisions (haptics *played*, not decided; the turnover shout built
+    /// from the same drained events the director already returns), disk save/load, and
+    /// the wall-clock countdown decay for the HUD toasts — none of which `MatchDirector`
+    /// (in `UltimateSim`) could own without depending on `FlightUI`'s `Feel`/
+    /// `TurnoverFlash`/`MatchSave`, an inversion ADR-0002/0008 rules out.
+    ///
+    /// The synthetic fingers and the save-cycle check keep their exact original position
+    /// — between `clock.beginFrame` and the tick loop — rather than moving to either side
+    /// of a single call to `director.advance`, because that ordering is observable: a
+    /// synthetic tap issued before this frame's ticks run takes effect a tick sooner than
+    /// one issued after. See `MatchDirector.runTicks`'s own comment.
     private func advance(to now: Date) {
         // Full time. There is nothing left to come back to, so the file that says
         // otherwise goes — once, not once per tick. Checked before `running` and not
@@ -862,49 +847,22 @@ public struct MatchView: View {
             return
         }
 
-        // The ticks the frame bought. The debt was clamped and scaled as it was paid in,
-        // above; `Engine.step` is handed `tickDt` and only `tickDt`, in every branch, at
-        // every rate — see `FrameClock`.
-        while clock.takeTick() {
-            match.step(dt: Self.tickDt)
-            tickCount &+= 1
-            recordTrail()
+        // The ticks the frame bought, drained events, hitstop deferral and handoff
+        // detection — `MatchDirector.runTicks()`. `onTick` is `recordTrail()`: it needs
+        // the intermediate tick count *inside* a catch-up burst (every fourth tick), not
+        // just the final one, and `MatchScene` is a `FlightUI` type the director cannot
+        // depend on — see `runTicks`'s own comment for why a callback is the boundary.
+        let output = director.runTicks { recordTrail() }
 
-            // Everything the machine decided in this tick, in the order it decided it.
-            // Drained per tick rather than per frame so a catch-up burst cannot swallow
-            // one — which is what the old counter diffing did whenever two things landed
-            // between snapshots.
-            var slowed = false
-            for event in match.drainEvents() {
-                if let flash = TurnoverFlash.make(event) { turnoverFlash = flash }
-                if let b = Feel.beat(for: event) { Feel.play(b) }
-                // The cooldown is checked here rather than inside `slowMo(for:)`, which
-                // stays a pure function of the event so it can be reasoned about — and
-                // measured — without a clock.
-                if let s = Self.slowMo(for: event), clock.canSlow(after: Self.slowMoCooldown) {
-                    clock.slow(s)
-                    slowed = true
-                }
-            }
-            // Control moves on catches and on turnovers, both of which happen inside a
-            // tick, so this is checked where they happen rather than once a frame.
-            if match.controlled != lastControlled {
-                lastControlled = match.controlled
-                handoff = Handoff(to: match.controlled, timeLeft: Handoff.duration)
-            }
-
-            // "Starting at the catch frame". If a burst of catch-up ticks was owed and
-            // the third of them was the layout grab, the remaining ticks must not be
-            // spent before the screen has drawn it. At most one tick of the debt is
-            // carried to the next frame and **the rest is dropped** — see
-            // `FrameClock.deferRemainingTicks`, which is a `min` and not a subtraction.
-            // Dropping is the right half of the trade: the ticks in question are ones the
-            // player was never going to see anyway, and paying them out would fast-forward
-            // through the very moment the hitstop exists to hold on.
-            if slowed {
-                clock.deferRemainingTicks()
-                break
-            }
+        // What the tick loop decided, applied here: the director only reports the
+        // drained events and who (if anyone) took control, exactly as `FrameOutput`
+        // documents, and this is where they become a haptic, a shout, a toast.
+        for event in output.events {
+            if let flash = TurnoverFlash.make(event) { turnoverFlash = flash }
+            if let b = Feel.beat(for: event) { Feel.play(b) }
+        }
+        if let to = output.handoffTo {
+            handoff = Handoff(to: to, timeLeft: Handoff.duration)
         }
 
         // The callout clocks run on wall time, outside the simulation, like everything
@@ -1364,7 +1322,7 @@ public struct MatchView: View {
             case .sceneInvalidated: scene.invalidate()
             case .clockReset:       clock.reset()
 
-            case .lastControlled:   lastControlled = match.controlled
+            case .lastControlled:   director.resetHandoffTracking()
 
             case .clearedAtEnd:     clearedAtEnd = false
             case .restoring:        restoring = nil

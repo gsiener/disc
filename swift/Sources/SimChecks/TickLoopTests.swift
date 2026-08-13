@@ -1,40 +1,33 @@
 import Foundation
 import UltimateSim
 
-/// Phase 0 of issue #16 ("Lift the tick loop out of the SwiftUI view"): characterize
-/// `MatchView.advance(to:)` (`MatchView.swift:799-940`) *before* anything is extracted from
-/// it, by driving an `Engine` + `FrameClock` pair through the same order of operations and
-/// pinning what comes out.
+/// Phase 0 of issue #16 ("Lift the tick loop out of the SwiftUI view") characterized
+/// `MatchView.advance(to:)`, at the time a private method on a SwiftUI view, by driving an
+/// `Engine` + `FrameClock` pair through the same order of operations and pinning what came
+/// out. Phase 1 did the lift: the tick loop, per-tick event drain, hitstop deferral and
+/// handoff detection now live in `UltimateSim.MatchDirector.runTicks()` / `advance(to:
+/// running:)`, a plain non-isolated class `SimChecks` can drive directly.
 ///
-/// **What this suite mirrors, and what it deliberately leaves out.** `advance` does two
-/// kinds of work: the simulation-relevant composition (accumulate wall time into whole
-/// ticks, step the engine, drain events per tick so a catch-up burst cannot swallow one,
-/// notice a handoff, defer the rest of a burst when a hitstop starts) and the
-/// SwiftUI-specific bits that sit beside it (`bobPhase`, `Feel.play` haptics, the synthetic
-/// fingers `autoDefend`/`demoCut`/`saveCycle`, `MatchSave` to disk). The issue's plan is
-/// explicit that only the first kind is this suite's business — the second kind stays
-/// view-side through Phase 1, when `MatchDirector` is extracted for real. `TickLoopDriver`
-/// below is therefore a transcription of `advance`'s tick-loop mechanics only, built fresh
-/// here rather than by touching `MatchView.swift` (owned by peer work on #21/#22 at the
-/// time of writing — see the issue's risk table).
-///
-/// **Why a transcription and not a reference to the view.** `SimChecks` cannot import
-/// `FlightUI` (ADR-0002/0008 — dependency direction), and the friction log
-/// (`.agents/friction-log/20260809162502-no-launch-argument/`) already proved the cost of
-/// not having this: a hand transcription of the loop caught a real bug — 120 wasted
-/// `Engine.step` calls a second behind the result card — in under a second, and was thrown
-/// away afterwards because it had nowhere to live. This suite is that transcription, done
-/// on purpose, kept, and pointed at real engines. Phase 1 deletes it and points these same
-/// assertions at the extracted `MatchDirector` instead — that is the acceptance suite this
-/// suite exists to become.
+/// **This suite now points at the real module, per the issue's own plan** ("Phase 1 …
+/// Point the Phase-0 suite at the real module and delete the transcription"). `TickLoopDriver`
+/// below is a thin bookkeeping wrapper around `MatchDirector` — it no longer contains a
+/// second copy of the tick loop, the event drain, the hitstop-eligibility rule or the
+/// handoff detector; every one of those now runs inside `MatchDirector` itself, and this
+/// wrapper only accumulates the counters the scenarios below assert on (`drainedEvents`,
+/// `handoffCount`, `hitstopsStarted`, `framesRendered`) from what `MatchDirector` reports
+/// back in `FrameOutput`. The scenarios and their assertions are otherwise unchanged from
+/// Phase 0 — this suite is exactly the acceptance gate the issue's plan describes, now
+/// checking the shipped composition instead of a stand-in for it.
 ///
 /// **This suite pins CURRENT behavior, warts included.** `resultCardIdleLoopKeepsTicking`
-/// below is the friction log's bug, still present on `main`: nothing in `advance` sets
-/// `running = false` when `match.isOver` goes true, so the tick loop keeps spending wall
-/// time on `Engine.step` behind a result card nobody is looking at. Pinning it here is not
-/// endorsing it — it is the point of Phase 0: the suite that proves later phases changed
-/// nothing must first agree with what "nothing changed" currently *is*, bug included. Fixing
-/// it is out of scope for this phase and would need its own issue.
+/// below is the friction log's bug
+/// (`.agents/friction-log/20260809162502-no-launch-argument/`), still present on `main`:
+/// nothing in `MatchDirector` or `MatchView` sets `running = false` when `match.isOver`
+/// goes true, so the tick loop keeps spending wall time on `Engine.step` behind a result
+/// card nobody is looking at. Pinning it here is not endorsing it — it is the point of this
+/// suite: it proves later phases changed nothing by first agreeing with what "nothing
+/// changed" currently *is*, bug included. Fixing it is Phase 4's `needsFrames`/
+/// `TimelineView` work, out of scope here.
 enum TickLoopTests {
 
     static func run() throws {
@@ -50,62 +43,36 @@ enum TickLoopTests {
 
     // MARK: - the driver
 
-    /// The tick-loop mechanics of `MatchView.advance(to:)`, and nothing else.
-    ///
-    /// Mirrors, in order: the `running == false` abandon path; `clock.beginFrame`; the
-    /// `while clock.takeTick()` loop stepping `Engine` by exactly `FrameClock.tickDt`;
-    /// per-tick event drain (never per-frame — see `Replay.swift` and `ClockTests` on why
-    /// batching would be a different, wrong, composition); the same `slowMo(for:)`
-    /// hitstop-eligibility rule `MatchView` uses, gated by the same cooldown; handoff
-    /// detection on `match.controlled` changing; `deferRemainingTicks()` + `break` the
-    /// instant a hitstop starts; `clock.endFrame()`.
-    ///
-    /// Left out on purpose: `bobPhase`, `Feel.play`, the synthetic fingers, disk save/load.
-    /// None of those touch the simulation — see the file comment.
+    /// A thin wrapper over `MatchDirector` that accumulates the running totals the
+    /// scenarios below assert on. All of the tick-loop mechanics — stepping, per-tick
+    /// event drain, hitstop eligibility and deferral, handoff detection — live in
+    /// `MatchDirector` itself; nothing here re-implements any of them.
     final class TickLoopDriver {
-        let match: Engine
-        var clock = FrameClock()
+        let director: MatchDirector
 
-        /// Ticks run across the whole driven sequence.
-        private(set) var tickCount = 0
+        var match: Engine { director.match }
+        var clock: FrameClock { director.clock }
+        var tickCount: Int { director.tickCount }
+
         /// Every event drained, in the order it was drained — across every tick of every
-        /// frame, exactly as `advance`'s per-tick drain sees them.
+        /// frame, exactly as `MatchDirector.runTicks`'s per-tick drain sees them.
         private(set) var drainedEvents: [MatchEvent] = []
-        /// `advance`'s handoff detector: `match.controlled` changing mid-tick.
+        /// How many frames reported a handoff (`FrameOutput.handoffTo != nil`).
         private(set) var handoffCount = 0
-        /// How many times a hitstop actually started (i.e. `clock.slow` was called and the
-        /// burst was cut short for it) — not how many eligible events were seen, since the
-        /// cooldown can refuse one.
+        /// How many frames actually started a hitstop (`FrameOutput.hitstopStarted`) — not
+        /// how many eligible events were seen, since the cooldown can refuse one.
         private(set) var hitstopsStarted = 0
-        /// `frame &+= 1`, bumped once per call regardless of how many ticks ran — including
-        /// the abandoned-frame and zero-tick cases. Nothing in the driver reads this; it
-        /// exists because "rendering happens every frame regardless" is part of the
-        /// contract `advance`'s own comment states, and a suite that never counted it could
-        /// not tell a caller who broke that apart.
+        /// Bumped once per call regardless of how many ticks ran — including the
+        /// abandoned-frame and zero-tick cases. Nothing in the driver reads this; it exists
+        /// because "rendering happens every frame regardless" is part of the contract
+        /// `MatchView.advance`'s own comment states, and a suite that never counted it
+        /// could not tell a caller who broke that apart.
         private(set) var framesRendered = 0
 
-        private var lastControlled: Int
-
         static let tickDt = FrameClock.tickDt
-        /// `MatchView.slowMoCooldown`, restated here rather than imported — it is a private
-        /// constant on a SwiftUI view.
-        static let slowMoCooldown = 8.0
 
         init(match: Engine) {
-            self.match = match
-            self.lastControlled = match.controlled
-        }
-
-        /// `MatchView.slowMo(for:)`, restated. A layout block or interception starts a
-        /// hitstop; nothing else does.
-        private static func slowMoTrigger(for event: MatchEvent) -> FrameClock.SlowMo? {
-            guard case .turnover(let reason, _, _, _, let grade, _) = event else { return nil }
-            switch reason {
-            case .block, .interception:
-                return grade == .layout ? FrameClock.SlowMo(scale: 0.35, timeLeft: 0.45) : nil
-            default:
-                return nil
-            }
+            self.director = MatchDirector(match: match)
         }
 
         /// One rendered frame. Returns the ticks that ran, so a scenario can assert on the
@@ -113,40 +80,11 @@ enum TickLoopTests {
         @discardableResult
         func advance(to now: Double, running: Bool) -> Int {
             defer { framesRendered &+= 1 }
-            guard running else {
-                clock.abandon()
-                return 0
-            }
-            guard clock.beginFrame(at: now) != nil else { return 0 }
-
-            var ticksThisFrame = 0
-            while clock.takeTick() {
-                match.step(dt: Self.tickDt)
-                tickCount &+= 1
-                ticksThisFrame &+= 1
-
-                var slowed = false
-                for event in match.drainEvents() {
-                    drainedEvents.append(event)
-                    if let s = Self.slowMoTrigger(for: event),
-                        clock.canSlow(after: Self.slowMoCooldown)
-                    {
-                        clock.slow(s)
-                        slowed = true
-                    }
-                }
-                if match.controlled != lastControlled {
-                    lastControlled = match.controlled
-                    handoffCount &+= 1
-                }
-                if slowed {
-                    hitstopsStarted &+= 1
-                    clock.deferRemainingTicks()
-                    break
-                }
-            }
-            clock.endFrame()
-            return ticksThisFrame
+            let output = director.advance(to: now, running: running)
+            drainedEvents.append(contentsOf: output.events)
+            if output.handoffTo != nil { handoffCount &+= 1 }
+            if output.hitstopStarted { hitstopsStarted &+= 1 }
+            return output.ticksRun
         }
     }
 
