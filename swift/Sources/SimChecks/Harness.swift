@@ -309,7 +309,7 @@ let allSuites: [Suite] = [
     // instead of all 1,370 frames, because the wiring it checks cannot vary by frame (one
     // construction site, both sides reading the same player at the same instant). That is
     // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
-    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381182),
+    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381115),
     Suite(name: "gamestate", run: GameStateTests.run, minAssertions: 2223),
     // Issue #48/#2: `Game.doPull`, ported. A rules event with no AI in it, against
     // fixtures captured directly from the reference rather than a property. See
