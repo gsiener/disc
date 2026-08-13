@@ -58,16 +58,24 @@ enum FlightTests {
         let cases: [Case]
     }
 
+    /// Where the widening below stops. Issue #20 found the same shape in
+    /// `DiscRuntimeTests`, uncapped: `1e-9 * pow(10, t/2)` reaches a planet-sized budget
+    /// by t=60s, silently stopping the assertion from checking anything. No real fixture
+    /// here asks for it — the longest flight in `flight.json` is t≈7.0s — but the formula
+    /// itself had no ceiling, so a future long-flight case would have gotten a tolerance
+    /// too loose to mean anything rather than a clear failure.
+    private static let toleranceHorizon = 10.0
+
     /// Position tolerance in metres at elapsed time `t`.
     ///
     /// About a nanometre at release, a micrometre by six seconds. Both are far below
     /// anything the game could perceive — a disc is 273 mm across — while still being
     /// tight enough that a wrong coefficient or a transposed term fails immediately.
-    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, t / 2.0) }
+    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
     /// Velocity drifts a little faster than position, since position is its integral and
     /// integration smooths.
-    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, t / 2.0) }
+    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
     nonisolated(unsafe) static var worstPosRatio = 0.0
     nonisolated(unsafe) static var worstPosAbs = 0.0

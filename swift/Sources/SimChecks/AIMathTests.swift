@@ -121,8 +121,6 @@ enum AIMathTests {
     /// correctly rounded either. Nothing else here needs slack.
     private static let transcendentalTol = 1e-12
 
-    nonisolated(unsafe) static var worst = 0.0
-
     static func run() throws {
         let g = try Goldens.load(File.self, "aimath")
 
@@ -142,18 +140,9 @@ enum AIMathTests {
         sheets(g)
         rosters(g)
         claims()
-        // `worst` (the running max deviation) is redundant with the report: every
-        // sample that could move it went through `near()`, which already asserts
-        // `d <= tol` per call.
     }
 
     // MARK: helpers
-
-    private static func near(_ got: Double, _ want: Double, _ tol: Double, _ what: String) {
-        let d = abs(got - want)
-        worst = Swift.max(worst, d)
-        Check.ok(d <= tol, "\(what): off by \(d) (got \(got), want \(want))")
-    }
 
     private static func probe(_ energy: Double) -> AIPlayer {
         let p = makePlayer(1, 0, .cutter, Rng(seed: 12345), overall: 72)
@@ -173,15 +162,15 @@ enum AIMathTests {
     private static func compare(_ got: AIAttributes, _ want: Sheet, _ at: String) {
         // Each of these is a clamp of a sum containing one `gauss()`, so they inherit
         // that transcendental's slack and nothing more.
-        near(got.speed, want.speed, transcendentalTol, "\(at).speed")
-        near(got.acceleration, want.acceleration, transcendentalTol, "\(at).acceleration")
-        near(got.agility, want.agility, transcendentalTol, "\(at).agility")
-        near(got.jumping, want.jumping, transcendentalTol, "\(at).jumping")
-        near(got.catching, want.catching, transcendentalTol, "\(at).catching")
-        near(got.throwPower, want.throwPower, transcendentalTol, "\(at).throwPower")
-        near(got.decision, want.decision, transcendentalTol, "\(at).decision")
-        near(got.stamina, want.stamina, transcendentalTol, "\(at).stamina")
-        near(got.defAwareness, want.defAwareness, transcendentalTol, "\(at).defAwareness")
+        Check.near(got.speed, want.speed, transcendentalTol, "\(at).speed")
+        Check.near(got.acceleration, want.acceleration, transcendentalTol, "\(at).acceleration")
+        Check.near(got.agility, want.agility, transcendentalTol, "\(at).agility")
+        Check.near(got.jumping, want.jumping, transcendentalTol, "\(at).jumping")
+        Check.near(got.catching, want.catching, transcendentalTol, "\(at).catching")
+        Check.near(got.throwPower, want.throwPower, transcendentalTol, "\(at).throwPower")
+        Check.near(got.decision, want.decision, transcendentalTol, "\(at).decision")
+        Check.near(got.stamina, want.stamina, transcendentalTol, "\(at).stamina")
+        Check.near(got.defAwareness, want.defAwareness, transcendentalTol, "\(at).defAwareness")
 
         Check.eq(got.throwAccuracy.count, want.throwAccuracy.count, "\(at): five accuracies")
         for t in AI_THROW_TYPES {
@@ -189,7 +178,7 @@ enum AIMathTests {
                 Check.ok(false, "\(at): missing accuracy for \(t.rawValue)")
                 continue
             }
-            near(a, w, transcendentalTol, "\(at).throwAccuracy.\(t.rawValue)")
+            Check.near(a, w, transcendentalTol, "\(at).throwAccuracy.\(t.rawValue)")
         }
     }
 
@@ -305,13 +294,13 @@ enum AIMathTests {
                 Check.eq(i, want.step, "stamina trace step alignment")
                 // `hypot` inside the load term is not correctly rounded, and this is an
                 // accumulation of 120+ steps of it.
-                near(p.energy, want.energy, transcendentalTol, "stamina[\(i)].energy")
+                Check.near(p.energy, want.energy, transcendentalTol, "stamina[\(i)].energy")
                 index += 1
             }
         }
         if index < g.staminaTrace.count {
             let want = g.staminaTrace[index]
-            near(p.energy, want.energy, transcendentalTol, "stamina[final].energy")
+            Check.near(p.energy, want.energy, transcendentalTol, "stamina[final].energy")
         }
     }
 
@@ -381,7 +370,7 @@ enum AIMathTests {
         // pattern, and writing a decimal literal for it means writing down whichever of
         // the two neighbouring doubles the subtraction happens to land on. It landed on
         // the other one here on the first attempt.
-        near(
+        Check.near(
             EXTENDED_REACH - STANDING_REACH, 0.73, 1e-15,
             "the layout band is the 0.73 m the rules engine pays out on")
 

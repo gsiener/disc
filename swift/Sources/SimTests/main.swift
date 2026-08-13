@@ -19,7 +19,7 @@ if !unknown.isEmpty {
     exit(2)
 }
 
-let report = runChecks(only: requested)
+let report = await runChecks(only: requested)
 
 for suite in report.suites {
     let name = suite.name.padding(toLength: 12, withPad: " ", startingAt: 0)
@@ -27,6 +27,9 @@ for suite in report.suites {
 }
 for note in report.notes {
     print("  · \(note)")
+}
+if let m = report.worstMargin {
+    print("  closest call: \(m.label) at \(String(format: "%.1f", m.ratio * 100))% of its tolerance (\(m.suite))")
 }
 
 if report.isGreen {

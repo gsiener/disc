@@ -262,38 +262,38 @@ enum DiscRuntimeTests {
 
     // MARK: - tolerances
 
+    /// Where the widening below stops. Issue #20: uncapped, `1e-9 * pow(10, t/2)` reaches
+    /// a *planet-sized* budget by t=60s — at which point the assertion has stopped
+    /// checking anything, silently, which is the opposite of what a tolerance is for. No
+    /// real fixture asks: the longest flight across every case in `discruntime.json` is
+    /// t≈4.9s (verified against the committed fixture, not assumed), comfortably inside
+    /// the doc comments' own designed envelope of "a micrometre by six seconds." The cap
+    /// sits at ten so today's real data is unaffected and a future flight this suite was
+    /// never designed for still gets a real, if generous, budget rather than an infinite
+    /// one.
+    private static let toleranceHorizon = 10.0
+
     /// Position tolerance in metres at elapsed flight time `t`, identical in shape to
     /// `FlightTests`: about a nanometre at release, a micrometre by six seconds. A disc is
     /// 273 mm across, so both are far below anything the game could perceive, while still
     /// being tight enough that a transposed term fails on the first frame.
-    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, t / 2.0) }
+    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
     /// Velocity drifts faster than position, because position is its integral and
     /// integration smooths.
-    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, t / 2.0) }
+    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
     /// Quaternion components. Unit-magnitude, so this is an absolute angle budget of the
     /// same order as the position one.
-    static func quatTol(_ t: Double) -> Double { 1e-9 * pow(10.0, t / 2.0) }
+    static func quatTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
-    nonisolated(unsafe) static var worstRatio = 0.0
-    nonisolated(unsafe) static var worstAbs = 0.0
-    nonisolated(unsafe) static var worstLabel = "none"
-
-    /// A tolerance assertion that also records how much of its budget it used, so the
-    /// suite can report a measured margin rather than a hopeful one.
-    static func within(
-        _ got: Double, _ want: Double, _ tol: Double, _ label: @autoclosure () -> String
-    ) {
-        let d = abs(got - want)
-        let ratio = tol > 0 ? d / tol : 0
-        if ratio > worstRatio {
-            worstRatio = ratio
-            worstAbs = d
-            worstLabel = label()
-        }
-        Check.ok(d <= tol, "\(label()) — off by \(d), tolerance \(tol)")
-    }
+    // `within()` was here — a tolerance assertion that also recorded the worst
+    // ratio-to-tolerance seen, via `worstRatio`/`worstAbs`/`worstLabel`, three
+    // `nonisolated(unsafe) static var`s that `run()` never reset between calls. Deleted
+    // in favour of `Check.near`, which does the same margin tracking, correctly scoped to
+    // one run via the accumulator rather than the whole process — see issue #20 and
+    // `Harness.swift`'s `Accumulator.worstMargin`. Every call site below is renamed, not
+    // rewritten: `within`'s signature was already `Check.near`'s.
 
     // MARK: - ground closures
 
@@ -349,8 +349,6 @@ enum DiscRuntimeTests {
         for (i, s) in g.scuffs.enumerated() { scuff(s, i) }
         for (i, t) in g.trails.enumerated() { trailCase(t, i) }
         proseClaims()
-        // `worstAbs`/`worstRatio`/`worstLabel` are redundant with the report: `within()`
-        // already asserts `d <= tol` on every call that could move them.
     }
 
     // MARK: - defaults and ground
@@ -408,9 +406,9 @@ enum DiscRuntimeTests {
         // `throwDisc` builds the release frame from `cos`/`sin` of the elevation, so this
         // is the one place in the trace that is transcendental at t = 0. 1e-12 is the same
         // budget `ThrowsTests` measured for the same construction.
-        within(releaseVel.x, tr.release.vel[0], 1e-12, "\(tr.name) release vel.x")
-        within(releaseVel.y, tr.release.vel[1], 1e-12, "\(tr.name) release vel.y")
-        within(releaseVel.z, tr.release.vel[2], 1e-12, "\(tr.name) release vel.z")
+        Check.near(releaseVel.x, tr.release.vel[0], 1e-12, "\(tr.name) release vel.x")
+        Check.near(releaseVel.y, tr.release.vel[1], 1e-12, "\(tr.name) release vel.y")
+        Check.near(releaseVel.z, tr.release.vel[2], 1e-12, "\(tr.name) release vel.z")
         compare(rt, tr.release.frame, "\(tr.name) release", field: f)
 
         var predictions = tr.predictions.makeIterator()
@@ -495,18 +493,18 @@ enum DiscRuntimeTests {
                 leftAtFrame = i
                 if let want = tr.crossing {
                     let c = FieldConstants.standard.boundaryCrossing(prev, rt.state.pos)
-                    within(prev.x, want.prev[0], posTol(rt.state.t), "\(tr.name) crossing prev.x")
-                    within(prev.z, want.prev[2], posTol(rt.state.t), "\(tr.name) crossing prev.z")
-                    within(
+                    Check.near(prev.x, want.prev[0], posTol(rt.state.t), "\(tr.name) crossing prev.x")
+                    Check.near(prev.z, want.prev[2], posTol(rt.state.t), "\(tr.name) crossing prev.z")
+                    Check.near(
                         rt.state.pos.x, want.cur[0], posTol(rt.state.t), "\(tr.name) crossing cur.x")
-                    within(
+                    Check.near(
                         rt.state.pos.z, want.cur[2], posTol(rt.state.t), "\(tr.name) crossing cur.z")
                     Check.eq(c != nil, want.point != nil, "\(tr.name) the segment leaves the field")
                     if let c, let pt = want.point, let wt = want.t, let we = want.edge {
                         Check.eq(c.edge.rawValue, we, "\(tr.name) crossing edge")
-                        within(c.point.x, pt[0], posTol(rt.state.t), "\(tr.name) crossing point.x")
-                        within(c.point.z, pt[2], posTol(rt.state.t), "\(tr.name) crossing point.z")
-                        within(c.t, wt, 1e-7, "\(tr.name) crossing parameter")
+                        Check.near(c.point.x, pt[0], posTol(rt.state.t), "\(tr.name) crossing point.x")
+                        Check.near(c.point.z, pt[2], posTol(rt.state.t), "\(tr.name) crossing point.z")
+                        Check.near(c.t, wt, 1e-7, "\(tr.name) crossing parameter")
                     }
                 }
             }
@@ -557,16 +555,16 @@ enum DiscRuntimeTests {
             "\(at) in bounds agrees with the regulation field")
 
         // Integrated: tolerance that widens with horizon.
-        within(s.pos.x, want.pos[0], pT, "\(at) pos.x")
-        within(s.pos.y, want.pos[1], pT, "\(at) pos.y")
-        within(s.pos.z, want.pos[2], pT, "\(at) pos.z")
-        within(s.vel.x, want.vel[0], vT, "\(at) vel.x")
-        within(s.vel.y, want.vel[1], vT, "\(at) vel.y")
-        within(s.vel.z, want.vel[2], vT, "\(at) vel.z")
-        within(s.omega.x, want.omega[0], vT, "\(at) omega.x")
-        within(s.omega.y, want.omega[1], vT, "\(at) omega.y")
-        within(s.omega.z, want.omega[2], vT, "\(at) omega.z")
-        within(s.groundY, want.groundY, pT, "\(at) groundY")
+        Check.near(s.pos.x, want.pos[0], pT, "\(at) pos.x")
+        Check.near(s.pos.y, want.pos[1], pT, "\(at) pos.y")
+        Check.near(s.pos.z, want.pos[2], pT, "\(at) pos.z")
+        Check.near(s.vel.x, want.vel[0], vT, "\(at) vel.x")
+        Check.near(s.vel.y, want.vel[1], vT, "\(at) vel.y")
+        Check.near(s.vel.z, want.vel[2], vT, "\(at) vel.z")
+        Check.near(s.omega.x, want.omega[0], vT, "\(at) omega.x")
+        Check.near(s.omega.y, want.omega[1], vT, "\(at) omega.y")
+        Check.near(s.omega.z, want.omega[2], vT, "\(at) omega.z")
+        Check.near(s.groundY, want.groundY, pT, "\(at) groundY")
 
         // A quaternion and its negation are the same rotation, so align the sign before
         // comparing components. Comparing components rather than only `|dot|` catches an
@@ -574,13 +572,13 @@ enum DiscRuntimeTests {
         let d = s.orient.x * want.orient[0] + s.orient.y * want.orient[1]
             + s.orient.z * want.orient[2] + s.orient.w * want.orient[3]
         let sign = d < 0 ? -1.0 : 1.0
-        within(sign * s.orient.x, want.orient[0], qT, "\(at) orient.x")
-        within(sign * s.orient.y, want.orient[1], qT, "\(at) orient.y")
-        within(sign * s.orient.z, want.orient[2], qT, "\(at) orient.z")
-        within(sign * s.orient.w, want.orient[3], qT, "\(at) orient.w")
+        Check.near(sign * s.orient.x, want.orient[0], qT, "\(at) orient.x")
+        Check.near(sign * s.orient.y, want.orient[1], qT, "\(at) orient.y")
+        Check.near(sign * s.orient.z, want.orient[2], qT, "\(at) orient.z")
+        Check.near(sign * s.orient.w, want.orient[3], qT, "\(at) orient.w")
 
         if let ws = want.spin {
-            within(s.spin, ws, vT, "\(at) spin")
+            Check.near(s.spin, ws, vT, "\(at) spin")
         } else {
             Check.eq(s.spin.isNaN, true, "\(at) spin is NaN once the state has been poisoned")
         }
@@ -590,9 +588,9 @@ enum DiscRuntimeTests {
         // from outside `DiscPhysics.swift` re-derives all three. Nothing in the sim
         // branches on either, and the next flight step recomputes both.
         if want.mode == "flight" {
-            within(s.alpha, want.alpha, 1e-9 * pow(10.0, want.t / 2.0), "\(at) alpha")
+            Check.near(s.alpha, want.alpha, 1e-9 * pow(10.0, want.t / 2.0), "\(at) alpha")
             if let wa = want.airspeed {
-                within(s.airspeed, wa, vT, "\(at) airspeed")
+                Check.near(s.airspeed, wa, vT, "\(at) airspeed")
             } else {
                 Check.eq(s.airspeed.isNaN, true, "\(at) airspeed is NaN once poisoned")
             }
@@ -607,20 +605,20 @@ enum DiscRuntimeTests {
         if let wt = want.trailLastT {
             let last = rt.trail.last!
             Check.bitEqViaJSON(last.t, wt, "\(at) newest trail sample time")
-            within(last.x, want.trailLastPos![0], pT, "\(at) newest trail x")
-            within(last.y, want.trailLastPos![1], pT, "\(at) newest trail y")
-            within(last.z, want.trailLastPos![2], pT, "\(at) newest trail z")
-            within(last.speed, want.trailLastSpeed!, vT, "\(at) newest trail speed")
+            Check.near(last.x, want.trailLastPos![0], pT, "\(at) newest trail x")
+            Check.near(last.y, want.trailLastPos![1], pT, "\(at) newest trail y")
+            Check.near(last.z, want.trailLastPos![2], pT, "\(at) newest trail z")
+            Check.near(last.speed, want.trailLastSpeed!, vT, "\(at) newest trail speed")
         } else {
             Check.eq(rt.trail.isEmpty, true, "\(at) trail is empty")
         }
         if let wt = want.trailFirstT {
             let first = rt.trail.first!
             Check.bitEqViaJSON(first.t, wt, "\(at) oldest trail sample time")
-            within(first.x, want.trailFirstPos![0], pT, "\(at) oldest trail x")
-            within(first.y, want.trailFirstPos![1], pT, "\(at) oldest trail y")
-            within(first.z, want.trailFirstPos![2], pT, "\(at) oldest trail z")
-            within(first.speed, want.trailFirstSpeed!, vT, "\(at) oldest trail speed")
+            Check.near(first.x, want.trailFirstPos![0], pT, "\(at) oldest trail x")
+            Check.near(first.y, want.trailFirstPos![1], pT, "\(at) oldest trail y")
+            Check.near(first.z, want.trailFirstPos![2], pT, "\(at) oldest trail z")
+            Check.near(first.speed, want.trailFirstSpeed!, vT, "\(at) oldest trail speed")
         }
     }
 
@@ -638,8 +636,8 @@ enum DiscRuntimeTests {
             Check.eq(rt.pendingScuff == nil, want.scuff == nil, "\(at) scuff presence")
             return
         }
-        within(got.rr, w.rr, Swift.max(tol, 1e-12), "\(at) rr")
-        within(got.ang, w.ang, Swift.max(tol, 1e-12), "\(at) ang")
+        Check.near(got.rr, w.rr, Swift.max(tol, 1e-12), "\(at) rr")
+        Check.near(got.ang, w.ang, Swift.max(tol, 1e-12), "\(at) ang")
         Check.eq(got.top, w.top, "\(at) which face struck")
         Check.bitEqViaJSON(got.strength, w.strength, "\(at) strength")
     }
@@ -655,9 +653,9 @@ enum DiscRuntimeTests {
             // Sample times are `i * dt` with a clamped `dt`, so they are exact.
             Check.bitEqViaJSON(got[i].t, w[0], "\(at) sample \(i) t")
             let tol = posTol(elapsed + w[0])
-            within(got[i].x, w[1], tol, "\(at) sample \(i) x")
-            within(got[i].y, w[2], tol, "\(at) sample \(i) y")
-            within(got[i].z, w[3], tol, "\(at) sample \(i) z")
+            Check.near(got[i].x, w[1], tol, "\(at) sample \(i) x")
+            Check.near(got[i].y, w[2], tol, "\(at) sample \(i) y")
+            Check.near(got[i].z, w[3], tol, "\(at) sample \(i) z")
         }
         Check.ok(got.count >= 2, "\(at) always returns at least two points")
     }
@@ -682,10 +680,10 @@ enum DiscRuntimeTests {
         // this is the assertion that would say so, rather than a position drifting.
         Check.bitEqViaJSON(r.t, c.t, "\(at) flight time at the catch plane")
         let tol = posTol(c.t)
-        within(r.dist, c.dist, tol, "\(at) distance down the aim line")
-        within(r.lat, c.lat, tol, "\(at) lateral offset")
-        within(r.x, c.x, tol, "\(at) x")
-        within(r.z, c.z, tol, "\(at) z")
+        Check.near(r.dist, c.dist, tol, "\(at) distance down the aim line")
+        Check.near(r.lat, c.lat, tol, "\(at) lateral offset")
+        Check.near(r.x, c.x, tol, "\(at) x")
+        Check.near(r.z, c.z, tol, "\(at) z")
     }
 
     // MARK: - scuff geometry
@@ -711,24 +709,24 @@ enum DiscRuntimeTests {
             let d = rt.state.orient.x * want[0] + rt.state.orient.y * want[1]
                 + rt.state.orient.z * want[2] + rt.state.orient.w * want[3]
             let sign = d < 0 ? -1.0 : 1.0
-            within(sign * rt.state.orient.x, want[0], 1e-15, "\(at) orient.x")
-            within(sign * rt.state.orient.y, want[1], 1e-15, "\(at) orient.y")
-            within(sign * rt.state.orient.z, want[2], 1e-15, "\(at) orient.z")
-            within(sign * rt.state.orient.w, want[3], 1e-15, "\(at) orient.w")
+            Check.near(sign * rt.state.orient.x, want[0], 1e-15, "\(at) orient.x")
+            Check.near(sign * rt.state.orient.y, want[1], 1e-15, "\(at) orient.y")
+            Check.near(sign * rt.state.orient.z, want[2], 1e-15, "\(at) orient.z")
+            Check.near(sign * rt.state.orient.w, want[3], 1e-15, "\(at) orient.w")
         }
 
         Check.bitEqViaJSON(rt.wear, c.wearBefore!, "\(at) wear before the strike")
         rt.markScuff(0.6)
         let first = rt.pendingScuff!
-        within(first.rr, c.first!.rr, 1e-15, "\(at) first rr")
-        within(first.ang, c.first!.ang, 1e-15, "\(at) first ang")
+        Check.near(first.rr, c.first!.rr, 1e-15, "\(at) first rr")
+        Check.near(first.ang, c.first!.ang, 1e-15, "\(at) first ang")
         Check.eq(first.top, c.first!.top, "\(at) first face")
         Check.bitEqViaJSON(first.strength, c.first!.strength, "\(at) first strength")
 
         rt.markScuff(0.9)
         let second = rt.pendingScuff!
-        within(second.rr, c.second!.rr, 1e-15, "\(at) second rr")
-        within(second.ang, c.second!.ang, 1e-15, "\(at) second ang")
+        Check.near(second.rr, c.second!.rr, 1e-15, "\(at) second rr")
+        Check.near(second.ang, c.second!.ang, 1e-15, "\(at) second ang")
         Check.eq(second.top, c.second!.top, "\(at) second face")
         Check.bitEqViaJSON(second.strength, c.second!.strength, "\(at) second strength")
         Check.bitEqViaJSON(rt.wear, c.wearAfter!, "\(at) wear accumulates rather than replaces")
@@ -764,10 +762,10 @@ enum DiscRuntimeTests {
             for (k, w) in c.trail!.enumerated() {
                 let s = rt.trail[k]
                 Check.bitEqViaJSON(s.t, w[3], "\(at) sample \(k) time")
-                within(s.x, w[0], posTol(s.t), "\(at) sample \(k) x")
-                within(s.y, w[1], posTol(s.t), "\(at) sample \(k) y")
-                within(s.z, w[2], posTol(s.t), "\(at) sample \(k) z")
-                within(s.speed, w[4], velTol(s.t), "\(at) sample \(k) speed")
+                Check.near(s.x, w[0], posTol(s.t), "\(at) sample \(k) x")
+                Check.near(s.y, w[1], posTol(s.t), "\(at) sample \(k) y")
+                Check.near(s.z, w[2], posTol(s.t), "\(at) sample \(k) z")
+                Check.near(s.speed, w[4], velTol(s.t), "\(at) sample \(k) speed")
             }
 
         case "empty":

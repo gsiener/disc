@@ -57,16 +57,7 @@ enum CoeffsTests {
         }
 
         physicalProperties(aero)
-        // `worstDeviation`/`worstLabel` are redundant with the report: `near()` already
-        // asserts `d <= transcendentalTol` on every call that could move them.
     }
-
-    /// The largest deviation actually seen, so the tolerance above is a measured
-    /// margin rather than a hopeful constant. Printed at the end of the suite: if it
-    /// ever creeps toward `transcendentalTol` that is drift worth knowing about
-    /// before it becomes a failure.
-    nonisolated(unsafe) static var worstDeviation = 0.0
-    nonisolated(unsafe) static var worstLabel = "none"
 
     private static func assertSample(_ aero: AeroCoeffs, _ s: Sample, _ what: String) {
         Check.bitEq(aero.stallBlend(s.alpha), s.stallBlend, "\(what) stallBlend")
@@ -76,12 +67,12 @@ enum CoeffsTests {
         near(aero.pitchCoeff(s.alpha), s.pitch, "\(what) pitch")
     }
 
+    /// Curries `transcendentalTol` — the one tolerance this whole file compares against —
+    /// so the three call sites above don't repeat it. The margin tracking that used to
+    /// live here (`worstDeviation`/`worstLabel`, a `nonisolated(unsafe) static var` pair
+    /// `run()` never reset between calls) is `Check.near`'s job now; see issue #20 and
+    /// `Harness.swift`'s `Accumulator.worstMargin`.
     private static func near(_ got: Double, _ want: Double, _ label: @autoclosure () -> String) {
-        let deviation = abs(got - want)
-        if deviation > worstDeviation {
-            worstDeviation = deviation
-            worstLabel = label()
-        }
         Check.near(got, want, transcendentalTol, label())
     }
 

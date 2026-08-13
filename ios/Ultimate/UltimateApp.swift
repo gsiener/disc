@@ -369,7 +369,7 @@ struct SelfCheckView: View {
         // Off the main actor: the suites are pure computation and the sweep is long
         // enough to drop frames if it runs on the main thread.
         Task.detached(priority: .userInitiated) {
-            let result = runChecks()
+            let result = await runChecks()
             await MainActor.run {
                 report = result
                 running = false

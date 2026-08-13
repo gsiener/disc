@@ -425,7 +425,21 @@ enum TeamAITests {
             exact(got.count, f.it.count, "\(tag) intent count")
             if got.count == f.it.count {
                 for k in 0..<got.count {
-                    if flipped.contains(got[k].id) { continue }
+                    // Issue #20: this used to be a bare `continue`, which drops every
+                    // field `compareIntent`/`structural` would have checked for this
+                    // player this frame — position, mode, action, lane, cut kind,
+                    // matchup — with nothing recording that it happened. The 0.5% flip-
+                    // rate ceiling below bounds how OFTEN this fires; it says nothing
+                    // about how many comparisons vanished each time, which is more than
+                    // one. A counted, passing, self-describing assertion means the total
+                    // reflects every skip rather than shrinking silently around it.
+                    if flipped.contains(got[k].id) {
+                        Check.ok(
+                            true,
+                            "\(tag) i\(k) — #\(got[k].id) skipped: energy diverged past the "
+                                + "documented tickStamina libm knife-edge, not a porting bug")
+                        continue
+                    }
                     compareIntent(got[k], f.it[k], "\(tag) i\(k)")
                     structural(got[k], players, "\(tag) i\(k)")
                 }
