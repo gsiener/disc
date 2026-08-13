@@ -7,6 +7,10 @@
     {
       "issue": "gsiener/disc#50",
       "path": ".agents/friction-log/20260811183614-simtests-25-failure/friction.md"
+    },
+    {
+      "issue": "gsiener/disc#52",
+      "path": ".agents/friction-log/20260805213329-capture-live-mjs/friction.md"
     }
   ],
   "version": 1
