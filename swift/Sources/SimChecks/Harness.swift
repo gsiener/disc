@@ -326,6 +326,7 @@ let allSuites: [Suite] = [
     Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 35),
     Suite(name: "permatchreset", run: PerMatchResetTests.run, minAssertions: 53),
     Suite(name: "clock", run: ClockTests.run, minAssertions: 40),
+    Suite(name: "tickloop", run: TickLoopTests.run, minAssertions: 640),
     Suite(name: "boxscore", run: BoxScoreTests.run, minAssertions: 35),
     Suite(name: "matchdiff", run: MatchDiffTests.run, minAssertions: 41),
     Suite(name: "divergences", run: DivergenceTests.run, minAssertions: 34),
