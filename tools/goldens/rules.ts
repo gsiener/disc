@@ -196,7 +196,7 @@ export function rulesGoldens() {
   }
 
   /* ------------------------------------------------------------ stallCountFor */
-  const stallCountForCases: { elapsed: number; rules: RuleSet; want: number }[] = [];
+  const stallCountForCases: { elapsed: number; rules: RuleSet }[] = [];
   for (const rules of [DEFAULT_RULES, rulesVariant({ stallInterval: 1.5, stallMax: 7 })]) {
     for (const n of [0, 1, 5, rules.stallMax]) {
       const exact = n * rules.stallInterval;

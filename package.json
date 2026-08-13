@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "npm run reference:gate && npm run reference:check && npm run reference:imports && npm run reference:structure && npm run reference:reachability && npm run reference:goldens:test",
+    "test": "npm run reference:gate && npm run reference:check && npm run reference:check:tools && npm run reference:imports && npm run reference:structure && npm run reference:reachability && npm run reference:goldens:test",
     "reference:gate": "node tools/gate.mjs",
     "reference:check": "tsc --noEmit",
+    "reference:check:tools": "tsc --noEmit --project tsconfig.tools.json",
     "reference:imports": "node --experimental-strip-types tools/test-imports.ts",
     "reference:structure": "node --experimental-strip-types tools/test-structure.ts",
     "reference:reachability": "node --experimental-strip-types tools/test-reachability.ts",
@@ -18,6 +19,7 @@
     "web:preview": "vite preview --port 4173",
     "gate": "npm run reference:gate",
     "check": "npm run reference:check",
+    "check:tools": "npm run reference:check:tools",
     "dev": "npm run web:dev",
     "build": "npm run web:build",
     "preview": "npm run web:preview",
@@ -31,6 +33,7 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/node": "^26.1.2",
     "@types/three": "^0.185.1",
     "frog": "^1.0.9",
     "puppeteer-core": "^25.3.0",

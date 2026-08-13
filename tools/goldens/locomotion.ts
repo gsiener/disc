@@ -284,7 +284,7 @@ export function locomotionGoldens() {
     const events: Ev[] = [];
     const loco = new Locomotion();
     loco.attach(mkHost(events));
-    const mk = (s: typeof pairSeedA, attr: Attributes) => loco.create({
+    const mk = (s: typeof pairSeedA | typeof pairSeedB, attr: Attributes) => loco.create({
       id: s.id, team: s.team, attr,
       pos: new THREE.Vector3(s.pos.x, s.pos.y, s.pos.z), facing: s.facing, stamina: s.stamina,
     });

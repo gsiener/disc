@@ -81,7 +81,7 @@ final class ChargeTests: XCTestCase {
             return (0, "")
         }
         guard let measured = after.hold else {
-            XCTFail("the probe reported no hold for a recorded throw — \(after.raw)")
+            match.fail("the probe reported no hold for a recorded throw — \(after.raw)")
             return (0, "")
         }
         XCTAssertEqual(

@@ -96,6 +96,14 @@ jobs:
   # parses, and it exists because a backtick inside a GLSL comment closes the shader
   # template literal and makes `tsc` report a hundred errors at lines that are not the
   # fault. So when both are red, believe the gate and ignore this job until it is green.
+  #
+  # **Two steps, not one.** `tsconfig.json` has `include: ["src"]`, so `tsc --noEmit`
+  # silently skips every file under `tools/` — the golden generator, the freshness checker,
+  # and every focused test harness. A separate `tsconfig.tools.json` with `include: ["tools"]`
+  # closes that gap without widening the src gate's include set, which would slow it by
+  # pulling in the gameplay suites. The two checks run as sequential steps in one job
+  # because both are `tsc` and cost tens of seconds, and the second step is free if the
+  # first already found the fault (the job fails on the first red step).
   typecheck:
     name: Types (tsc --noEmit)
     runs-on: ubuntu-latest
@@ -110,8 +118,11 @@ jobs:
 
       - run: npm ci
 
-      - name: Typecheck
+      - name: Typecheck src/
         run: npm run check
+
+      - name: Typecheck tools/
+        run: npm run check:tools
 
   # Regenerate a golden and diff it. The cardinal rule of this repository is that
   # `src/sim/` is the oracle and the fixtures are its output (ADR-0001), and until now
@@ -239,10 +250,17 @@ jobs:
   # missing one.
   #
   # One thing that can turn this red without anybody changing the reference: a Node minor
-  # bump. `.nvmrc` pins the major, so setup-node resolves the newest 26.x, and a V8 update
-  # can move a libm-sensitive number by a ULP. That is not a false alarm — it is the fixture
-  # genuinely no longer being what this toolchain produces — and the fix is the one the
-  # failure prints: regenerate on the canonical platform and commit the diff.
+  # bump. `.nvmrc` now pins the exact version `provenance.json` records (v26.7.0) rather
+  # than the major alone, so `setup-node` resolves the same Node that produced the committed
+  # fixtures — and a V8 update cannot move a libm-sensitive number by a ULP without a
+  # deliberate version bump in `.nvmrc`. If that bump does move a number, it is not a false
+  # alarm: it is the fixture genuinely no longer being what this toolchain produces, and the
+  # fix is the one the failure prints — regenerate on the canonical platform and commit the
+  # diff. The exact pin is the decision: the major-only pin was sufficient for detection (the
+  # canonical job catches any drift), but not for reproducibility (a developer who checks out
+  # the repo and regenerates locally would get a different Node than CI did). Pinning to the
+  # version `provenance.json` records closes that gap. The runner platform step below prints
+  # `process.version` so a version mismatch is the first thing a reader sees, not the last.
   goldens-canonical:
     name: Goldens are fresh on the canonical platform (coeffs, matchdiff)
     runs-on: macos-15

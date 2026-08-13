@@ -526,6 +526,15 @@ struct MatchDriver {
             return Probe(attribution.lastKnownState)
         }
         let last = probe()
+        // **Re-check after the probe read** (VAL-CI-004). `poll` returns nil when its
+        // deadline expires; if the app crashed between the last poll iteration and this
+        // `probe()` call, `probe()` sets `processLost` — but without this re-check the
+        // pacing-timeout diagnostic fires with `last.raw` reading `process=lost`, labelling
+        // a crash as a timeout for one diagnostic line.
+        if attribution.processLost {
+            XCTFail(processLossMessage(), file: file, line: line)
+            return last
+        }
         let probeTime = attribution.lastProbeAt.map { String(describing: $0) } ?? "never"
         XCTFail(
             "PACING TIMEOUT: \(what) — budget \(Int(timeout))s "
