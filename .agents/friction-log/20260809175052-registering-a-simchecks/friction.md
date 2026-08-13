@@ -1,56 +1,23 @@
 ---
-title: 'Registering a SimChecks suite means committing Harness.swift, which peers add lines to at the same time'
+title: 'Harness.swift''s allSuites array is a shared-line merge hazard for every new SimChecks suite'
 severity: 'minor'
 issue: 'gsiener/disc#51'
 ---
 
-## Description
+Registering a new `SimChecks` suite is two edits: a new file under `swift/Sources/SimChecks/`, plus one line appended to the `allSuites` array in `Harness.swift`. The new file belongs to whoever wrote it; the one line in `Harness.swift` is a line every agent adding a suite has to touch, in a shared checkout where several agents work at once.
 
-Adding a check suite is two edits: a new file under `swift/Sources/SimChecks/`,
-and one line in the `allSuites` array in `Harness.swift`. The new file is yours
-alone; the one line is in a file every agent adding a suite touches.
-
-AGENTS.md's staging rule says to commit with an explicit pathspec:
-
-    git commit -- swift/Sources/SimChecks/Harness.swift
-
-That does not help here, and quietly does the thing the rule exists to prevent.
-A pathspec commit takes the **working-tree** state of that path — so it commits
-the peer's uncommitted `Suite(name: "matchdiff", run: MatchDiffTests.run)` line
-along with mine, referencing `MatchDiffTests.swift`, which is untracked. That is
-a broken `main`: the exact failure AGENTS.md says has already happened twice.
-
-The pathspec rule protects you from a peer's changes to *other files*. It gives
-you nothing when you and a peer are both editing one line-oriented registry.
+AGENTS.md's staging rule says to commit with an explicit pathspec (`git commit -- swift/Sources/SimChecks/Harness.swift`), but a pathspec commit takes the **working-tree** state of that path — so it silently pulls in a peer's uncommitted registration line along with your own, referencing a suite file that peer hasn't committed yet. That produces a broken `main`: a commit whose `Harness.swift` references a class that doesn't exist in that commit's tree. The pathspec rule protects against a peer's changes to *other* files; it gives no protection when two agents are both editing the same line-oriented registry.
 
 ## Reproduction
 
-Two agents each add a suite. Agent A commits first, with a pathspec:
+Two agents each add a suite. Agent A commits first with a pathspec that includes `Harness.swift`. If agent B's uncommitted registration line is present in the working tree at that moment, A's commit contains B's line pointing at B's still-untracked file. Anyone who checks out A's commit cannot build.
 
-    git commit -- swift/Sources/SimChecks/BoxScoreTests.swift \
-                  swift/Sources/SimChecks/Harness.swift
+## Workaround in use today
 
-The commit contains B's registration line and not B's suite file. Anyone who
-checks that commit out cannot build.
+Restore `Harness.swift` to `HEAD`, re-apply only your own line, commit, then restore the shared working copy — a two-second window in which a peer writing the same file would still be clobbered. This is documented as a manual recipe, not a structural fix.
 
-## Workaround
+## Suggested fix
 
-Commit the file as HEAD-plus-your-line only, then put the shared working copy
-back:
+A registry that isn't a hand-edited shared list — e.g. have suite discovery read a per-suite declaration from each suite's own file (a static property, a registration macro, or a generated index), so adding a suite becomes a one-file change and the merge hazard disappears by construction. Failing that, `Harness.swift` should be named explicitly in AGENTS.md as the one file where the pathspec-commit rule is insufficient, with the recipe above as the documented answer.
 
-    cp swift/Sources/SimChecks/Harness.swift /tmp/harness.working
-    git show HEAD:swift/Sources/SimChecks/Harness.swift > swift/Sources/SimChecks/Harness.swift
-    # re-apply only your one line, then:
-    git commit -- swift/Sources/SimChecks/Harness.swift swift/Sources/SimChecks/YourTests.swift
-    cp /tmp/harness.working swift/Sources/SimChecks/Harness.swift
-
-It works, and it is a two-second window in which a peer writing `Harness.swift`
-would be clobbered. It should not be the documented answer.
-
-## What would fix it
-
-A registry that is not a hand-edited shared list: have `runChecks` discover
-suites from a per-suite declaration in the suite's own file, so adding a suite is
-a one-file change and the merge hazard disappears. Failing that, AGENTS.md should
-name `Harness.swift` as the one file where the pathspec rule is not sufficient,
-and give the recipe above.
+Source: `.agents/friction-log/20260809175052-registering-a-simchecks/friction.md`

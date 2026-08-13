@@ -1,0 +1,13 @@
+{
+  "mirrors": [
+    {
+      "issue": "gsiener/disc#49",
+      "path": ".agents/friction-log/20260810-teamai-lines-up/friction.md"
+    },
+    {
+      "issue": "gsiener/disc#50",
+      "path": ".agents/friction-log/20260811183614-simtests-25-failure/friction.md"
+    }
+  ],
+  "version": 1
+}
