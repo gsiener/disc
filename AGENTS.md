@@ -177,10 +177,21 @@ Two rows it used to carry — `ratings change on-field outcomes` and
 verified", that is the honest state: the count and the text are measured, the
 attribution is not.
 
+**`windy completion % stays sane` also now passes** (issue #57 Phase 1a,
+commit `a63454f`): `laneBlockage`'s tail window excluded the last 22% of
+flight for every non-mark defender on the assumption that only the
+receiver's own man threatens it there, already priced by `separationAt` —
+true in person defence, false in zone, where a help defender who is
+nobody's "man" closes on the catch point in that exact window. The fix
+extends the tail window to every defender who is neither the mark nor the
+receiver's `onMan`/`onDisc` coverage, gated on `world.scheme[opponent] ===
+'zone'` so person-defence throws take the byte-identical old path — 73.7%
+pooled over 4 wind seeds against the 70% floor, up from 67.1%, with calm-day
+completion unchanged at 78.9%. `test-ai` is 65/5 as of that commit.
+
 | suite | red | assertion | cause |
 |---|---|---|---|
 | `test-game.ts` | 1 | `with no single seed outside 80-97%` (`77777` 98%, `33333` 67%) | tracked in #39 — `33333` is the pre-existing outlier, `77777` arrived with #36 |
-| `test-ai.ts` | 1 | `windy completion % stays sane` (42.0% pooled over 4 wind seeds, 71/169, vs 78.9% calm) | throw solver has no wind term — #32 was closed, this assertion was not; pooling *confirmed* the defect rather than dissolving it |
 | `test-ai.ts` | 1 | `completion holds across seeds (75-92)` (74.2% pooled over 318 throws) | cause not verified |
 | `test-ai.ts` | 1 | `a reset handler is stationed behind the disc` (88.7% of 81,487 held frames) | cause not verified |
 | `test-ai.ts` | 2 | `nobody dives for a disc he could run down`; `a bid that is made is a bid that was needed` | both fire on a sample of **one bid** — a band measured against n=1 is the shape `20260810-per-seed-bands-again` warns about; pool before believing either |
