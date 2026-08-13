@@ -160,10 +160,14 @@ Three measurements at increasing sample sizes, three different numbers, all belo
 65–75% target: the metric is genuinely seed-sensitive, and neither 64% nor 46.9% was
 ever a confident population estimate — 60% over 15 seeds isn't fully confident either,
 only more so. **Do not tune a probability constant toward this number without a larger,
-principled sample first**, and see issue #10 for the open question underneath the
-number: whether 65–75% is a sevens-specific target at all, given minis measured
-independently at 87% after an unrelated correctness fix (`discStakes`, #17/#28) — a
-game-wide band and a sevens-only band would call for different responses to that.
+principled sample first.**
+
+**65–75% is a sevens target, decided 2026-08-12.** Minis measured independently at 87%
+after an unrelated correctness fix (`discStakes`, #17/#28) — above this band, but that
+band was never minis's: minis is judged against `minisIsPlayable`'s own, wider 30–90%
+sanity check, which 87% clears comfortably. Nothing about minis needs re-tuning; the
+`discStakes` fix stands as a correctness fix, not a calibration to revisit. The
+remaining, open item is sevens holds alone, still below band at 60% (n=15) — see #10.
 
 Two bugs did all of the completion/calls/laid-out-D movement, and both had the same
 shape: a consumer disagreeing with the rules engine about geometry.
