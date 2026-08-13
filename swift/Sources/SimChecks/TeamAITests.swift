@@ -513,8 +513,20 @@ enum TeamAITests {
             world.wind = Vec2d(f.wx, f.wz)
 
             // ---- step, in the reference's order: team 0 then team 1.
+            //
+            // `world.scheme` has to be refreshed BETWEEN the two calls, not once per
+            // frame before either — the reference writes `world.scheme[team]` inside
+            // `pickScheme`, which runs during a team's own `update`, so team 1 sees
+            // team 0's freshly-decided call in the SAME frame it was made (issue #57).
+            // `AIWorld` is a value type here, so team 0's write inside `updateTeam`
+            // cannot propagate back through the call the way the reference's shared
+            // mutable object does — reading `currentScheme` straight off each `TeamAI`
+            // after its own call reproduces the same information without needing an
+            // `inout` world.
             let a = updateTeam(teams[0], world, f.dt)
+            world.scheme[0] = teams[0].currentScheme
             let b = updateTeam(teams[1], world, f.dt)
+            world.scheme[1] = teams[1].currentScheme
             let got = a + b
 
             let tag = "f\(fi)/\(f.seg)"
