@@ -38,6 +38,8 @@ enum TickLoopTests {
         resultCardIdleLoopKeepsTicking()
         slowMoBurstBoundary()
         pauseResumeGap()
+        needsFramesFalseAcrossIdleWallTime()
+        needsFramesTrueWhilePendingWorkExists()
         replayEquivalence()
     }
 
@@ -497,6 +499,103 @@ enum TickLoopTests {
             Double(postResumeTicks), 4, 5,
             "the five frames right after resume buy about five ticks total between them — "
                 + "not a burst of the 12 s the gap was worth, and not a stall either")
+    }
+
+    // MARK: - the quiescence seam itself (Phase 4's `needsFrames`)
+
+    /// The direct measurement Phase 5 asked for. Everything above this point pins that the
+    /// *engine* never steps while paused — true even before Phase 4, since `advance`'s
+    /// `guard running else { clock.abandon(); return }` always skipped ticking. What Phase 4
+    /// actually changed is a level up from that: whether `TimelineView` keeps asking for
+    /// frames at all while nothing is happening. Before Phase 4, nothing consumed
+    /// `needsFrames`, so `TimelineView(.animation)` re-evaluated at the display's refresh
+    /// rate regardless of its value — that unconditional redraw, not the (already-zero) tick
+    /// count, is what XCUITest's quiescence detector was waiting out (issue #16: "`app
+    /// .launch()` could sit 84s waiting for quiescence").
+    ///
+    /// This asserts the seam itself, at suite speed, over a window long enough in wall-clock
+    /// terms (90 s of sampled frames) that the pre-Phase-4 bug — redrawing the whole time —
+    /// would have had ample room to show up: `needsFrames(running: false)` must answer
+    /// `false` on every single sampled frame across the whole window, which is precisely the
+    /// condition `MatchView.body`'s `TimelineView(.animation(paused: !director.needsFrames
+    /// (running: running)))` needs to actually stop scheduling redraws at the pre-game sheet,
+    /// paused, backgrounded, or (once `running` itself is flipped false — a `MatchView`
+    /// concern, not this one; see `resultCardIdleLoopKeepsTicking`) over screens. Sampled at
+    /// a plain 60 Hz cadence rather than 120, since a paused `TimelineView` would be
+    /// re-evaluated at the display's own pace, not the sim's tick rate — the point being
+    /// "checked far more often than needed and still always false", not "checked at exactly
+    /// the sim's rate".
+    private static func needsFramesFalseAcrossIdleWallTime() {
+        let d = TickLoopDriver(match: Engine(format: .minis, seed: 707))
+        d.match.autoTeams = [0, 1]
+        d.advance(to: 0, running: true)
+
+        let idleWallSeconds = 90.0
+        let sampleHz = 60.0
+        let sampleCount = Int(idleWallSeconds * sampleHz)
+        var now = 0.0
+        var falseCount = 0
+        for i in 0..<sampleCount {
+            now = Double(i) / sampleHz
+            // Read the seam the same way `MatchView.body` does: before this frame's
+            // `advance` runs, since `TimelineView`'s pause decision has to be made before
+            // the frame it would gate (see `MatchDirector.needsFrames`'s own comment).
+            if d.director.needsFrames(running: false) == false { falseCount &+= 1 }
+            d.advance(to: now, running: false)
+        }
+        Check.eq(
+            falseCount, sampleCount,
+            "needsFrames(running: false) answered false on every one of \(sampleCount) "
+                + "frames sampled at 60 Hz across \(Int(idleWallSeconds))s of idle wall "
+                + "time — the seam that lets TimelineView actually stop asking for frames, "
+                + "for the whole window the issue's own 84s quiescence hang lived in, not "
+                + "just at the instant a single fast launch test happens to sample")
+        Check.eq(d.tickCount, 0, "and, as before Phase 4, not one tick ran across it either")
+
+        // The symmetric sanity check: the same director, still `running`, reports the seam
+        // is needed — so this suite is not vacuously true by asserting a method that always
+        // answers `false` regardless of its argument.
+        Check.eq(
+            d.director.needsFrames(running: true), true,
+            "needsFrames(running: true) is true — the seam gates on real state, not a "
+                + "constant")
+    }
+
+    /// The other half of the same claim: `needsFrames` is not simply `running` — it also
+    /// answers `true` while the director's own clock has pending work `running` alone
+    /// wouldn't reveal (a live catch-up-burst accumulator, or slow motion), exactly as
+    /// `MatchDirector.needsFrames`'s doc comment claims. Uses `director` directly rather
+    /// than `TickLoopDriver.advance` so the accumulator can be inspected *between*
+    /// `beginFrame` and `runTicks` — the same split `MatchView.advance` performs (see
+    /// `MatchDirector.advance`'s own comment on why the two calls stay separate).
+    private static func needsFramesTrueWhilePendingWorkExists() {
+        let director = MatchDirector(match: Engine(format: .minis, seed: 909))
+        director.match.autoTeams = [0, 1]
+        _ = director.clock.beginFrame(at: 0)
+        director.runTicks()
+        director.clock.endFrame()
+
+        // A single large hitch — several ticks' worth of wall time arriving in one frame —
+        // leaves ticks still owed to `runTicks()` the instant `beginFrame` returns, before
+        // any of them have actually run. `needsFrames(running: false)` has to see that
+        // pending burst even though `running` itself says nothing is happening.
+        let hitchAt = 0.5
+        _ = director.clock.beginFrame(at: hitchAt)
+        Check.ok(
+            director.clock.accumulator >= FrameClock.tickDt,
+            "a half-second hitch leaves at least one tick owed the instant beginFrame "
+                + "returns, before runTicks has drained any of it")
+        Check.eq(
+            director.needsFrames(running: false), true,
+            "and needsFrames(running: false) sees that pending burst — a paused-looking "
+                + "frame that still owes ticks must not be told to stop asking for the next "
+                + "one")
+        director.runTicks()
+        director.clock.endFrame()
+        Check.eq(
+            director.needsFrames(running: false), false,
+            "once the burst is fully drained, the same paused frame goes back to reporting "
+                + "nothing pending")
     }
 
     // MARK: - replay equivalence: director-style driving vs a raw Engine.step loop
