@@ -5,6 +5,15 @@
  *   node tools/capture-live.mjs                    # 8 frames, 2.5 s apart
  *   node tools/capture-live.mjs --n 12 --gap 1.5
  *   node tools/capture-live.mjs --q high --out shots/live
+ *   node tools/capture-live.mjs --ai-only 0         # opt out, see below
+ *
+ * The controlled body is AI-driven by default (`--ai-only`, on unless you pass
+ * `--ai-only 0`) — this rig never publishes input for him, so left to his own
+ * devices during LIVE_POSSESSION he is a statue holding the disc for the whole
+ * stall count while everyone else plays around him (issue #52). `Game.ts`
+ * already hands an idle controlled player back to his own AI; this flag makes
+ * that a guarantee from frame zero rather than a side effect of the default
+ * warm-up outlasting the idle timeout.
  *
  * Every other rig in this repo stages a *pinned* shot: `Shots.ts` hard-pins the
  * camera to a fixed pos/target and the director stands down. That is the right
@@ -59,6 +68,21 @@ const QUALITY = flag('q', 'high');
 const N = Number(flag('n', 8));
 const GAP = Number(flag('gap', 2.5));
 const WARM = Number(flag('warm', 3));
+/**
+ * On by default, because this rig never publishes any input for the
+ * controlled player — see .agents/friction-log/20260805213329-capture-live-mjs/
+ * (issue #52) — and there is no live human anywhere in a headless capture for
+ * him to represent. `Game.liveHumanIntent` already reads an unfed controlled
+ * player as idle and hands him to his own AI (`humanIdle > 0.4`, Game.ts)
+ * well before the first frame is ever captured given the default 3 s warm-up,
+ * so under default flags `--ai-only` does not change the frames this rig
+ * produces — it turns that outcome from a side effect of timing into a
+ * guarantee, by forcing `humanIdle` high before ANY frame is taken. That
+ * matters for `--warm 0` or a `--gap` under 0.4 s, where the built-in idle
+ * timeout would otherwise have a real, if narrow, window to catch the
+ * controlled body mid-handoff. Pass `--ai-only 0` to opt back out.
+ */
+const AI_ONLY = flag('ai-only', '1') !== '0';
 
 /**
  * A third of a second, before three minutes of Chrome.
@@ -151,21 +175,30 @@ if (/swiftshader|llvmpipe|software/i.test(gpu)) {
  * and this tool silently produces N identical frames of a frozen pose, which
  * is precisely the failure it exists to catch.
  */
-const released = await page.evaluate(() => {
+const released = await page.evaluate((aiOnly) => {
   const ctx = window.__ENGINE__?.ctx;
   const dir = ctx?.sys?.['camera'];
   const game = ctx?.sys?.['game'];
   if (!dir || typeof dir.unpin !== 'function' || !game) return null;
   dir.unpin();
   game.posed = false;
-  return { pinned: dir.isPinned, posed: game.posed };
-});
+  // See .agents/friction-log/20260805213329-capture-live-mjs/ (issue #52):
+  // this rig publishes no input, so the controlled body has nothing driving
+  // it. `Game.ts` already hands an idle controlled player back to his own AI
+  // (`humanIdle > 0.4`) — forcing the counter high here just makes that
+  // guaranteed from frame zero instead of arriving ~0.4 simulated seconds in.
+  if (aiOnly && typeof game.humanIdle === 'number') game.humanIdle = 999;
+  return { pinned: dir.isPinned, posed: game.posed, humanIdle: game.humanIdle };
+}, AI_ONLY);
 if (!released || released.pinned || released.posed) {
   console.error('Could not release the page for live play:', released);
   await browser.close();
   if (child) child.kill('SIGTERM');
   process.exit(2);
 }
+console.log(AI_ONLY
+  ? `--ai-only: the controlled body is AI-driven for this capture (humanIdle=${released.humanIdle}).`
+  : '--ai-only 0: the controlled body follows the rig\'s (nonexistent) input, same as before #52.');
 
 await page.evaluate((s) => window.__RIG__.advance(Math.round(s * 120), 1 / 120), WARM);
 
