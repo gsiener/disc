@@ -132,6 +132,26 @@ public struct MatchView: View {
     /// be behind it. So coming back is a paused pitch and one tap.
     @State var paused = false
 
+    /// True for exactly one frame after `scenePhase` returns to `.active`, so `body`'s
+    /// `TimelineView` unpauses for that one frame even though `running` is still false
+    /// (returning to foreground lands on a paused pitch or the pre-game sheet, neither of
+    /// which makes `director.needsFrames` true — see `running`).
+    ///
+    /// **Why this exists on top of Phase 4's "SwiftUI holds the last frame" guarantee**:
+    /// that guarantee is about *SwiftUI's* timeline, not about whatever the compositor did
+    /// with the Metal drawable backing the `RealityView` while the app was not frontmost.
+    /// Issue #53 was a white screen on reopen — `RealityView`'s `update` closure only runs
+    /// again when something it reads (`frame`, via the comment at its call site) changes,
+    /// and Phase 4 made `frame` stop changing on exactly the frames a resume lands on. If
+    /// the OS ever discards or invalidates the drawable while backgrounded — which Phase 4
+    /// did not have to consider, because before it `frame` bumped on every rendered frame
+    /// unconditionally — nothing was left to ask for a fresh one. One extra unpaused frame
+    /// on the way back in costs nothing at steady state (it is consumed and cleared
+    /// immediately, in `advance(to:)`) and removes the dependency on that assumption
+    /// holding for a case nobody had reason to test on a Simulator, where the drawable
+    /// survives backgrounding uneventfully.
+    @State var resumeKick = false
+
     /// The tick-loop composition — the stepped engine, the wall clock, the tick count —
     /// lifted out of this view and into `MatchDirector` (issue #16, Phase 1). A class,
     /// and `@State` for the reason `MatchScene` gives below for `scene`: SwiftUI does not
@@ -519,7 +539,8 @@ public struct MatchView: View {
         // not blank the pitch — SwiftUI holds the schedule's last emitted date, so the
         // last rendered frame stays on screen; see `frame`'s own comment for what still
         // needs a bump on the rare `!running` frame this still reaches.
-        TimelineView(.animation(paused: !director.needsFrames(running: running))) { timeline in
+        TimelineView(.animation(paused: !(director.needsFrames(running: running) || resumeKick))) {
+            timeline in
             matchContent
                 .onChange(of: timeline.date) { _, now in
                     advance(to: now)
@@ -532,7 +553,7 @@ public struct MatchView: View {
         // a call, the home gesture, the system reclaiming memory an hour later — passes
         // through here first, and it is the only moment the system promises to give the
         // app time to do anything at all.
-        .onChange(of: scenePhase) { _, phase in
+        .onChange(of: scenePhase) { old, phase in
             if phase != .active {
                 paused = true
                 // A gesture interrupted by the system is a gesture that never ends:
@@ -542,6 +563,12 @@ public struct MatchView: View {
                 // the match.
                 cancelDrag()
                 saveMatch()
+            } else if old != .active {
+                // Returning to the foreground. `running` stays false here — a resume is a
+                // paused pitch and a tap, per `paused`'s own comment — so nothing else
+                // would unpause `TimelineView` or bump `frame` this frame. See
+                // `resumeKick`'s comment for why one is forced anyway.
+                resumeKick = true
             }
         }
         // The swipe out of the app switcher, which on some paths terminates without a
@@ -783,7 +810,16 @@ public struct MatchView: View {
         // there is nothing to bump `frame` for either. A paused pitch stays a picture
         // rather than a black screen because SwiftUI holds the last frame a paused
         // `TimelineView` rendered, not because this method keeps forcing a redraw.
+        //
+        // **Except the frame `resumeKick` bought (issue #53).** That one bump is a
+        // one-shot "the app just came back to the foreground" signal, not a claim that
+        // anything in the sim changed, so it is spent and cleared here rather than folded
+        // into the `defer` below, which is about frames where a tick actually ran.
         guard running else {
+            if resumeKick {
+                resumeKick = false
+                frame &+= 1
+            }
             clock.abandon()
             return
         }
