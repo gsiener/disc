@@ -1,6 +1,7 @@
 ---
 title: 'Engine.stagePoint''s opening formation is not lineUpForPull — puller position differs before a tick moves anyone'
 severity: 'minor'
+issue: 'gsiener/disc#56'
 ---
 
 ## Description
