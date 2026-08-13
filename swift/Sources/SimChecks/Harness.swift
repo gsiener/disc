@@ -320,7 +320,7 @@ let allSuites: [Suite] = [
     Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4482),
     Suite(name: "replay", run: ReplayTests.run, minAssertions: 258),
     Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 35),
-    Suite(name: "permatchreset", run: PerMatchResetTests.run, minAssertions: 42),
+    Suite(name: "permatchreset", run: PerMatchResetTests.run, minAssertions: 53),
     Suite(name: "clock", run: ClockTests.run, minAssertions: 40),
     Suite(name: "boxscore", run: BoxScoreTests.run, minAssertions: 35),
     Suite(name: "matchdiff", run: MatchDiffTests.run, minAssertions: 41),

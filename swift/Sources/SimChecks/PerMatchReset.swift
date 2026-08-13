@@ -90,19 +90,50 @@ public struct PerMatchReset: Equatable, Sendable, Codable {
 
     public init() {}
 
-    /// The seven restart-only field names — the fields `restart(_:)` clears that
-    /// `adopt(_:from:setup:)` previously omitted (issue #43).
-    public static let restartOnlyFields: [String] = [
-        "cutCall", "refusedTap", "offenceTaps", "refusals",
-        "widenedCalls", "lastRefusal", "refusalTally",
-    ]
+    // MARK: - Exhaustive field enumeration
 
-    /// All shared reset field names — the complete boundary both paths must cover.
-    public static let allFields: [String] = [
-        "cutCall", "refusedTap", "offenceTaps", "refusals",
-        "widenedCalls", "lastRefusal", "refusalTally",
-        "defenceCall", "turnoverFlash", "assistToast", "handoff",
-        "drag", "sceneInvalidated", "clockReset", "lastControlled",
-        "clearedAtEnd", "restoring", "resumable",
-    ]
+    /// Every reset field as an exhaustive enum case, with the case name matching the
+    /// stored property name. This enum is the structural link between the descriptor
+    /// and `MatchView.applyPerMatchReset()`: the application method switches over
+    /// `Field.allCases`, and Swift's exhaustive-switch check makes adding a `Field`
+    /// case without handling it a **compile error**, not a silent drift — exactly the
+    /// bug `adopt` had when it omitted the seven fields `restart` was clearing.
+    ///
+    /// `PerMatchResetTests.fieldEnumMatchesStructProperties` uses `Mirror` reflection to
+    /// verify that every `Field` case corresponds to a stored property and vice versa,
+    /// closing the last gap: a property added to the struct without a `Field` case (or
+    /// the reverse) fails the test.
+    public enum Field: String, CaseIterable, Sendable {
+        // The seven restart-only presentation fields.
+        case cutCall, refusedTap, offenceTaps, refusals
+        case widenedCalls, lastRefusal, refusalTally
+
+        // Already-parallel shared fields.
+        case defenceCall, turnoverFlash, assistToast, handoff
+        case drag, sceneInvalidated, clockReset, lastControlled
+        case clearedAtEnd, restoring, resumable
+
+        /// Whether this field is one of the seven `restart(_:)` clears that
+        /// `adopt(_:from:setup:)` previously omitted (issue #43).
+        public var isRestartOnly: Bool {
+            switch self {
+            case .cutCall, .refusedTap, .offenceTaps, .refusals,
+                 .widenedCalls, .lastRefusal, .refusalTally:
+                true
+            default:
+                false
+            }
+        }
+    }
+
+    /// The seven restart-only field names — derived from `Field.isRestartOnly` so the
+    /// list cannot drift from the enum. These are the fields `restart(_:)` clears that
+    /// `adopt(_:from:setup:)` previously omitted (issue #43).
+    public static let restartOnlyFields: [String] =
+        Field.allCases.filter(\.isRestartOnly).map(\.rawValue)
+
+    /// All shared reset field names — derived from `Field.allCases` so the list cannot
+    /// drift from the enum. The complete boundary both paths must cover.
+    public static let allFields: [String] =
+        Field.allCases.map(\.rawValue)
 }

@@ -1,5 +1,6 @@
 import Foundation
 import RealityKit
+import SimChecks
 import SwiftUI
 import UltimateSim
 
@@ -1322,8 +1323,16 @@ public struct MatchView: View {
     ///
     /// Both `restart(_:)` and `adopt(_:from:setup:)` call this to clear all per-match
     /// presentation and interaction state, so the two paths cannot drift. The
-    /// `PerMatchReset` value type in `SimChecks` defines the complete set of fields;
-    /// this method applies it to the view's `@State` properties.
+    /// `PerMatchReset.Field` enum in `SimChecks` is the single source of truth for what
+    /// gets reset: this method switches exhaustively over `Field.allCases`, so adding a
+    /// field to the descriptor without handling it here is a **compile error**, not a
+    /// silent drift — the exact bug `adopt` had when it omitted the seven fields
+    /// `restart` was clearing.
+    ///
+    /// `PerMatchResetTests.fieldEnumMatchesStructProperties` verifies by `Mirror`
+    /// reflection that every `Field` case corresponds to a stored property and vice
+    /// versa, closing the last gap: a property added to the struct without a `Field`
+    /// case (or the reverse) fails the test.
     ///
     /// **What is not here is deliberate.** The match engine, seed, input tape, tick
     /// count, and `playedSetup` are identity fields set by each caller before this runs.
@@ -1331,37 +1340,34 @@ public struct MatchView: View {
     /// unpaused, `adopt` lands paused. `hasStarted` is set by the caller. `restoreNote`
     /// is restart-only (a restore clears it before `adopt` runs).
     func applyPerMatchReset() {
-        // Gesture and clock — the drag overlay and the charge meter must not survive a
-        // match change, and the frame clock starts fresh.
-        cancelDrag()
-        scene.invalidate()
-        clock.reset()
+        // Exhaustive application of every PerMatchReset.Field case. The compiler
+        // enforces that every case is handled — adding a Field case without a branch
+        // here is a compile error, not a silently missed assignment.
+        for field in PerMatchReset.Field.allCases {
+            switch field {
+            case .cutCall:          cutCall = nil
+            case .refusedTap:       refusedTap = nil
+            case .offenceTaps:      offenceTaps = 0
+            case .refusals:         refusals = 0
+            case .widenedCalls:     widenedCalls = 0
+            case .lastRefusal:      lastRefusal = nil
+            case .refusalTally:     refusalTally = [:]
 
-        // Transient overlays — the prior match's announcements are not the new match's.
-        turnoverFlash = nil
-        assistToast = nil
-        handoff = nil
-        defenceCall = nil
+            case .defenceCall:      defenceCall = nil
+            case .turnoverFlash:    turnoverFlash = nil
+            case .assistToast:      assistToast = nil
+            case .handoff:          handoff = nil
 
-        // The seven restart-only presentation fields (issue #43). A restored match that
-        // carried the prior match's cut order, refusal message, and tap ledger was not
-        // the match the player put down.
-        cutCall = nil
-        refusedTap = nil
-        offenceTaps = 0
-        refusals = 0
-        widenedCalls = 0
-        lastRefusal = nil
-        refusalTally = [:]
+            case .drag:             cancelDrag()
+            case .sceneInvalidated: scene.invalidate()
+            case .clockReset:       clock.reset()
 
-        // Lifecycle flags — the new match has not finished, nothing is being restored,
-        // and no save is on offer.
-        clearedAtEnd = false
-        restoring = nil
-        resumable = nil
+            case .lastControlled:   lastControlled = match.controlled
 
-        // Control tracking — set to the new engine's controlled player, which the caller
-        // has already assigned to `match` before calling this.
-        lastControlled = match.controlled
+            case .clearedAtEnd:     clearedAtEnd = false
+            case .restoring:        restoring = nil
+            case .resumable:        resumable = nil
+            }
+        }
     }
 }

@@ -17,6 +17,7 @@ enum PerMatchResetTests {
         sharedBoundaryIsComplete()
         zeroValuesAreCorrect()
         defaultInitProducesAllZeros()
+        fieldEnumMatchesStructProperties()
     }
 
     /// Exactly seven restart-only fields, matching the issue #43 contract.
@@ -103,6 +104,46 @@ enum PerMatchResetTests {
             Check.eq(decoded, a, "PerMatchReset survives JSON unchanged — the contract is serializable")
         } else {
             Check.ok(false, "PerMatchReset encodes and decodes")
+        }
+    }
+
+    /// The `Field` enum is the structural link between the descriptor and
+    /// `MatchView.applyPerMatchReset()`. Every stored property of `PerMatchReset` must
+    /// have a corresponding `Field` case, and vice versa — otherwise the exhaustive
+    /// `switch` in `applyPerMatchReset()` could miss a field or carry a stale one.
+    ///
+    /// This is the executable completeness guarantee: `Mirror` reflection discovers the
+    /// struct's actual stored properties and compares them to the enum's cases, so a
+    /// property added without a `Field` case (or the reverse) fails this test. Combined
+    /// with the compiler's exhaustive-switch check in `applyPerMatchReset()`, adding or
+    /// removing a reset field cannot silently leave the application out of sync.
+    static func fieldEnumMatchesStructProperties() {
+        // Mirror reflection discovers the actual stored properties of the struct.
+        let mirror = Mirror(reflecting: PerMatchReset())
+        let propertyNames = Set(mirror.children.compactMap { $0.label })
+
+        // The Field enum's raw values are the field names.
+        let fieldNames = Set(PerMatchReset.Field.allCases.map { $0.rawValue })
+
+        Check.eq(
+            fieldNames, propertyNames,
+            "every Field case corresponds to a PerMatchReset stored property and vice versa")
+        Check.eq(
+            PerMatchReset.Field.allCases.count, propertyNames.count,
+            "Field case count matches stored property count — no extras on either side")
+        Check.eq(
+            PerMatchReset.allFields,
+            PerMatchReset.Field.allCases.map { $0.rawValue },
+            "allFields is derived from Field.allCases — the string list cannot drift")
+        Check.eq(
+            PerMatchReset.restartOnlyFields,
+            PerMatchReset.Field.allCases.filter(\.isRestartOnly).map { $0.rawValue },
+            "restartOnlyFields is derived from Field.isRestartOnly — the subset cannot drift")
+        // Every restart-only field is also in the full boundary.
+        for field in PerMatchReset.restartOnlyFields {
+            Check.ok(
+                PerMatchReset.allFields.contains(field),
+                "\(field) is in the shared boundary (allFields)")
         }
     }
 }
