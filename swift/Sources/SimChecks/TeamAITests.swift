@@ -125,14 +125,14 @@ enum TeamAITests {
         let possession: Int
         let wx: Double
         let wz: Double
-        let disc: String
-        let pl: [String]
+        let disc: DiscRow
+        let pl: [PlayerRow]
         /// Energy after both updates — see the generator. This is the one input the AI
         /// itself changes during the frame, and recording it is what makes the
         /// `tickStamina` knife-edge visible instead of hidden.
         let pe: [String]
-        let it: [String]
-        let ts: [String]
+        let it: [IntentRow]
+        let ts: [TeamRow]
     }
 
     struct File: Decodable {
@@ -245,6 +245,17 @@ enum TeamAITests {
     }
 
     // MARK: - packed-row parsing
+    //
+    // ISSUE #19. `tools/goldens/teamai.ts` packs each row into a `|`-delimited string
+    // (17.9 MB pretty-printed as plain objects; under 5 MB packed) and every row shape
+    // used to be re-split and re-indexed at every call site that read one — `w[13]`,
+    // `w[15]`, `w[17]`, both here and duplicated again in `claims()`. A field inserted
+    // on the TypeScript side shifted every comparison after it, silently, because most
+    // of them are geometric doubles compared inside a tolerance: some of those shifts
+    // still passed. The four structs below are the one place that field order is
+    // knowledge now. They decode the identical wire string — nothing about
+    // `tools/goldens/teamai.ts` or the fixture's byte size changes — but every other
+    // line in this file reads a name, not a position.
 
     private static func parts(_ s: String) -> [Substring] {
         s.split(separator: "|", omittingEmptySubsequences: false)
@@ -256,6 +267,88 @@ enum TeamAITests {
     private static func dbl(_ s: Substring) -> Double { Double(s) ?? Double.nan }
     private static func optInt(_ s: Substring) -> Int? { s.isEmpty ? nil : Int(s) }
     private static func optStr(_ s: Substring) -> String? { s.isEmpty ? nil : String(s) }
+
+    /// `x|z|vx|vz|energy` — `tools/goldens/teamai.ts:playerRow`.
+    struct PlayerRow: Decodable {
+        let x, z, vx, vz, energy: Double
+        init(from decoder: Decoder) throws {
+            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            x = dbl(w[0]); z = dbl(w[1]); vx = dbl(w[2]); vz = dbl(w[3]); energy = dbl(w[4])
+        }
+    }
+
+    /// `x|y|z|vx|vy|vz|state|carrier|intendedReceiver|stall` — `...teamai.ts:discRow`.
+    struct DiscRow: Decodable {
+        let x, y, z, vx, vy, vz: Double
+        let state: String
+        let carrier: Int?
+        let intendedReceiver: Int?
+        let stall: Double
+        init(from decoder: Decoder) throws {
+            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            x = dbl(w[0]); y = dbl(w[1]); z = dbl(w[2])
+            vx = dbl(w[3]); vy = dbl(w[4]); vz = dbl(w[5])
+            state = String(w[6])
+            carrier = optInt(w[7]); intendedReceiver = optInt(w[8])
+            stall = dbl(w[9])
+        }
+    }
+
+    /// `id|targetX|targetZ|faceX|faceZ|mode|effort|desiredSpeed|maxSpeed|arriveRadius`
+    /// `|role|state|lane|cutX|cutZ|cutKind|cutDepth|action` — `...teamai.ts:intentRow`.
+    /// `action` is itself `,`-delimited (`compareAction` owns that shape: it is a
+    /// discriminated union whose field count varies by kind, which is a different
+    /// problem than a fixed row read by position).
+    struct IntentRow: Decodable {
+        let id: Int
+        let targetX, targetZ, faceX, faceZ: Double
+        let mode: String
+        let effort, desiredSpeed, maxSpeed, arriveRadius: Double
+        let role, state: String
+        let lane: String?
+        let cutX, cutZ: Double
+        let cutKind: String?
+        let cutDepth: Double
+        let action: String
+        init(from decoder: Decoder) throws {
+            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            id = Int(w[0])!
+            targetX = dbl(w[1]); targetZ = dbl(w[2]); faceX = dbl(w[3]); faceZ = dbl(w[4])
+            mode = String(w[5])
+            effort = dbl(w[6]); desiredSpeed = dbl(w[7]); maxSpeed = dbl(w[8])
+            arriveRadius = dbl(w[9])
+            role = String(w[10]); state = String(w[11])
+            lane = optStr(w[12])
+            cutX = dbl(w[13]); cutZ = dbl(w[14])
+            cutKind = optStr(w[15])
+            cutDepth = dbl(w[16])
+            action = String(w[17])
+        }
+    }
+
+    /// `stall|scheme|formation|openSign|stackAxisX|marker|resetHandler|openSideOnD`
+    /// `|force|holding,csv|matchup,csv|zoneRole,csv` — `...teamai.ts:teamRow`.
+    struct TeamRow: Decodable {
+        let stall: Double
+        let scheme, formation: String
+        let openSign: Int
+        let stackAxisX: Double
+        let marker, resetHandler: Int
+        let openSideOnD: Int?
+        let force: String
+        let holding, matchup, zoneRole: String
+        init(from decoder: Decoder) throws {
+            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            stall = dbl(w[0])
+            scheme = String(w[1]); formation = String(w[2])
+            openSign = Int(w[3])!
+            stackAxisX = dbl(w[4])
+            marker = Int(w[5])!; resetHandler = Int(w[6])!
+            openSideOnD = optInt(w[7])
+            force = String(w[8])
+            holding = String(w[9]); matchup = String(w[10]); zoneRole = String(w[11])
+        }
+    }
 
     // MARK: - run
 
@@ -371,18 +464,17 @@ enum TeamAITests {
 
             // ---- write the recorded inputs back.
             for (i, row) in f.pl.enumerated() {
-                let p = parts(row)
-                players[i].pos = Vec3d(dbl(p[0]), 0, dbl(p[1]))
-                players[i].vel = Vec3d(dbl(p[2]), 0, dbl(p[3]))
-                players[i].energy = dbl(p[4])
+                players[i].pos = Vec3d(row.x, 0, row.z)
+                players[i].vel = Vec3d(row.vx, 0, row.vz)
+                players[i].energy = row.energy
             }
-            let d = parts(f.disc)
+            let d = f.disc
             world.disc = AIDiscState(
-                pos: Vec3d(dbl(d[0]), dbl(d[1]), dbl(d[2])),
-                vel: Vec3d(dbl(d[3]), dbl(d[4]), dbl(d[5])),
-                state: DiscPhase(rawValue: String(d[6]))!,
-                carrier: optInt(d[7]), thrownBy: nil,
-                intendedReceiver: optInt(d[8]), stall: dbl(d[9]))
+                pos: Vec3d(d.x, d.y, d.z),
+                vel: Vec3d(d.vx, d.vy, d.vz),
+                state: DiscPhase(rawValue: d.state)!,
+                carrier: d.carrier, thrownBy: nil,
+                intendedReceiver: d.intendedReceiver, stall: d.stall)
             world.time = f.time
             world.phase = GamePhase(rawValue: f.phase)!
             world.possession = f.possession
@@ -439,13 +531,12 @@ enum TeamAITests {
 
     // MARK: - comparison
 
-    private static func compareIntent(_ got: PlayerIntent, _ row: String, _ tag: String) {
-        let w = parts(row)
-        exact(got.id, Int(w[0])!, "\(tag) id")
-        approx(got.targetX, dbl(w[1]), "\(tag) targetX")
-        approx(got.targetZ, dbl(w[2]), "\(tag) targetZ")
-        approx(got.faceX, dbl(w[3]), "\(tag) faceX")
-        approx(got.faceZ, dbl(w[4]), "\(tag) faceZ")
+    private static func compareIntent(_ got: PlayerIntent, _ w: IntentRow, _ tag: String) {
+        exact(got.id, w.id, "\(tag) id")
+        approx(got.targetX, w.targetX, "\(tag) targetX")
+        approx(got.targetZ, w.targetZ, "\(tag) targetZ")
+        approx(got.faceX, w.faceX, "\(tag) faceX")
+        approx(got.faceZ, w.faceZ, "\(tag) faceZ")
 
         // LAYOUT_CEILING is a DECLARED divergence (ADR-0007, `tools/goldens/divergences.ts`):
         // Swift guards a defensive bid at 1.10 m, a prone body's real reach; the reference
@@ -470,35 +561,35 @@ enum TeamAITests {
         // fields all still compare normally — and the count is asserted small in
         // `replay`, the same shape `staminaFlips` uses, so a REAL regression (this firing
         // on far more than a bid-height coincidence) still goes red.
-        let wantMode = String(w[5])
-        let wantActionKind = (w.count > 17 ? String(w[17]) : "").split(separator: ",").first.map(String.init) ?? ""
+        let wantMode = w.mode
+        let wantActionKind = w.action.split(separator: ",").first.map(String.init) ?? ""
         let gotIsLayoutBid: Bool = {
             if case .bid = got.action { return got.mode == .layout }
             return false
         }()
         let wantIsLayoutBid = wantMode == "layout" && wantActionKind == "bid"
-        let isDefenderReadDisc = got.debug.role == "defender" && String(w[10]) == "defender"
-            && got.debug.state == "read-disc" && String(w[11]) == "read-disc"
+        let isDefenderReadDisc = got.debug.role == "defender" && w.role == "defender"
+            && got.debug.state == "read-disc" && w.state == "read-disc"
         if isDefenderReadDisc && gotIsLayoutBid != wantIsLayoutBid {
             layoutCeilingFlips += 1
         } else {
             exact(got.mode.rawValue, wantMode, "\(tag) mode")
-            compareAction(got.action, w.count > 17 ? String(w[17]) : "", tag)
+            compareAction(got.action, w.action, tag)
         }
 
-        approx(got.effort, dbl(w[6]), "\(tag) effort")
-        approx(got.desiredSpeed, dbl(w[7]), "\(tag) desiredSpeed")
-        approx(got.maxSpeed, dbl(w[8]), "\(tag) maxSpeed")
+        approx(got.effort, w.effort, "\(tag) effort")
+        approx(got.desiredSpeed, w.desiredSpeed, "\(tag) desiredSpeed")
+        approx(got.maxSpeed, w.maxSpeed, "\(tag) maxSpeed")
         // Discrete in practice — it takes one of three literals — so an exact compare is
         // what makes the `settle` flag visible from outside at all.
-        Check.bitEqViaJSON(got.arriveRadius, dbl(w[9]), "\(tag) arriveRadius")
-        exact(got.debug.role, String(w[10]), "\(tag) debug.role")
-        exact(got.debug.state, String(w[11]), "\(tag) debug.state")
-        exact(got.debug.lane?.rawValue, optStr(w[12]), "\(tag) debug.lane")
-        approx(got.debug.cutX, dbl(w[13]), "\(tag) debug.cutX")
-        approx(got.debug.cutZ, dbl(w[14]), "\(tag) debug.cutZ")
-        exact(got.debug.cutKind?.rawValue, optStr(w[15]), "\(tag) debug.cutKind")
-        Check.bitEqViaJSON(got.debug.cutDepth, dbl(w[16]), "\(tag) debug.cutDepth")
+        Check.bitEqViaJSON(got.arriveRadius, w.arriveRadius, "\(tag) arriveRadius")
+        exact(got.debug.role, w.role, "\(tag) debug.role")
+        exact(got.debug.state, w.state, "\(tag) debug.state")
+        exact(got.debug.lane?.rawValue, w.lane, "\(tag) debug.lane")
+        approx(got.debug.cutX, w.cutX, "\(tag) debug.cutX")
+        approx(got.debug.cutZ, w.cutZ, "\(tag) debug.cutZ")
+        exact(got.debug.cutKind?.rawValue, w.cutKind, "\(tag) debug.cutKind")
+        Check.bitEqViaJSON(got.debug.cutDepth, w.cutDepth, "\(tag) debug.cutDepth")
     }
 
     private static func compareAction(_ got: PlayerAction?, _ text: String, _ tag: String) {
@@ -562,19 +653,18 @@ enum TeamAITests {
     }
 
     private static func compareTeam(
-        _ t: TeamAI, _ mates: [AIPlayer], _ row: String, _ tag: String
+        _ t: TeamAI, _ mates: [AIPlayer], _ w: TeamRow, _ tag: String
     ) {
-        let w = parts(row)
-        approx(t.stall, dbl(w[0]), "\(tag) stall")
-        exact(t.currentScheme.rawValue, String(w[1]), "\(tag) scheme")
-        exact(t.currentFormation.rawValue, String(w[2]), "\(tag) formation")
-        exact(t.openSign, Int(w[3])!, "\(tag) openSign")
-        approx(t.stackAxisX, dbl(w[4]), "\(tag) stackAxisX")
-        exact(t.marker, Int(w[5])!, "\(tag) marker")
-        exact(t.resetHandler, Int(w[6])!, "\(tag) resetHandler")
-        exact(t.openSideOnD, optInt(w[7]), "\(tag) openSideOnD")
-        exact(t.force.rawValue, String(w[8]), "\(tag) force")
-        exact(t.stackHolding().map(String.init).joined(separator: ","), String(w[9]),
+        approx(t.stall, w.stall, "\(tag) stall")
+        exact(t.currentScheme.rawValue, w.scheme, "\(tag) scheme")
+        exact(t.currentFormation.rawValue, w.formation, "\(tag) formation")
+        exact(t.openSign, w.openSign, "\(tag) openSign")
+        approx(t.stackAxisX, w.stackAxisX, "\(tag) stackAxisX")
+        exact(t.marker, w.marker, "\(tag) marker")
+        exact(t.resetHandler, w.resetHandler, "\(tag) resetHandler")
+        exact(t.openSideOnD, w.openSideOnD, "\(tag) openSideOnD")
+        exact(t.force.rawValue, w.force, "\(tag) force")
+        exact(t.stackHolding().map(String.init).joined(separator: ","), w.holding,
             "\(tag) stackHolding")
         // The matchup table is the single most order-sensitive structure in the port: the
         // reference iterates a JS `Map` and keeps the LAST defender matched to the
@@ -582,10 +672,10 @@ enum TeamAITests {
         // container fail loudly instead of intermittently.
         exact(
             mates.map { t.matchupOf($0.id).map(String.init) ?? "" }.joined(separator: ","),
-            String(w[10]), "\(tag) matchups")
+            w.matchup, "\(tag) matchups")
         exact(
             mates.map { t.zoneRoleOf($0.id)?.rawValue ?? "" }.joined(separator: ","),
-            String(w[11]), "\(tag) zoneRoles")
+            w.zoneRole, "\(tag) zoneRoles")
     }
 
     // MARK: - prose as behaviour
@@ -665,25 +755,23 @@ enum TeamAITests {
         for f in g.frames where f.seg == "live" {
             let dir = Double(g.dirs[f.possession])
             let floor = -(FieldConstants.standard.goalLine - 2.0)
-            for row in f.it {
-                let w = parts(row)
-                let id = Int(w[0])!
+            for w in f.it {
                 // Only the team in possession is running an offensive shape.
-                if (id < 7 ? 0 : 1) != f.possession { continue }
-                let kind = optStr(w[15])
+                if (w.id < 7 ? 0 : 1) != f.possession { continue }
+                let kind = w.cutKind
                 if kind == "dump" || kind == "swing" {
                     resetCuts += 1
                     Check.ok(
-                        dir * dbl(w[14]) >= floor - 1e-9,
+                        dir * w.cutZ >= floor - 1e-9,
                         "a reset cut never targets ground behind the own-goal floor "
-                            + "(\(kind!) at z=\(dbl(w[14])))")
+                            + "(\(kind!) at z=\(w.cutZ))")
                 }
-                if String(w[10]) == "handler" && String(w[11]) == "stack" {
+                if w.role == "handler" && w.state == "stack" {
                     handlerStandings += 1
                     Check.ok(
-                        dir * dbl(w[2]) >= floor - 1e-9,
+                        dir * w.targetZ >= floor - 1e-9,
                         "a handler never STANDS behind the own-goal floor "
-                            + "(z=\(dbl(w[2])))")
+                            + "(z=\(w.targetZ))")
                 }
             }
         }
