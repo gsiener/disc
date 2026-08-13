@@ -406,12 +406,7 @@ public final class Engine {
     /// Collapsing them would mean editing one to suit the other, and the sim is not the
     /// one that should move.
     public var fieldSpec: FieldSpec {
-        FieldSpec(
-            length: format.field.length,
-            width: format.field.width,
-            endzoneDepth: format.field.endzoneDepth,
-            teamSize: format.playersPerSide,
-            target: target)
+        FieldSpec(format: format, target: target)
     }
 
     public func attackDirection(of team: TeamId) -> Double { Double(dirFor(team)) }
@@ -1596,6 +1591,21 @@ private final class EngineEventSink {
 }
 
 extension FieldSpec {
+    /// The other direction: a `GameFormat` plus the score target the format alone
+    /// doesn't carry. The inverse of `gameFormat` below.
+    ///
+    /// One conversion, in one place, rather than `Engine.fieldSpec` and each static
+    /// preset (`FieldSpec.full`, `.minis`) rebuilding the same field-by-field mapping —
+    /// which is exactly the drift `#45` was filed about, just one level up.
+    public init(format: GameFormat, target: Int) {
+        self.init(
+            length: format.field.length,
+            width: format.field.width,
+            endzoneDepth: format.field.endzoneDepth,
+            teamSize: format.playersPerSide,
+            target: target)
+    }
+
     /// The same pitch in the sim's vocabulary. The inverse of `Engine.fieldSpec`.
     ///
     /// The view picks a format from a button and the sim needs a `GameFormat`; this is
