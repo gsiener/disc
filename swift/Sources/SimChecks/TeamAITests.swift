@@ -261,6 +261,38 @@ enum TeamAITests {
         s.split(separator: "|", omittingEmptySubsequences: false)
     }
 
+    /// Split a packed row and assert its width before anything indexes into it.
+    ///
+    /// **This is the half of #19 the row structs alone do not close.** Moving field order
+    /// into one struct per shape means a Swift-side reader can no longer disagree with
+    /// itself — but the writers in `tools/goldens/teamai.ts` still author that same order
+    /// independently, and nothing makes the two agree. Insert a field into `intentRow`
+    /// there and `IntentRow` here would go on reading `w[13]` as the wrong quantity: no
+    /// compile error, and (the issue's own warning) not necessarily a test failure either,
+    /// because most of these are geometric doubles compared inside a tolerance and a
+    /// shifted neighbour can land inside it.
+    ///
+    /// A width check converts that from silently-wrong into loudly-wrong for every insert
+    /// or deletion, which is most of the gap for one line per row. It throws rather than
+    /// trapping: `Decodable`'s own error path is what `Goldens.load` and `run()` already
+    /// propagate, so a width change reports as a decode failure naming both counts instead
+    /// of taking the whole 2.2 M-assertion process down with a crash.
+    private static func fields(
+        _ decoder: Decoder, _ want: Int, _ shape: String
+    ) throws -> [Substring] {
+        let w = parts(try decoder.singleValueContainer().decode(String.self))
+        guard w.count == want else {
+            throw DecodingError.dataCorrupted(
+                .init(
+                    codingPath: decoder.codingPath,
+                    debugDescription:
+                        "\(shape) row has \(w.count) fields, expected \(want) — "
+                        + "tools/goldens/teamai.ts and this struct disagree about the row "
+                        + "shape (#19). Reconcile them; do not index the short row."))
+        }
+        return w
+    }
+
     /// `Double(String)` is correctly rounded and `String(v)` in JavaScript emits the
     /// shortest representation that round-trips, so the wire form loses nothing. "nan" is
     /// the one spelling the pretty-printer could not carry as a number.
@@ -272,7 +304,7 @@ enum TeamAITests {
     struct PlayerRow: Decodable {
         let x, z, vx, vz, energy: Double
         init(from decoder: Decoder) throws {
-            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            let w = try fields(decoder, 5, "player")
             x = dbl(w[0]); z = dbl(w[1]); vx = dbl(w[2]); vz = dbl(w[3]); energy = dbl(w[4])
         }
     }
@@ -285,7 +317,7 @@ enum TeamAITests {
         let intendedReceiver: Int?
         let stall: Double
         init(from decoder: Decoder) throws {
-            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            let w = try fields(decoder, 10, "disc")
             x = dbl(w[0]); y = dbl(w[1]); z = dbl(w[2])
             vx = dbl(w[3]); vy = dbl(w[4]); vz = dbl(w[5])
             state = String(w[6])
@@ -311,7 +343,7 @@ enum TeamAITests {
         let cutDepth: Double
         let action: String
         init(from decoder: Decoder) throws {
-            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            let w = try fields(decoder, 18, "intent")
             id = Int(w[0])!
             targetX = dbl(w[1]); targetZ = dbl(w[2]); faceX = dbl(w[3]); faceZ = dbl(w[4])
             mode = String(w[5])
@@ -338,7 +370,7 @@ enum TeamAITests {
         let force: String
         let holding, matchup, zoneRole: String
         init(from decoder: Decoder) throws {
-            let w = parts(try decoder.singleValueContainer().decode(String.self))
+            let w = try fields(decoder, 12, "team")
             stall = dbl(w[0])
             scheme = String(w[1]); formation = String(w[2])
             openSign = Int(w[3])!
