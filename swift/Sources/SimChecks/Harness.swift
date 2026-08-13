@@ -316,6 +316,10 @@ let allSuites: [Suite] = [
     // PullTests.swift's header for why this and `Engine.autoPull()` run with zero
     // ticks between construction and the pull.
     Suite(name: "pull", run: PullTests.run, minAssertions: 177),
+    // Issue #56: `Game.ts`'s `lineUpForPull()`, ported into `Engine.stagePoint`. Fixtures
+    // captured directly, at the same zero-tick instant `pull` reads at. See
+    // LineupTests.swift's header.
+    Suite(name: "lineup", run: LineupTests.run, minAssertions: 361),
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 408),
     Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 651),

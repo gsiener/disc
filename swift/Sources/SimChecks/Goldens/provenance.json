@@ -14,6 +14,11 @@
     "platform": "darwin/arm64",
     "commit": "3f85b1b5f60fd2b77788fdfde8542052d7ad3ead"
   },
+  "lineup": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "9ea527bb3a6d329ca094f64519ebb4c836e136d2"
+  },
   "matchdiff": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",

@@ -150,15 +150,23 @@ extension Engine {
         calls.markFoulHeld = false
         records = []
 
-        // Both teams line up on their own goal lines, facing each other. Positions are
-        // only a starting shape — the AI takes over on the first tick and moves everyone
-        // where the formation actually wants them.
+        // Both teams line up on their own goal lines, facing each other. Ported one-for-one
+        // from `Game.ts`'s `lineUpForPull` (called from `onPhaseChange` the instant
+        // `PRE_PULL` is entered — exactly this method's own cadence, once per point):
+        // `x = -SIDELINE + 3.5 + (i/6) * (2*SIDELINE - 7)`, `z = -dir*GOAL_LINE + dir*0.5`.
+        // `i/6` is `i / (playersPerSide - 1)` generalised past the reference's sevens-only
+        // literal — the reference has no minis pitch to check this against, but it is the
+        // same margin-from-sideline shape `TeamAI.lineUp` already uses once the AI takes
+        // over (issue #56: this used to be a different, generic shape that put seed 11's
+        // puller 1.5 m from where the reference has him at the zero-tick instant before any
+        // AI runs).
         for (i, p) in players.enumerated() {
             let dir = Double(dirFor(p.team))
             let slot = Double(i % format.playersPerSide)
             let span = Double(Swift.max(1, format.playersPerSide - 1))
-            let lateral = (slot / span - 0.5) * format.field.width * 0.6
-            p.pos = Vec3d(lateral, 0.9, -dir * format.field.goalLine * 0.95)
+            let x = -format.field.sideline + 3.5 + (slot / span) * (2 * format.field.sideline - 7)
+            let z = -dir * format.field.goalLine + dir * 0.5
+            p.pos = Vec3d(x, 0.9, z)
             p.vel = .zero
             p.airborne = false
             let body = loco.create(

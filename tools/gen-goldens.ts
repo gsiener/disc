@@ -47,6 +47,7 @@ import { flightGoldens } from './goldens/flight.ts';
 import { teamAIGoldens } from './goldens/teamai.ts';
 import { humanReleaseGoldens } from './goldens/humanrelease.ts';
 import { gameStateGoldens } from './goldens/gamestate.ts';
+import { lineupGoldens } from './goldens/lineup.ts';
 import { locomotionGoldens } from './goldens/locomotion.ts';
 import { matchDiffGoldens } from './goldens/matchdiff.ts';
 import { moveGoldens } from './goldens/move.ts';
@@ -82,6 +83,9 @@ const GENERATORS: Record<string, () => unknown> = {
   'playbook.json': playbookGoldens,
   // Issue #48/#2: `Game.doPull`, captured directly — see tools/goldens/pull.ts.
   'pull.json': pullGoldens,
+  // Issue #56: `Game.ts`'s `lineUpForPull()`, captured directly — see
+  // tools/goldens/lineup.ts. Regenerate alongside `pull` if you touch either.
+  'lineup.json': lineupGoldens,
   'aimath.json': aiMathGoldens,
   'humanrelease.json': humanReleaseGoldens,
   'discruntime.json': discRuntimeGoldens,
