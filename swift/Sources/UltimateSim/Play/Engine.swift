@@ -444,11 +444,6 @@ public final class Engine {
     /// it could be broken. Fourteen elements: the linear scan is not the cost.
     public func body(of id: PlayerId) -> AIPlayer? { player(id) }
 
-    /// Where in `players` the body with this id sits, for the two callers that genuinely
-    /// need a slot rather than a body — a parallel array of entities, say. Nil for an id
-    /// no longer on the roster, which a raw subscript would have crashed on.
-    public func index(of id: PlayerId) -> Int? { players.firstIndex { $0.id == id } }
-
     /// **`PlayerId` and "index into `players`" are the same number, and until now nothing
     /// said so.**
     ///
