@@ -1,6 +1,7 @@
 ---
 title: 'TeamAI lines every body up on the goal line for any phase that is not live, so a mid-point stoppage cannot be expressed'
 severity: 'major'
+issue: 'gsiener/disc#49'
 ---
 
 ## Description

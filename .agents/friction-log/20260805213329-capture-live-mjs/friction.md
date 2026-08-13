@@ -1,6 +1,7 @@
 ---
 title: 'capture-live.mjs has no input driver, so the human player is a statue and stalls every possession he starts'
 severity: 'major'
+issue: 'gsiener/disc#52'
 ---
 
 `tools/capture-live.mjs` releases `director.unpin()` and `game.posed` and lets the

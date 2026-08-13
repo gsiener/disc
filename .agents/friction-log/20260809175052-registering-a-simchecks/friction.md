@@ -1,6 +1,7 @@
 ---
 title: 'Registering a SimChecks suite means committing Harness.swift, which peers add lines to at the same time'
 severity: 'minor'
+issue: 'gsiener/disc#51'
 ---
 
 ## Description

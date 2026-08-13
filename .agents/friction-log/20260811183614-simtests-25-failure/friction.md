@@ -1,6 +1,7 @@
 ---
 title: 'SimTests'' 25-failure print cap silently hides a targeted assertion behind unrelated golden mismatches'
 severity: 'major'
+issue: 'gsiener/disc#50'
 ---
 
 ## Description
