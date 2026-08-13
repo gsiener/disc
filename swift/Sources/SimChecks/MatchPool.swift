@@ -143,6 +143,14 @@ enum MatchPool {
     /// independent of each other. `body` gets a seed, builds its own engine, and returns a
     /// value; it must not call `Check`, which is shared mutable state, so the caller
     /// asserts on the returned values afterwards.
+    /// `UnsafeMutablePointer` itself has no `Sendable` conformance — the type says nothing
+    /// about how it's used, so the compiler can't tell that `concurrentPerform` hands each
+    /// iteration a distinct `i` and every write lands at a disjoint index. This box asserts
+    /// that fact once, here, rather than at the closure capture the compiler can't see through.
+    private struct DisjointWriteBox<T>: @unchecked Sendable {
+        let pointer: UnsafeMutablePointer<T?>
+    }
+
     static func concurrently<T: Sendable>(
         _ seeds: [UInt32], _ body: @Sendable (UInt32) -> T
     ) -> [T] {
@@ -153,8 +161,9 @@ enum MatchPool {
             buffer.deinitialize(count: list.count)
             buffer.deallocate()
         }
+        let box = DisjointWriteBox(pointer: buffer)
         DispatchQueue.concurrentPerform(iterations: list.count) { i in
-            buffer[i] = body(list[i])
+            box.pointer[i] = body(list[i])
         }
         return (0..<list.count).map { buffer[$0]! }
     }
