@@ -1,6 +1,7 @@
 ---
 title: 'tools/test-ai.ts''s windy completion % gate is unreachable from ThrowSolver.ts, so #32''s real acceptance criterion is a different bug'
 severity: 'major'
+issue: 'gsiener/disc#57'
 ---
 
 ## Description
