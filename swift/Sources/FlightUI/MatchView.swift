@@ -325,13 +325,23 @@ public struct MatchView: View {
     /// fixing that, so the probe reports the whole rectangle.
     @State var viewFrame: CGRect = .zero
 
-    /// Bumped once per rendered frame purely so SwiftUI knows something happened.
+    /// Bumped once per rendered frame that actually does something, purely so SwiftUI
+    /// knows something happened.
     ///
     /// `Match` is a `final class` — deliberately, since passing a match around must not
     /// silently copy it — and SwiftUI does not observe mutations through a class
     /// reference. Without this the sim ticks correctly and the screen never redraws,
     /// which looks exactly like a frozen simulation and is not one. The frame counter is
     /// the honest fix: the view depends on the tick, and the tick depends on the clock.
+    ///
+    /// **Only bumped on the `running` path, since issue #16 Phase 4.** Before that,
+    /// `advance(to:)` bumped this on the `!running` guard too — the reason `TimelineView`
+    /// itself never stopped asking for frames in the first place (see `body`'s
+    /// `needsFrames` comment): a counter that changes every call keeps SwiftUI convinced
+    /// something is still happening, whether or not anything is. Now that `TimelineView`
+    /// is paused instead, `advance(to:)` is not even called on most of those frames, and
+    /// on the rare one where it still is (the frame `needsFrames` flips false on), nothing
+    /// downstream needs a redraw it wasn't already getting.
     @State var frame = 0
 
     /// Time, slowed, for as long as the moment is worth watching.
@@ -498,7 +508,18 @@ public struct MatchView: View {
         // Wall time therefore decides only *how many* whole ticks run, never how big
         // they are; the leftover fraction of a frame stays in `accumulator`, outside
         // the simulation, where nothing the sim computes can read it.
-        TimelineView(.animation) { timeline in
+        // Paused rather than merely ignored on the `!needsFrames` frames — issue #16
+        // Phase 4. `.animation` alone re-evaluates unconditionally at display refresh
+        // rate; there was no way to tell it "nothing is happening, stop asking," so
+        // `app.launch()` waited out XCUITest's quiescence timeout at the pre-game sheet,
+        // paused, backgrounded, or after full time, because *something* kept redrawing
+        // even though nothing was changing. `director.needsFrames(running:)` is that seam
+        // now: true exactly when there is real work for the next frame (`running`, or the
+        // director's own clock still has a hitstop or catch-up burst live). Pausing does
+        // not blank the pitch — SwiftUI holds the schedule's last emitted date, so the
+        // last rendered frame stays on screen; see `frame`'s own comment for what still
+        // needs a bump on the rare `!running` frame this still reaches.
+        TimelineView(.animation(paused: !director.needsFrames(running: running))) { timeline in
             matchContent
                 .onChange(of: timeline.date) { _, now in
                     advance(to: now)
@@ -751,12 +772,19 @@ public struct MatchView: View {
         // Paused, backgrounded, on a tab nobody is looking at, or over.
         //
         // See `FrameClock.abandon` for what that costs and why: the stamp is dropped, the
-        // accumulator emptied, the charge ended and any slow motion cancelled. Rendering
-        // still happens — `frame` is bumped regardless — so a paused pitch is a picture
-        // rather than a black screen.
+        // accumulator emptied, the charge ended and any slow motion cancelled.
+        //
+        // No `frame` bump here since issue #16 Phase 4: `TimelineView` itself is now
+        // paused whenever `director.needsFrames(running:)` is false, which subsumes this
+        // guard (see `body`), so most calls that reach this branch stop happening rather
+        // than happening and being made to look like they mattered. On the odd frame that
+        // still lands here — `needsFrames` was true when this frame was scheduled and
+        // turned false by the time it ran — there is nothing new for `sync` to draw, so
+        // there is nothing to bump `frame` for either. A paused pitch stays a picture
+        // rather than a black screen because SwiftUI holds the last frame a paused
+        // `TimelineView` rendered, not because this method keeps forcing a redraw.
         guard running else {
             clock.abandon()
-            frame &+= 1
             return
         }
 

@@ -216,6 +216,36 @@ public final class MatchDirector {
         return output
     }
 
+    /// The quiescence seam `TimelineView` pauses on — issue #16 Phase 4.
+    ///
+    /// **Why this takes `running` rather than deriving it alone.** `MatchView.running`
+    /// folds in state this class cannot see and should not try to — `scenePhase`,
+    /// `paused`, the setup/coach sheets, `restoring` — all `MatchView`-only `@State`. The
+    /// director does not reconstruct that; the caller passes the same `running` it already
+    /// computes for `advance(to:running:)`, at the same call site, for the same reason: see
+    /// that method's own comment.
+    ///
+    /// **Not simply `running`, on purpose, even though the two never diverge today.** Once
+    /// `!running` reaches `advance(to:running:)`, `clock.abandon()` cancels slow motion and
+    /// empties the accumulator in the same call — so by the time `running` is false, there
+    /// is never anything left pending regardless. But that is a guarantee `advance`'s
+    /// ordering happens to provide, not one this method should assume: a caller that reads
+    /// `needsFrames` before it has called `advance` this frame (exactly what `body` does,
+    /// since `TimelineView`'s pause has to be decided before the frame it would gate)
+    /// deserves an answer that checks the clock's actual state rather than trusting a
+    /// side effect elsewhere to have already run. Checking `clock.slowMo` and
+    /// `clock.accumulator` directly is what keeps a hitstop or a still-draining catch-up
+    /// burst from going dark if `abandon()`'s timing ever changes.
+    ///
+    /// **Never false during a hitstop.** `running` stays true for the whole match while a
+    /// hitstop plays — nothing about slow motion pauses, backgrounds, or ends the match —
+    /// so the `running ||` half alone already covers it; `clock.slowMo != nil` only matters
+    /// for the theoretical case where a caller checks between an abandonment and its
+    /// effects landing.
+    public func needsFrames(running: Bool) -> Bool {
+        running || clock.slowMo != nil || clock.accumulator >= Self.tickDt
+    }
+
     /// The ticks one already-begun frame bought: `MatchView.advance`'s old `while
     /// clock.takeTick() { ... }`, moved verbatim. In order: step the engine by exactly
     /// `FrameClock.tickDt`, drain events *per tick* (never per frame — a catch-up burst
