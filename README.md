@@ -62,6 +62,21 @@ distance sanity, and a quality-scaled assist may rotate the release up to 5°
 toward the ideal lead. Drag back to where you started to abort. A tap that finds
 nobody says so rather than vanishing.
 
+### Launch and probe contract
+
+The app, `FlightUI`, and `UltimateUITests` share the dependency-free
+`ProbeContract` Swift package target. It is the canonical home for the
+`LaunchArg` enum (10 flags), the `ProbeKey` enum (26 retained keys), the shared
+`probeIdentifier`, `LaunchOptions.parse()`, and `Probe`'s typed accessors.
+Launch options are parsed once at the app boundary and threaded as one immutable
+value through initial, restart, and restore construction, replacing the former
+ten separate `ProcessInfo` reads.
+
+The probe wire format remains `k=v;k=v`; only the unused `flight` and `coach`
+fields were removed. `UltimateUITests` depends on `ProbeContract`, not
+`FlightUI`, preserving the black-box UI test boundary. `SimChecks` contains 224
+`ProbeContract` assertions, and all 43 validation contract assertions passed.
+
 ## Why it's interesting
 
 Most of the difficulty in a sports game is not drawing the field — it's that the
@@ -108,6 +123,10 @@ target, so the identical assertions run in the terminal and on the phone.
 The rule the harness enforces: **the reference evolves first.** A gameplay
 change lands in `src/sim/`, is mirrored in Swift, and the goldens are
 regenerated — never the other way around, and never by editing a JSON.
+
+The `ProbeContract` target is covered by 224 assertions in `SimChecks`; the 43
+validation contract assertions all pass. The focused validation commands below
+remain the same.
 
 ```bash
 node --experimental-strip-types tools/check-goldens.ts # check platform/freshness provenance
@@ -176,6 +195,7 @@ player-facing behavior gate; the reference suites do not claim to replace it.
 | path | what |
 |---|---|
 | `swift/Sources/UltimateSim/` | the engine — rules (`GameState` is the single authority), AI, locomotion, disc physics, `Engine` integration |
+| `swift/Sources/ProbeContract/` | dependency-free launch-argument and probe contract shared by the app, `FlightUI`, and `UltimateUITests` |
 | `swift/Sources/SimChecks/` | the differential suite + goldens (runs on device and in terminal) |
 | `swift/Sources/FlightUI/` | SwiftUI + RealityKit match view, HUD, overlays |
 | `ios/` | XcodeGen project for the app shell |
