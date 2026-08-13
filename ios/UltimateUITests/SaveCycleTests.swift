@@ -1,3 +1,4 @@
+import ProbeContract
 import XCTest
 
 /// Save/restore lifecycle and REMATCH reset parity — issue #43, VAL-CROSS-004.
@@ -35,7 +36,10 @@ final class SaveCycleTests: XCTestCase {
         // 10 seconds of play is enough for the pull to complete and the match to be live,
         // and short enough to keep the test fast. The cycle fires once the tick count
         // reaches this many seconds.
-        let match = MatchDriver(extraArgs: ["-savecycle", "10", "-points", "9"])
+        let match = MatchDriver(extraArgs: [
+            LaunchArg.savecycle.rawValue, "10",
+            LaunchArg.points.rawValue, "9",
+        ])
 
         // Wait for the match to be live before the cycle fires.
         match.wait("the match to be live", timeout: MatchDriver.patience, until: { $0.isLive })
@@ -115,7 +119,7 @@ final class SaveCycleTests: XCTestCase {
     /// This is VAL-PERSIST-002: the restart path yields the same shared reset values as
     /// restore, compared field-for-field.
     func testRematchLandsUnpausedWithEmptyCounters() {
-        let match = MatchDriver(extraArgs: ["-points", "1"])
+        let match = MatchDriver(extraArgs: [LaunchArg.points.rawValue, "1"])
 
         // Wait for the match to end (one goal wins it).
         let ended = match.wait(

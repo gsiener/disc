@@ -525,12 +525,44 @@ struct MatchDriver {
     /// app answering for a gesture. The tap tests loop over this, so a situation that comes and
     /// goes is already tolerated; what they cannot tolerate is it never coming, which is what
     /// the budget bounds.
+    ///
+    /// **Relaunches when the game does not hand us the situation in time, rather than waiting
+    /// it out.** A match whose pull we lost — the opponent holds the disc for longer than
+    /// `possession` — is discarded for 1.3 s and a fresh match is started, on the same
+    /// principle as `withTheDisc`. This is not a blanket retry: each attempt uses the same
+    /// `possession` budget, and a fresh match is a fresh seed, not a re-read of the same
+    /// state. The `testATapOnTheSkyIsRefusedWithTheGrassAsTheFix` pacing flake was caused by
+    /// an opponent holding the disc past the `possession` budget with no relaunch path — the
+    /// test waited for `canCut` and timed out when the opponent's possession ran longer than
+    /// the budget allowed.
     @discardableResult
     func waitToAct(
-        _ what: String, until condition: (Probe) -> Bool,
+        _ what: String, attempts: Int = 3, until condition: (Probe) -> Bool,
         file: StaticString = #filePath, line: UInt = #line
     ) -> Probe {
-        wait(what, timeout: Self.possession, until: condition, file: file, line: line)
+        for attempt in 0..<attempts {
+            if let held = poll(for: Self.possession, until: condition) { return held }
+            if attribution.processLost { break }
+            if attempt == attempts - 1 { break }
+            guard relaunch() else { break }
+        }
+        // No attempt reached the condition. Emit the same diagnostics as `wait`.
+        if attribution.processLost {
+            XCTFail(processLossMessage(), file: file, line: line)
+            return probe()
+        }
+        let last = probe()
+        if attribution.processLost {
+            XCTFail(processLossMessage(), file: file, line: line)
+            return last
+        }
+        let probeTime = attribution.lastProbeAt.map { String(describing: $0) } ?? "never"
+        XCTFail(
+            "PACING TIMEOUT: \(what) — budget \(Int(Self.possession))s ×\(attempts) attempts "
+                + "(slowdown ×\(String(format: "%.1f", Self.slowdown))) "
+                + "— last probe at \(probeTime): \(last.raw)",
+            file: file, line: line)
+        return last
     }
 
     /// Wait for the disc, do something with it, and try again if the possession was gone by
