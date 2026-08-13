@@ -64,6 +64,37 @@ There is no force-push escape hatch afterwards, so the only cheap moment to get
 this right is before the push. If `main` does go red, fix it forward — a revert
 is a commit like any other.
 
+**4. `Harness.swift` is the one file where rule 1's pathspec recipe is not
+enough.** `swift/Sources/SimChecks/Harness.swift`'s `allSuites` array is a
+hand-maintained shared list — every new SimChecks suite appends one line to it.
+A pathspec commit takes the **working-tree** state of the path, not just your
+own edit, so `git commit -- swift/Sources/SimChecks/Harness.swift` can silently
+pull in a peer's uncommitted registration line along with yours — one pointing
+at a suite file that peer hasn't committed yet. That produces a commit whose
+`Harness.swift` references a class absent from that same commit's tree: a
+broken `main` that a normal pathspec commit of any *other* shared file would
+not produce, because this is a case of two agents editing the *same line*, not
+two agents editing different files. (See
+`.agents/friction-log/20260809175052-registering-a-simchecks/friction.md` and
+issue #51 for the full reasoning, including why a generated-registry fix was
+considered and rejected — it hardens this one file but leaves the same hazard
+class reachable through suite removals, and adds tooling this repo's
+minimalism preference argues against for ~40 suites.)
+
+Before committing `Harness.swift`, restore it to `HEAD`, reapply only your own
+line, commit, then restore your working copy — using a uniquely-named temp
+file, for the same reason rule 2 insists on a unique verification path rather
+than a fixed one:
+
+```sh
+T=$(mktemp -d)/harness.working          # a path no peer can also pick
+cp swift/Sources/SimChecks/Harness.swift "$T"
+git show HEAD:swift/Sources/SimChecks/Harness.swift > swift/Sources/SimChecks/Harness.swift
+# re-apply only your one line to swift/Sources/SimChecks/Harness.swift, then:
+git commit -- swift/Sources/SimChecks/Harness.swift swift/Sources/SimChecks/YourSuiteTests.swift
+cp "$T" swift/Sources/SimChecks/Harness.swift
+```
+
 ## Friction log
 
 Managed by [Frog](https://github.com/wevm/frog). Entries live in
