@@ -41,8 +41,6 @@ enum ThrowsTests {
         let cases: [Case]
     }
 
-    nonisolated(unsafe) static var worstPos = 0.0
-
     static func run() throws {
         let g = try Goldens.load(File.self, "throws")
         Check.eq(g.cases.count, 36, "six throws × two hands × three powers")
@@ -87,7 +85,6 @@ enum ThrowsTests {
                         ["x", "y", "z"],
                         [s.pos.x - want.pos[0], s.pos.y - want.pos[1], s.pos.z - want.pos[2]])
                     {
-                        worstPos = Swift.max(worstPos, abs(d))
                         Check.ok(abs(d) <= tol, "\(at) t=\(want.t) pos.\(axis) off by \(d)")
                     }
                     Check.eq(s.atRest, want.atRest, "\(at) t=\(want.t) atRest")
@@ -97,8 +94,6 @@ enum ThrowsTests {
         }
 
         vocabularyAndPhysics()
-        // `worstPos` is redundant with the report: every sample that could move it
-        // already went through `Check.ok(abs(d) <= tol, ...)` above.
     }
 
     private static func expect(

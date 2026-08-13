@@ -28,7 +28,8 @@ import UltimateSim
 /// the stall geometry. `atan2`, `acos`, `cos`, `sin`, `exp` (through `sigmoid`) and `pow`
 /// are all in here as well. So continuous quantities get an **ulp-relative** envelope,
 /// stated as ulps rather than an absolute because the values here span from 0 to 50 m, and
-/// the worst observed deviation is reported so drift is visible before it is a failure.
+/// the share of comparisons that land bit-identical is reported so a slow slide from
+/// "identical" to merely "close" is visible before it is a failure.
 ///
 /// Everything discrete is exact and that is where the real assertions live: `mode`, the
 /// action kind, `role`, `state`, `lane`, `cutKind`, `cutDepth`, the scheme, the formation,
@@ -99,11 +100,7 @@ enum TeamAITests {
     }
 
     struct Observed: Decodable {
-        let liveThrows: Int
-        let liveCatches: Int
-        let liveTurnovers: Int
         let livePickups: Int
-        let liveBids: Int
         let liveFlightFrames: Int
         let liveGroundFrames: Int
         let livePossessionFlips: Int
@@ -181,8 +178,6 @@ enum TeamAITests {
     /// cut kind, the matchup — is asserted exactly regardless.
     private static let traceTol = 1e-7
 
-    nonisolated(unsafe) static var worst = 0.0
-    nonisolated(unsafe) static var worstWhat = "nothing"
     /// A bit-exactness census over the tolerance comparisons, matching `LocomotionTests`.
     /// The tolerance is the honest bar for a trace this deep, but it would also hide a
     /// slow slide from "identical" to "close", so the share that is bit-identical is
@@ -231,10 +226,6 @@ enum TeamAITests {
             return
         }
         let d = abs(got - want)
-        if d > worst {
-            worst = d
-            worstWhat = what()
-        }
         record(d <= traceTol, "\(what()): off by \(d) (got \(got), want \(want))")
     }
 
@@ -270,8 +261,6 @@ enum TeamAITests {
 
     static func run() throws {
         let g = try Goldens.load(File.self, "teamai")
-        worst = 0
-        worstWhat = "nothing"
         approxTotal = 0
         approxExact = 0
         failed = 0
@@ -283,11 +272,9 @@ enum TeamAITests {
         replay(g)
         claims(g)
 
-        // `worst`/`worstWhat` are redundant with the report: every sample that could
-        // move them went through `approx()`, which already asserts `d <= traceTol` per
-        // call via `record()`. The bit-exactness census has no pass/fail direction of
-        // its own — an envelope assertion tolerates small differences by design — so
-        // it is printed rather than asserted.
+        // The bit-exactness census has no pass/fail direction of its own — an envelope
+        // assertion tolerates small differences by design — so it is printed rather than
+        // asserted.
         print(
             "  · teamai: \(g.frames.count) frames tested"
                 + " — \(approxExact) of \(approxTotal) tolerance comparisons were bit-identical")

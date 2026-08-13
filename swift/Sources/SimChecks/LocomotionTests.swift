@@ -251,9 +251,6 @@ enum LocomotionTests {
     /// cut still passes at `traceTol`, which is what says the difference stopped here.
     private static let acosTol = 1e-7
 
-    nonisolated(unsafe) static var worst = 0.0
-    nonisolated(unsafe) static var worstWhat = "nothing"
-
     /// A bit-exactness census over the tolerance comparisons.
     ///
     /// The tolerance above is the honest bar for a trajectory, but it would also hide a
@@ -278,8 +275,6 @@ enum LocomotionTests {
         pair(g)
         claims(g)
 
-        // `worst`/`worstWhat` are redundant with the report: every sample that could
-        // move them went through `near()`, which already asserts `d <= tol` per call.
         // The bit-exactness census has no direction that is "good" — an envelope
         // assertion tolerates small differences by design — so it is printed rather
         // than asserted.
@@ -941,10 +936,6 @@ enum LocomotionTests {
 
     private static func approx(_ got: Double, _ want: Double, _ what: String) {
         let d = abs(got - want)
-        if d > worst {
-            worst = d
-            worstWhat = what
-        }
         compared += 1
         if got.bitPattern != want.bitPattern && !(got == 0 && want == 0) { notBitEqual += 1 }
         Check.ok(d <= traceTol, "\(what): off by \(d) (got \(got), want \(want))")

@@ -145,8 +145,6 @@ enum MoveTests {
     /// transposed coefficient cannot hide inside it.
     private static let transcendentalTol = 1e-12
 
-    nonisolated(unsafe) static var worst = 0.0
-
     static func run() throws {
         let g = try Goldens.load(File.self, "move")
 
@@ -159,9 +157,6 @@ enum MoveTests {
         ground(g)
         bodies(g)
         claims()
-
-        // `worst` is redundant with the report: every sample that could move it went
-        // through `near()`, which already asserts `d <= tol` per call.
     }
 
     // MARK: - constants
@@ -234,7 +229,7 @@ enum MoveTests {
         // `propulsiveAt` runs the speed fraction through `pow(f, 1.7)`.
         for c in g.propulsiveAtCases {
             let got = propulsiveAt(c.d, speed: c.speed ?? 0, cap: c.cap ?? 0)
-            near(got, c.want, transcendentalTol, "propulsiveAt(speed \(c.speed ?? 0), cap \(c.cap ?? 0))")
+            Check.near(got, c.want, transcendentalTol, "propulsiveAt(speed \(c.speed ?? 0), cap \(c.cap ?? 0))")
         }
         // Pure arithmetic on the run-up fraction.
         for c in g.leapHeightCases {
@@ -255,7 +250,7 @@ enum MoveTests {
     private static func stamina(_ cases: [StaminaCase]) {
         for c in cases {
             let got = staminaRate(c.a, speed: c.speed, topSpeedFresh: c.topSpeedFresh)
-            near(got, c.want, transcendentalTol, "staminaRate(speed \(c.speed))")
+            Check.near(got, c.want, transcendentalTol, "staminaRate(speed \(c.speed))")
             // Draining and recovering must not be confusable: assert the sign matches
             // as well as the magnitude, since a tolerance around zero would not.
             Check.ok(
@@ -352,7 +347,7 @@ enum MoveTests {
                 "compliance(mass \(c.spec.mass), strength \(c.spec.strength), "
                 + "state \(c.spec.state ?? "idle"), airborne \(c.spec.airborne ?? false), "
                 + "prone \(c.spec.prone ?? false), anchored \(c.spec.anchored ?? false))"
-            near(compliance(p), c.want, transcendentalTol, at)
+            Check.near(compliance(p), c.want, transcendentalTol, at)
         }
 
         // Ballistic prediction: position under gravity, so bit-exact.
@@ -432,11 +427,4 @@ enum MoveTests {
         Check.ok(dutyFactor(7) < dutyFactor(2), "less of each stride is spent on the ground")
     }
 
-    // MARK: - helpers
-
-    private static func near(_ got: Double, _ want: Double, _ tol: Double, _ what: String) {
-        let d = abs(got - want)
-        worst = Swift.max(worst, d)
-        Check.ok(d <= tol, "\(what): off by \(d) (got \(got), want \(want))")
-    }
 }

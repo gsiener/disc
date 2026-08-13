@@ -70,8 +70,6 @@ enum HumanReleaseTests {
     /// wide: the regression it exists for is a 20 m swing and a sign flip.
     static let flightTol = 0.5
 
-    nonisolated(unsafe) static var worstFlight = 0.0
-
     static func run() throws {
         let g = try Goldens.load(File.self, "humanrelease")
 
@@ -114,8 +112,6 @@ enum HumanReleaseTests {
 
         flownAgainstReference(g)
         feel(g)
-        // `worstFlight` is redundant with the report: every flight that could move it
-        // already went through `Check.near(..., flightTol, ...)`.
     }
 
     // MARK: - the two counterfactual mappings
@@ -255,9 +251,6 @@ enum HumanReleaseTests {
             for (i, p) in g.feel.charges.enumerated() {
                 let f = fly(type, release(sw.mapping, type, power: p, quality: 1, tilt: 0))
                 let at = "\(sw.mapping) \(sw.type) charge \(p)"
-                worstFlight = Swift.max(
-                    worstFlight,
-                    Swift.max(abs(f.carry - sw.carry[i]), abs(f.drift - sw.drift[i])))
                 Check.near(f.carry, sw.carry[i], flightTol, "\(at) carry")
                 Check.near(f.drift, sw.drift[i], flightTol, "\(at) drift")
                 // One step of slack: the flight ends on a threshold, not on a step count.

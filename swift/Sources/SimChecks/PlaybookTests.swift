@@ -291,9 +291,6 @@ enum PlaybookTests {
     /// against a platform libm; in practice the observed deviation is 0 or 1.
     private static let ULPS = 4.0
 
-    nonisolated(unsafe) static var worst = 0.0
-    nonisolated(unsafe) static var worstUlps = 0.0
-
     /// The regulation pitch — the only geometry `Playbook.ts` can express, and
     /// therefore the only one the fixtures describe.
     private static let pb = Playbook.regulation
@@ -312,9 +309,6 @@ enum PlaybookTests {
         claims()
         minisPitch()
         minisShape()
-
-        // `worst`/`worstUlps` are redundant with the report: every sample that could
-        // move them went through `nearUlp()`, which already asserts `d <= tol` per call.
     }
 
     // MARK: - constants
@@ -1541,8 +1535,6 @@ enum PlaybookTests {
         let d = abs(got - want)
         let unit = want == 0 ? Double.ulpOfOne : want.ulp
         let tol = ULPS * unit
-        worst = Swift.max(worst, d)
-        worstUlps = Swift.max(worstUlps, d / unit)
         Check.ok(d <= tol, "\(what): off by \(d) (\(d / unit) ulp; got \(got), want \(want))")
     }
 }

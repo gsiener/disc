@@ -77,10 +77,6 @@ enum FlightTests {
     /// integration smooths.
     static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
-    nonisolated(unsafe) static var worstPosRatio = 0.0
-    nonisolated(unsafe) static var worstPosAbs = 0.0
-    nonisolated(unsafe) static var worstPosLabel = "none"
-
     static func run() throws {
         let g = try Goldens.load(File.self, "flight")
         Check.near(g.fixedDt, 1.0 / 120.0, 1e-18, "fixture stepped at the engine's fixed dt")
@@ -91,8 +87,6 @@ enum FlightTests {
         }
 
         physicalProperties()
-        // `worstPosAbs`/`worstPosRatio`/`worstPosLabel` are redundant with the report:
-        // `compare()` already asserts `d <= tol` on every sample that could move them.
     }
 
     /// Re-run a scenario in Swift from the same release state and compare sample by sample.
@@ -139,12 +133,6 @@ enum FlightTests {
 
         let dp = [s.pos.x - want.pos[0], s.pos.y - want.pos[1], s.pos.z - want.pos[2]]
         for (axis, d) in zip(["x", "y", "z"], dp) {
-            let ratio = abs(d) / pTol
-            if ratio > worstPosRatio {
-                worstPosRatio = ratio
-                worstPosAbs = abs(d)
-                worstPosLabel = "\(name) t=\(String(format: "%.2f", t)) pos.\(axis)"
-            }
             Check.ok(
                 abs(d) <= pTol,
                 "\(name) sample \(i) (t=\(t)) pos.\(axis) — off by \(d), tolerance \(pTol)")

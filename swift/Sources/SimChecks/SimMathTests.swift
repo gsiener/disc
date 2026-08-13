@@ -40,8 +40,6 @@ enum SimMathTests {
     /// four-argument form for the quaternion norm. Everything else is exact.
     static let hypotTol = 1e-15
 
-    nonisolated(unsafe) static var worstNormDeviation = 0.0
-
     static func run() throws {
         let g = try Goldens.load(File.self, "simmath")
         Check.eq(g.cases.count, 221, "simmath goldens cover the full case set")
@@ -69,14 +67,10 @@ enum SimMathTests {
             Check.bitEqViaJSON(conj.z, c.conjugate[2], "\(at) conjugate.z")
             Check.bitEqViaJSON(conj.w, c.conjugate[3], "\(at) conjugate.w")
 
-            let deviation = abs(q.length - c.quatNorm)
-            worstNormDeviation = Swift.max(worstNormDeviation, deviation)
             Check.near(q.length, c.quatNorm, hypotTol, "\(at) quaternion norm")
         }
 
         algebraicIdentities()
-        // `worstNormDeviation` is redundant with the report: every sample that could
-        // move it already went through `Check.near(..., hypotTol, ...)` above.
     }
 
     private static func expectVec(_ got: Vec3d, _ want: [Double], _ what: String) {

@@ -102,9 +102,6 @@ enum ThrowSolverTests {
         let e = Engine(format: .sevens, seed: 1)
         let rt = DiscRuntime()
 
-        var worstSolve = 0.0
-        var worstVel = 0.0
-        var worstFlight = 0.0
         var skipped = 0
         var total = 0
 
@@ -178,20 +175,12 @@ enum ThrowSolverTests {
                 Check.near(req.bank ?? 0, c.solved.bank, 1e-9, "\(label): release bank")
                 Check.near(req.aim.x, c.solved.aimX, 1e-9, "\(label): corrected heading x")
                 Check.near(req.aim.z, c.solved.aimZ, 1e-9, "\(label): corrected heading z")
-                worstSolve = Swift.max(
-                    worstSolve,
-                    Swift.max(
-                        abs(req.angle - c.solved.angle),
-                        Swift.max(
-                            abs(req.aim.x - c.solved.aimX),
-                            abs((req.bank ?? 0) - c.solved.bank))))
 
                 // The velocity handed to the disc.
                 let vel = rt.release(req)
                 Check.near(vel.x, c.released.x, 1e-9, "\(label): release velocity x")
                 Check.near(vel.y, c.released.y ?? 0, 1e-9, "\(label): release velocity y")
                 Check.near(vel.z, c.released.z, 1e-9, "\(label): release velocity z")
-                worstVel = Swift.max(worstVel, abs(vel.x - c.released.x))
 
                 // And the flight it produces, end to end.
                 var closest = Double.infinity
@@ -206,15 +195,11 @@ enum ThrowSolverTests {
                 Check.near(closest, c.flight.closest, 1e-6, "\(label): closest approach to the aim")
                 Check.near(rt.state.pos.x, c.flight.restX, 1e-6, "\(label): comes to rest at x")
                 Check.near(rt.state.pos.z, c.flight.restZ, 1e-6, "\(label): comes to rest at z")
-                worstFlight = Swift.max(worstFlight, abs(closest - c.flight.closest))
             }
         }
 
         Check.eq(skipped, 0, "every throw type in the fixture exists in the aero table")
         Check.ok(total > 200, "the solver fixture has cases (\(total))")
-        // `worstSolve`/`worstVel`/`worstFlight` are redundant with the report: every
-        // sample that could move them already went through its own `Check.near` above,
-        // each at a stated tolerance (1e-9 / 1e-6).
 
         shortAsksStayShort()
     }
