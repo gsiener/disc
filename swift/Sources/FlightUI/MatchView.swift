@@ -123,6 +123,15 @@ public struct MatchView: View {
     /// every other caller, including the macOS scope, where there are no tabs.
     private let active: Bool
 
+    /// Mirrors `running` outward, for a host that wants to know without duplicating the
+    /// five-condition definition below. Issue #54: the tab bar's chrome blocks the
+    /// drag-to-throw gesture area, so `UltimateApp` hides it while this is true and
+    /// shows it the moment the player is at the sheet, paused, or the result card —
+    /// exactly the moments a way back to the other tabs is needed and the screen space
+    /// is not being fought over. Defaults to a no-op binding so every other caller
+    /// (previews, macOS, existing call sites) is unaffected.
+    private let isPlaying: Binding<Bool>
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// Set whenever the app stops being frontmost, and cleared only by a tap.
@@ -426,8 +435,12 @@ public struct MatchView: View {
     /// cancel that fails exactly when you are panicking.
     private static let cancelRadius = 26.0
 
-    public init(options: LaunchOptions = .defaults, active: Bool = true) {
+    public init(
+        options: LaunchOptions = .defaults, active: Bool = true,
+        isPlaying: Binding<Bool> = .constant(false)
+    ) {
         self.active = active
+        self.isPlaying = isPlaying
         self.showsProbe = options.showsProbe
         self.startingPullTeam = options.receiveTeam
         self.skipsSetup = options.skipsSetup
@@ -584,6 +597,13 @@ public struct MatchView: View {
         // taught the gesture should be taught it however the app was started.
         .onAppear {
             if skipsSetup && !Prefs.coachSeen { showCoach = true }
+            isPlaying.wrappedValue = running
+        }
+        // See `isPlaying`'s comment: kept in step with `running` so a host can hide its
+        // own chrome exactly while there is a gesture underneath it to protect, and show
+        // it again — sheet, pause, result card — the moment the player might need it.
+        .onChange(of: running) { _, now in
+            isPlaying.wrappedValue = now
         }
     }
 

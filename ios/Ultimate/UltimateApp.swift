@@ -61,6 +61,17 @@ struct UltimateApp: App {
 
     @State private var tab: Int = UltimateApp.launchOptions.requestedTab
 
+    /// Mirrors `MatchView.isPlaying` while Play is the selected tab. Issue #54: the tab
+    /// bar's chrome sits over the drag-to-throw gesture area and blocks it, so the bar
+    /// is hidden while this is true — see `root`. It is not simply "is tab 0 selected":
+    /// a plain `TabView` (unlike a `.page`-style one) has no swipe between tabs, so
+    /// hiding the bar for the whole time Play is selected would strand a player with no
+    /// way back to Pitch/Flight/Checks/Speed. Gating on "a point is actually live" as
+    /// well means the bar is back the moment the player is at the pre-game sheet,
+    /// paused, or looking at a result card — precisely when they might want another tab,
+    /// and precisely when the screen space isn't being fought over by a gesture.
+    @State private var matchIsPlaying = false
+
     var body: some Scene {
         WindowGroup {
             root.preferredColorScheme(.dark)
@@ -75,8 +86,10 @@ struct UltimateApp: App {
                 // so without this the match and the flight loop both keep running behind
                 // whatever is on screen.
                 MatchView(
-                    options: Self.launchOptions, active: tab == 0)
+                    options: Self.launchOptions, active: tab == 0,
+                    isPlaying: $matchIsPlaying)
                     .tabItem { Label("Play", systemImage: "figure.run") }.tag(0)
+                    .toolbar(tab == 0 && matchIsPlaying ? .hidden : .visible, for: .tabBar)
                 PitchView(active: tab == 1)
                     .tabItem { Label("Pitch", systemImage: "sportscourt") }.tag(1)
                 FlightView()
