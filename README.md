@@ -28,7 +28,8 @@ but it is not where the game lives anymore.
 > against a 65–75% target ([issue #10](https://github.com/gsiener/disc/issues/10),
 > a genuinely noisy metric — three re-measurements at growing sample sizes have
 > read 64%, 47%, then 60%, none of them in band). Eleven XCUITest gestures verify
-> the controls with real touches on every push.
+> the controls with real touches on pushes; the touch job is deliberately separate
+> from the simulator build.
 >
 > What is left is in [the issues](https://github.com/gsiener/disc/issues), and the
 > largest item cannot be done by an agent: **nobody has played it for fun yet.**
@@ -37,8 +38,8 @@ but it is not where the game lives anymore.
 ## The iOS game
 
 ```bash
-cd swift && swift run -c release SimTests   # the differential suite (terminal)
-cd ios && xcodegen && xcodebuild -project Ultimate.xcodeproj -scheme Ultimate \
+(cd swift && swift build -c release --product SimTests && .build/release/SimTests)
+cd ios && xcodegen generate && xcodebuild -project Ultimate.xcodeproj -scheme Ultimate \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
 
@@ -108,12 +109,66 @@ change lands in `src/sim/`, is mirrored in Swift, and the goldens are
 regenerated — never the other way around, and never by editing a JSON.
 
 ```bash
-node --experimental-strip-types tools/gen-goldens.ts   # regenerate fixtures
-cd swift && swift run -c release SimTests              # replay them
+node --experimental-strip-types tools/check-goldens.ts # check platform/freshness provenance
+cd swift && swift build -c release --product SimTests
+.build/release/SimTests                                # replay the goldens
 ```
 
-CI (`.github/workflows/ci.yml`) runs the suite and the simulator build on every
-push.
+The reference must evolve first: regenerate only the fixture families you own with
+`node --experimental-strip-types tools/gen-goldens.ts <family> ...`, then run the
+freshness check. Do not hand-edit JSON fixtures or regenerate all families casually;
+some values are platform-sensitive (#41).
+
+## Focused validation
+
+Install the pinned Node version (`.nvmrc`, currently 26.7.0), then install
+dependencies and run the reference/tooling checks:
+
+```bash
+nvm use
+npm ci
+npm test
+```
+
+`npm test` is the fast TypeScript validation path: parsing, typechecking
+(`src/` and `tools/`), imports, structure, reachability, and golden-generator
+tests. `npm run reference:goldens:check` is the focused #41 provenance and
+freshness check.
+
+The Swift behavior gate is the differential executable, not the standalone
+gameplay scripts:
+
+```bash
+cd swift
+swift build -c release --product SimTests
+.build/release/SimTests
+```
+
+The gameplay suites under `tools/test-*.ts` are useful diagnostics and
+exploration aids; their known, noisy failures are not a behavior gate for this
+repository. The Swift `SimTests` result and the iOS build are the focused
+simulation checks.
+
+The only validation that drives the product like a player is the dedicated
+`UltimateUITests` XCUITest scheme. Generate the project, choose an available
+iOS Simulator (a dedicated simulator is preferred; do not shut down another
+agent's device), and run:
+
+```bash
+cd ios
+xcodegen generate
+xcodebuild test -project Ultimate.xcodeproj -scheme UltimateUITests \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  CODE_SIGNING_ALLOWED=NO
+```
+
+For a machine whose device names differ, replace `name=...` with an available
+simulator UDID from `xcrun simctl list devices available`. CI builds the UI
+tests once with `build-for-testing`, then runs the two shards with
+`test-without-building`; this keeps boot/build failures distinct from gesture
+failures (#46). The suite includes the save/restore and REMATCH lifecycle
+coverage added for #43, including the `-savecycle` path. XCUITest is the
+player-facing behavior gate; the reference suites do not claim to replace it.
 
 ## Repository map
 
