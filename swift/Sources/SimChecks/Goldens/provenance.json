@@ -37,7 +37,6 @@
   "teamai": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",
-    "commit": "430c55f125c5fac7f2766a68967f5d3a59894e6f",
-    "dirty": true
+    "commit": "fed70805aaf85a00414866bd3f96b62ae072985c"
   }
 }
