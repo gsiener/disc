@@ -829,7 +829,7 @@ function liveSystem(tier: QualityTier = 'high'): { sys: AudioSystem; ctx: any; a
   ok(Math.abs(lx.target - (-26)) < 1e-6, 'the listener sits at the camera', `${lx.target}`);
   ok(Math.abs(ac.listener.forwardZ.target - (-1)) < 1e-6, 'the listener faces the camera forward axis');
 
-  ok(sys.debug().voices >= 0, 'debug() reports a voice count');
+  ok((sys.debug().voices as number) >= 0, 'debug() reports a voice count');
   sys.dispose();
   ok(!sys.running && sys.graph === null, 'dispose() tears the graph down');
 }

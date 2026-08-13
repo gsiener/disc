@@ -6,10 +6,6 @@
   "include": ["tools"],
   "exclude": [
     "tools/_*.ts",
-    "tools/_*.mjs",
-    "tools/test-game.ts",
-    "tools/test-ai.ts",
-    "tools/test-locomotion.ts",
-    "tools/test-audio.ts"
+    "tools/_*.mjs"
   ]
 }

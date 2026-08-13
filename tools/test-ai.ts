@@ -48,8 +48,8 @@ import {
   createTeamAI, updateTeam, makePlayer, catchProbability, reachHeight,
   restBetweenPoints, layoutExtend, effectiveMaxSpeed, effectiveAccel, shouldBid,
   type AIPlayer, type AIWorld, type PlayerIntent, type DiscState,
-  type Archetype, type FlightSample, type TeamAI, type PlayerAction,
-  type TeamConfig,
+  type DiscPhase, type Archetype, type FlightSample, type TeamAI,
+  type PlayerAction, type TeamConfig,
 } from '../src/sim/AI.ts';
 import {
   FIELD, SeededRng, clamp, dist2, openSideSign, markPoint, formationStations,
@@ -795,7 +795,7 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
       if (setupTimer <= 0) world.phase = 'live';
     }
 
-    if (process.env.AI_TRACE && disc.state.state === 'flight' && disc.flight
+    if (process.env.AI_TRACE && (disc.state.state as DiscPhase) === 'flight' && disc.flight
         && disc.state.intendedReceiver != null && true) {
       const rr = byId.get(disc.state.intendedReceiver);
       const ii = sim.lastIntents?.find((q) => q.id === disc.state.intendedReceiver);
@@ -815,7 +815,7 @@ function runPoint(sim: Sim, index: number, receiving: 0 | 1, log: boolean): Poin
      * One entry per body per flight, taken on the frame the bid is first
      * declared and against the disc state the AI itself was looking at.
      */
-    if (disc.state.state === 'flight' && disc.flight) {
+    if ((disc.state.state as DiscPhase) === 'flight' && disc.flight) {
       for (const it of intents) {
         if (it.action?.kind !== 'bid' && it.mode !== 'layout') continue;
         if (bidSeen.has(it.id)) continue;

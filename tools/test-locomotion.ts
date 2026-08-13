@@ -8,7 +8,7 @@
  */
 import * as THREE from 'three';
 import { Rng } from '../src/core/Ctx.ts';
-import { Locomotion, fromAIAttributes } from '../src/sim/Locomotion.ts';
+import { Locomotion, fromAIAttributes, type AthleteLike } from '../src/sim/Locomotion.ts';
 import type { DesiredMove, LocoPlayer } from '../src/sim/move/Types.ts';
 
 const DT = 1 / 120;
@@ -750,7 +750,7 @@ function testAIAdapter(): void {
     if (windup) run(L, a, { dir: dir(0, 1), mode: 'sprint' }, windup);
     const base = new THREE.Vector3(a.pos.x, 0, a.pos.z);
     const gx = base.x + tx, gz = base.z + tz;
-    const predicted = L.timeToReach(a, gx, gz);
+    const predicted = L.timeToReach(a as unknown as AthleteLike, gx, gz);
     let actual = -1;
     for (let i = 0; i < 120 * 12; i++) {
       L.step(a, { dir: dir(gx - a.pos.x, gz - a.pos.z), mode: 'sprint' }, DT);

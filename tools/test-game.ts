@@ -470,6 +470,8 @@ const norm = (x: number, z: number): { x: number; z: number } => {
 
 /** The minimum a peer must look like for GameSystem to read a human off it. */
 class StubInput {
+  readonly name = 'input';
+  init(): void {}
   readonly human = { buffer: new InputBuffer({ window: 0.5 }) };
   readonly intent: PlayerIntent = makeIntent(0, 'human');
   private n = 0;
@@ -917,6 +919,8 @@ function defenceRun(seed: number, want: 'mark' | 'matchup', opts: {
     px: number; pz: number; tx: number; tz: number; ctx: string;
     /** Signed angle off the mark point the force implies, radians. */
     shade: number;
+    /** Seconds of unbroken live play preceding this sample. */
+    live: boolean;
   }[] = [];
   let geo: { ux: number; uz: number } | null = null;
   let force: -1 | 1 = 1;
