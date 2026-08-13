@@ -2369,7 +2369,8 @@ export class TeamAI {
 
         const flightTime = throwFlightTime(thrower, type, d);
         const path = this.flightPath(thrower.pos, aim, flightTime, type);
-        const blockage = this.laneBlockage(path, marker, r);
+        const foeZone = world.scheme[1 - this.team as 0 | 1] === 'zone';
+        const blockage = this.laneBlockage(path, marker, r, foeZone);
         const separation = this.separationAt(r, aim, flightTime);
 
         // Break penalty scales with how well the mark is actually positioned.
@@ -2637,40 +2638,51 @@ export class TeamAI {
 
   /**
    * Is a defender's body in the flight path? Samples the first 78% of the
-   * flight for the receiver's own coverage (the tail is priced as separation)
-   * and the WHOLE flight for anyone else, and asks whether each defender can
-   * get a hand into that window.
+   * flight (the tail is the receiver's defender, priced as separation) and
+   * asks whether each defender can get a hand into that window — except
+   * against a called ZONE, where the tail is sampled in full for every
+   * defender who is not the receiver's own coverage.
    *
-   * **The 78% cutoff used to apply to every defender, and that was blind to
-   * exactly the body zone defence is built around.** It assumed the only
-   * threat in the last 22% of flight is the receiver's own man, already priced
-   * by `separationAt` — true in person defence, where one body covers one
-   * receiver, and false in zone, where a help defender who is nobody's "man"
-   * closes on the catch point in that same window. Issue #57 Phase 1a measured
-   * 227 blocked windy throws: 73.6% landed past this cutoff, and for the three
-   * zone roles built to arrive late — wing-open, short-deep, wing-break — it
-   * was 97-100%, together 69% of every block in the sample. Cup roles, which
-   * sit close to the mark from release, were already inside the window 98-100%
-   * of the time and are untouched by this change.
+   * **The 78% cutoff was blind to exactly the body zone defence is built
+   * around.** It assumed the only threat in the last 22% of flight is the
+   * receiver's own man, already priced by `separationAt` — true in person
+   * defence, where one body covers one receiver, and false in zone, where a
+   * help defender who is nobody's "man" closes on the catch point in that
+   * same window. Issue #57 Phase 1a measured 227 blocked windy throws: 73.6%
+   * landed past this cutoff, and for the three zone roles built to arrive
+   * late — wing-open, short-deep, wing-break — it was 97-100%, together 69%
+   * of every block in the sample. Cup roles, which sit close to the mark from
+   * release, were already inside the window 98-100% of the time and are
+   * untouched by this change.
    *
-   * So the cutoff now applies only to the same two candidates `separationAt`
-   * already prices for THIS receiver — nearest to his current position and
-   * nearest to the throw's aim point, mirroring its own candidate selection so
-   * nothing is charged twice for the same body. Every other defender, zone
-   * helper included, is sampled through to the catch.
+   * The extension is gated on `foeZone` rather than applied everywhere on
+   * purpose. Trying it unconditionally moved the calm-day and huck numbers
+   * too: `onMan`/`onDisc` are a good enough proxy for "the receiver's real
+   * coverage" for `separationAt`'s own late-flight purpose, but they are
+   * imperfect stand-ins for it, and applying the extension whenever they
+   * happened to miss the real man — routine in person defence whenever a cut
+   * has actually created separation — reached into throws that had nothing
+   * to do with zone at all and pulled calm-day completion down with them.
+   * Gating on the opponent's actual scheme call scopes the fix to the
+   * mechanism it was measured on and leaves every person-defence throw
+   * (`foeZone` false) on the exact path this function always took.
    */
-  private laneBlockage(path: FlightSample[], marker: AIPlayer | null, receiver: AIPlayer): number {
+  private laneBlockage(
+    path: FlightSample[], marker: AIPlayer | null, receiver: AIPlayer, foeZone: boolean,
+  ): number {
     let worst = 0;
     const last = path[path.length - 1];
     const cut = last.t * 0.78;
 
     let onMan: AIPlayer | null = null; let bd = 1e9;
     let onDisc: AIPlayer | null = null; let ad = 1e9;
-    for (const f of this.foes) {
-      const d = dist2(f.pos.x, f.pos.z, receiver.pos.x, receiver.pos.z);
-      if (d < bd) { bd = d; onMan = f; }
-      const a = dist2(f.pos.x, f.pos.z, last.x, last.z);
-      if (a < ad) { ad = a; onDisc = f; }
+    if (foeZone) {
+      for (const f of this.foes) {
+        const d = dist2(f.pos.x, f.pos.z, receiver.pos.x, receiver.pos.z);
+        if (d < bd) { bd = d; onMan = f; }
+        const a = dist2(f.pos.x, f.pos.z, last.x, last.z);
+        if (a < ad) { ad = a; onDisc = f; }
+      }
     }
 
     for (const f of this.foes) {
@@ -2685,7 +2697,7 @@ export class TeamAI {
         // lane, and pretending otherwise is how a reset gets blocked.
         if (isMark) {
           if (s.t > 0.42) continue;
-        } else if (isCovered) {
+        } else if (!foeZone || isCovered) {
           if (s.t > cut || s.t < 0.05) continue;
         } else if (s.t < 0.05) continue;
         if (s.y > reach || s.y < 0.15) continue;
