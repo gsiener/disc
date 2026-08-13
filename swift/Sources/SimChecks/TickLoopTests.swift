@@ -282,22 +282,45 @@ enum TickLoopTests {
     }
 
     /// Drives fresh engines across a handful of seeds, tick by tick, looking for the first
-    /// `.turnover` event with `grade == .layout` — the one thing that starts a hitstop.
-    /// Returns the seed and the 1-based tick count at which it drained.
+    /// `.turnover` event with `grade == .layout` **that actually starts a hitstop** —
+    /// not just the first tick the event is drained on. Returns the seed and the 1-based
+    /// tick count at which it drained.
+    ///
+    /// **Driven through `TickLoopDriver`/`MatchDirector`, not a bare `Engine.step` loop —
+    /// issue #56.** A layout turnover only starts a hitstop when `FrameClock.canSlow`'s
+    /// cooldown has cleared, and that cooldown is real (wall-clock) time, not tick count.
+    /// A bare `e.step` loop has no `FrameClock` at all, so it cannot see a hitstop the
+    /// cooldown would refuse — and both call sites below replay the discovered tick
+    /// through a real `TickLoopDriver`, expecting a hitstop to fire there. Before issue
+    /// #56's formation fix, every seed in this sweep happened to reach its first layout
+    /// turnover with the cooldown clear; the fix changed match trajectories enough that
+    /// seed 103's first layout turnover now lands a few ticks after an earlier
+    /// hitstop-eligible catch, inside that catch's cooldown — a real event the old
+    /// bare-loop discovery had no way to see coming. Driving discovery through the same
+    /// `MatchDirector` the scenarios themselves use makes "found" and "reproduces" the
+    /// same claim: steady ticking here keeps wall time in exact lockstep with tick count
+    /// (one `tickDt` of both per call), which is exactly what `runSteady` guarantees in
+    /// the scenarios that replay this tick, so the cooldown state at any given tick is
+    /// identical between discovery and replay.
     private static func findLayoutTurnover() -> (seed: UInt32, tick: Int)? {
         for seed: UInt32 in [11, 23, 37, 53, 71, 89, 103, 127] {
-            let e = Engine(format: .minis, seed: seed)
-            e.autoTeams = [0, 1]
-            var tick = 0
+            let d = TickLoopDriver(match: Engine(format: .minis, seed: seed))
+            d.match.autoTeams = [0, 1]
+            var now = 0.0
+            d.advance(to: now, running: true)
             for _ in 0..<(120 * 300) {
-                e.step(dt: TickLoopDriver.tickDt)
-                tick += 1
-                for event in e.drainEvents() {
-                    if case .turnover(_, _, _, _, .layout, _) = event {
-                        return (seed, tick)
-                    }
+                now += TickLoopDriver.tickDt
+                let before = d.drainedEvents.count
+                let hitstopsBefore = d.hitstopsStarted
+                d.advance(to: now, running: true)
+                let sawLayoutTurnover = d.drainedEvents[before...].contains {
+                    if case .turnover(_, _, _, _, .layout, _) = $0 { return true }
+                    return false
                 }
-                if e.isOver { break }
+                if sawLayoutTurnover && d.hitstopsStarted > hitstopsBefore {
+                    return (seed, d.tickCount)
+                }
+                if d.match.isOver { break }
             }
         }
         return nil

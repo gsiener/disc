@@ -323,16 +323,24 @@ let allSuites: [Suite] = [
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 408),
     Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 651),
-    Suite(name: "engine", run: EngineTests.run, minAssertions: 1587533),
+    // Floor lowered from 1587533 with issue #56's stagePoint formation fix: a genuinely
+    // different pulling-team opening shape shifts match trajectories (different
+    // score/turnover timing downstream of a real pull-position change) enough to move
+    // this real, deterministic count. Measured 1587509 in an isolated worktree at the
+    // commit that made the change; not chased further, per this repo's own guidance on
+    // per-seed bands moving as expected fallout of a real behaviour fix.
+    Suite(name: "engine", run: EngineTests.run, minAssertions: 1587509),
     Suite(name: "engineseam", run: EngineSeamTests.run, minAssertions: 149),
-    Suite(name: "events", run: EventTests.run, minAssertions: 125),
+    // Floor lowered from 125 to 123 for the same reason as `engine` above — issue #56.
+    Suite(name: "events", run: EventTests.run, minAssertions: 123),
     Suite(name: "humandefence", run: HumanDefenceTests.run, minAssertions: 20),
     Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
     Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
     Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4482),
     Suite(name: "replay", run: ReplayTests.run, minAssertions: 258),
-    Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 35),
+    // Floor lowered from 35 to 34 for the same reason as `engine` above — issue #56.
+    Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 34),
     Suite(name: "permatchreset", run: PerMatchResetTests.run, minAssertions: 21),
     Suite(name: "matchsession", run: MatchSessionTests.run, minAssertions: 39),
     Suite(name: "clock", run: ClockTests.run, minAssertions: 40),

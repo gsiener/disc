@@ -214,17 +214,26 @@ enum HumanCutTests {
         // different athlete to each named seed, so whether a given seed's backfield happens
         // to offer a body behind the disc at the probed moment shifts with it. The actual
         // claim this floor guards — every tap behind the disc still classifies as a reset,
-        // `resetRight == resetAsked` below — has no failures. Floor moved from 4 to 2, one
-        // seed of room below the new measurement, matching how the deep floor already sits
-        // two below its own near-total 7 of 8.
+        // `resetRight == resetAsked` below — has no failures.
+        //
+        // **Remeasured again after issue #56's `stagePoint`/`lineUpForPull` formation fix:
+        // 1 of 8, not 3.** The pulling team's opening shape moved (hard against the
+        // sidelines, one row deep, matching the reference exactly instead of a generic
+        // `(slot/span - 0.5) * width` shape), which shifts where each seed's possession
+        // sits at the moment this probe fires — the same kind of seed-sensitive shift the
+        // issue #2 remeasurement above describes, one fix further downstream. Floor moved
+        // from 2 to 1: there is no room to spare below the new measurement because a
+        // possession pinned on its own goal line — the case the comment above already
+        // names as offering no backfield space — is now the common case rather than the
+        // exception at this probed moment, not because the underlying claim weakened.
         Check.ok(
             deepAsked >= 7,
             "there was a downfield space to point at on nearly every seed (\(deepAsked) of "
                 + "\(reached))")
         Check.ok(
-            resetAsked >= 2,
-            "and a backfield one on some of them (\(resetAsked) of \(reached); 3 after issue "
-                + "#2's roster fix)")
+            resetAsked >= 1,
+            "and a backfield one on some of them (\(resetAsked) of \(reached); 1 after issue "
+                + "#56's formation fix)")
         Check.eq(
             deepRight, deepAsked,
             "every tap into the deep space is a deep cut (\(deepRight) of \(deepAsked))"
