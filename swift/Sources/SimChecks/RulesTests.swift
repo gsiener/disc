@@ -363,6 +363,17 @@ enum RulesTests {
                 "\(name): the brick mark sits BRICK_IN in from the goal line")
         }
 
+        // `FieldSpec` (the setup-UI's pitch preset, `Play/PlayTypes.swift`) and
+        // `GameFormat` (the engine's pitch, this file) used to spell the same two
+        // presets as two independent literal sets with nothing asserting they agreed —
+        // worse than the free-function duplication #45 was filed about, because that one
+        // at least had a test. `FieldSpec.full`/`.minis` now derive their length/width/
+        // endzoneDepth/teamSize from `GameFormat.sevens`/`.minis` instead of retyping the
+        // numbers, so this is checking the derivation formula (`FieldSpec.gameFormat`),
+        // not two hardcoded copies.
+        Check.eq(FieldSpec.full.gameFormat, GameFormat.sevens, "FieldSpec.full agrees with GameFormat.sevens")
+        Check.eq(FieldSpec.minis.gameFormat, GameFormat.minis, "FieldSpec.minis agrees with GameFormat.minis")
+
         // USAU 16.G double-team radius is ten feet, not a round number of metres.
         Check.bitEq(DEFAULT_RULES.doubleTeamRange, 3.048, "double-team radius is 10 ft = 3.048 m")
         Check.bitEq(DEFAULT_RULES.discSpace, 0.274, "disc space is one disc diameter")

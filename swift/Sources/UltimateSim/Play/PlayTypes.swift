@@ -40,15 +40,26 @@ public struct FieldSpec: Equatable, Sendable {
         self.target = target
     }
 
-    /// Regulation 7v7. USAU dimensions.
+    /// Regulation 7v7. USAU dimensions — `GameFormat.sevens`'s, not a second copy of
+    /// them. `RulesTests` asserts `FieldSpec.full.gameFormat == GameFormat.sevens`, so
+    /// this and the engine's own preset cannot drift the way `Rules.FIELD` and the
+    /// free functions over it did (#45).
     public static let full = FieldSpec(
-        length: 100, width: 37, endzoneDepth: 18, teamSize: 7, target: 15)
+        length: GameFormat.sevens.field.length,
+        width: GameFormat.sevens.field.width,
+        endzoneDepth: GameFormat.sevens.field.endzoneDepth,
+        teamSize: GameFormat.sevens.playersPerSide,
+        target: 15)
 
     /// 3v3 in the space of a single endzone, turned so its long axis is the direction of
     /// play. Game to 7 — short enough to finish on a phone, long enough that one lucky
-    /// point does not decide it.
+    /// point does not decide it. `GameFormat.minis`'s pitch, not a second copy.
     public static let minis = FieldSpec(
-        length: 37, width: 18, endzoneDepth: 6, teamSize: 3, target: 7)
+        length: GameFormat.minis.field.length,
+        width: GameFormat.minis.field.width,
+        endzoneDepth: GameFormat.minis.field.endzoneDepth,
+        teamSize: GameFormat.minis.playersPerSide,
+        target: 7)
 
     // `inBounds(_:)`, `inAttackingEndzone(_:_:)` and `clamped(_:)` were here — all three
     // zero callers anywhere, including SimChecks. Deleted (#5). `FieldSpec` itself stays:
