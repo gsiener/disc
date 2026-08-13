@@ -37,6 +37,11 @@ targets:
         product: SimChecks
       - package: UltimateSim
         product: FlightUI
+      # The dependency-free launch and probe contract — issue #21. The app boundary
+      # resolves canonical launch-argument names and receive-side values through this
+      # product, and the probe producer/consumer share its key enum and identifier.
+      - package: UltimateSim
+        product: ProbeContract
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.grahamsiener.ultimate
@@ -133,6 +138,11 @@ targets:
       # test agrees with itself.
       - package: UltimateSim
         product: UltimateSim
+      # The launch and probe contract — issue #21. The UI-test bundle depends on the
+      # contract product, not on FlightUI, and reads the probe by accessibility
+      # identifier query rather than by calling app internals. VAL-CROSS-013.
+      - package: UltimateSim
+        product: ProbeContract
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.grahamsiener.ultimate.uitests

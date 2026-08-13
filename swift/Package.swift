@@ -22,6 +22,7 @@ let package = Package(
     products: [
         .library(name: "UltimateSim", targets: ["UltimateSim"]),
         .library(name: "SimChecks", targets: ["SimChecks"]),
+        .library(name: "ProbeContract", targets: ["ProbeContract"]),
         .library(name: "FlightUI", targets: ["FlightUI"]),
         .executable(name: "SimTests", targets: ["SimTests"]),
         .executable(name: "FlightScope", targets: ["FlightScope"]),
@@ -32,9 +33,21 @@ let package = Package(
         // FMA. Swift gives us that by default — this note is here so nobody adds a flag
         // that takes it away.
         .target(name: "UltimateSim"),
+
+        // The dependency-free launch and probe contract — issue #21. Canonical
+        // launch-argument names, receive-side values, probe keys, the probe
+        // accessibility identifier, and the wire-format parser live here so a rename
+        // is a compile error on both sides rather than a silent default at runtime.
+        // Must not import SwiftUI, RealityKit, UIKit, or UltimateSim.
+        .target(name: "ProbeContract"),
+
+        // `SimChecks` depends on both the sim and the contract, because the contract
+        // tests (ProbeContractTests) run through the same harness as the sim checks.
+        // UltimateSim still does not depend on ProbeContract — the layering boundary
+        // is preserved.
         .target(
             name: "SimChecks",
-            dependencies: ["UltimateSim"],
+            dependencies: ["UltimateSim", "ProbeContract"],
             resources: [.copy("Goldens")]
         ),
         .executableTarget(name: "SimTests", dependencies: ["SimChecks"]),
