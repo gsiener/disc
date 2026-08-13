@@ -291,42 +291,17 @@ public struct MatchView: View {
     static let tickHz = FrameClock.tickHz
     static let tickDt = FrameClock.tickDt
 
-    /// The turnover being shouted about, while there is one. Its `timeLeft` is burned
-    /// down by wall time in `advance`, so the shout lasts 1.5 s at any refresh rate.
+    /// The six wall-clock countdown toasts (`turnoverFlash`, `assistToast`, `handoff`,
+    /// `defenceCall`, `cutCall`, `refusedTap`) and the tap/refusal tallies (`offenceTaps`,
+    /// `refusals`, `widenedCalls`, `lastRefusal`, `refusalTally`), collected into one value
+    /// — issue #16, Phase 2. These used to be eleven separate `@State` lines here; see
+    /// `MatchSession` for the fields themselves and why they are one struct rather than
+    /// eleven properties.
     ///
-    /// Built from `Engine.drainEvents()` rather than from a box-score diff — see
-    /// `TurnoverFlash`, and `MatchEvent` for why the surface is a drained buffer.
-    @State var turnoverFlash: TurnoverFlash? = nil
-
-    /// The defender the player has just sent at the disc, while it is worth saying so.
-    /// See `DefenceCall`.
-    @State var defenceCall: DefenceCall? = nil
-
-    /// The cut the player has just called, while it is worth saying so. See `CutCall`.
-    @State var cutCall: CutCall? = nil
-
-    /// The tap the game would not take, while it is worth saying so. See `RefusedTap`.
-    @State var refusedTap: RefusedTap? = nil
-
-    /// The tap ledger, which is why this change is measurable rather than argued about.
-    ///
-    /// Three view-side counters, written only by `callCut`/`defend`/`refuse` and read only by
-    /// the probe: how many taps the offence took, how many taps of either half were turned
-    /// down, and how many of the accepted ones only landed because the empty cone was widened
-    /// to a right angle. `offenceTaps - refusals - widenedCalls` over `offenceTaps` is the hit
-    /// rate the 35° cone gets on its own, in the same run that measures the hit rate a player
-    /// now gets — which is the before-and-after the whole exercise asked for, taken with a
-    /// finger rather than modelled.
-    @State var offenceTaps = 0
-    @State var refusals = 0
-    @State var widenedCalls = 0
-    /// The reason the last refused tap gave, for the probe. Nil before the first one.
-    @State var lastRefusal: RefusedTap.Reason? = nil
-    /// Every refusal of the run, by reason. The last one says what the plate is showing; this
-    /// says what a whole session of tapping ran into, which is what a measurement needs — "11 of
-    /// 39 taps were refused" is not actionable until it is "7 of them named nobody and 4 were
-    /// taps that arrived after the disc changed hands".
-    @State var refusalTally: [String: Int] = [:]
+    /// A plain `@State` value (not a class, unlike `director`/`scene`): `MatchSession` is a
+    /// `struct`, so SwiftUI observes every mutation through this property exactly as it did
+    /// through the eleven separate ones — no `frame`-bump dependency needed for these reads.
+    @State var session = MatchSession()
 
     /// The last release the thumb made, with the hold that graded it. Written by
     /// `throwGesture` and read only by the probe — see `MatchProbe.Released` for why the
@@ -341,11 +316,6 @@ public struct MatchView: View {
     /// the app at all — which is precisely the failure this whole exercise is trying to rule
     /// out.
     @State var lastDragEnd: String = "-"
-
-    /// What the aim assist did to the last throw, while it is still worth saying.
-    @State var assistToast: AssistToast? = nil
-    /// The control swap being announced, while there is one.
-    @State var handoff: Handoff? = nil
 
     /// The scene in front of the camera: the entity handles, taken once when it was
     /// built, and the per-frame caches that keep the render pass from allocating.
@@ -658,7 +628,7 @@ public struct MatchView: View {
                 // touch that just happened rather than about the match, and it cannot collide
                 // with them: an accepted call clears it, and its own rectangle is clamped out
                 // of the plate strip. See `refusedOverlay`.
-                if let refused = refusedTap { refusedOverlay(refused, in: geo.size) }
+                if let refused = session.refusedTap { refusedOverlay(refused, in: geo.size) }
 
                 // Full time. Drawn over everything, including the callouts — once the
                 // game is over the only interesting fact left is the result, and the
@@ -858,38 +828,38 @@ public struct MatchView: View {
         // drained events and who (if anyone) took control, exactly as `FrameOutput`
         // documents, and this is where they become a haptic, a shout, a toast.
         for event in output.events {
-            if let flash = TurnoverFlash.make(event) { turnoverFlash = flash }
+            if let flash = TurnoverFlash.make(event) { session.turnoverFlash = flash }
             if let b = Feel.beat(for: event) { Feel.play(b) }
         }
         if let to = output.handoffTo {
-            handoff = Handoff(to: to, timeLeft: Handoff.duration)
+            session.handoff = Handoff(to: to, timeLeft: Handoff.duration)
         }
 
         // The callout clocks run on wall time, outside the simulation, like everything
         // else that is display and not physics.
-        if var flash = turnoverFlash {
+        if var flash = session.turnoverFlash {
             flash.timeLeft -= frameDt
-            turnoverFlash = flash.timeLeft > 0 ? flash : nil
+            session.turnoverFlash = flash.timeLeft > 0 ? flash : nil
         }
-        if var toast = assistToast {
+        if var toast = session.assistToast {
             toast.timeLeft -= frameDt
-            assistToast = toast.timeLeft > 0 ? toast : nil
+            session.assistToast = toast.timeLeft > 0 ? toast : nil
         }
-        if var h = handoff {
+        if var h = session.handoff {
             h.timeLeft -= frameDt
-            handoff = h.timeLeft > 0 ? h : nil
+            session.handoff = h.timeLeft > 0 ? h : nil
         }
-        if var call = defenceCall {
+        if var call = session.defenceCall {
             call.timeLeft -= frameDt
-            defenceCall = call.timeLeft > 0 ? call : nil
+            session.defenceCall = call.timeLeft > 0 ? call : nil
         }
-        if var call = cutCall {
+        if var call = session.cutCall {
             call.timeLeft -= frameDt
-            cutCall = call.timeLeft > 0 ? call : nil
+            session.cutCall = call.timeLeft > 0 ? call : nil
         }
-        if var refused = refusedTap {
+        if var refused = session.refusedTap {
             refused.timeLeft -= frameDt
-            refusedTap = refused.timeLeft > 0 ? refused : nil
+            session.refusedTap = refused.timeLeft > 0 ? refused : nil
         }
         // The hitstop's own fuse and its cooldown, burned in real seconds rather than
         // slowed ones — a 0.35 s hitstop that lasted 0.35 s of *game* time would run for
@@ -957,7 +927,7 @@ public struct MatchView: View {
                 if let assist = match.lastAssist {
                     let slot = match.selectedReceiver
                         .flatMap { id in match.players.firstIndex { $0.id == id } }
-                    assistToast = AssistToast.make(
+                    session.assistToast = AssistToast.make(
                         assist, jersey: slot.map(jersey), grade: grade)
                 }
             }
@@ -1016,7 +986,7 @@ public struct MatchView: View {
     /// right angle the runner the game picked would be behind the space the player pointed
     /// at, which is a worse answer than NOBODY THERE.
     private func callCut(at point: CGPoint, in size: CGSize) {
-        offenceTaps += 1
+        session.offenceTaps += 1
         guard let camera = scene.camera,
             let at = Self.groundPoint(tap: point, in: size, camera: camera)
         else { return refuse(.offPitch, at: point) }
@@ -1041,7 +1011,7 @@ public struct MatchView: View {
         let aim = (x: alternative.pos.x, z: alternative.pos.z)
         switch match.attemptCallCut(atX: aim.x, atZ: aim.z) {
         case .success(let called):
-            widenedCalls += 1
+            session.widenedCalls += 1
             accept(called, aimedAt: aim)
         case .failure(let reason):
             // A body was named, so in practice this is always `TeamAI.commandCut` having had
@@ -1061,9 +1031,9 @@ public struct MatchView: View {
         inputs.append(
             RecordedInput(tick: tickCount, input: .callCut(x: at.x, z: at.z)))
         Prefs.cutUsed = true
-        refusedTap = nil
+        session.refusedTap = nil
         let slot = match.players.firstIndex { $0.id == called.receiver }
-        cutCall = CutCall(
+        session.cutCall = CutCall(
             jersey: slot.map(jersey), kind: called.kind, timeLeft: CutCall.duration)
         Feel.play(.commit)
     }
@@ -1133,10 +1103,10 @@ public struct MatchView: View {
     /// `refusals` is the hit rate a finger actually gets, and `widenedCalls` is how much of it
     /// the widening bought. They are read by the probe and by nothing else — see `MatchProbe`.
     private func refuse(_ reason: RefusedTap.Reason, at point: CGPoint) {
-        refusals += 1
-        lastRefusal = reason
-        refusalTally[reason.rawValue, default: 0] += 1
-        refusedTap = RefusedTap(reason: reason, at: point, timeLeft: RefusedTap.duration)
+        session.refusals += 1
+        session.lastRefusal = reason
+        session.refusalTally[reason.rawValue, default: 0] += 1
+        session.refusedTap = RefusedTap(reason: reason, at: point, timeLeft: RefusedTap.duration)
     }
 
     /// The defensive half of the control scheme, and the whole of it: send your best
@@ -1167,7 +1137,7 @@ public struct MatchView: View {
         // that used to be one case short of the engine's own (issue #8/#9).
         switch match.attemptDefend() {
         case .success(let commit):
-            refusedTap = nil
+            session.refusedTap = nil
             // A tap that committed somebody is an input; a tap that was refused changed
             // nothing and is not one. `humanDefend` refuses identically on replay, so either
             // choice would restore correctly — recording only the taps that did something
@@ -1175,7 +1145,7 @@ public struct MatchView: View {
             inputs.append(RecordedInput(tick: tickCount, input: .defend))
             Prefs.defenceUsed = true
             let slot = match.players.firstIndex { $0.id == commit.defender }
-            defenceCall = DefenceCall(
+            session.defenceCall = DefenceCall(
                 jersey: slot.map(jersey), kind: commit.kind, timeLeft: DefenceCall.duration)
             Feel.play(.commit)
         case .failure(let reason):
@@ -1279,15 +1249,26 @@ public struct MatchView: View {
         paused = false
     }
 
-    /// Apply the shared per-match reset boundary — issue #43.
+    /// Apply the shared per-match reset boundary — issue #43, rewired by issue #16 Phase 2.
     ///
     /// Both `restart(_:)` and `adopt(_:from:setup:)` call this to clear all per-match
-    /// presentation and interaction state, so the two paths cannot drift. The
-    /// `PerMatchReset.Field` enum in `SimChecks` is the single source of truth for what
-    /// gets reset: this method switches exhaustively over `Field.allCases`, so adding a
-    /// field to the descriptor without handling it here is a **compile error**, not a
-    /// silent drift — the exact bug `adopt` had when it omitted the seven fields
-    /// `restart` was clearing.
+    /// presentation and interaction state, so the two paths cannot drift.
+    ///
+    /// **The eleven session fields are now one construction.** `session = MatchSession()`
+    /// replaces what used to be eleven individual `case` assignments in this switch — the
+    /// six countdown toasts and the five tap/refusal tallies all reset to their zero value
+    /// simultaneously, by construction, rather than field by field. `MatchSessionTests`
+    /// (in `SimChecks`) is what still guarantees `MatchSession`'s stored properties cannot
+    /// silently gain a field this reset misses: it Mirror-reflects the type itself, the
+    /// same seam this method's remaining switch relies on for the other seven fields.
+    ///
+    /// **The other seven fields are still an exhaustive switch.** `PerMatchReset.Field` in
+    /// `SimChecks` is the single source of truth for what gets reset: this switches
+    /// exhaustively over `Field.allCases`, so adding a field to the descriptor without
+    /// handling it here is a **compile error**, not a silent drift — the exact bug `adopt`
+    /// had when it omitted the seven fields `restart` was clearing (issue #43; those seven
+    /// turned out to all be session fields and are covered by the construction above
+    /// instead).
     ///
     /// `PerMatchResetTests.fieldEnumMatchesStructProperties` verifies by `Mirror`
     /// reflection that every `Field` case corresponds to a stored property and vice
@@ -1300,24 +1281,15 @@ public struct MatchView: View {
     /// unpaused, `adopt` lands paused. `hasStarted` is set by the caller. `restoreNote`
     /// is restart-only (a restore clears it before `adopt` runs).
     func applyPerMatchReset() {
-        // Exhaustive application of every PerMatchReset.Field case. The compiler
+        // One construction clears all eleven session fields at once — see the doc comment
+        // above for why this replaces a per-field switch case.
+        session = MatchSession()
+
+        // Exhaustive application of every remaining PerMatchReset.Field case. The compiler
         // enforces that every case is handled — adding a Field case without a branch
         // here is a compile error, not a silently missed assignment.
         for field in PerMatchReset.Field.allCases {
             switch field {
-            case .cutCall:          cutCall = nil
-            case .refusedTap:       refusedTap = nil
-            case .offenceTaps:      offenceTaps = 0
-            case .refusals:         refusals = 0
-            case .widenedCalls:     widenedCalls = 0
-            case .lastRefusal:      lastRefusal = nil
-            case .refusalTally:     refusalTally = [:]
-
-            case .defenceCall:      defenceCall = nil
-            case .turnoverFlash:    turnoverFlash = nil
-            case .assistToast:      assistToast = nil
-            case .handoff:          handoff = nil
-
             case .drag:             cancelDrag()
             case .sceneInvalidated: scene.invalidate()
             case .clockReset:       clock.reset()

@@ -180,9 +180,9 @@ extension MatchView {
         // The shared per-match reset — the same boundary `restart` uses. This clears the
         // seven restart-only presentation fields (cutCall, refusedTap, offenceTaps,
         // refusals, widenedCalls, lastRefusal, refusalTally) that were previously omitted
-        // here, plus all already-parallel shared fields (defenceCall, turnoverFlash,
-        // assistToast, handoff, drag, scene, clock, clearedAtEnd, restoring, resumable,
-        // lastControlled). Issue #43.
+        // here, via one `session = MatchSession()` construction, plus the non-session
+        // shared fields (drag, scene, clock, clearedAtEnd, restoring, resumable,
+        // lastControlled). Issue #43; the session split is issue #16 Phase 2.
         applyPerMatchReset()
 
         hasStarted = true

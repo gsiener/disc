@@ -111,19 +111,19 @@ extension MatchView {
         // reports the hit rate the 35° cone gets alone, `(taps - refused - wide) / taps`, and
         // the hit rate a player now gets, `(taps - refused) / taps`, from the same taps. See
         // `MatchView.callCut`.
-        put(.taps, "\(offenceTaps)")
-        put(.refused, "\(refusals)")
-        put(.wide, "\(widenedCalls)")
+        put(.taps, "\(session.offenceTaps)")
+        put(.refused, "\(session.refusals)")
+        put(.wide, "\(session.widenedCalls)")
         // And why the last one was refused, as `RefusedTap.Reason`'s own spelling, so a test
         // can name the refusal it expected instead of matching on the words on screen.
-        put(.refuse, lastRefusal?.rawValue ?? "-")
+        put(.refuse, session.lastRefusal?.rawValue ?? "-")
         // And every refusal of the run by reason, `reason:count` and `|`-separated, sorted so a
         // diff between two runs is a diff and not a re-ordering.
         put(
             .tally,
-            refusalTally.isEmpty
+            session.refusalTally.isEmpty
                 ? "-"
-                : refusalTally.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }
+                : session.refusalTally.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }
                     .joined(separator: "|"))
 
         // The rectangle the game is actually being played on, in the window's coordinates —
@@ -158,8 +158,8 @@ extension MatchView {
         put(.dragend, lastDragEnd)
 
         // The two order plates, as the words they are printing.
-        put(.cut, cutCall.map { "\($0.title)|\($0.detail)" } ?? "-")
-        put(.def, defenceCall.map { "\($0.title)|\($0.detail)" } ?? "-")
+        put(.cut, session.cutCall.map { "\($0.title)|\($0.detail)" } ?? "-")
+        put(.def, session.defenceCall.map { "\($0.title)|\($0.detail)" } ?? "-")
 
         put(.score, "\(match.score[0])-\(match.score[1])")
         flag(.over, match.isOver)

@@ -591,7 +591,7 @@ extension MatchView {
         // is re-read every frame rather than frozen at the swap, because in the third of
         // a second this lasts the player is running.
         if let pulse = scene.pulse {
-            if let h = handoff, let p = match.body(of: h.to) {
+            if let h = session.handoff, let p = match.body(of: h.to) {
                 pulse.isEnabled = true
                 pulse.position = [Float(p.pos.x), 0.02, Float(p.pos.z)]
                 pulse.scale = .init(repeating: Float(0.7 + 2.3 * h.progress))

@@ -162,7 +162,7 @@ extension MatchView {
     /// there, and this fires on *every* throw. It sits under the scoreboard, on the same
     /// plate treatment, small — it is a read-out you learn to glance at, not a shout.
     @ViewBuilder var assistReadout: some View {
-        if let toast = assistToast {
+        if let toast = session.assistToast {
             VStack(spacing: 1) {
                 Text(toast.title)
                     .font(.system(size: 15, weight: .heavy, design: .monospaced))
@@ -216,7 +216,7 @@ extension MatchView {
                 title: "DOWN",
                 tint: .orange,
                 detail: String(format: "BACK UP IN %.1fs", seconds))
-        } else if let call = defenceCall {
+        } else if let call = session.defenceCall {
             defencePlate(
                 id: "hud.defence",
                 title: call.title,
@@ -274,7 +274,7 @@ extension MatchView {
     /// plate telling them to tap while another explains why they cannot.
     @ViewBuilder var defenceHint: some View {
         if match.possession != 0, match.holder != nil || match.discInFlight,
-            defenceCall == nil, match.recovery(of: match.controlled) == nil,
+            session.defenceCall == nil, match.recovery(of: match.controlled) == nil,
             match.defensiveCommit == nil, !Prefs.defenceUsed, !match.isOver
         {
             Text("TAP TO ATTACK THE DISC")
@@ -298,7 +298,7 @@ extension MatchView {
     /// plate and the route are one sentence about one decision, the same argument
     /// `MatchScene.bidMarker` makes for the blue.
     @ViewBuilder var cutReadout: some View {
-        if let call = cutCall, match.possession == 0 {
+        if let call = session.cutCall, match.possession == 0 {
             defencePlate(
                 id: "hud.cut",
                 title: call.title,
@@ -317,7 +317,7 @@ extension MatchView {
     /// using.
     @ViewBuilder var cutHint: some View {
         if match.possession == 0, match.holder != nil, match.holder == match.controlled,
-            cutCall == nil, drag == nil, !Prefs.cutUsed, !match.isOver,
+            session.cutCall == nil, drag == nil, !Prefs.cutUsed, !match.isOver,
             match.recovery(of: match.controlled) == nil
         {
             Text("TAP THE SPACE TO SEND A CUTTER")
@@ -484,7 +484,7 @@ extension MatchView {
                 title: team == 0 ? "GOAL" : "THEIR POINT",
                 tint: team == 0 ? Color(red: 0.5, green: 1, blue: 0.62) : .orange,
                 subtitle: "\(match.score[0]) — \(match.score[1])")
-        } else if let flash = turnoverFlash {
+        } else if let flash = session.turnoverFlash {
             calloutPlate(
                 title: flash.text,
                 tint: flash.good ? Color(red: 0.5, green: 1, blue: 0.62) : .orange,
