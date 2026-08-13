@@ -2637,14 +2637,45 @@ export class TeamAI {
 
   /**
    * Is a defender's body in the flight path? Samples the first 78% of the
-   * flight (the tail is the receiver's defender, priced as separation) and asks
-   * whether each defender can get a hand into that window.
+   * flight for the receiver's own coverage (the tail is priced as separation)
+   * and the WHOLE flight for anyone else, and asks whether each defender can
+   * get a hand into that window.
+   *
+   * **The 78% cutoff used to apply to every defender, and that was blind to
+   * exactly the body zone defence is built around.** It assumed the only
+   * threat in the last 22% of flight is the receiver's own man, already priced
+   * by `separationAt` — true in person defence, where one body covers one
+   * receiver, and false in zone, where a help defender who is nobody's "man"
+   * closes on the catch point in that same window. Issue #57 Phase 1a measured
+   * 227 blocked windy throws: 73.6% landed past this cutoff, and for the three
+   * zone roles built to arrive late — wing-open, short-deep, wing-break — it
+   * was 97-100%, together 69% of every block in the sample. Cup roles, which
+   * sit close to the mark from release, were already inside the window 98-100%
+   * of the time and are untouched by this change.
+   *
+   * So the cutoff now applies only to the same two candidates `separationAt`
+   * already prices for THIS receiver — nearest to his current position and
+   * nearest to the throw's aim point, mirroring its own candidate selection so
+   * nothing is charged twice for the same body. Every other defender, zone
+   * helper included, is sampled through to the catch.
    */
   private laneBlockage(path: FlightSample[], marker: AIPlayer | null, receiver: AIPlayer): number {
     let worst = 0;
-    const cut = path[path.length - 1].t * 0.78;
+    const last = path[path.length - 1];
+    const cut = last.t * 0.78;
+
+    let onMan: AIPlayer | null = null; let bd = 1e9;
+    let onDisc: AIPlayer | null = null; let ad = 1e9;
+    for (const f of this.foes) {
+      const d = dist2(f.pos.x, f.pos.z, receiver.pos.x, receiver.pos.z);
+      if (d < bd) { bd = d; onMan = f; }
+      const a = dist2(f.pos.x, f.pos.z, last.x, last.z);
+      if (a < ad) { ad = a; onDisc = f; }
+    }
+
     for (const f of this.foes) {
       const isMark = f === marker;
+      const isCovered = f === onMan || f === onDisc;
       const reach = reachHeight(f);
       const v = effectiveMaxSpeed(f);
       const awareness = 0.55 + 0.45 * (f.attr.defAwareness / 100);
@@ -2652,7 +2683,11 @@ export class TeamAI {
         // The mark is planted, so he only counts in the release window and
         // only for what he can reach without running — but his body IS in the
         // lane, and pretending otherwise is how a reset gets blocked.
-        if (isMark ? s.t > 0.42 : (s.t > cut || s.t < 0.05)) continue;
+        if (isMark) {
+          if (s.t > 0.42) continue;
+        } else if (isCovered) {
+          if (s.t > cut || s.t < 0.05) continue;
+        } else if (s.t < 0.05) continue;
         if (s.y > reach || s.y < 0.15) continue;
         const hd = dist2(f.pos.x, f.pos.z, s.x, s.z);
         const reachable = isMark
@@ -2664,7 +2699,7 @@ export class TeamAI {
     }
     // A receiver already at the catch point shields their own space a little.
     return clamp(worst * (1 - 0.12 * smoothstep(6, 2, dist2(
-      receiver.pos.x, receiver.pos.z, path[path.length - 1].x, path[path.length - 1].z))), 0, 0.97);
+      receiver.pos.x, receiver.pos.z, last.x, last.z))), 0, 0.97);
   }
 
   /**
