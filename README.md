@@ -24,12 +24,13 @@ but it is not where the game lives anymore.
 > cutters off the disc (tap the space), and you commit a defender at the disc
 > (tap). Measured on 15-minute matches: **89.7% completion, 2.4% drops, 3.7 calls
 > a game, hucks past 40 m, a laid-out D about once a game** — every target in
-> [`docs/release-plan.md`](docs/release-plan.md) met but one: holds sit at **60%**
-> against a 65–75% target ([issue #10](https://github.com/gsiener/disc/issues/10),
-> a genuinely noisy metric — three re-measurements at growing sample sizes have
-> read 64%, 47%, then 60%, none of them in band). Eleven XCUITest gestures verify
-> the controls with real touches on pushes; the touch job is deliberately separate
-> from the simulator build.
+> [`docs/release-plan.md`](docs/release-plan.md) met but one: holds sit at **58.5%**
+> against a 65–75% target, over a 45-match pool confident enough to trust
+> ([issue #10](https://github.com/gsiener/disc/issues/10), closed — the documented
+> fix (cutting the defender-catch discount) was tried at full scale and moved the
+> number by nothing, so the gap is recorded rather than tuned against blindly; see
+> `tools/test-holds.ts`). Eleven XCUITest gestures verify the controls with real
+> touches on pushes; the touch job is deliberately separate from the simulator build.
 >
 > What is left is in [the issues](https://github.com/gsiener/disc/issues), and the
 > largest item cannot be done by an agent: **nobody has played it for fun yet.**

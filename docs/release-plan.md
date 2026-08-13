@@ -129,7 +129,7 @@ Measured from headless 15-minute sevens matches unless noted:
 |---|---|---|---|
 | Completion rate | 72–79% | 89.7% ✅ | 85–92% |
 | Drops | ~10% of passes | 2.9% ✅ | 2–4% (real sport) |
-| Holds vs breaks | ~50% breaks | 60% holds (issue #10) | offence holds 65–75% |
+| Holds vs breaks | ~50% breaks | 58.5% holds (n=45, #10 — closed, gap accepted) | offence holds 65–75% |
 | Release cadence | ~9 s/throw | 5.1–5.5 s ✅ | 4–6 s/throw |
 | Hucks (≥30 m completions) | 0 | 2.25/match ✅ | ≥2 per game |
 | Longest completion | 16.7 m | ~40 m ✅ | 40–60 m |
@@ -151,23 +151,46 @@ Measured from headless 15-minute sevens matches unless noted:
 **89.7%**, calls to **3.7/match**, and the laid-out D came back at 1.3/game — all by
 fixing causes, with **no probability constant touched.**
 
-**Holds is the exception, and the number below the table has moved three times as the
-sample grew, none of them ✅.** `c491099`'s own measurement — a single match — read
-53% → 64%. A later 5-seed re-check (issue #10) read 46.9%. A fresh 15-seed sweep, run
-2026-08-12 (`node tools/_bidsweep.ts` with 15 seeds — the script survives as a
-gitignored probe, see the tool itself for the seed list), reads **60% (138/230)**.
-Three measurements at increasing sample sizes, three different numbers, all below the
-65–75% target: the metric is genuinely seed-sensitive, and neither 64% nor 46.9% was
-ever a confident population estimate — 60% over 15 seeds isn't fully confident either,
-only more so. **Do not tune a probability constant toward this number without a larger,
-principled sample first.**
+**Holds is the exception, and #10 is now closed with the gap accepted rather than
+hidden.** The number moved three times as the sample grew, none of them ✅: `c491099`'s
+single-match measurement read 64%, a 5-seed re-check read 46.9%, a 15-seed sweep read
+60%. All three were too small to tune against — the metric is genuinely seed-sensitive,
+per-seed holds on any given match run anywhere from the 20s to the high 80s in percent.
+
+**The confident number: 58.5% (401/686), pooled over 45 fifteen-minute matches**
+(`tools/test-holds.ts`, committed, run with `node --experimental-strip-types
+tools/test-holds.ts`; red on purpose — it is the permanent record of this gap, the same
+way `tools/test-game.ts`'s per-seed sweep stays red for #39). At this sample size the
+standard error is under 2 points, so 58.5% is not sampling noise: it is a real ~7-point
+shortfall against the low end of the 65–75% band.
+
+**The documented lever does not have the headroom to close it.** This plan named the
+fix before this measurement existed: "calibrate catch probability / defender roll
+(`p *= 0.62`, interception `* 0.55`) until holds land 65–75%." Tested at full 45-seed
+scale — the only scale this metric can be trusted at — cutting the defender-catch
+discount from 0.62 to 0.45 (a 27% reduction, well past what "calibration" usually means)
+moved holds from 58.5% to **56.2% (392/697)**, statistically indistinguishable from no
+effect, and moved the laid-out-D rate from 1.22 to 1.24 per game — also no effect. A
+composition check over an independent sample found 75% of turnovers ARE defender-forced
+(block + interception), so the constant is real; it is just not where the missing seven
+points live, and pushing it harder to find out (0.40, then 0.15 — a 4× cut — bought only
+~5 points on a small sample before the full-scale test showed even that was noise) would
+gut the "laid-out D about once a game" target for no measured gain in this one, and cross
+the exact line ADR-0004 is named for: tuning a probability constant toward a number
+without confirming the constant is even the right knob.
+
+**Closed as an accepted, documented gap rather than left open (#10).** The actual lever
+is somewhere in the offence's own unforced-error rate or in how often a turnover, once it
+happens, gets converted before the point ends — both of which are coupled to the
+completion and drop targets this table already shows ✅, so touching them is a separate,
+properly-scoped calibration pass, not a one-constant nudge. `tools/test-holds.ts` stays
+in the tree, red, as the check that pass would need to turn green.
 
 **65–75% is a sevens target, decided 2026-08-12.** Minis measured independently at 87%
 after an unrelated correctness fix (`discStakes`, #17/#28) — above this band, but that
 band was never minis's: minis is judged against `minisIsPlayable`'s own, wider 30–90%
 sanity check, which 87% clears comfortably. Nothing about minis needs re-tuning; the
-`discStakes` fix stands as a correctness fix, not a calibration to revisit. The
-remaining, open item is sevens holds alone, still below band at 60% (n=15) — see #10.
+`discStakes` fix stands as a correctness fix, not a calibration to revisit.
 
 Two bugs did all of the completion/calls/laid-out-D movement, and both had the same
 shape: a consumer disagreeing with the rules engine about geometry.
@@ -188,8 +211,8 @@ shape: a consumer disagreeing with the rules engine about geometry.
    marking situation has existed for 0.4 s, and that the thrower is settled.
 
 A residual of the calibration is the deep game giving a little back (longest completion
-~39 m → ~35 m). That framing was written when holds looked met; it is not the residual
-now — see the holds note above, which is the open item, tracked as issue #10.
+~39 m → ~35 m). That framing was written when holds looked met; the accepted-gap note
+above is the honest replacement — see #10.
 
 ## The plan — four milestones
 
@@ -213,8 +236,12 @@ The coach's ranked list. Order matters: pin tryCatch first (M0), then calibrate.
 - **Hucks**: explicit deep-shot valuation (goal proximity + jump-ball win% from
   jumping/speed) instead of pricing 40 m throws through the multiplicative
   completion chain that zeroes them.
-- **Offence advantage**: calibrate catch probability / defender roll (`p *= 0.62`,
-  interception `* 0.55`) until holds land 65–75%.
+- **Offence advantage**: holds sit at 58.5% against a 65–75% target (#10, closed as an
+  accepted gap). The defender-catch discount (`p *= 0.62`) was tested at full 45-seed
+  scale down to 0.45 and moved holds by nothing measurable — it is not the knob. The
+  real lever is in the offence's own unforced-error rate or turnover-conversion rate,
+  both coupled to the completion/drop targets above, so it wants its own scoped
+  calibration pass rather than a repeat of this one, starting from `tools/test-holds.ts`.
 - **Tempo**: release every 4–6 s — decision latency, early-stall hold bar, give-go
   continuation after completions.
 - **Pivot + travel**: pivot constraint in Locomotion, wire `pivotFoot` into the
