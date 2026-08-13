@@ -129,7 +129,7 @@ Measured from headless 15-minute sevens matches unless noted:
 |---|---|---|---|
 | Completion rate | 72–79% | 89.7% ✅ | 85–92% |
 | Drops | ~10% of passes | 2.9% ✅ | 2–4% (real sport) |
-| Holds vs breaks | ~50% breaks | 64% holds ✅ | offence holds 65–75% |
+| Holds vs breaks | ~50% breaks | 60% holds (issue #10) | offence holds 65–75% |
 | Release cadence | ~9 s/throw | 5.1–5.5 s ✅ | 4–6 s/throw |
 | Hucks (≥30 m completions) | 0 | 2.25/match ✅ | ≥2 per game |
 | Longest completion | 16.7 m | ~40 m ✅ | 40–60 m |
@@ -147,13 +147,26 @@ Measured from headless 15-minute sevens matches unless noted:
 | Verified by real touches | no | **yes, in CI on every push** ✅ | 11 XCUITest gestures |
 | Subjective feel judged by a human | no | **no** ⚠ | someone plays it |
 
-**Every gameplay target is now met** (as of `c491099`). Holds went 53% → **64%**
-against a 65–75% target, completion to **89.7%**, calls to **3.7/match**, and the
-laid-out D came back at 1.3/game — all by fixing causes, with **no probability
-constant touched.**
+**Every gameplay target but one is now met** (as of `c491099`). Completion moved to
+**89.7%**, calls to **3.7/match**, and the laid-out D came back at 1.3/game — all by
+fixing causes, with **no probability constant touched.**
 
-Two bugs did all of it, and both had the same shape: a consumer disagreeing with
-the rules engine about geometry.
+**Holds is the exception, and the number below the table has moved three times as the
+sample grew, none of them ✅.** `c491099`'s own measurement — a single match — read
+53% → 64%. A later 5-seed re-check (issue #10) read 46.9%. A fresh 15-seed sweep, run
+2026-08-12 (`node tools/_bidsweep.ts` with 15 seeds — the script survives as a
+gitignored probe, see the tool itself for the seed list), reads **60% (138/230)**.
+Three measurements at increasing sample sizes, three different numbers, all below the
+65–75% target: the metric is genuinely seed-sensitive, and neither 64% nor 46.9% was
+ever a confident population estimate — 60% over 15 seeds isn't fully confident either,
+only more so. **Do not tune a probability constant toward this number without a larger,
+principled sample first**, and see issue #10 for the open question underneath the
+number: whether 65–75% is a sevens-specific target at all, given minis measured
+independently at 87% after an unrelated correctness fix (`discStakes`, #17/#28) — a
+game-wide band and a sevens-only band would call for different responses to that.
+
+Two bugs did all of the completion/calls/laid-out-D movement, and both had the same
+shape: a consumer disagreeing with the rules engine about geometry.
 
 1. **Every flat throw was aimed at the receiver's ankles.** `probeThrow` reports
    where a flight *descends through* the catch plane and falls through to ground
@@ -170,8 +183,9 @@ the rules engine about geometry.
    new: it now *requires* the two conditions it had always *assumed* — that a
    marking situation has existed for 0.4 s, and that the thrower is settled.
 
-The residual is the deep game giving a little back (longest completion ~39 m →
-~35 m), which is where to look next rather than at catch odds.
+A residual of the calibration is the deep game giving a little back (longest completion
+~39 m → ~35 m). That framing was written when holds looked met; it is not the residual
+now — see the holds note above, which is the open item, tracked as issue #10.
 
 ## The plan — four milestones
 

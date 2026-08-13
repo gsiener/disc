@@ -22,10 +22,13 @@ but it is not where the game lives anymore.
 > halftime, timeouts, caps, fouls and picks called by the players themselves, a
 > box score. You throw (drag, with a charge window and a receiver cone), you send
 > cutters off the disc (tap the space), and you commit a defender at the disc
-> (tap). Measured on 15-minute matches: **89.7% completion, 64% holds, 2.4%
-> drops, 3.7 calls a game, hucks past 40 m, a laid-out D about once a game** —
-> every target in [`docs/release-plan.md`](docs/release-plan.md) met. Eleven
-> XCUITest gestures verify the controls with real touches on every push.
+> (tap). Measured on 15-minute matches: **89.7% completion, 2.4% drops, 3.7 calls
+> a game, hucks past 40 m, a laid-out D about once a game** — every target in
+> [`docs/release-plan.md`](docs/release-plan.md) met but one: holds sit at **60%**
+> against a 65–75% target ([issue #10](https://github.com/gsiener/disc/issues/10),
+> a genuinely noisy metric — three re-measurements at growing sample sizes have
+> read 64%, 47%, then 60%, none of them in band). Eleven XCUITest gestures verify
+> the controls with real touches on every push.
 >
 > What is left is in [the issues](https://github.com/gsiener/disc/issues), and the
 > largest item cannot be done by an agent: **nobody has played it for fun yet.**
