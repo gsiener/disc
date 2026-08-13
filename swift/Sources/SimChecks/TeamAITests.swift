@@ -552,7 +552,9 @@ enum TeamAITests {
                         continue
                     }
                     compareIntent(got[k], f.it[k], "\(tag) i\(k)")
-                    structural(got[k], players, "\(tag) i\(k)")
+                    // Frame zero only — see `structural`. The wiring it checks cannot vary
+                    // by frame, and repeating it per frame was 95,705 identical assertions.
+                    if fi == g.frames.startIndex { structural(got[k], players, "\(tag) i\(k)") }
                 }
             }
             for t in 0..<2 {
@@ -672,6 +674,25 @@ enum TeamAITests {
     /// bit — so what is worth asserting is that `intent` wired the right function to the
     /// right field, which this does without four more doubles on every row. `bitEq`
     /// rather than a tolerance: both sides are the same Swift call.
+    ///
+    /// **Run on the first frame only, and that is the whole claim rather than a sample.**
+    /// This is a WIRING check, and wiring does not vary by frame: `TeamAI.swift:861-874`
+    /// is the single `PlayerIntent` construction site in the port (verified — nothing else
+    /// assigns `personalSpace`), so `maxAccel: effectiveAccel(p)` either names the right
+    /// function or it does not, once, for every intent it will ever build. Both sides here
+    /// read the *same* `p` from the *same* `players` array at the *same* instant, so
+    /// `i.maxAccel == effectiveAccel(p)` is a tautology on every frame by construction —
+    /// energy changing between frames moves both sides identically and cannot make it
+    /// disagree. `personalSpace` compares a literal to a literal and `team` compares
+    /// `p.team` to itself; neither has a data dependence at all.
+    ///
+    /// It used to run on all fourteen intents of all 1,370 frames: 19,141 calls × 5
+    /// assertions = **95,705 identical comparisons carrying five bits of information.**
+    /// Fourteen players on one frame still covers every distinct athlete and every
+    /// archetype's attribute sheet, and a rewiring — the only regression these can catch —
+    /// fails on frame zero. What would NOT be caught by frame zero is a second, differently
+    /// wired construction site added later; `tools/test-reachability.ts` and the
+    /// single-site invariant above are what keep that honest, not repetition here.
     private static func structural(_ i: PlayerIntent, _ players: [AIPlayer], _ tag: String) {
         guard let p = players.first(where: { $0.id == i.id }) else {
             record(false, "\(tag) intent for unknown player \(i.id)")

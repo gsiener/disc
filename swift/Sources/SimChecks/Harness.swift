@@ -305,7 +305,11 @@ let allSuites: [Suite] = [
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 2180),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9934),
     Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 14154),
-    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 476751),
+    // Lowered from 476751 deliberately: `TeamAITests.structural` now runs on frame zero
+    // instead of all 1,370 frames, because the wiring it checks cannot vary by frame (one
+    // construction site, both sides reading the same player at the same instant). That is
+    // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
+    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381182),
     Suite(name: "gamestate", run: GameStateTests.run, minAssertions: 2223),
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 408),
