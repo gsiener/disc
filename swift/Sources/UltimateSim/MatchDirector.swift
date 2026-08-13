@@ -77,9 +77,23 @@ public final class MatchDirector {
     /// `MatchView.slowMoCooldown`, moved alongside the decision that reads it.
     static let slowMoCooldown = 8.0
 
-    public init(match: Engine) {
+    /// The active synthetic-finger configuration — issue #16 Phase 3. `.none` (the
+    /// default) reproduces every non-launch-argument run exactly: every field in
+    /// `syntheticInputs()`'s result is the "off" value, so a caller that never sets this
+    /// sees no behavior change from before this type existed.
+    public var script: InputScript
+
+    /// Whether the save-cycle threshold has already fired once. `MatchView`'s old
+    /// `cycled` flag, moved here unchanged: a one-shot for the lifetime of the director,
+    /// never reset by `restart`/`adopt` (neither reset the view's `@State private var
+    /// cycled` either — both replace `match` in place and keep the same director/view
+    /// alive), so a script that names a save cycle fires it exactly once per launch.
+    private var saveCycled = false
+
+    public init(match: Engine, script: InputScript = .none) {
         self.match = match
         self.lastControlled = match.controlled
+        self.script = script
     }
 
     /// Forgets the tick loop's own handoff tracking and re-arms it against the current
@@ -119,6 +133,60 @@ public final class MatchDirector {
         default:
             return nil
         }
+    }
+
+    /// The synthetic-finger decisions for one frame — issue #16 Phase 3.
+    ///
+    /// **What moved here and why.** `autoDefend`/`demoCut`/`saveCycle` used to be three
+    /// `if` blocks inline in `MatchView.advance(to:)`, each guarding a call the view made
+    /// itself. Per the issue's Phase 3 split, the *timing decision* of each — is there
+    /// currently no defensive commit, can a cut currently be called, has the tick
+    /// threshold now been crossed — is simulation-state arithmetic the director already
+    /// has everything it needs for, so it moves here. What does **not** move is the
+    /// *execution*: `defend(at:)`/`callCut(at:in:)` update `MatchSession`, play a haptic
+    /// via `Feel`, and record a `RecordedInput` — all `FlightUI`-only state this module
+    /// cannot see (ADR-0002/0008) — and the save/restore round trip is disk I/O, ruled
+    /// out by the same "decisions in, side effects out" rule `FrameOutput` already
+    /// follows for events and handoffs. So the caller still calls those; this only says
+    /// whether to.
+    ///
+    /// **Called once per frame, before that frame's ticks run** — the same relative
+    /// position the three `if` blocks held in `MatchView.advance` (between
+    /// `clock.beginFrame` and `runTicks()`), because that ordering is observable: a
+    /// synthetic action taken before this frame's ticks run takes effect a tick sooner
+    /// than one taken after. All three fields read `match`/`tickCount` as they stand at
+    /// the moment of the call — none of `defendRequested`, `cutRequested`, or
+    /// `saveCycleReached` depends on the others, so evaluating them together here is
+    /// equivalent to the original sequential checks (verified in
+    /// `InputScriptTests`/`TickLoopTests`).
+    ///
+    /// **Not a field on `FrameOutput`.** `FrameOutput` is what `runTicks()` returns after
+    /// ticks actually ran; the save-cycle boundary, in particular, is checked *before*
+    /// deciding whether to run any ticks at all this frame (a triggered save skips the
+    /// tick loop entirely, exactly as `MatchView.advance` used to `return` before
+    /// reaching it) — so it cannot be reported by the same call that runs the ticks. A
+    /// separate result, read first, is what the actual data dependency is.
+    public func syntheticInputs() -> SyntheticFrame {
+        let defendRequested = script.autoDefend && match.defensiveCommit == nil
+
+        let cutRequested: NormalizedPoint?
+        if let target = script.demoCut, match.canCallCut {
+            cutRequested = target
+        } else {
+            cutRequested = nil
+        }
+
+        var saveCycleReached = false
+        if let after = script.saveCycleAfter, !saveCycled,
+            Double(tickCount) * Self.tickDt >= after
+        {
+            saveCycled = true
+            saveCycleReached = true
+        }
+
+        return SyntheticFrame(
+            defendRequested: defendRequested, cutRequested: cutRequested,
+            saveCycleReached: saveCycleReached)
     }
 
     /// One rendered frame, start to finish: the stamp, the clamp, the tick loop, the
@@ -243,4 +311,92 @@ public struct FrameOutput {
     /// frames, so a caller (chiefly a test) that wants to know "did one begin just now"
     /// needs the decision reported, not just the state it left behind.
     public let hitstopStarted: Bool
+}
+
+/// A point in the unit square — screen-fraction coordinates (0...1 on each axis),
+/// independent of any concrete view size.
+///
+/// `LaunchOptions.demoCut` is already in this space: `LaunchOptions.parseCut` rejects
+/// anything outside `[0, 1]` on either axis. So `MatchDirector` can consume it directly
+/// without depending on `viewSize` — a view-metric quantity this module has no business
+/// knowing about (ADR-0002/0008); only the eventual unit-square→screen→ground
+/// conversion (`viewSize`, then `MatchScene.groundPoint`'s camera projection) stays with
+/// the caller, because that really is view-metric work `UltimateSim` cannot do.
+///
+/// Deliberately not `CGPoint`: this module otherwise has no reason to import
+/// `CoreGraphics`, and not `Vec2d`: that name already means a ground-plane XZ pair
+/// elsewhere in this module (metres on the pitch, not fractions of a screen), and
+/// reusing it here would invite exactly the mixup a distinct type exists to rule out.
+public struct NormalizedPoint: Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+    public init(x: Double, y: Double) {
+        self.x = x
+        self.y = y
+    }
+}
+
+/// The active synthetic-finger configuration for a `MatchDirector` — issue #16 Phase 3.
+///
+/// Parsing stays at the app boundary (`ProbeContract.LaunchOptions`, already true per
+/// #21); this is the typed value that boundary's three fields (`autoDefend`, `demoCut`,
+/// `saveCycle`) become once they cross into the sim. `.none`, the default, reproduces
+/// every non-launch-argument run exactly — every check `syntheticInputs()` makes against
+/// it is false or nil, so a `MatchDirector` nobody hands a script behaves exactly as one
+/// predating this type.
+public struct InputScript: Equatable, Sendable {
+    /// Mirrors `LaunchOptions.autoDefend`. See `MatchDirector.syntheticInputs()`.
+    public var autoDefend: Bool
+
+    /// Mirrors `LaunchOptions.demoCut` — already a unit-square point, so no conversion
+    /// happens crossing this boundary. See `NormalizedPoint`.
+    public var demoCut: NormalizedPoint?
+
+    /// Mirrors `LaunchOptions.saveCycle`: seconds of *simulated* play
+    /// (`tickCount * MatchDirector.tickDt`), not wall time, after which the save-cycle
+    /// boundary is reported once. See `MatchDirector.syntheticInputs()`.
+    public var saveCycleAfter: Double?
+
+    public static let none = InputScript()
+
+    public init(
+        autoDefend: Bool = false, demoCut: NormalizedPoint? = nil,
+        saveCycleAfter: Double? = nil
+    ) {
+        self.autoDefend = autoDefend
+        self.demoCut = demoCut
+        self.saveCycleAfter = saveCycleAfter
+    }
+}
+
+/// What `MatchDirector.syntheticInputs()` decided for one frame, before that frame's
+/// ticks run. See that method's doc comment for the full reasoning; in short, these are
+/// *decisions* — the caller (a view, or a headless test) still performs the
+/// corresponding *action* (`defend(at:)`, `callCut(at:in:)`, the save/restore round
+/// trip), because each of those touches state (`MatchSession`, `Feel`, disk) this module
+/// does not and should not depend on.
+public struct SyntheticFrame {
+    /// True when `InputScript.autoDefend` is on and `match.defensiveCommit == nil` right
+    /// now — mirrors `MatchView`'s old `if autoDefend, match.defensiveCommit == nil`.
+    /// The point a defensive tap lands on is irrelevant to whether it fires (the engine
+    /// picks the defender by time-to-reach, not by the tap's own position) — see
+    /// `MatchView.defend(at:)` — so unlike `cutRequested` there is nothing to carry here
+    /// beyond the yes/no.
+    public let defendRequested: Bool
+
+    /// `InputScript.demoCut`, unchanged, when the script has one **and**
+    /// `match.canCallCut` is true right now — mirrors `MatchView`'s old `if let u =
+    /// demoCut, viewSize != .zero, match.canCallCut`, minus the `viewSize != .zero`
+    /// half, which stays the caller's own gate (see `NormalizedPoint`'s doc comment for
+    /// why). Nil whenever the script has no cut configured or the engine will not
+    /// currently accept one.
+    public let cutRequested: NormalizedPoint?
+
+    /// True exactly once, the frame `tickCount * MatchDirector.tickDt` first reaches
+    /// `InputScript.saveCycleAfter`. One-shot per director instance — see
+    /// `MatchDirector.saveCycled`. The caller is responsible for the save/restore round
+    /// trip itself (`MatchSave`, disk I/O — `MatchView.saveMatch()`/`resume(_:)`) and,
+    /// per the original behavior this mirrors, for skipping this frame's tick loop
+    /// entirely when this is true rather than running ticks and then saving.
+    public let saveCycleReached: Bool
 }

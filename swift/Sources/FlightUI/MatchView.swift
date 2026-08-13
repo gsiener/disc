@@ -64,52 +64,31 @@ public struct MatchView: View {
     /// never reaches `humanRelease`, because nothing releases it.
     private let demoCharge: Double?
 
-    /// A tap to issue automatically, in fractions of the screen, whenever the engine will
-    /// take one.
+    /// The synthetic-finger configuration (`autoDefend`/`demoCut`/`saveCycle`) is parsed
+    /// here at the app boundary from `LaunchOptions` (unchanged since #21) but, as of
+    /// issue #16 Phase 3, executed by `director.script` rather than by three fields and
+    /// three `if` blocks on this view — see `MatchDirector.InputScript` and
+    /// `MatchDirector.syntheticInputs()`. `demoCharge` (below) has no equivalent move: it
+    /// pins a *gesture overlay* the sim has no notion of, never reaches `humanRelease`,
+    /// and stays exactly what it always was.
     ///
-    /// The offensive twin of `autoDefend`, and it exists for the same reason and one more.
-    /// The reason it shares: everything a called cut puts on screen — the ghost route on
-    /// the grass, the order plate, the prompt going away — lives behind a finger, and
-    /// synthetic touch injection does not reach the Simulator. The reason it does not: this
-    /// is the only control whose *screen coordinates* matter, so it is also the only way to
-    /// photograph whether `MatchScene.groundPoint` puts the finger where the player thinks
-    /// they put it. A tap at (0.5, 0.35) should send somebody up the middle of the frame.
+    /// The three flags' own launch-argument doors, unchanged from before this move:
     ///
-    ///     xcrun simctl launch booted com.grahamsiener.ultimate -setup off -cut 0.5,0.35
-    ///
-    /// It drives `tap(at:in:)`, the identical function the finger drives, so a screenshot
-    /// shows the real path. Nil in every normal run.
-    private let demoCut: CGPoint?
-
-    /// Whether to issue the defensive tap automatically, whenever there is one to issue.
-    ///
-    /// The same door as `-charge`, and for the same reason: `xcrun simctl launch` can pass
-    /// arguments but cannot touch the screen, and synthetic touch injection into the
-    /// Simulator does not reach it. The defensive call plate, the bid marker on the grass
-    /// and the recovery countdown all exist only after a tap, so without this they are
-    /// three pieces of HUD nobody can photograph — which is how a control stops being
-    /// looked at.
-    ///
-    /// It drives `defend()`, the identical function the finger drives, so what a
-    /// screenshot shows is the real path and not a mock of it. Off in every normal run.
-    private let autoDefend: Bool
-
-    /// Seconds of play after which to save the match, throw the engine away, and restore
-    /// it from the save — the whole round trip, without a finger.
-    ///
-    /// Same door as `-charge` and `-defend on`, and the reason is sharper here than for
-    /// either of them: the save path is driven by *backgrounding the app*, and the restore
-    /// path by a button on a sheet, so between them they need a home button and a tap —
-    /// neither of which this environment can synthesise. Without this argument the entire
-    /// feature is unreachable on the Simulator, which is how a feature stops being looked
-    /// at, and worse, stops being verified.
-    ///
-    /// It runs the real functions: the same `saveMatch()` the scene phase calls, and the
-    /// same `resume(_:)` the sheet's button calls, on the same file on disk. What a
-    /// screenshot shows is the restore, not a mock of it.
-    ///
-    /// Nil in every normal run.
-    private let saveCycle: Double?
+    /// - `-defend on` (`autoDefend`) drives `defend()`, the identical function the finger
+    ///   drives — the defensive call plate, the bid marker on the grass and the recovery
+    ///   countdown all exist only after a tap, so without this they are three pieces of
+    ///   HUD nobody can photograph.
+    /// - `-cut x,y` (`demoCut`, in fractions of the screen) drives `tap(at:in:)` — the
+    ///   only control whose *screen coordinates* matter, so also the only way to
+    ///   photograph whether `MatchScene.groundPoint` puts the finger where the player
+    ///   thinks they put it: `xcrun simctl launch booted com.grahamsiener.ultimate
+    ///   -setup off -cut 0.5,0.35` should send somebody up the middle of the frame.
+    /// - `-savecycle N` (`saveCycle`) runs the real round trip — the same `saveMatch()`
+    ///   the scene phase calls and the same `resume(_:)` the sheet's button calls, on the
+    ///   same file on disk — because the save path is driven by backgrounding the app and
+    ///   the restore path by a sheet button, neither of which `xcrun simctl launch` can
+    ///   synthesise; without this argument the whole feature is unreachable on the
+    ///   Simulator.
 
     /// Whether to draw the state probe a UI test reads. `-probe on`, and nothing else.
     ///
@@ -272,10 +251,6 @@ public struct MatchView: View {
     /// overlay's arrival does not try to delete a file once per tick.
     @State var clearedAtEnd = false
 
-    /// Whether `-savecycle` has already fired. It is a one-shot: a demo that saved and
-    /// restored every ten seconds would never be playable.
-    @State private var cycled = false
-
     // MARK: fixed-tick clock state
     //
     // The sim is advanced only in whole 1/120 s ticks; see the long comment on `body`'s
@@ -425,11 +400,8 @@ public struct MatchView: View {
         self.active = active
         self.showsProbe = options.showsProbe
         self.startingPullTeam = options.receiveTeam
-        self.autoDefend = options.autoDefend
-        self.demoCut = options.demoCut
         self.skipsSetup = options.skipsSetup
         self.demoCharge = options.demoCharge
-        self.saveCycle = options.saveCycle
 
         // Map the contract's LaunchFormat to the engine's FieldSpec. The contract owns
         // the launch-argument vocabulary; the engine owns the pitch geometry. This is the
@@ -468,11 +440,22 @@ public struct MatchView: View {
         // sheet is drawn over a pitch and the pitch has to be something. It is the same
         // match the START button keeps if nothing is changed — restart draws a new seed,
         // so the only cost of touching a setting is a different wind.
+        // The synthetic-finger configuration, moved into the director per issue #16
+        // Phase 3 — see `InputScript`. `options.demoCut` is already a unit-square point
+        // (`LaunchOptions.parseCut`'s range check), so this is a field-for-field carry,
+        // not a conversion.
+        let script = InputScript(
+            autoDefend: options.autoDefend,
+            demoCut: options.demoCut.map {
+                NormalizedPoint(x: $0.x, y: $0.y)
+            },
+            saveCycleAfter: options.saveCycle)
         _director = State(
             initialValue: MatchDirector(
                 match: Engine(
                     format: chosen.fieldSpec.gameFormat, seed: s,
-                    config: Self.engineConfig(chosen, startingPullTeam: startingPullTeam))))
+                    config: Self.engineConfig(chosen, startingPullTeam: startingPullTeam)),
+                script: script))
     }
 
     /// A seed for a new match, drawn from the clock. The engine stays fully
@@ -737,13 +720,16 @@ public struct MatchView: View {
     /// what you see, never what happens.
     ///
     /// **The tick loop itself — stepping, per-tick event drain, hitstop deferral, and
-    /// handoff detection — moved to `MatchDirector.runTicks()` in issue #16's Phase 1.**
-    /// What is left here is exactly the view-only work the plan calls out to stay:
-    /// `bobPhase`, the synthetic fingers (`autoDefend`/`demoCut`/`saveCycle`), applying
-    /// the director's decisions (haptics *played*, not decided; the turnover shout built
-    /// from the same drained events the director already returns), disk save/load, and
-    /// the wall-clock countdown decay for the HUD toasts — none of which `MatchDirector`
-    /// (in `UltimateSim`) could own without depending on `FlightUI`'s `Feel`/
+    /// handoff detection — moved to `MatchDirector.runTicks()` in issue #16's Phase 1.
+    /// The synthetic fingers' *timing decisions* — moved to
+    /// `MatchDirector.syntheticInputs()` in Phase 3.** What is left here is exactly the
+    /// view-only work the plan calls out to stay: `bobPhase`, actually *issuing* the
+    /// synthetic taps `syntheticInputs()` asked for (`defend`/`tap`, which touch
+    /// `MatchSession`/`Feel`/the input tape), applying the tick loop's decisions
+    /// (haptics *played*, not decided; the turnover shout built from the same drained
+    /// events the director already returns), disk save/load, and the wall-clock
+    /// countdown decay for the HUD toasts — none of which `MatchDirector` (in
+    /// `UltimateSim`) could own without depending on `FlightUI`'s `Feel`/
     /// `TurnoverFlash`/`MatchSave`, an inversion ADR-0002/0008 rules out.
     ///
     /// The synthetic fingers and the save-cycle check keep their exact original position
@@ -788,30 +774,38 @@ public struct MatchView: View {
 
         scene.bobPhase += frameDt * 3.6
 
-        // The finger a headless run does not have. See `autoDefend`.
-        // The middle of the render surface, because that is where `-defend on` documents the
-        // tap as landing and because the defensive half ignores the point anyway — it is
-        // carried only so a refusal has somewhere to draw itself.
-        if autoDefend, match.defensiveCommit == nil {
+        // The synthetic fingers a headless run does not have — issue #16 Phase 3.
+        // `director.syntheticInputs()` makes the same three checks `MatchView` used to
+        // make inline (`match.defensiveCommit == nil`, `match.canCallCut`, the tick-count
+        // threshold), at the same point in the frame, over the same `match`/`tickCount`
+        // this view already exposes. What is still here, and still view-only: actually
+        // *calling* `defend`/`tap` (they touch `MatchSession`, `Feel`, and the input
+        // tape — none of which `MatchDirector` can see) and the `viewSize` gate on the
+        // cut, which is real view-metric knowledge the director has no way to have.
+        let synthetic = director.syntheticInputs()
+
+        // The middle of the render surface, because that is where `-defend on` documents
+        // the tap as landing and because the defensive half ignores the point anyway — it
+        // is carried only so a refusal has somewhere to draw itself.
+        if synthetic.defendRequested {
             defend(at: CGPoint(x: viewSize.width / 2, y: viewSize.height / 2))
         }
 
-        // And its offensive twin. See `demoCut`, and `viewSize` for the one fact this
-        // needs that the tick loop cannot see. Every frame, because the engine's own
-        // cooldown is what decides when a tap is taken — this is a finger held down, not
-        // a schedule of its own.
-        if let u = demoCut, viewSize != .zero, match.canCallCut {
+        // The offensive twin. `cutRequested` is already the unit-square point
+        // `LaunchOptions.demoCut` carries — `viewSize != .zero` is the one gate the
+        // director could not make on its own, since it has no view to measure.
+        if let u = synthetic.cutRequested, viewSize != .zero {
             tap(
                 at: CGPoint(x: u.x * viewSize.width, y: u.y * viewSize.height),
                 in: viewSize)
         }
 
-        // The home button and the sheet tap a headless run does not have either. See
-        // `saveCycle`.
-        if let after = saveCycle, !cycled,
-            Double(tickCount) * Self.tickDt >= after
-        {
-            cycled = true
+        // The home button and the sheet tap a headless run does not have either. The
+        // *timing* was the director's decision (`syntheticInputs()`, one-shot); the round
+        // trip to disk stays here. Skips the rest of this frame — including the tick
+        // loop below — exactly as the pre-Phase-3 `return` did: the match is about to be
+        // thrown away and rebuilt, so there is nothing this frame to run ticks against.
+        if synthetic.saveCycleReached {
             saveMatch()
             if let saved = MatchSave.load() { resume(saved) }
             return
