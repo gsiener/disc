@@ -19,6 +19,11 @@
     "platform": "darwin/arm64",
     "commit": "293071dfa5385cca24d82584f2d3087f2138b4dd"
   },
+  "pull": {
+    "node": "v26.7.0",
+    "platform": "darwin/arm64",
+    "commit": "d21563730f82e33937057ddfb6410f04c2946728"
+  },
   "rng": {
     "node": "v26.7.0",
     "platform": "darwin/arm64",

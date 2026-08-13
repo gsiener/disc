@@ -51,6 +51,7 @@ import { locomotionGoldens } from './goldens/locomotion.ts';
 import { matchDiffGoldens } from './goldens/matchdiff.ts';
 import { moveGoldens } from './goldens/move.ts';
 import { playbookGoldens } from './goldens/playbook.ts';
+import { pullGoldens } from './goldens/pull.ts';
 import { rngGoldens } from './goldens/rng.ts';
 import { rulesGoldens } from './goldens/rules.ts';
 import { simMathGoldens } from './goldens/simmath.ts';
@@ -79,6 +80,8 @@ const GENERATORS: Record<string, () => unknown> = {
   'move.json': moveGoldens,
   'locomotion.json': locomotionGoldens,
   'playbook.json': playbookGoldens,
+  // Issue #48/#2: `Game.doPull`, captured directly — see tools/goldens/pull.ts.
+  'pull.json': pullGoldens,
   'aimath.json': aiMathGoldens,
   'humanrelease.json': humanReleaseGoldens,
   'discruntime.json': discRuntimeGoldens,

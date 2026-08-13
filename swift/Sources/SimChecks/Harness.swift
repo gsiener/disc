@@ -311,6 +311,11 @@ let allSuites: [Suite] = [
     // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
     Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381182),
     Suite(name: "gamestate", run: GameStateTests.run, minAssertions: 2223),
+    // Issue #48/#2: `Game.doPull`, ported. A rules event with no AI in it, against
+    // fixtures captured directly from the reference rather than a property. See
+    // PullTests.swift's header for why this and `Engine.autoPull()` run with zero
+    // ticks between construction and the pull.
+    Suite(name: "pull", run: PullTests.run, minAssertions: 177),
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 408),
     Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 651),

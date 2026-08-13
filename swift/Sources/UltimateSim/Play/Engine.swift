@@ -83,6 +83,9 @@ public final class Engine {
     public internal(set) var loco = Locomotion()
     public internal(set) var ai: [TeamAI] = []
     public internal(set) var disc = DiscRuntime()
+    /// What `releasePull` last sent, and what `disc.release` did with it. See
+    /// `EnginePoint.PullThrow`. Nil until the first pull of the match.
+    public internal(set) var lastPullThrow: PullThrow?
     /// The match's breeze. Fed to both the flight model and the AI's world — the reference
     /// sets both from one vector and they must not drift apart.
     public private(set) var wind = Vec3d.zero

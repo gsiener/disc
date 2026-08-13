@@ -278,6 +278,25 @@ extension Engine {
 
     // MARK: - the pull
 
+    /// The exact request the last pull released with, and what `disc.release` did with
+    /// it. Telemetry only — nothing reads it to decide anything — kept so a test can see
+    /// what `regulationPull`/`solvedPull` actually built without re-deriving it. See
+    /// `SimChecks/PullTests.swift`, which is the reason this exists (issue #48/#2): a
+    /// property test can see that a pull flew and landed somewhere plausible, but not
+    /// that the aim, the speed, the bank or the nose is the wrong formula.
+    public struct PullThrow: Sendable {
+        public let from: Vec3d
+        public let aim: Vec3d
+        public let power: Double
+        public let angle: Double
+        public let spin: Double
+        public let bank: Double?
+        public let nose: Double?
+        public let speed: Double?
+        public let hand: ThrowOptions.Hand?
+        public let vel: Vec3d
+    }
+
     /// Send a pull on its way and report it. Everything about the throw is the caller's.
     ///
     /// The engine used to start each point from a *caught* pull — a shortcut inherited
@@ -287,6 +306,9 @@ extension Engine {
     func releasePull(_ req: ThrowRequest) -> Bool {
         guard game.phase == .prePull, carrier == puller else { return false }
         let vel = disc.release(req)
+        lastPullThrow = PullThrow(
+            from: req.from, aim: req.aim, power: req.power, angle: req.angle, spin: req.spin,
+            bank: req.bank, nose: req.nose, speed: req.speed, hand: req.hand, vel: vel)
         thrownBy = puller
         intendedReceiver = nil
         beginFlight(req.from)
@@ -308,7 +330,12 @@ extension Engine {
     /// there, and the bisection plus the wind correction is what the small pitch has been
     /// measured against. This is not a declared divergence under ADR-0007: there is no
     /// reference value for a minis pull to disagree with.
-    func autoPull() {
+    ///
+    /// Public so `SimChecks/PullTests.swift` can call it the instant a match exists,
+    /// with no `update()` tick in between — see that file's header for why the zero-tick
+    /// timing is load-bearing rather than incidental. `servicePhase` is still what calls
+    /// it in the ordinary tick loop; this does not change when a real match auto-pulls.
+    public func autoPull() {
         guard let p = player(puller) else { return }
         if format.field == .standard {
             regulationPull(p)
