@@ -1,4 +1,5 @@
 import Foundation
+import ProbeContract
 import RealityKit
 import SimChecks
 import SwiftUI
@@ -482,22 +483,23 @@ public struct MatchView: View {
     /// cancel that fails exactly when you are panicking.
     private static let cancelRadius = 26.0
 
-    public init(
-        format: FieldSpec? = nil, points: Int? = nil, active: Bool = true,
-        skipsSetup: Bool = false, demoCharge: Double? = nil, autoDefend: Bool = false,
-        saveCycle: Double? = nil, demoCut: CGPoint? = nil, showsProbe: Bool = false,
-        startingPullTeam: Int? = nil
-    ) {
+    public init(options: LaunchOptions = .defaults, active: Bool = true) {
         self.active = active
-        self.showsProbe = showsProbe
-        self.startingPullTeam = startingPullTeam
-        self.autoDefend = autoDefend
-        self.demoCut = demoCut
+        self.showsProbe = options.showsProbe
+        self.startingPullTeam = options.receiveTeam
+        self.autoDefend = options.autoDefend
+        self.demoCut = options.demoCut
+        self.skipsSetup = options.skipsSetup
+        self.demoCharge = options.demoCharge
+        self.saveCycle = options.saveCycle
+
+        // Map the contract's LaunchFormat to the engine's FieldSpec. The contract owns
+        // the launch-argument vocabulary; the engine owns the pitch geometry. This is the
+        // one place they meet, because ProbeContract must not depend on UltimateSim.
+        let format: FieldSpec? = options.format.map { $0 == .full ? .full : .minis }
+        let points: Int? = options.points
         self.formatOverride = format
         self.pointsOverride = points
-        self.skipsSetup = skipsSetup
-        self.demoCharge = demoCharge
-        self.saveCycle = saveCycle
 
         // The saved game, read off disk before anything is drawn. A file read of a few
         // kilobytes, and deliberately *only* a file read: whether it can actually be

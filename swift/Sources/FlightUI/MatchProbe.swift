@@ -1,4 +1,5 @@
 import Foundation
+import ProbeContract
 import SwiftUI
 import UltimateSim
 
@@ -40,9 +41,6 @@ import UltimateSim
 @available(macOS 15.0, iOS 18.0, *)
 extension MatchView {
 
-    /// The identifier a UI test looks the probe up by.
-    public static let probeIdentifier = "match.probe"
-
     /// The last release the thumb made, as the charge graded it.
     ///
     /// Kept because it is the one fact about a throw that is gone the instant it happens:
@@ -62,8 +60,8 @@ extension MatchView {
     /// there is no way for it to disagree with the game.
     var probeState: String {
         var f: [String] = []
-        func put(_ k: String, _ v: String) { f.append("\(k)=\(v)") }
-        func flag(_ k: String, _ v: Bool) { put(k, v ? "1" : "0") }
+        func put(_ k: ProbeKey, _ v: String) { f.append("\(k.rawValue)=\(v)") }
+        func flag(_ k: ProbeKey, _ v: Bool) { put(k, v ? "1" : "0") }
 
         // Whose disc, and whether the body the player is driving is the one holding it.
         //
@@ -72,25 +70,24 @@ extension MatchView {
         // human gets to make it: during `prePull` our man is holding while `possession`
         // still reads as the receiving team. A drag test that waited for possession 0 would
         // sleep through the one moment the disc is guaranteed to be in our hand.
-        put("poss", "\(match.possession)")
+        put(.poss, "\(match.possession)")
         // The coarse phase, which is the only one outside the package: `setup` before a pull,
         // `live` while the point is being played, `dead` between. It is here because half the
         // refusals a tap can meet are phase refusals, and a test that wants to provoke one has
         // to be able to wait for the phase rather than race the pull clock.
-        put("phase", match.phase.rawValue)
-        flag("mine", match.holder != nil && match.holder == match.controlled)
-        flag("flight", match.discInFlight)
-        flag("cut.ok", match.canCallCut)
+        put(.phase, match.phase.rawValue)
+        flag(.mine, match.holder != nil && match.holder == match.controlled)
+        flag(.cutOk, match.canCallCut)
         // `humanDefend`'s precondition, minus the "is anybody on their feet" part it can
         // only answer by asking. `Engine.canDefend` is the engine's own predicate now — see
         // issue #8 — rather than a reconstruction from `possession`/`holder`/`discInFlight`.
-        flag("def.ok", match.canDefend)
+        flag(.defOk, match.canDefend)
         // Whether the body the player is watching is on the floor. It is the reason a tap can
         // be accepted and *still* not put the call plate on screen: `defenceReadout` gives the
         // rectangle to the "DOWN / BACK UP IN x.xs" line first, because by the time a body is
         // down the order is history. A test that only looked for the order would read that as
         // a tap that did nothing.
-        put("rec", match.recovery(of: match.controlled).map { String(format: "%.1f", $0) } ?? "-")
+        put(.rec, match.recovery(of: match.controlled).map { String(format: "%.1f", $0) } ?? "-")
 
         // What the finger has actually got the engine to accept. Counted off the recording
         // — the same list `saveMatch` writes — so a throw here is a throw a replay would
@@ -103,9 +100,9 @@ extension MatchView {
             case .defend: defends += 1
             }
         }
-        put("thrown", "\(thrown)")
-        put("cuts", "\(cuts)")
-        put("defends", "\(defends)")
+        put(.thrown, "\(thrown)")
+        put(.cuts, "\(cuts)")
+        put(.defends, "\(defends)")
 
         // The tap ledger, which is the one thing on this line that is about the *control*
         // rather than about the match. `taps` counts every tap the offence took, `refused`
@@ -114,16 +111,16 @@ extension MatchView {
         // reports the hit rate the 35° cone gets alone, `(taps - refused - wide) / taps`, and
         // the hit rate a player now gets, `(taps - refused) / taps`, from the same taps. See
         // `MatchView.callCut`.
-        put("taps", "\(offenceTaps)")
-        put("refused", "\(refusals)")
-        put("wide", "\(widenedCalls)")
+        put(.taps, "\(offenceTaps)")
+        put(.refused, "\(refusals)")
+        put(.wide, "\(widenedCalls)")
         // And why the last one was refused, as `RefusedTap.Reason`'s own spelling, so a test
         // can name the refusal it expected instead of matching on the words on screen.
-        put("refuse", lastRefusal?.rawValue ?? "-")
+        put(.refuse, lastRefusal?.rawValue ?? "-")
         // And every refusal of the run by reason, `reason:count` and `|`-separated, sorted so a
         // diff between two runs is a diff and not a re-ordering.
         put(
-            "tally",
+            .tally,
             refusalTally.isEmpty
                 ? "-"
                 : refusalTally.sorted { $0.key < $1.key }.map { "\($0.key):\($0.value)" }
@@ -134,23 +131,23 @@ extension MatchView {
         // maps its taps through this and asserts on it, so the geometry a player gets is the
         // geometry that was tested.
         put(
-            "rect",
+            .rect,
             [viewFrame.minX, viewFrame.minY, viewFrame.width, viewFrame.height]
                 .map { String(Int($0.rounded())) }.joined(separator: ","))
 
         // The charge, which is the one thing on this line the screen never shows.
         if let r = lastRelease {
-            put("grade", r.grade.rawValue)
-            put("hold", String(format: "%.3f", r.hold))
-            put("type", r.type.rawValue)
+            put(.grade, r.grade.rawValue)
+            put(.hold, String(format: "%.3f", r.hold))
+            put(.type, r.type.rawValue)
         } else {
-            put("grade", "-")
-            put("hold", "-")
-            put("type", "-")
+            put(.grade, "-")
+            put(.hold, "-")
+            put(.type, "-")
         }
 
         // The gesture under the thumb right now, in the three states the aim overlay draws.
-        put("drag", drag == nil ? "none" : (drag!.aborted ? "cancel" : "aim"))
+        put(.drag, drag == nil ? "none" : (drag!.aborted ? "cancel" : "aim"))
         // And how the last one finished. The abort is a *non-event* — no throw, no plate, no
         // recorded input — so the only way to tell "the cancel worked" from "the gesture
         // never arrived" is to have the gesture say which one it was.
@@ -158,17 +155,16 @@ extension MatchView {
         // **Sticky: nothing clears this between gestures**, so a reader that has just made a
         // drag and sees `cancel` cannot conclude that its own drag was cancelled — it may be
         // looking at the previous one. Poll it for a *change*, not for a value.
-        put("dragend", lastDragEnd)
+        put(.dragend, lastDragEnd)
 
         // The two order plates, as the words they are printing.
-        put("cut", cutCall.map { "\($0.title)|\($0.detail)" } ?? "-")
-        put("def", defenceCall.map { "\($0.title)|\($0.detail)" } ?? "-")
+        put(.cut, cutCall.map { "\($0.title)|\($0.detail)" } ?? "-")
+        put(.def, defenceCall.map { "\($0.title)|\($0.detail)" } ?? "-")
 
-        put("score", "\(match.score[0])-\(match.score[1])")
-        flag("over", match.isOver)
-        flag("paused", paused)
-        flag("sheet", showSetup)
-        flag("coach", showCoach)
+        put(.score, "\(match.score[0])-\(match.score[1])")
+        flag(.over, match.isOver)
+        flag(.paused, paused)
+        flag(.sheet, showSetup)
         return f.joined(separator: ";")
     }
 
@@ -192,7 +188,7 @@ extension MatchView {
                 .padding(.bottom, 4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
                 .allowsHitTesting(false)
-                .accessibilityIdentifier(Self.probeIdentifier)
+                .accessibilityIdentifier(ProbeContract.probeIdentifier)
         }
     }
 }

@@ -1,3 +1,4 @@
+import ProbeContract
 import XCTest
 
 /// The app, launched into a live match, plus the two things a touch test needs that the
@@ -67,8 +68,12 @@ struct MatchDriver {
     init(receives: Possession = .us) {
         Self.announce()
         let app = XCUIApplication()
-        app.launchArguments =
-            ["-setup", "off", "-probe", "on", "-points", "9", "-receive", receives.rawValue]
+        app.launchArguments = [
+            LaunchArg.setup.rawValue, SetupValue.off.rawValue,
+            LaunchArg.probe.rawValue, ToggleValue.on.rawValue,
+            LaunchArg.points.rawValue, "9",
+            LaunchArg.receive.rawValue, receives.rawValue,
+        ]
         app.launch()
         self.app = app
 
@@ -88,7 +93,7 @@ struct MatchDriver {
         // Queried through locals rather than through `probeElement`, because a stored property
         // is still uninitialised at this point and reaching for `self` to read one computed
         // property does not compile. The queries are the same ones.
-        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        let probe = app.descendants(matching: .any).matching(identifier: ProbeContract.probeIdentifier).firstMatch
         // **Launch and readiness are separate diagnostics** (VAL-CI-003). The app not
         // running after `launch()` is a launch failure — the process never started or died
         // immediately. The app running but the probe never appearing is a readiness timeout
@@ -127,13 +132,15 @@ struct MatchDriver {
     init(extraArgs: [String], receives: Possession = .us) {
         Self.announce()
         let app = XCUIApplication()
-        app.launchArguments =
-            ["-setup", "off", "-probe", "on", "-receive", receives.rawValue]
-            + extraArgs
+        app.launchArguments = [
+            LaunchArg.setup.rawValue, SetupValue.off.rawValue,
+            LaunchArg.probe.rawValue, ToggleValue.on.rawValue,
+            LaunchArg.receive.rawValue, receives.rawValue,
+        ] + extraArgs
         app.launch()
         self.app = app
 
-        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        let probe = app.descendants(matching: .any).matching(identifier: ProbeContract.probeIdentifier).firstMatch
         guard Self.ready(app) else {
             let device = Self.deviceIdentity()
             if app.state == .notRunning {
@@ -169,7 +176,7 @@ struct MatchDriver {
     /// cannot be reused here — it reads the probe's *label*, which does not exist yet.
     private static func ready(_ app: XCUIApplication) -> Bool {
         let skip = app.buttons["coach.skip"]
-        let probe = app.descendants(matching: .any).matching(identifier: "match.probe").firstMatch
+        let probe = app.descendants(matching: .any).matching(identifier: ProbeContract.probeIdentifier).firstMatch
         let deadline = Date().addingTimeInterval(patience)
         while Date() < deadline {
             // Skip first, and deliberately not the other way around. The probe may well be in
@@ -347,7 +354,7 @@ struct MatchDriver {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
 
-    private var probeElement: XCUIElement { element("match.probe") }
+    private var probeElement: XCUIElement { element(ProbeContract.probeIdentifier) }
 
     // MARK: - reading the match
 
@@ -370,80 +377,11 @@ struct MatchDriver {
     }
 
     /// One line of `MatchProbe.probeState`, parsed.
-    struct Probe {
-        let raw: String
-        private let fields: [String: String]
-
-        init(_ raw: String) {
-            self.raw = raw
-            var f: [String: String] = [:]
-            for pair in raw.split(separator: ";") {
-                guard let eq = pair.firstIndex(of: "=") else { continue }
-                f[String(pair[pair.startIndex..<eq])] = String(pair[pair.index(after: eq)...])
-            }
-            self.fields = f
-        }
-
-        func string(_ key: String) -> String { fields[key] ?? "" }
-        func int(_ key: String) -> Int { Int(fields[key] ?? "") ?? 0 }
-        func double(_ key: String) -> Double? { Double(fields[key] ?? "") }
-        func flag(_ key: String) -> Bool { fields[key] == "1" }
-
-        /// `humanRelease`'s precondition: our man is holding it, so a drag will throw.
-        var canThrow: Bool { flag("mine") }
-        /// `humanCallCut`'s precondition, cooldown included.
-        var canCut: Bool { flag("cut.ok") }
-        /// `humanDefend`'s situation: they have it or it is in the air.
-        var canDefend: Bool { flag("def.ok") }
-
-        var thrown: Int { int("thrown") }
-        var cuts: Int { int("cuts") }
-        var defends: Int { int("defends") }
-        var grade: String { string("grade") }
-        var hold: Double? { double("hold") }
-        var throwType: String { string("type") }
-        var drag: String { string("drag") }
-        var dragEnd: String { string("dragend") }
-        var cut: String { string("cut") }
-        var defence: String { string("def") }
-
-        /// Taps the offence took, taps either half refused, and accepted calls that only
-        /// landed because the empty cone was widened. See `MatchView.callCut`.
-        var taps: Int { int("taps") }
-        var refused: Int { int("refused") }
-        var widened: Int { int("wide") }
-        /// Why the last refusal happened, spelled as `RefusedTap.Reason`.
-        var refusal: String { string("refuse") }
-        /// Every refusal of the run by reason, `nobodyThere:7|tooSoon:2`.
-        var refusalTally: String { string("tally") }
-        /// `Engine.phase`: `setup` before a pull, `live` in a point, `dead` between.
-        var phase: String { string("phase") }
-        var isLive: Bool { phase == "live" }
-
-        /// The rectangle the game is drawn and tapped on, in the window's coordinates.
-        ///
-        /// **It is not the window, and it is a different rectangle in each configuration.**
-        /// Measured on an iPhone 17 Pro in landscape, in an 874 × 402 window: a debug build gives
-        /// the game 750 × 338 at (62, 0) — the instruments tab bar takes 64 pt off the bottom — and
-        /// a release build gives it 750 × 382 at (62, 0), 44 pt more pitch, with only the home
-        /// indicator below it. Both lose 62 pt a side to the display cutout. So a fraction of the
-        /// window is a different piece of grass from a fraction of the pitch, in both
-        /// configurations and differently. See `pitchPoint`.
-        var pitch: CGRect? {
-            let parts = string("rect").split(separator: ",").compactMap { Double($0) }
-            guard parts.count == 4, parts[2] > 0, parts[3] > 0 else { return nil }
-            return CGRect(x: parts[0], y: parts[1], width: parts[2], height: parts[3])
-        }
-        /// Seconds until the watched body is back on its feet, or nil while it is.
-        var recovery: Double? { double("rec") }
-        var isOver: Bool { flag("over") }
-        var paused: Bool { flag("paused") }
-        var sheet: Bool { flag("sheet") }
-        /// The score as `"x-y"`.
-        var score: String { string("score") }
-        /// Which team has possession (0 = us, 1 = them).
-        var poss: Int { int("poss") }
-    }
+    ///
+    /// The parser and typed accessors live in `ProbeContract.Probe`, shared with the
+    /// production app — issue #21. The type is available as a bare `Probe` through the
+    /// `import ProbeContract` at the top of this file; test files that reference the type
+    /// by name import the module themselves.
 
     /// Tap, then poll for a counter on the probe to move, and grab a HUD plate the instant it
     /// does.

@@ -59,7 +59,9 @@ let package = Package(
         // `BenchReport` and the self-check screen draws a `CheckReport`. Both are
         // *returned* rather than printed precisely so a view can render them — see the
         // note at the top of `Harness.swift`.
-        .target(name: "FlightUI", dependencies: ["UltimateSim", "SimChecks"]),
+        // Depends on `ProbeContract` so the probe producer (`MatchProbe`) emits only
+        // shared `ProbeKey` cases and references the canonical probe identifier — issue #21.
+        .target(name: "FlightUI", dependencies: ["UltimateSim", "SimChecks", "ProbeContract"]),
         .executableTarget(name: "FlightScope", dependencies: ["FlightUI"]),
     ]
 )

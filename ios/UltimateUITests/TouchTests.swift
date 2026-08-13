@@ -1,3 +1,4 @@
+import ProbeContract
 import XCTest
 
 /// The four things a finger does, done with a finger.
@@ -225,7 +226,7 @@ final class TouchTests: XCTestCase {
                     withVelocity: XCUIGestureVelocity(rawValue: 400),
                     thenHoldForDuration: 0.4)
             },
-            resolve: { before, now -> (before: MatchDriver.Probe, after: MatchDriver.Probe)? in
+            resolve: { before, now -> (before: Probe, after: Probe)? in
                 // **A change in `dragend`, not a value in it, and the difference is a real
                 // failure rather than a style point.** `dragend` is sticky: `lastDragEnd` holds
                 // the *previous* drag's outcome and nothing clears it, so `contains(now.dragEnd)`
