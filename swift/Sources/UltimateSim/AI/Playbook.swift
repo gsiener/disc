@@ -761,9 +761,15 @@ public struct Playbook: Sendable {
     }
 
     /// Situational formation call. `prefer` is the team's base look.
+    ///
+    /// `foeZone` — the opposing team's already-decided defensive call — is read from
+    /// `AIWorld.scheme` by the caller and passed in here so this stays a pure function
+    /// of its arguments, matching the reference's `chooseFormation(disc, dir, prefer,
+    /// windSpeed, openSign, foeZone)` in `src/sim/Playbook.ts`. See the comment on the
+    /// `foeZone` branch below for why: this is issue #57's fix.
     public func chooseFormation(
         _ disc: Vec2d, _ dir: Dir, _ prefer: FormationName, _ windSpeed: Double,
-        _ openSign: Sign
+        _ openSign: Sign, _ foeZone: Bool
     ) -> FormationName {
         // The endzone set is a real look but it is not a column, so it is worth asking
         // for it only when it is genuinely an endzone situation. At 22 m it was firing
@@ -794,6 +800,30 @@ public struct Playbook: Sendable {
         // 14 m from the middle is "trapped on a line" on a pitch 18.5 m to the sideline;
         // on the minis pitch the sideline is at 9, so the call could never fire at all.
         if abs(disc.x) > 14.0 * widthScale && disc.x * Double(openSign) < 0 { return .side }
+        // A BLOW IS ALSO A ZONE DAY — but the column that reads well against a person
+        // mark is the wrong shape to answer a cup with. Vertical bunches five cutters
+        // on one line straight through the middle of the field, which is exactly where
+        // a 3-2-2 cup sits and exactly the depth its wings and short-deep are built to
+        // collapse on. `shouldPlayZone`'s wind trigger and this rule's old unconditional
+        // 7.5 both keyed off the same wind reading, so they fired together — vertical
+        // into zone, every windy point — and that compounding, not either rule alone,
+        // was issue #57: 33.5% pooled windy completion against a 70-98% band, 94% of
+        // the extra turnovers block (a defender beating the receiver), not drift.
+        //
+        // The fix does not touch the calibrated wind response (vertical stays it
+        // against person) or `shouldPlayZone`'s threshold (a separately calibrated
+        // trigger point). It teaches the offence to read the defence's already-decided
+        // call, the same way a real team reads shape before calling their own —
+        // `foeZone` is that read. Horizontal spreads the same seven bodies across the
+        // field's width instead of its depth, stretching the cup sideways and opening
+        // the swing/around throws a zone is weak to.
+        //
+        // Checked BEFORE the wind gate, not inside it: `shouldPlayZone` can call zone
+        // on wind alone from its smoothstep's foot (well under this rule's 7.5) or on a
+        // late lead with no wind at all. Gating the read on `windSpeed > 7.5` would
+        // ignore the one signal that matters in exactly the band where it's the only
+        // signal available. This removes a wind dependency rather than adding one.
+        if foeZone { return .horizontal }
         if windSpeed > 7.5 { return .vertical }
         return prefer == .endzone ? .vertical : prefer
     }

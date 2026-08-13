@@ -72,7 +72,8 @@ extension TeamAI {
         // thresholds on the disc position, and a disc sitting on one of them made the
         // whole stack slide 20 m across the field and back at whatever rate the thrower
         // pivoted. A shape that teleports is not a shape.
-        let want = pb.chooseFormation(anchor, dir, cfg.formation, windSpeed, openSign)
+        let foeZone = world.scheme[1 - team] == .zone
+        let want = pb.chooseFormation(anchor, dir, cfg.formation, windSpeed, openSign, foeZone)
         if want == formation {
             formWant = want
             formHold = 0

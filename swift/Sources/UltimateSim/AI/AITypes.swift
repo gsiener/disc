@@ -198,6 +198,15 @@ public struct AIDiscState: Equatable, Sendable {
     }
 }
 
+/// The call a team's defence is running. Hoisted to module scope (rather than nested in
+/// `TeamAI`, where the reference's ad hoc `'person' | 'zone'` union lived before this) so
+/// `AIWorld.scheme` below — the channel that lets the offence read the opposing team's
+/// already-decided call — can reference it without reaching into `TeamAI` internals.
+public enum DefenceScheme: String, Equatable, Sendable {
+    case person
+    case zone
+}
+
 /// Everything one AI update sees.
 ///
 /// The reference carries a `sys` bag of duck-typed peers read defensively. Here the two
@@ -222,13 +231,21 @@ public struct AIWorld {
     public var field: FieldConstants
     public var locomotion: LocomotionPeer?
     public var discPeer: DiscPeer?
+    /// Each team's most recently CALLED defensive scheme, indexed by `TeamId` — see the
+    /// reference's `AIWorld.scheme` (src/sim/AI.ts) for why this exists: it is the one
+    /// channel `chooseFormation` has to know a zone is coming, rather than inferring it
+    /// from the same wind reading the defence used. `Engine.buildWorld` fills this from
+    /// each `TeamAI`'s own persistent `currentScheme` (not reset per tick the way the rest
+    /// of `AIWorld` is), since the struct itself is rebuilt fresh every tick.
+    public var scheme: [DefenceScheme]
 
     public init(
         time: Double = 0, players: [AIPlayer] = [], disc: AIDiscState = AIDiscState(),
         possession: TeamId = 0, phase: GamePhase = .setup, wind: Vec2d = .zero,
         score: [Int] = [0, 0], scoreCap: Int = 15, rand: Rng = Rng(),
         field: FieldConstants = .standard,
-        locomotion: LocomotionPeer? = nil, discPeer: DiscPeer? = nil
+        locomotion: LocomotionPeer? = nil, discPeer: DiscPeer? = nil,
+        scheme: [DefenceScheme] = [.person, .person]
     ) {
         self.time = time
         self.players = players
@@ -242,6 +259,7 @@ public struct AIWorld {
         self.field = field
         self.locomotion = locomotion
         self.discPeer = discPeer
+        self.scheme = scheme
     }
 }
 

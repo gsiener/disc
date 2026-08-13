@@ -276,27 +276,32 @@ export function playbookGoldens() {
 
   const chooseFormationCases: Array<{
     disc: Vec2; dir: AttackDir; prefer: FormationName; windSpeed: number;
-    openSign: Sign; want: FormationName;
+    openSign: Sign; foeZone: boolean; want: FormationName;
   }> = [];
   for (const dir of DIRS) {
     for (const openSign of SIGNS) {
       for (const prefer of FORMATIONS) {
         for (const windSpeed of [0, 7.5, 7.500000000000001, 12]) {
-          for (const disc of [
-            v(0, 0),
-            v(0, dir * 19), // yardsToGoal = 13 exactly
-            v(0, dir * 19.000000000000004),
-            v(0, dir * 18.9),
-            v(14.0, 0), // exactly on the |x| > 14 trigger: not side
-            v(14.000000000000002, 0),
-            v(-14.000000000000002, 0),
-            v(17.9, -4),
-            v(-17.9, -4),
-          ]) {
-            chooseFormationCases.push({
-              disc, dir, prefer, windSpeed, openSign,
-              want: chooseFormation(disc, dir, prefer, windSpeed, openSign),
-            });
+          // foeZone only matters once windSpeed clears the 7.5 threshold
+          // (#57's fix), but it is swept unconditionally so a regression
+          // that made it leak into the untriggered branches would show up.
+          for (const foeZone of [false, true]) {
+            for (const disc of [
+              v(0, 0),
+              v(0, dir * 19), // yardsToGoal = 13 exactly
+              v(0, dir * 19.000000000000004),
+              v(0, dir * 18.9),
+              v(14.0, 0), // exactly on the |x| > 14 trigger: not side
+              v(14.000000000000002, 0),
+              v(-14.000000000000002, 0),
+              v(17.9, -4),
+              v(-17.9, -4),
+            ]) {
+              chooseFormationCases.push({
+                disc, dir, prefer, windSpeed, openSign, foeZone,
+                want: chooseFormation(disc, dir, prefer, windSpeed, openSign, foeZone),
+              });
+            }
           }
         }
       }

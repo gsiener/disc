@@ -324,11 +324,6 @@ public final class TeamAI {
     /// port ships such a peer.
     var discPeerFailed = false
 
-    public enum DefenceScheme: String, Equatable, Sendable {
-        case person
-        case zone
-    }
-
     /// `cfg` is a whole value here where the reference takes a `Partial` spread over
     /// `DEFAULT_TEAM_CONFIG`; pass `DEFAULT_TEAM_CONFIG` and mutate what you mean.
     ///

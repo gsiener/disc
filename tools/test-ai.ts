@@ -672,6 +672,7 @@ function buildSim(
     score: [0, 0],
     scoreCap: 15,
     rand: rng.fork(999),
+    scheme: ['person', 'person'],
     sys: { disc },
   };
 
@@ -1967,7 +1968,7 @@ async function main(): Promise<void> {
         for (const x of [-17, -15.5, 15.5, 17]) {
           // Mid-field z so the endzone call cannot pre-empt the side call.
           const disc = { x, z: 0 };
-          const got = chooseFormation(disc, dir, 'vertical', 0, openSign);
+          const got = chooseFormation(disc, dir, 'vertical', 0, openSign, false);
           if (x * openSign > 0) {
             // Trapped ON the open side: the side stack must not be called.
             if (got === 'side') trappedOpenOk = false;
@@ -1990,7 +1991,7 @@ async function main(): Promise<void> {
     let midOk = true;
     for (const openSign of [1, -1] as const) {
       for (const x of [-13, 0, 13]) {
-        if (chooseFormation({ x, z: 0 }, 1, 'vertical', 0, openSign) === 'side') midOk = false;
+        if (chooseFormation({ x, z: 0 }, 1, 'vertical', 0, openSign, false) === 'side') midOk = false;
       }
     }
     ok('and it stays off inside 14 m of centre', midOk, 'x = -13, 0, +13 on both forces');

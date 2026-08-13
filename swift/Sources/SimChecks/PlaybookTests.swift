@@ -162,6 +162,7 @@ enum PlaybookTests {
         let prefer: Playbook.FormationName
         let windSpeed: Double
         let openSign: Int
+        let foeZone: Bool
         let want: Playbook.FormationName
     }
 
@@ -474,10 +475,12 @@ enum PlaybookTests {
 
         for c in g.chooseFormationCases {
             Check.eq(
-                pb.chooseFormation(c.disc.vec, c.dir, c.prefer, c.windSpeed, c.openSign),
+                pb.chooseFormation(
+                    c.disc.vec, c.dir, c.prefer, c.windSpeed, c.openSign, c.foeZone),
                 c.want,
                 "chooseFormation(disc \(c.disc.x),\(c.disc.z), dir \(c.dir), "
-                    + "prefer \(c.prefer.rawValue), wind \(c.windSpeed), open \(c.openSign))")
+                    + "prefer \(c.prefer.rawValue), wind \(c.windSpeed), open \(c.openSign), "
+                    + "foeZone \(c.foeZone))")
         }
     }
 
@@ -804,31 +807,40 @@ enum PlaybookTests {
             let d = Double(dir)
             // "if yardsToGoal <= 13 return endzone" — from both sides of 13.
             Check.eq(
-                pb.chooseFormation(Vec2d(0, d * (gl - 13)), dir, .vertical, 0, 1), .endzone,
-                "the endzone set fires exactly at 13 m out")
+                pb.chooseFormation(Vec2d(0, d * (gl - 13)), dir, .vertical, 0, 1, false),
+                .endzone, "the endzone set fires exactly at 13 m out")
             Check.eq(
-                pb.chooseFormation(Vec2d(0, d * (gl - 13.5)), dir, .vertical, 0, 1), .vertical,
-                "it does not fire at 13.5 m out")
+                pb.chooseFormation(Vec2d(0, d * (gl - 13.5)), dir, .vertical, 0, 1, false),
+                .vertical, "it does not fire at 13.5 m out")
             // "near a line, AND the open side pointing back into the field".
             Check.eq(
-                pb.chooseFormation(Vec2d(17, 0), dir, .vertical, 0, -1), .side,
+                pb.chooseFormation(Vec2d(17, 0), dir, .vertical, 0, -1, false), .side,
                 "trapped on the break side calls the side stack")
             Check.eq(
-                pb.chooseFormation(Vec2d(17, 0), dir, .vertical, 0, 1), .vertical,
+                pb.chooseFormation(Vec2d(17, 0), dir, .vertical, 0, 1, false), .vertical,
                 "trapped on the OPEN side does not call the side stack")
             Check.eq(
-                pb.chooseFormation(Vec2d(14, 0), dir, .vertical, 0, -1), .vertical,
+                pb.chooseFormation(Vec2d(14, 0), dir, .vertical, 0, -1, false), .vertical,
                 "exactly 14 m out is not yet trapped")
-            // "windSpeed > 7.5 return vertical".
+            // "windSpeed > 7.5 return vertical" — when the foe is not known to be in zone.
             Check.eq(
-                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 8, 1), .vertical,
-                "a big wind forces the vertical stack")
+                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 8, 1, false), .vertical,
+                "a big wind forces the vertical stack against a person mark")
             Check.eq(
-                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 7.5, 1), .horizontal,
+                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 7.5, 1, false), .horizontal,
                 "exactly 7.5 m/s does not")
+            // issue #57: a foe known to be running zone gets the anti-zone look
+            // (horizontal) instead of vertical, regardless of wind — checked BEFORE the
+            // wind gate, matching the reference's reordered rule.
+            Check.eq(
+                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 8, 1, true), .horizontal,
+                "a foe in zone gets horizontal even in a big wind")
+            Check.eq(
+                pb.chooseFormation(Vec2d(0, 0), dir, .horizontal, 0, 1, true), .horizontal,
+                "and even with no wind at all — the zone read does not depend on wind")
             // "prefer === 'endzone' ? 'vertical' : prefer" — endzone is never a base look.
             Check.eq(
-                pb.chooseFormation(Vec2d(0, 0), dir, .endzone, 0, 1), .vertical,
+                pb.chooseFormation(Vec2d(0, 0), dir, .endzone, 0, 1, false), .vertical,
                 "the endzone set is never a base look")
         }
 
@@ -1156,16 +1168,16 @@ enum PlaybookTests {
         // the fix into a failure.
         let regulation = Playbook(field: .standard)
         Check.eq(
-            regulation.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1), .vertical,
+            regulation.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1, false), .vertical,
             "at the centre of a regulation pitch the offence runs its base look")
         Check.eq(
-            regulation.chooseFormation(Vec2d(0, 26), 1, .vertical, 0, 1), .endzone,
+            regulation.chooseFormation(Vec2d(0, 26), 1, .vertical, 0, 1, false), .endzone,
             "and calls the endzone set six metres out")
         Check.eq(
-            minis.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1), .vertical,
+            minis.chooseFormation(Vec2d(0, 0), 1, .vertical, 0, 1, false), .vertical,
             "at the centre of a minis pitch it runs its base look too")
         Check.eq(
-            minis.chooseFormation(Vec2d(0, 10), 1, .vertical, 0, 1), .endzone,
+            minis.chooseFormation(Vec2d(0, 10), 1, .vertical, 0, 1, false), .endzone,
             "and calls the endzone set two and a half metres out — the same fraction "
                 + "of a shorter pitch")
     }
@@ -1313,7 +1325,8 @@ enum PlaybookTests {
                                     let a = Vec2d(
                                         fx * p.field.sideline,
                                         Double(dir) * fz * p.field.goalLine)
-                                    let name = p.chooseFormation(a, dir, prefer, wind, openSign)
+                                    let name = p.chooseFormation(
+                                        a, dir, prefer, wind, openSign, false)
                                     let st = p.formationStations(name, a, dir, openSign)
                                     for i in 0..<st.count {
                                         for j in (i + 1)..<st.count {

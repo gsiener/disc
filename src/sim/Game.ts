@@ -810,6 +810,7 @@ export class GameSystem implements System {
         time: 0, players: this.roster.map((r) => r.ai), disc: ad,
         possession, phase: 'setup', wind: { x: this.wind.x, z: this.wind.z },
         score: [0, 0], scoreCap: gs.target, rand: this.rng, sys: undefined,
+        scheme: ['person', 'person'],
       };
     }
     const w = this.world;

@@ -868,6 +868,12 @@ public final class Engine {
         // to say it reasons about bodies that move differently from the ones on the pitch.
         w.locomotion = self
         w.discPeer = disc
+        // `AIWorld` is rebuilt fresh every tick (see the doc comment above), but each
+        // `TeamAI`'s own `scheme` is not — it only changes when `pickScheme` runs, once
+        // per point/turnover. Reading it here (rather than trying to propagate a write
+        // through the value-type world the way the reference mutates its single shared
+        // object) is what makes `AIWorld.scheme` see the CURRENT call for both teams.
+        if ai.count == 2 { w.scheme = [ai[0].currentScheme, ai[1].currentScheme] }
         return w
     }
 

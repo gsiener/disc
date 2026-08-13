@@ -140,6 +140,8 @@ export interface DiscState {
   throwType: ThrowType | null;
 }
 
+export type DefenceScheme = 'person' | 'zone';
+
 export interface AIWorld {
   time: number;
   players: AIPlayer[];
@@ -152,6 +154,15 @@ export interface AIWorld {
   score: [number, number];
   scoreCap: number;
   rand: RandomSource;
+  /**
+   * Each team's most recently CALLED defensive scheme, written by that team's
+   * own `pickScheme` the moment it decides (once per point/turnover, when it
+   * becomes the defending side) and read by the OPPOSING team's offence —
+   * this is the one channel `chooseFormation` has to know a zone is coming,
+   * rather than reacting to the same wind reading in isolation. Defaults to
+   * `'person'` for both teams before either has played defence.
+   */
+  scheme: [DefenceScheme, DefenceScheme];
   /** `ctx.sys`. Read defensively — every peer is optional. */
   sys?: Record<string, unknown>;
 }
@@ -991,7 +1002,7 @@ export class TeamAI {
   get openSideOnD(): Sign | null { return this.forceSide; }
 
   /* defence */
-  private scheme: 'person' | 'zone' = 'person';
+  private scheme: DefenceScheme = 'person';
   force: Force;
   private matchup = new Map<number, number>();   // defenderId -> offenceId
   private zoneRole = new Map<number, ZoneRole>();
@@ -1041,7 +1052,7 @@ export class TeamAI {
 
   /** Current stall count the marker has reached (0 when not marking). */
   get stall(): number { return this.stallClock; }
-  get currentScheme(): 'person' | 'zone' { return this.scheme; }
+  get currentScheme(): DefenceScheme { return this.scheme; }
   get currentFormation(): FormationName { return this.formation; }
   /** X sign of the open side, as this team currently understands it. */
   get openSign(): Sign { return this.openCommit; }
@@ -1440,7 +1451,10 @@ export class TeamAI {
     // triggers are thresholds on the disc position, and a disc sitting on one
     // of them made the whole stack slide 20 m across the field and back at
     // whatever rate the thrower pivoted. A shape that teleports is not a shape.
-    const want = chooseFormation(this.anchor, dir, this.cfg.formation, windSpeed, this.openSign);
+    const foeZone = world.scheme[1 - this.team as 0 | 1] === 'zone';
+    const want = chooseFormation(
+      this.anchor, dir, this.cfg.formation, windSpeed, this.openSign, foeZone,
+    );
     if (want === this.formation) {
       this.formWant = want;
       this.formHold = 0;
@@ -2940,6 +2954,10 @@ export class TeamAI {
     const diff = world.score[this.team] - world.score[1 - this.team];
     const played = world.score[0] + world.score[1];
     this.scheme = shouldPlayZone(windSpeed, diff, played, this.cfg.zoneBias) ? 'zone' : 'person';
+    // Publish the call so the offence's `chooseFormation` can react to zone
+    // specifically, rather than inferring it from the same wind reading —
+    // see `AIWorld.scheme`'s doc comment for why this channel exists.
+    world.scheme[this.team] = this.scheme;
     // Under a strong crosswind, force to the upwind side — throws hang there.
     const odir = -this.dir as AttackDir;
     if (windSpeed > 5) {

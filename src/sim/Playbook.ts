@@ -572,6 +572,7 @@ export const hasColumn = (name: FormationName): boolean =>
 /** Situational formation call. `prefer` is the team's base look. */
 export function chooseFormation(
   disc: Vec2, dir: AttackDir, prefer: FormationName, windSpeed: number, openSign: Sign,
+  foeZone: boolean,
 ): FormationName {
   // The endzone set is a real look but it is not a column, so it is worth
   // asking for it only when it is genuinely an endzone situation. At 22 m it
@@ -606,6 +607,44 @@ export function chooseFormation(
    * work the reset and swing it, which is what the base look already does.
    */
   if (Math.abs(disc.x) > 14.0 && disc.x * openSign < 0) return 'side';
+  /**
+   * A BLOW IS ALSO A ZONE DAY — but the column that reads well against a
+   * person mark is the wrong shape to answer a cup with. Vertical bunches
+   * five cutters on one line straight through the middle of the field, which
+   * is exactly where a 3-2-2 cup sits and exactly the depth its wings and
+   * short-deep are built to collapse on: one lane, three defenders already
+   * stacked on it. `shouldPlayZone`'s wind trigger (windPull, foot 4.5,
+   * midpoint 7.75) and this rule's old unconditional 7.5 both key off the
+   * same wind reading, so historically they fired together — vertical into
+   * zone, every windy point, the worst possible pairing — and that
+   * compounding (not either rule alone) was issue #57's real defect: 33.5%
+   * pooled windy completion against a 70-98% band, with 94% of the extra
+   * turnovers being blocks, not drifted throws.
+   *
+   * The fix is not to stop calling vertical in wind (that's the calibrated,
+   * separately-tested behaviour this rule exists for) and not to retune
+   * `shouldPlayZone`'s threshold (that's a different calibrated behaviour —
+   * block rates and the zone-trigger point other assertions depend on). It's
+   * to teach the offence to RECOGNISE zone, the same way a real team reads
+   * the defence's shape before calling their own: `world.scheme` carries the
+   * defending team's already-decided call, so by the time this runs the
+   * information exists — it just wasn't being read. Horizontal spreads the
+   * same seven bodies across the width of the field instead of its depth,
+   * which stretches the cup sideways and opens the swing/around throws a
+   * zone is weak to, instead of asking a blocked lane to open by itself.
+   *
+   * `foeZone` is checked BEFORE the wind gate, not inside it. `shouldPlayZone`
+   * can call zone on wind alone from windPull's foot at 4.5 m/s (smoothstep
+   * midpoint 7.75) or on a big late lead with no wind at all — either way,
+   * gating the read on `windSpeed > 7.5` would ignore the one signal that
+   * matters in exactly the band where it is the only signal available: a
+   * 5-6 m/s day where the defence has already called zone but this rule
+   * would still hand back a bunched column because it never checked. This
+   * removes a wind dependency rather than adding one — it does not touch
+   * `shouldPlayZone`'s threshold, only the order this rule reads two things
+   * it already had.
+   */
+  if (foeZone) return 'horizontal';
   if (windSpeed > 7.5) return 'vertical';
   return prefer === 'endzone' ? 'vertical' : prefer;
 }

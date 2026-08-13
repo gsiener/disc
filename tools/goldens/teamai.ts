@@ -257,6 +257,7 @@ export function teamAIGoldens() {
     score: [0, 0],
     scoreCap: 15,
     rand: new SeededRng(7).fork(999),
+    scheme: ['person', 'person'],
     sys: undefined,
   };
 
