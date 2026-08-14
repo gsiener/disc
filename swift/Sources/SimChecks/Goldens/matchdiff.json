@@ -24,25 +24,25 @@
     "throwaway": 0,
     "out-of-bounds": 1,
     "caught-out-of-bounds": 0,
-    "block": 37,
-    "interception": 73,
+    "block": 40,
+    "interception": 68,
     "stall-out": 0,
     "pull-drop": 21,
     "travel-violation": 0,
     "double-touch": 0
   },
   "calls": {
-    "foul": 35,
+    "foul": 32,
     "pick": 6,
-    "strip": 8,
+    "strip": 9,
     "travel": 0,
-    "contested": 12
+    "contested": 11
   },
   "totals": {
-    "attempts": 1412,
+    "attempts": 1410,
     "completions": 1258,
     "goals": 178,
-    "blocks": 110,
+    "blocks": 108,
     "stallOuts": 0,
     "points": 187
   }
