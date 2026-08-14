@@ -233,6 +233,11 @@ public struct MatchView: View {
     /// them, and set again by the sheet's HOW TO PLAY button.
     @State var showCoach = false
 
+    /// Whether the throwing practice is up. Set by the sheet's PRACTICE button; cleared by
+    /// its own DONE button. Issue #55 — a target and the real throw gesture, with none of
+    /// this match's own state around it. See `PracticeView`.
+    @State var showPractice = false
+
     /// Whether the sheet, if dismissed, has a match to fall back onto. False before the
     /// first pull; true forever after, since a match — running, paused or finished —
     /// exists from then on.
@@ -622,7 +627,7 @@ public struct MatchView: View {
     /// match that had finished. That is unbounded work and battery on a screen whose only
     /// remaining input is one button.
     private var running: Bool {
-        active && scenePhase == .active && !paused && !showSetup && !showCoach
+        active && scenePhase == .active && !paused && !showSetup && !showCoach && !showPractice
             && restoring == nil && !match.isOver
     }
 
@@ -734,6 +739,7 @@ public struct MatchView: View {
                         // drawn over it and dismissing them puts you back on the choices
                         // you were making, which is where you were.
                         onCoach: { showCoach = true },
+                        onPractice: { showPractice = true },
                         // Nothing to go back to before the first pull.
                         onDismiss: hasStarted ? { showSetup = false } : nil)
                 }
@@ -749,6 +755,15 @@ public struct MatchView: View {
                         Prefs.coachSeen = true
                         showCoach = false
                     }
+                }
+
+                // The throwing practice, over everything including the sheet it was
+                // opened from — issue #55. It owns its own disc and its own tick loop
+                // (see `PracticeView`), so `running` above excludes it the same way it
+                // excludes the sheet and the coach cards: nothing behind it should be
+                // spending battery on a match nobody is looking at.
+                if showPractice && active {
+                    PracticeView(onDismiss: { showPractice = false })
                 }
 
                 // The state a UI test reads, when one asked for it. Last in the stack so

@@ -50,6 +50,11 @@ struct PreGameSheet: View {
     let onStart: () -> Void
     /// Show the coach cards again. The one way back to them once the first run is spent.
     let onCoach: () -> Void
+    /// Open the throwing practice: a target, the same drag-to-throw gesture, no match
+    /// around it. Issue #55 — single-player, no drills or difficulty, so it needs nothing
+    /// from this sheet's own settings (format, length, difficulty all describe a *match*)
+    /// and lives beside START rather than inside any of the groups above.
+    let onPractice: () -> Void
     /// Close without starting anything. Nil before the first match, when there is no
     /// match to close onto.
     let onDismiss: (() -> Void)?
@@ -240,6 +245,18 @@ struct PreGameSheet: View {
         HStack(spacing: 12) {
             Button(action: onCoach) {
                 Text("HOW TO PLAY")
+                    .font(.system(size: 12, design: .monospaced).bold())
+                    .foregroundStyle(.white.opacity(0.7))
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onPractice) {
+                Text("PRACTICE")
                     .font(.system(size: 12, design: .monospaced).bold())
                     .foregroundStyle(.white.opacity(0.7))
                     .padding(.horizontal, 14).padding(.vertical, 10)
