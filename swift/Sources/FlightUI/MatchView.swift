@@ -557,12 +557,26 @@ public struct MatchView: View {
         // not blank the pitch — SwiftUI holds the schedule's last emitted date, so the
         // last rendered frame stays on screen; see `frame`'s own comment for what still
         // needs a bump on the rare `!running` frame this still reaches.
-        TimelineView(.animation(paused: !(director.needsFrames(running: running) || resumeKick))) {
-            timeline in
-            matchContent
-                .onChange(of: timeline.date) { _, now in
-                    advance(to: now)
+        // Practice (issue #55) swaps out this whole tree rather than drawing over it.
+        // `PracticeView` owns its own `RealityView`, and RealityKit's IBL blending does
+        // not support two scenes on screen at once ("skip subsequent scenes", logged the
+        // one time this was tried as a same-tree overlay) — the practice pitch built and
+        // loaded its assets correctly and simply never composited. An `if`/`else` on
+        // different view types tears the match's `RealityView` down while practice is up
+        // and rebuilds it on return, which is the only way to keep exactly one on screen.
+        Group {
+            if showPractice {
+                PracticeView(onDismiss: { showPractice = false })
+            } else {
+                TimelineView(.animation(paused: !(director.needsFrames(running: running) || resumeKick)))
+                {
+                    timeline in
+                    matchContent
+                        .onChange(of: timeline.date) { _, now in
+                            advance(to: now)
+                        }
                 }
+            }
         }
         // Leaving the foreground pauses the match and writes it down. Note what this does
         // *not* do: resume it. See `paused`.
@@ -627,7 +641,7 @@ public struct MatchView: View {
     /// match that had finished. That is unbounded work and battery on a screen whose only
     /// remaining input is one button.
     private var running: Bool {
-        active && scenePhase == .active && !paused && !showSetup && !showCoach && !showPractice
+        active && scenePhase == .active && !paused && !showSetup && !showCoach
             && restoring == nil && !match.isOver
     }
 
@@ -755,15 +769,6 @@ public struct MatchView: View {
                         Prefs.coachSeen = true
                         showCoach = false
                     }
-                }
-
-                // The throwing practice, over everything including the sheet it was
-                // opened from — issue #55. It owns its own disc and its own tick loop
-                // (see `PracticeView`), so `running` above excludes it the same way it
-                // excludes the sheet and the coach cards: nothing behind it should be
-                // spending battery on a match nobody is looking at.
-                if showPractice && active {
-                    PracticeView(onDismiss: { showPractice = false })
                 }
 
                 // The state a UI test reads, when one asked for it. Last in the stack so
