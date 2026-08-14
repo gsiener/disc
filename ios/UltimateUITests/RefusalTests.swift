@@ -273,12 +273,17 @@ final class RefusalTests: XCTestCase {
 
     /// **The rectangle the game is played on is the rectangle these tests tap.**
     ///
-    /// Measured on an iPhone 17 Pro in landscape, in an 874 × 402 window:
+    /// Measured on an iPhone 17 Pro in landscape, in an 874 × 402 window, mid-match — which
+    /// is where `MatchDriver()` puts every test in this suite (`-setup off`, straight into a
+    /// live point):
     ///
-    ///   - **debug:  pitch 750 × 338 at (62, 0)** — `UltimateApp.showsInstruments` wraps the match
-    ///     in a `TabView` and its bar takes 64 pt off the bottom;
-    ///   - **release: pitch 750 × 382 at (62, 0)** — no tab bar, so the bottom inset is 20 pt of
-    ///     home indicator and the game is 44 pt taller.
+    ///   - **debug and release alike: pitch 750 × 382 at (62, 0)** — issue #54 hides the
+    ///     instruments tab bar for the duration of a live point in a debug build too, so the
+    ///     bottom inset is 20 pt of home indicator in both configurations and the game is the
+    ///     same height either way. The tab bar still exists in debug (`showsInstruments`,
+    ///     unchanged) — it is just not reserving space *while a point is live*, which is the
+    ///     only state this driver ever launches into. A run that visits the pre-game sheet or
+    ///     a paused match would see the bar again; nothing in this suite does.
     ///
     /// Neither is the window: both lose 62 pt on each side to the notch and the display cutout.
     /// So a tap expressed as a fraction of the *window* is a different piece of grass in the
@@ -328,20 +333,15 @@ final class RefusalTests: XCTestCase {
         XCTAssertGreaterThan(pitch.width, window.width * 0.7)
         XCTAssertGreaterThan(pitch.height, window.height * 0.7)
 
-        // The bottom is the one edge the configuration decides, and it is the whole difference
-        // between the layout the tests exercise and the layout that ships.
-        #if DEBUG
-            XCTAssertGreaterThan(
-                bottom, 40,
-                "a debug build has the instruments tab bar under the pitch — if this fails, "
-                    + "`showsInstruments` has changed and the touch tests are exercising the "
-                    + "shipped layout by accident")
-        #else
-            XCTAssertLessThan(
-                bottom, 40,
-                "a release build is the match and nothing else, so the only thing under the pitch "
-                    + "is the home indicator — pitch \(pitch), window \(window)")
-        #endif
+        // The bottom used to be the one edge debug and release disagreed on: a debug build's
+        // instruments tab bar took 64 pt off it, a release build's didn't. Issue #54 closed
+        // that gap for a live point specifically — the tab bar hides in both configurations
+        // while playing, since `MatchDriver()` never launches into anything else, only the
+        // home indicator is left under the pitch either way.
+        XCTAssertLessThan(
+            bottom, 40,
+            "a live point is the match and nothing else, in debug or release — the only thing "
+                + "under the pitch should be the home indicator — pitch \(pitch), window \(window)")
     }
 
     private func pct(_ x: Double) -> String { String(format: "%.0f%%", x * 100) }
