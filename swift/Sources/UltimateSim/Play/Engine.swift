@@ -641,6 +641,7 @@ public final class Engine {
 
         actionOf.removeAll(keepingCapacity: true)
         for intent in intents where intent.action != nil { actionOf[intent.id] = intent.action }
+        lastIntents = intents
 
         // 4. Bodies move. Locomotion owns position and velocity from here.
         //
@@ -1238,6 +1239,20 @@ public final class Engine {
     /// "the input reached the intent path" is exactly the assertion this read enables.
     public func reportedAction(of id: PlayerId) -> String? { actionOf[id]?.kind }
 
+    /// Every intent the last `step` acted on, both teams, in team order.
+    ///
+    /// `actionOf` above keeps only the discrete half of an intent and only for the bodies
+    /// that had one. The rest — `debug.state`, `debug.lane`, `debug.cutKind` — is what
+    /// tells a check whether a body is *attacking a lane* or *holding the shape*, and
+    /// those two are indistinguishable from a position alone: a cutter standing in the
+    /// under lane and a cutter sprinting through it occupy the same metre of grass. A
+    /// suite that has to guess ends up asserting its own guess.
+    ///
+    /// Recorded after the human's overrides so it is what locomotion was handed, not what
+    /// the AI proposed. Reading it changes nothing: the array is built every tick either
+    /// way, and this keeps the same one rather than a second copy.
+    public private(set) var lastIntents: [PlayerIntent] = []
+
     /// The roster as `CatchDecision` sees it, right now.
     ///
     /// A read of the same builder `tryCatch` uses, so a check can ask what the contest
@@ -1370,6 +1385,12 @@ public final class Engine {
 
     /// Who threw the disc that is currently in the air, if one is.
     public var thrower: Int? { discInFlight ? thrownBy : nil }
+
+    /// Who it was thrown *to*, if one is in the air. The sibling of `thrower`, and the
+    /// only way from outside to tell a cutter who stopped because his cut died from one
+    /// who stopped because the disc is on its way to him — two things that look identical
+    /// in a position trace and mean opposite things about the shape.
+    public var receiver: Int? { discInFlight ? intendedReceiver : nil }
 
     // MARK: refusals
 

@@ -122,6 +122,11 @@ enum MatchPool {
         let deepShots: Int
         let scaledDeepShots: Int
         let aimedThrows: Int
+
+        // MARK: shape
+        /// What the off-ball game looked like — see `ShapeTests` for what each counter is
+        /// and why it is a counter rather than a sample.
+        let shape: ShapeStats
     }
 
     /// The pool, played on first use and kept. Ordered by `seeds`.
@@ -202,9 +207,11 @@ enum MatchPool {
         var deepShots = 0
         var scaledDeepShots = 0
         var aimedThrows = 0
+        var shape = ShapeObserver()
 
         for _ in 0..<ticks where !e.isOver {
             e.step(dt: dt)
+            shape.observe(e, dt: dt)
 
             if e.game.phase == .livePossession { liveTicks += 1 }
             if e.stats.throwsMade > throwsSeen {
@@ -342,7 +349,8 @@ enum MatchPool {
             finished: e.isOver,
             deepShots: deepShots,
             scaledDeepShots: scaledDeepShots,
-            aimedThrows: aimedThrows
+            aimedThrows: aimedThrows,
+            shape: shape.stats
         )
     }
 }
