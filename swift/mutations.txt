@@ -49,3 +49,33 @@ flight: gravity halved | swift/Sources/UltimateSim/DiscPhysics.swift | var fx = 
 flight: lift sign flipped | swift/Sources/UltimateSim/DiscPhysics.swift | lift = qdyn * CL | lift = -qdyn * CL | flight
 flight: drag halved | swift/Sources/UltimateSim/DiscPhysics.swift | drag = qdyn * CD | drag = qdyn * CD * 0.5 | flight
 flight: dynamic pressure drops velocity-squared term | swift/Sources/UltimateSim/DiscPhysics.swift | let qdyn = 0.5 * c.rho * V * V * b.area | let qdyn = 0.5 * c.rho * V * b.area | flight
+
+# humanrelease: the Swift.max(0, top - MIN_THROW_SPEED) guard in humanReleaseParams is
+# deliberately not listed — provably dead. Every throw type's top speed (14-27 m/s)
+# clears MIN_THROW_SPEED (9.0) by at least 5 m/s, so the guard never binds and a mutation
+# of it is bit-identical over the whole domain. See HumanReleaseTests.flownFeel().
+humanrelease: MIN_THROW_SPEED 9.0 -> 9.5 | swift/Sources/UltimateSim/Play/HumanRelease.swift | public let MIN_THROW_SPEED = 9.0 | public let MIN_THROW_SPEED = 9.5 | humanrelease
+humanrelease: HUCK_HYZER 0.20 -> 0.25 | swift/Sources/UltimateSim/Play/HumanRelease.swift | public let HUCK_HYZER = 0.20 | public let HUCK_HYZER = 0.25 | humanrelease
+humanrelease: angle offset 0.02 -> 0.03 | swift/Sources/UltimateSim/Play/HumanRelease.swift | angle: 0.02 + 0.10 * p, | angle: 0.03 + 0.10 * p, | humanrelease
+humanrelease: angle slope 0.10 -> 0.12 | swift/Sources/UltimateSim/Play/HumanRelease.swift | angle: 0.02 + 0.10 * p, | angle: 0.02 + 0.12 * p, | humanrelease
+humanrelease: spin base 0.35 -> 0.40 | swift/Sources/UltimateSim/Play/HumanRelease.swift | spin: clamp(0.35 + 0.55 * quality, 0.1, 1), | spin: clamp(0.40 + 0.55 * quality, 0.1, 1), | humanrelease
+humanrelease: spin clamp floor 0.1 -> 0.15 | swift/Sources/UltimateSim/Play/HumanRelease.swift | spin: clamp(0.35 + 0.55 * quality, 0.1, 1), | spin: clamp(0.35 + 0.55 * quality, 0.15, 1), | humanrelease
+humanrelease: bank tilt slope 0.85 -> 0.80 | swift/Sources/UltimateSim/Play/HumanRelease.swift | bank: tilt * 0.85 + HUCK_HYZER * p * p * spec.spinSign, | bank: tilt * 0.80 + HUCK_HYZER * p * p * spec.spinSign, | humanrelease
+humanrelease: bank drops spinSign entirely | swift/Sources/UltimateSim/Play/HumanRelease.swift | bank: tilt * 0.85 + HUCK_HYZER * p * p * spec.spinSign, | bank: tilt * 0.85 + HUCK_HYZER * p * p, | humanrelease
+humanrelease: nose slope 0.08 -> 0.10 | swift/Sources/UltimateSim/Play/HumanRelease.swift | nose: (1 - quality) * 0.08 | nose: (1 - quality) * 0.10 | humanrelease
+humanrelease: power clamp drops its floor | swift/Sources/UltimateSim/Play/HumanRelease.swift | let p = clamp(power, 0, 1) | let p = clamp(power, -1, 1) | humanrelease
+
+move: topSpeed base 6.6 -> 6.0 | swift/Sources/UltimateSim/Move/Attributes.swift | let topSpeed = (6.6 + 3.0 * spd) * (1 - 0.22 * fatigue) * slopeMul | let topSpeed = (6.0 + 3.0 * spd) * (1 - 0.22 * fatigue) * slopeMul | move
+move: fatigue weight on topSpeed 0.22 -> 0.30 | swift/Sources/UltimateSim/Move/Attributes.swift | let topSpeed = (6.6 + 3.0 * spd) * (1 - 0.22 * fatigue) * slopeMul | let topSpeed = (6.6 + 3.0 * spd) * (1 - 0.30 * fatigue) * slopeMul | move
+move: brakeMax loses its agility term | swift/Sources/UltimateSim/Move/Attributes.swift | let brakeMax = accelMax * (1.25 + 0.35 * agi) | let brakeMax = accelMax * 1.25 | move
+move: backpedal accelMul 0.62 -> 0.70 | swift/Sources/UltimateSim/Move/Attributes.swift | let accelMul = mode == .backpedal ? 0.62 : (mode == .shuffle ? 0.72 : 1) | let accelMul = mode == .backpedal ? 0.70 : (mode == .shuffle ? 0.72 : 1) | move
+move: turnRate speed-collapse term dropped | swift/Sources/UltimateSim/Move/Attributes.swift | let turnRate = (9.5 + 4.0 * agi) * (1 - 0.72 * sFrac) | let turnRate = (9.5 + 4.0 * agi) | move
+move: fatigue formula direction flipped | swift/Sources/UltimateSim/Move/Attributes.swift | let fatigue = clamp01((STAM_FADE - stamina) / STAM_FADE) | let fatigue = clamp01(stamina / STAM_FADE) | move
+move: STAM_FADE 60 -> 50 | swift/Sources/UltimateSim/Move/Attributes.swift | public let STAM_FADE = 60.0 | public let STAM_FADE = 50.0 | move
+move: stepRate slope 0.35 -> 0.45 | swift/Sources/UltimateSim/Move/Gait.swift | clamp(1.55 + 0.35 * speed, 1.55, 4.9) | clamp(1.55 + 0.45 * speed, 1.55, 4.9) | move
+move: dutyFactor sign flipped | swift/Sources/UltimateSim/Move/Gait.swift | clamp(0.64 - 0.045 * speed, 0.22, 0.65) | clamp(0.64 + 0.045 * speed, 0.22, 0.65) | move
+move: GAIT_MIN_SPEED 0.35 -> 0.5 | swift/Sources/UltimateSim/Move/Gait.swift | public let GAIT_MIN_SPEED = 0.35 | public let GAIT_MIN_SPEED = 0.5 | move
+move: slopeMultiplier sensitivity 1.6 -> 2.0 | swift/Sources/UltimateSim/Move/Ground.swift | clamp(1 - 1.6 * grade, 0.6, 1.15) | clamp(1 - 2.0 * grade, 0.6, 1.15) | move
+move: gradeAlong sign flipped on x | swift/Sources/UltimateSim/Move/Ground.swift | let gx = -n.x / n.y | let gx = n.x / n.y | move
+move: PERSONAL_RADIUS 0.63 -> 0.80 | swift/Sources/UltimateSim/Move/Separation.swift | public let PERSONAL_RADIUS = 0.63 | public let PERSONAL_RADIUS = 0.80 | move
+move: DISC_FREE_R below DISC_GRAB_R | swift/Sources/UltimateSim/Move/Separation.swift | public let DISC_FREE_R = 3.20 | public let DISC_FREE_R = 1.00 | move
