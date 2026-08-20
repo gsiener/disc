@@ -293,7 +293,7 @@ struct Suite: Sendable {
 /// verified in an isolated worktree — not a round number and not a guess. Update it
 /// deliberately, in the same commit as whatever changed the suite's real coverage.
 let allSuites: [Suite] = [
-    Suite(name: "rng", run: RngTests.run, minAssertions: 1294),
+    Suite(name: "rng", run: RngTests.run, minAssertions: 6042),
     Suite(name: "coeffs", run: CoeffsTests.run, minAssertions: 3790),
     Suite(name: "simmath", run: SimMathTests.run, minAssertions: 7749),
     Suite(name: "flight", run: FlightTests.run, minAssertions: 3972),
