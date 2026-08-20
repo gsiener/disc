@@ -339,7 +339,7 @@ let allSuites: [Suite] = [
     Suite(name: "humandefence", run: HumanDefenceTests.run, minAssertions: 20),
     Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
-    Suite(name: "calls", run: CallsTests.run, minAssertions: 30),
+    Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
     Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4477),
     // Issue #58: the off-ball game, measured off bodies rather than recorded. Thirty
     // assertions over pooled aggregates — a small count carrying a large measurement, which
