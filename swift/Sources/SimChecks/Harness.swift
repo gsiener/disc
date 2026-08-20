@@ -295,7 +295,10 @@ struct Suite: Sendable {
 let allSuites: [Suite] = [
     Suite(name: "rng", run: RngTests.run, minAssertions: 6042),
     Suite(name: "coeffs", run: CoeffsTests.run, minAssertions: 3790),
-    Suite(name: "simmath", run: SimMathTests.run, minAssertions: 7749),
+    // Issue #58: `simmath` no longer loads a golden. 7,749 recorded comparisons become
+    // 392,341 assertions against closed forms and an independently written rotation
+    // model — see SimMathTests.swift's header.
+    Suite(name: "simmath", run: SimMathTests.run, minAssertions: 392341),
     Suite(name: "flight", run: FlightTests.run, minAssertions: 3972),
     Suite(name: "throws", run: ThrowsTests.run, minAssertions: 6153),
     Suite(name: "rules", run: RulesTests.run, minAssertions: 582),
