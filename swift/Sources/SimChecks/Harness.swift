@@ -314,7 +314,13 @@ let allSuites: [Suite] = [
     // MoveTests.swift's header — including a stale doc comment it found (brakeMax).
     Suite(name: "move", run: MoveTests.run, minAssertions: 64700),
     Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
-    Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
+    // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
+    // become 22,786 assertions against `Model` — a second, independently typed
+    // implementation of every formula in Playbook.swift, hand-typed from its own doc
+    // comments and literal constants rather than transcribed from the functions under
+    // test — plus the property-based `claims()`/`minisPitch()`/`minisShape()` suites,
+    // which never touched a fixture. See PlaybookTests.swift's header.
+    Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 22786),
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9990),
     Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 93492),

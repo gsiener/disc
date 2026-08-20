@@ -1,608 +1,978 @@
 import Foundation
 import UltimateSim
 
-/// The playbook port, against fixtures dumped from `src/sim/Playbook.ts`.
+/// The playbook port, checked against its own claims rather than a recorded fixture.
 ///
-/// Playbook is almost entirely `+ - * / min max abs clamp` on doubles, all of which
-/// IEEE 754 makes correctly rounded — so nearly everything here is asserted
-/// **bit-for-bit** via `Check.bitEqViaJSON`. A tolerance would pass a sign flip on
-/// `openSign`, a `-` for a `+` in a station offset, or a clamp bound applied to the
-/// wrong end, because all three still land somewhere on the pitch.
+/// # Method
 ///
-/// Exactly three things are not bit-exact, and each says why:
+/// `Playbook.swift` is almost entirely `+ - * / min max abs clamp` on doubles, all of
+/// which IEEE 754 makes correctly rounded. So most of what follows is asserted against
+/// `Model` — a second, independently typed implementation of every formula, written
+/// from `Playbook.swift`'s own doc comments and literal constants rather than
+/// transcribed from the functions under test. Model's constants are hand-typed
+/// literals, not references to `Playbook.PLAY` or the module's own internal bands —
+/// reading the module's own constant would make a mutation of that constant invisible,
+/// since both sides would move together. Two spots go through a transcendental
+/// function with no ulp guarantee (`dist2`/`markPoint` through `hypot` vs `sqrt`,
+/// `sigmoid` through `exp` vs `tanh`) and those, plus every other Model comparison, get
+/// a small absolute tolerance (`nearEq`, 1e-9 m) rather than bit-exact — generous next
+/// to any real defect on a pitch measured in tens of metres, and tight enough that nothing
+/// but a genuine logic difference clears it.
 ///
-///   - `dist2` and `markPoint` go through `Math.hypot`. V8 computes `Math.hypot` with
-///     its own compensated sum-of-squares; Swift calls the platform libm's `hypot`.
-///     Neither is specified to the last ulp, so those get a 4-ulp envelope. This is the
-///     same treatment `SimMathTests` gives its quaternion norms.
-///   - `sigmoid` goes through `Math.exp`, likewise unspecified in its last bit.
-///
-/// Everything downstream of `markPoint` — the whole `cup-mark` station of every zone
-/// shell — inherits the envelope for the same reason, and only for that station.
+/// `claims()`, `minisPitch()` and `minisShape()` below never touched a fixture and are
+/// unchanged by this conversion — see their own headers for what they assert and why.
+/// Everything above them is new.
 ///
 /// ------------------------------------------------------------------ the pitch
 ///
-/// The fixtures are generated against the reference's module-level `FIELD`, which is
-/// the regulation 100 x 37 m pitch and the only one `Playbook.ts` can express. So every
-/// golden comparison below runs against `Playbook.regulation`. That the Swift port
-/// genuinely threads the pitch rather than hiding a constant is asserted separately, by
-/// property, in `minisPitch()` — a port that quietly kept 18.5 would pass every fixture
-/// in this file and fail there.
+/// `Playbook.ts` (the deleted reference's intent, read for INTENT only — nothing here
+/// is ported from it) could express only the regulation pitch, so the sweeps below run
+/// against `Playbook.regulation`. That the Swift port genuinely threads the pitch
+/// rather than hiding a constant is asserted separately, by property, in `minisPitch()`
+/// and `minisShape()` — a port that quietly kept 18.5 as a constant would pass every
+/// comparison in this file up to that point and fail there.
 enum PlaybookTests {
 
-    // MARK: - fixture shapes
+    // MARK: - shared fixtures
 
-    struct V2: Decodable {
-        let x: Double
-        let z: Double
-        var vec: Vec2d { Vec2d(x, z) }
-    }
-
-    struct FieldDTO: Decodable {
-        let halfWidth: Double
-        let halfLength: Double
-        let goalLine: Double
-        let endzoneDepth: Double
-        let brick: Double
-        let edgeMargin: Double
-    }
-
-    struct PlayDTO: Decodable {
-        let stackSpacing: Double
-        let stackLead: Double
-        let stackHold: Int
-        let maxLiveCuts: Int
-        let cutStagger: Double
-        let setupTime: Double
-        let plantTime: Double
-        let underCutTime: Double
-        let deepCutTime: Double
-        let markDistance: Double
-        let markMax: Double
-        let discSpace: Double
-        let shadeOpen: Double
-        let deepCushion: Double
-        let underGap: Double
-    }
-
-    struct Constants: Decodable {
-        let FIELD: FieldDTO
-        let PLAY: PlayDTO
-        let FORCE_DEADBAND: Double
-        let POSITIONAL_FORCES: [String]
-        let ALL_LANES: [String]
-    }
-
-    struct ClampCase: Decodable { let v: Double; let lo: Double; let hi: Double; let want: Double }
-    struct LerpCase: Decodable { let a: Double; let b: Double; let t: Double; let want: Double }
-    struct SmoothstepCase: Decodable {
-        let edge0: Double
-        let edge1: Double
-        let x: Double
-        let want: Double
-    }
-    struct Dist2Case: Decodable {
-        let ax: Double
-        let az: Double
-        let bx: Double
-        let bz: Double
-        let dist: Double
-        let distSq: Double
-    }
-    struct SigmoidCase: Decodable { let x: Double; let k: Double; let want: Double }
-
-    struct ClampToFieldCase: Decodable { let p: V2; let margin: Double?; let want: V2 }
-    struct InBoundsCase: Decodable {
-        let x: Double
-        let z: Double
-        let margin: Double
-        let want: Bool
-    }
-    struct GoalCase: Decodable {
-        let z: Double
-        let dir: Int
-        let yards: Double
-        let attack: Bool
-        let own: Bool
-    }
-
-    struct HandSideCase: Decodable {
-        let handed: Playbook.Handedness
-        let dir: Int
-        let want: Int
-    }
-    struct OpenSideSignCase: Decodable {
-        let force: Playbook.Force
-        let dir: Int
-        let open: Int
-        let brk: Int
-    }
-    struct OpenSideForCase: Decodable {
-        let force: Playbook.Force
-        let dir: Int
-        let discX: Double
-        let prev: Int?
-        let open: Int
-        let brk: Int
-    }
-    struct ReleaseSideCase: Decodable {
-        let handed: Playbook.Handedness
-        let dir: Int
-        let releaseSignX: Double
-        let want: Playbook.ThrowSide
-    }
-
-    struct StackColumnCase: Decodable {
-        let name: Playbook.FormationName
-        let openSign: Int
-        let a: V2
-        let want: Double
-    }
-    struct StationDTO: Decodable {
-        let x: Double
-        let z: Double
-        let role: Playbook.StationRole
-        let depth: Int
-    }
-    struct FormationCase: Decodable {
-        let name: Playbook.FormationName
-        let a: V2
-        let dir: Int
-        let openSign: Int
-        let want: [StationDTO]
-    }
-    struct HandlerCountCase: Decodable {
-        let name: Playbook.FormationName
-        let handlers: Int
-        let column: Bool
-    }
-    struct ChooseFormationCase: Decodable {
-        let disc: V2
-        let dir: Int
-        let prefer: Playbook.FormationName
-        let windSpeed: Double
-        let openSign: Int
-        let foeZone: Bool
-        let want: Playbook.FormationName
-    }
-
-    struct LaneCase: Decodable {
-        let x: Double
-        let z: Double
-        let disc: V2
-        let dir: Int
-        let openSign: Int
-        let want: Playbook.LaneKey
-    }
-    struct CutRouteDTO: Decodable {
-        let kind: Playbook.CutKind
-        let lane: Playbook.LaneKey
-        let setup: V2
-        let target: V2
-        let side: Int
-        let setupTime: Double
-        let maxTime: Double
-    }
-    struct BuildCutCase: Decodable {
-        let kind: Playbook.CutKind
-        let from: V2
-        let disc: V2
-        let dir: Int
-        let openSign: Int
-        let side: Int
-        let j: Double
-        let want: CutRouteDTO
-    }
-
-    struct MarkPointCase: Decodable {
-        let thrower: V2
-        let dir: Int
-        let breakSign: Int
-        let distance: Double?
-        let want: V2
-    }
-
-    struct ZoneStationDTO: Decodable {
-        let role: Playbook.ZoneRole
-        let x: Double
-        let z: Double
-    }
-    struct ZoneCase: Decodable {
-        let disc: V2
-        let dir: Int
-        let openSign: Int
-        let deepThreat: V2?
-        let want: [ZoneStationDTO]
-    }
-    struct ZoneCallCase: Decodable {
-        let windSpeed: Double
-        let scoreDiff: Int
-        let pointsPlayed: Int
-        let bias: Double
-        let want: Bool
-    }
-
-    struct WeatherConstants: Decodable {
-        let windyChance: Double
-        let calmAcross: Double
-        let calmAlong: Double
-        let windyMin: Double
-        let windyMax: Double
-        let panicBefore: Double
-        let setPlayStall: Double
-    }
-
-    struct WeatherCase: Decodable {
-        let seed: UInt32
-        let wind: V2
-        let speed: Double
-        let windy: Bool
-    }
-
-    struct TimeoutCase: Decodable {
-        let stall: Double
-        let stallMax: Double
-        let remaining: Int
-        let throwsThisPoint: Int
-        let receiving: Bool
-        let stoppedThisPossession: Bool
-        let ours: Int
-        let theirs: Int
-        let toWin: Int
-        let want: String
-    }
-
-    struct File: Decodable {
-        let note: String
-        let constants: Constants
-        let clampCases: [ClampCase]
-        let lerpCases: [LerpCase]
-        let smoothstepCases: [SmoothstepCase]
-        let dist2Cases: [Dist2Case]
-        let sigmoidCases: [SigmoidCase]
-        let clampToFieldCases: [ClampToFieldCase]
-        let inBoundsCases: [InBoundsCase]
-        let goalCases: [GoalCase]
-        let handSideSignCases: [HandSideCase]
-        let openSideSignCases: [OpenSideSignCase]
-        let openSideForCases: [OpenSideForCase]
-        let releaseSideTypeCases: [ReleaseSideCase]
-        let stackColumnXCases: [StackColumnCase]
-        let formationStationsCases: [FormationCase]
-        let handlerCountCases: [HandlerCountCase]
-        let chooseFormationCases: [ChooseFormationCase]
-        let laneOfCases: [LaneCase]
-        let buildCutCases: [BuildCutCase]
-        let markPointCases: [MarkPointCase]
-        let zoneStationsCases: [ZoneCase]
-        let shouldPlayZoneCases: [ZoneCallCase]
-        let weather: WeatherConstants
-        let weatherCases: [WeatherCase]
-        let timeoutCases: [TimeoutCase]
-    }
-
-    // MARK: - tolerance
-
-    /// How many ulps of the expected value a `hypot`/`exp` result may drift.
-    ///
-    /// Stated as ulps rather than as an absolute number because the values here span
-    /// four orders of magnitude — a corner-to-corner `dist2` is 107 m and a degenerate
-    /// one is 0 — and a fixed 1e-15 would be four ulps at one end and a thousandth of
-    /// an ulp at the other. Four is the envelope V8's compensated `Math.hypot` is worth
-    /// against a platform libm; in practice the observed deviation is 0 or 1.
-    private static let ULPS = 4.0
-
-    /// The regulation pitch — the only geometry `Playbook.ts` can express, and
-    /// therefore the only one the fixtures describe.
     private static let pb = Playbook.regulation
+    private static let DIRS: [Dir] = [1, -1]
+    private static let SIGNS: [Playbook.Sign] = [1, -1]
+    private static let FORCES: [Playbook.Force] = [.forehand, .backhand, .straight, .middle, .sideline]
+    private static let FORMATIONS: [Playbook.FormationName] = [.vertical, .horizontal, .side, .endzone]
+    private static let KINDS: [Playbook.CutKind] = [
+        .under, .breakUnder, .deep, .strike, .upLine, .dump, .swing,
+    ]
+    private static let HANDS: [Playbook.Handedness] = [.right, .left]
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "playbook")
-
-        constants(g.constants)
-        maths(g)
-        geometry(g)
-        forces(g)
-        formations(g)
-        cuts(g)
-        mark(g)
-        zone(g)
+        constants()
+        maths()
+        geometry()
+        forces()
+        formations()
+        cuts()
+        mark()
+        zone()
         claims()
         minisPitch()
         minisShape()
     }
 
+    // MARK: - tolerance
+
+    /// The Model comparison tolerance. Every quantity compared this way is O(0.01-100),
+    /// so 1e-9 is many orders of magnitude below anything a real geometry bug could
+    /// produce (a metre or more, typically — a sign flip, a swapped clamp bound, a
+    /// dropped scale factor) and comfortably above the rounding noise between two
+    /// independently ordered floating computations or two different transcendental
+    /// call shapes (`hypot` vs `sqrt(dx*dx+dz*dz)`, `exp` vs `tanh`).
+    private static func nearEq(_ got: Double, _ want: Double, _ what: String) {
+        Check.near(got, want, 1e-9, what)
+    }
+
+    /// An ulp-relative envelope, for the `hypot`/`exp` results in `claims()` only.
+    private static let ULPS = 4.0
+    private static func nearUlp(_ got: Double, _ want: Double, _ what: String) {
+        let d = abs(got - want)
+        let unit = want == 0 ? Double.ulpOfOne : want.ulp
+        let tol = ULPS * unit
+        Check.ok(d <= tol, "\(what): off by \(d) (\(d / unit) ulp; got \(got), want \(want))")
+    }
+
+    // MARK: - the specification, implemented independently
+
+    /// Every formula below is hand-typed from `Playbook.swift`'s own doc comments and
+    /// literal numbers, not copied from the functions under test. Constants are always
+    /// spelled as literals here, never read from `Playbook.PLAY` or its internal bands
+    /// (`RESET_BAND`, `SWING_BAND`, `PIN_MARGIN`, both inaccessible from this module
+    /// anyway) — a mutation to one of those numbers in production must show up as a
+    /// disagreement between this file and `UltimateSim`, which reading the same static
+    /// property would silently erase.
+    enum Model {
+        static func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double {
+            v < lo ? lo : (v > hi ? hi : v)
+        }
+        static func lerp(_ a: Double, _ b: Double, _ t: Double) -> Double { a + (b - a) * t }
+
+        /// Alternate expression tree from production's `t*t*(3-2t)`: "one minus the
+        /// mirrored ramp", `1 - (1-t)^2(1+2t)` — the same cubic reached a different way,
+        /// as `CoeffsTests.Model.smoothstep` does for the aero curves.
+        static func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+            let span = edge1 - edge0
+            let den = (span == 0 || span.isNaN) ? 1e-6 : span
+            let t = clamp((x - edge0) / den, 0, 1)
+            let m = 1 - t
+            return 1 - m * m * (1 + 2 * t)
+        }
+        static func distSq2(_ ax: Double, _ az: Double, _ bx: Double, _ bz: Double) -> Double {
+            let dx = ax - bx
+            let dz = az - bz
+            return dx * dx + dz * dz
+        }
+        /// `sqrt` of the sum of squares rather than `hypot` — a different algorithm
+        /// (no overflow-guarding scale step), not just a different call site.
+        static func dist2(_ ax: Double, _ az: Double, _ bx: Double, _ bz: Double) -> Double {
+            distSq2(ax, az, bx, bz).squareRoot()
+        }
+        /// Sigmoid via the `tanh` identity rather than `1/(1+exp(-kx))`.
+        static func sigmoid(_ x: Double, _ k: Double) -> Double {
+            0.5 * (1 + Foundation.tanh(k * x / 2))
+        }
+
+        // MARK: field geometry
+
+        static func clampToField(_ p: Playbook, _ pt: Vec2d, _ margin: Double?) -> Vec2d {
+            let m = margin ?? p.edgeMargin
+            return Vec2d(
+                clamp(pt.x, -p.field.sideline + m, p.field.sideline - m),
+                clamp(pt.z, -p.field.endLine + m, p.field.endLine - m))
+        }
+        static func inBounds(_ p: Playbook, _ x: Double, _ z: Double, _ margin: Double) -> Bool {
+            abs(x) <= p.field.sideline - margin && abs(z) <= p.field.endLine - margin
+        }
+        static func yardsToGoal(_ p: Playbook, _ z: Double, _ dir: Dir) -> Double {
+            p.field.goalLine - Double(dir) * z
+        }
+        static func inAttackEndzone(_ p: Playbook, _ z: Double, _ dir: Dir) -> Bool {
+            Double(dir) * z >= p.field.goalLine
+        }
+        static func inOwnEndzone(_ p: Playbook, _ z: Double, _ dir: Dir) -> Bool {
+            Double(dir) * z <= -p.field.goalLine
+        }
+
+        // MARK: force / side
+
+        static func handSideSign(_ handed: Playbook.Handedness, _ dir: Dir) -> Playbook.Sign {
+            let rightHandX = -dir
+            return handed == .right ? rightHandX : -rightHandX
+        }
+        static func openSideSign(_ force: Playbook.Force, _ dir: Dir) -> Playbook.Sign {
+            if force == .straight { return -dir }
+            if force == .middle || force == .sideline { return -dir }
+            let forehandX = handSideSign(.right, dir)
+            return force == .forehand ? forehandX : -forehandX
+        }
+        static func breakSideSign(_ force: Playbook.Force, _ dir: Dir) -> Playbook.Sign {
+            -openSideSign(force, dir)
+        }
+        static func openSideFor(
+            _ force: Playbook.Force, _ dir: Dir, _ discX: Double, _ prev: Playbook.Sign?
+        ) -> Playbook.Sign {
+            if force != .middle && force != .sideline { return openSideSign(force, dir) }
+            if let prev, abs(discX) < 3.0 { return prev }  // FORCE_DEADBAND, literal
+            let towardMiddle: Playbook.Sign = discX > 0 ? -1 : 1
+            return force == .middle ? towardMiddle : -towardMiddle
+        }
+        static func breakSideFor(
+            _ force: Playbook.Force, _ dir: Dir, _ discX: Double, _ prev: Playbook.Sign?
+        ) -> Playbook.Sign {
+            -openSideFor(force, dir, discX, prev)
+        }
+        static func releaseSideType(
+            _ handed: Playbook.Handedness, _ dir: Dir, _ releaseSignX: Double
+        ) -> Playbook.ThrowSide {
+            let forehandX = handSideSign(handed, dir)
+            let v = (releaseSignX == 0 || releaseSignX.isNaN) ? Double(forehandX) : releaseSignX
+            let s: Playbook.Sign = v < 0 ? -1 : (v > 0 ? 1 : 0)
+            return s == forehandX ? .forehand : .backhand
+        }
+
+        // MARK: formations
+
+        /// `Playbook.ts`'s literal spelling: field-independent, regulation numbers only.
+        static func stackColumnXStatic(
+            _ name: Playbook.FormationName, _ a: Vec2d, _ openSign: Playbook.Sign
+        ) -> Double {
+            if name == .side { return Double(-openSign) * 12.5 }
+            return clamp(a.x * 0.3, -5, 5)
+        }
+        static func stackColumnX(
+            _ p: Playbook, _ name: Playbook.FormationName, _ a: Vec2d, _ openSign: Playbook.Sign
+        ) -> Double {
+            let w = p.widthScale
+            if name == .side { return Double(-openSign) * 12.5 * w }
+            return clamp(a.x * 0.3, -5 * w, 5 * w)
+        }
+
+        static func rowShift(_ anchor: Double, _ lo: Double, _ hi: Double, _ band: Double) -> Double {
+            hi - lo >= 2 * band ? 0 : clamp(anchor, -band - lo, band - hi)
+        }
+
+        struct MStation { let x: Double; let z: Double; let role: Playbook.StationRole; let depth: Int }
+
+        static func formationStations(
+            _ p: Playbook, _ name: Playbook.FormationName, _ a: Vec2d, _ dir: Dir,
+            _ openSign: Playbook.Sign
+        ) -> [MStation] {
+            let brk: Playbook.Sign = -openSign
+            var out: [MStation] = []
+            // Literal bands, not `p`'s own internal (inaccessible) `resetBand`/
+            // `fieldBand`/`pinMargin` — 10.5, 13.0 and 2.0 are `RESET_BAND`, `SWING_BAND`
+            // and `PIN_MARGIN` in `Playbook.swift`, read off its own comments.
+            let resetBand = 10.5 * p.widthScale
+            let fieldBand = p.field.sideline - p.edgeMargin
+            let pinMargin = 2.0 * p.depthScale
+            let floorZ = Double(-dir) * (p.field.goalLine - pinMargin)
+
+            func push(_ x: Double, _ z: Double, _ role: Playbook.StationRole, _ depth: Int) {
+                let zz = role == .handler ? (dir > 0 ? Swift.max(z, floorZ) : Swift.min(z, floorZ)) : z
+                let pt = clampToField(p, Vec2d(x, zz), nil)
+                out.append(MStation(x: pt.x, z: pt.z, role: role, depth: depth))
+            }
+
+            let dz = p.depthScale
+            let wx = p.widthScale
+
+            switch name {
+            case .vertical:
+                let vReset = Double(openSign) * 4.5 * wx
+                let vSwing = Double(brk) * 6.5 * wx
+                let vs = rowShift(a.x, Swift.min(vReset, vSwing), Swift.max(vReset, vSwing), resetBand)
+                push(vs + vReset, a.z - Double(dir) * 6.5 * dz, .handler, 0)
+                push(vs + vSwing, a.z - Double(dir) * 3.5 * dz, .handler, 1)
+                let sx = stackColumnX(p, .vertical, a, openSign)
+                for i in 0..<5 {
+                    push(sx, a.z + Double(dir) * (11.0 + 4.2 * Double(i)) * dz, .cutter, i)
+                }
+            case .horizontal:
+                let hs = rowShift(a.x, -10.0 * wx, 10.0 * wx, fieldBand)
+                push(hs + Double(openSign) * 10.0 * wx, a.z - Double(dir) * 5.5 * dz, .handler, 0)
+                push(hs, a.z - Double(dir) * 4.0 * dz, .handler, 1)
+                push(hs + Double(brk) * 10.0 * wx, a.z - Double(dir) * 5.5 * dz, .handler, 2)
+                let xs = [-13.5, -4.5, 4.5, 13.5]
+                for i in 0..<4 { push(xs[i] * wx, a.z + Double(dir) * 15 * dz, .cutter, i) }
+            case .side:
+                let sReset = Double(openSign) * 4.0 * wx
+                let sSwing = Double(brk) * 6.0 * wx
+                let ss = rowShift(a.x, Swift.min(sReset, sSwing), Swift.max(sReset, sSwing), resetBand)
+                push(ss + sReset, a.z - Double(dir) * 6.5 * dz, .handler, 0)
+                push(ss + sSwing, a.z - Double(dir) * 3.0 * dz, .handler, 1)
+                let lx = stackColumnX(p, .side, a, openSign)
+                for i in 0..<5 {
+                    push(lx, a.z + Double(dir) * (9.0 + 4.2 * Double(i)) * dz, .cutter, i)
+                }
+            case .endzone:
+                let es = rowShift(a.x, -6.5 * wx, 6.5 * wx, resetBand)
+                push(es + Double(openSign) * 6.5 * wx, a.z - Double(dir) * 5.0 * dz, .handler, 0)
+                push(es, a.z - Double(dir) * 6.5 * dz, .handler, 1)
+                push(es + Double(brk) * 6.5 * wx, a.z - Double(dir) * 5.0 * dz, .handler, 2)
+                let ez = Double(dir) * clamp(
+                    Double(dir) * a.z + 12 * dz,
+                    p.field.goalLine + 3 * dz,
+                    p.field.goalLine + p.field.endzoneDepth * 0.55)
+                let xs = [-11.0, -4.0, 4.0, 11.0]
+                for i in 0..<4 { push(xs[i] * wx, ez, .cutter, i) }
+            }
+            return out
+        }
+
+        static func handlerCount(_ name: Playbook.FormationName) -> Int {
+            name == .horizontal || name == .endzone ? 3 : 2
+        }
+        static func hasColumn(_ name: Playbook.FormationName) -> Bool {
+            name == .vertical || name == .side
+        }
+
+        static func chooseFormation(
+            _ p: Playbook, _ disc: Vec2d, _ dir: Dir, _ prefer: Playbook.FormationName,
+            _ windSpeed: Double, _ openSign: Playbook.Sign, _ foeZone: Bool
+        ) -> Playbook.FormationName {
+            let dz = p.depthScale
+            let wx = p.widthScale
+            if yardsToGoal(p, disc.z, dir) <= 13 * dz { return .endzone }
+            if abs(disc.x) > 14.0 * wx && disc.x * Double(openSign) < 0 { return .side }
+            if foeZone { return .horizontal }
+            if windSpeed > 7.5 { return .vertical }
+            return prefer == .endzone ? .vertical : prefer
+        }
+
+        // MARK: cuts
+
+        static func laneOfStatic(
+            _ x: Double, _ z: Double, _ disc: Vec2d, _ dir: Dir, _ openSign: Playbook.Sign
+        ) -> Playbook.LaneKey {
+            let downfield = Double(dir) * (z - disc.z)
+            let open = (x - disc.x) * Double(openSign) >= 0
+            if downfield < 1.5 { return open ? .resetOpen : .resetBreak }
+            if downfield < 16 { return open ? .openUnder : .breakUnder }
+            return open ? .openDeep : .breakDeep
+        }
+        static func laneOf(
+            _ p: Playbook, _ x: Double, _ z: Double, _ disc: Vec2d, _ dir: Dir,
+            _ openSign: Playbook.Sign
+        ) -> Playbook.LaneKey {
+            let downfield = Double(dir) * (z - disc.z)
+            let open = (x - disc.x) * Double(openSign) >= 0
+            if downfield < 1.5 { return open ? .resetOpen : .resetBreak }
+            if downfield < 16 * p.depthScale { return open ? .openUnder : .breakUnder }
+            return open ? .openDeep : .breakDeep
+        }
+
+        struct MCutRoute {
+            let kind: Playbook.CutKind
+            let lane: Playbook.LaneKey
+            let setup: Vec2d
+            let target: Vec2d
+            let side: Playbook.Sign
+            let setupTime: Double
+            let maxTime: Double
+        }
+
+        static func buildCut(
+            _ p: Playbook, _ kind: Playbook.CutKind, _ from: Vec2d, _ disc: Vec2d, _ dir: Dir,
+            _ openSign: Playbook.Sign, _ side: Playbook.Sign, _ j: Double
+        ) -> MCutRoute {
+            let brk: Playbook.Sign = -openSign
+            var setup: Vec2d
+            var target: Vec2d
+            var maxTime: Double = 3.4  // underCutTime, the default
+
+            let d = Double(dir)
+            let sd = Double(side)
+            let bd = Double(brk)
+            let od = Double(openSign)
+            let dz = p.depthScale
+            let wx = p.widthScale
+
+            switch kind {
+            case .under:
+                setup = Vec2d(from.x + sd * 1.2, from.z + d * 3.0)
+                target = Vec2d(disc.x + sd * (6 + 3 * j) * wx, disc.z + d * (5.5 + 4 * j) * dz)
+            case .breakUnder:
+                setup = Vec2d(from.x + bd * 0.8, from.z + d * 2.6)
+                target = Vec2d(disc.x + bd * (7 + 3 * j) * wx, disc.z + d * (3 + 2.5 * j) * dz)
+            case .deep:
+                setup = Vec2d(from.x - sd * 1.0, from.z - d * 2.8)
+                let ahead = d * (from.z - disc.z)
+                let reach = Swift.min(
+                    38 * dz, Swift.max((24 + 8 * j) * dz, ahead + 13 * dz + 6 * j * dz))
+                target = Vec2d(disc.x + sd * (4 + 5 * j) * wx, disc.z + d * reach)
+                maxTime = 3.2
+            case .strike:
+                setup = Vec2d(from.x - sd * 1.6, from.z + d * 1.2)
+                target = Vec2d(
+                    disc.x + sd * (4 + 3 * j) * wx, d * (p.field.goalLine + 2 * dz + 4 * j * dz))
+                maxTime = 1.8
+            case .upLine:
+                setup = Vec2d(from.x - od * 1.6, from.z - d * 1.0)
+                target = Vec2d(disc.x + od * (2.0 + 1.5 * j) * wx, disc.z + d * (5 + 2 * j) * dz)
+                maxTime = 1.6
+            case .dump:
+                setup = Vec2d(from.x + bd * 2.4, from.z + d * 2.8)
+                target = Vec2d(
+                    clamp(
+                        disc.x + od * (6.5 + 2.5 * j) * wx, -10.5 * wx - 2 * wx, 10.5 * wx + 2 * wx),
+                    disc.z - d * (7.5 + 2 * j) * dz)
+                maxTime = 2.0
+            case .swing:
+                setup = Vec2d(from.x - od * 1.4, from.z - d * 1.2)
+                target = Vec2d(
+                    clamp(disc.x + od * (8 + 2 * j) * wx, -13.0 * wx, 13.0 * wx),
+                    disc.z - d * (2 + 2 * j) * dz)
+                maxTime = 1.8
+            }
+
+            if kind == .dump || kind == .swing {
+                let floor = Double(-dir) * (p.field.goalLine - 2.0 * dz)
+                let rawZ = target.z
+                target.z = dir > 0 ? Swift.max(rawZ, floor) : Swift.min(rawZ, floor)
+                let lost = abs(rawZ - target.z)
+                if lost > 0.1 {
+                    let raw = target.x - disc.x
+                    let signed: Playbook.Sign = raw < 0 ? -1 : (raw > 0 ? 1 : 0)
+                    let away: Playbook.Sign = (signed == 0) ? openSign : signed
+                    target.x = clamp(target.x + Double(away) * lost * 0.8, -13.0 * wx, 13.0 * wx)
+                }
+            }
+
+            let t = clampToField(p, target, nil)
+            return MCutRoute(
+                kind: kind,
+                lane: laneOf(p, t.x, t.z, disc, dir, openSign),
+                setup: clampToField(p, setup, nil),
+                target: t,
+                side: side,
+                setupTime: kind == .strike || kind == .upLine ? 0.45 * 0.7 : 0.45,
+                maxTime: maxTime)
+        }
+
+        // MARK: mark
+
+        /// `sqrt(dx^2+dz^2)` rather than `hypot` — see the header.
+        static func markPoint(
+            _ thrower: Vec2d, _ dir: Dir, _ breakSign: Playbook.Sign, _ distance: Double
+        ) -> Vec2d {
+            let dx = Double(breakSign) * 0.90
+            let dz = Double(dir) * 0.44
+            let l = (dx * dx + dz * dz).squareRoot()
+            return Vec2d(thrower.x + (dx / l) * distance, thrower.z + (dz / l) * distance)
+        }
+
+        // MARK: zone
+
+        struct MZoneStation { let role: Playbook.ZoneRole; let x: Double; let z: Double }
+
+        static func zoneStations(
+            _ p: Playbook, _ disc: Vec2d, _ dir: Dir, _ openSign: Playbook.Sign,
+            _ deepThreat: Vec2d?
+        ) -> [MZoneStation] {
+            let brk: Playbook.Sign = -openSign
+            let m = markPoint(disc, dir, brk, 2.15)  // PLAY.markDistance, literal
+            let cupR = 4.4
+            let dz = p.depthScale
+            let wx = p.widthScale
+            let deepX = deepThreat.map { clamp($0.x * 0.55, -9 * wx, 9 * wx) } ?? 0
+            var deepZ = disc.z + Double(dir) * 26 * dz
+            if Double(dir) * deepZ > p.field.goalLine + 5 * dz {
+                deepZ = Double(dir) * (p.field.goalLine + 5 * dz)
+            }
+            let d = Double(dir)
+            let raw: [MZoneStation] = [
+                MZoneStation(role: .cupMark, x: m.x, z: m.z),
+                MZoneStation(role: .cupLeft, x: disc.x - cupR * 0.88, z: disc.z + d * cupR * 0.6),
+                MZoneStation(role: .cupRight, x: disc.x + cupR * 0.88, z: disc.z + d * cupR * 0.6),
+                MZoneStation(
+                    role: .wingOpen, x: disc.x + Double(openSign) * 10.5 * wx,
+                    z: disc.z + d * 7.5 * dz),
+                MZoneStation(
+                    role: .wingBreak, x: disc.x + Double(brk) * 10.5 * wx, z: disc.z + d * 7.5 * dz),
+                MZoneStation(role: .shortDeep, x: disc.x * 0.4, z: disc.z + d * 15 * dz),
+                MZoneStation(role: .deep, x: deepX, z: deepZ),
+            ]
+            return raw.map { s in
+                let pt = clampToField(p, Vec2d(s.x, s.z), nil)
+                return MZoneStation(role: s.role, x: pt.x, z: pt.z)
+            }
+        }
+
+        /// Calls production's already-separately-tested `smoothstep` for the wind term —
+        /// this function's own claim is the threshold arithmetic around it, not the curve.
+        static func shouldPlayZone(
+            _ windSpeed: Double, _ scoreDiff: Int, _ pointsPlayed: Int, _ bias: Double
+        ) -> Bool {
+            let windPull = Playbook.smoothstep(4.5, 11, windSpeed)
+            let leadPull = scoreDiff >= 3 && pointsPlayed > 6 ? 0.35 : 0.0
+            return windPull + leadPull + bias > 0.5
+        }
+
+        // MARK: weather
+
+        static func drawWeather(_ rng: Rng) -> Playbook.Weather {
+            let calm = Vec2d(rng.range(-1.5, 1.5), rng.range(-1.1, 1.1))
+            if rng.next() >= 0.10 {
+                return Playbook.Weather(
+                    wind: calm, speed: (calm.x * calm.x + calm.z * calm.z).squareRoot(),
+                    windy: false)
+            }
+            let speed = rng.range(8.0, 9.5)
+            let bearing = rng.range(-Double.pi, Double.pi)
+            return Playbook.Weather(
+                wind: Vec2d(Foundation.cos(bearing) * speed, Foundation.sin(bearing) * speed),
+                speed: speed, windy: true)
+        }
+
+        // MARK: timeouts
+
+        static func timeoutIntent(_ r: Playbook.TimeoutRead) -> Playbook.TimeoutIntent {
+            if r.remaining <= 0 || r.stoppedThisPossession { return .none }
+            let endgame = Swift.max(r.ours, r.theirs) >= r.toWin - 2 && abs(r.ours - r.theirs) <= 1
+            if endgame && r.receiving && r.throwsThisPoint == 0 && r.stall <= 2.0 {
+                return .setPlay
+            }
+            if r.stall >= r.stallMax - 3.0 && (r.remaining >= 2 || !endgame) {
+                return .stallReset
+            }
+            return .none
+        }
+    }
+
     // MARK: - constants
 
-    /// Compared one at a time rather than as a struct, so a failure names the number
-    /// that is wrong. A single typed digit here moves every station on the pitch by a
-    /// plausible-looking amount.
-    private static func constants(_ c: Constants) {
-        // The reference's `FIELD` against the threaded `FieldConstants`. This is the
-        // mapping the port's doc comment claims; asserting it is what stops the two
-        // spellings drifting apart.
-        Check.bitEqViaJSON(pb.field.sideline, c.FIELD.halfWidth, "FIELD.halfWidth = sideline")
-        Check.bitEqViaJSON(pb.field.endLine, c.FIELD.halfLength, "FIELD.halfLength = endLine")
-        Check.bitEqViaJSON(pb.field.goalLine, c.FIELD.goalLine, "FIELD.goalLine")
-        Check.bitEqViaJSON(pb.field.endzoneDepth, c.FIELD.endzoneDepth, "FIELD.endzoneDepth")
-        Check.bitEqViaJSON(pb.field.brickZ, c.FIELD.brick, "FIELD.brick = brickZ")
-        Check.bitEqViaJSON(pb.edgeMargin, c.FIELD.edgeMargin, "FIELD.edgeMargin")
+    /// Every field this module declares, by exact value. A relation is the right
+    /// assertion for a law and the wrong one for a tuning number: nothing else in this
+    /// file (or, since the goldens are gone, anywhere) constrains `PLAY.stackSpacing`
+    /// to be 4.2 rather than some other positive number, so it is pinned here directly.
+    private static func constants() {
+        // FIELD — the mapping the port's doc comment claims: `Playbook.regulation`
+        // plays on exactly `FieldConstants.standard`.
+        Check.bitEq(pb.field.sideline, 18.5, "regulation FIELD.halfWidth = sideline")
+        Check.bitEq(pb.field.endLine, 50, "regulation FIELD.halfLength = endLine")
+        Check.bitEq(pb.field.goalLine, 32, "regulation FIELD.goalLine")
+        Check.bitEq(pb.field.endzoneDepth, 18, "regulation FIELD.endzoneDepth")
+        Check.bitEq(pb.field.brickZ, 14, "regulation FIELD.brick = brickZ")
+        Check.eq(pb.field, FieldConstants.standard, "Playbook.regulation plays on FieldConstants.standard")
+        Check.bitEq(pb.edgeMargin, 0.9, "FIELD.edgeMargin")
+        Check.bitEq(Playbook.DEFAULT_EDGE_MARGIN, 0.9, "DEFAULT_EDGE_MARGIN")
 
-        Check.bitEqViaJSON(Playbook.PLAY.stackSpacing, c.PLAY.stackSpacing, "PLAY.stackSpacing")
-        Check.bitEqViaJSON(Playbook.PLAY.stackLead, c.PLAY.stackLead, "PLAY.stackLead")
-        Check.eq(Playbook.PLAY.stackHold, c.PLAY.stackHold, "PLAY.stackHold")
-        Check.eq(Playbook.PLAY.maxLiveCuts, c.PLAY.maxLiveCuts, "PLAY.maxLiveCuts")
-        Check.bitEqViaJSON(Playbook.PLAY.cutStagger, c.PLAY.cutStagger, "PLAY.cutStagger")
-        Check.bitEqViaJSON(Playbook.PLAY.setupTime, c.PLAY.setupTime, "PLAY.setupTime")
-        Check.bitEqViaJSON(Playbook.PLAY.plantTime, c.PLAY.plantTime, "PLAY.plantTime")
-        Check.bitEqViaJSON(Playbook.PLAY.underCutTime, c.PLAY.underCutTime, "PLAY.underCutTime")
-        Check.bitEqViaJSON(Playbook.PLAY.deepCutTime, c.PLAY.deepCutTime, "PLAY.deepCutTime")
-        Check.bitEqViaJSON(Playbook.PLAY.markDistance, c.PLAY.markDistance, "PLAY.markDistance")
-        Check.bitEqViaJSON(Playbook.PLAY.markMax, c.PLAY.markMax, "PLAY.markMax")
-        Check.bitEqViaJSON(Playbook.PLAY.discSpace, c.PLAY.discSpace, "PLAY.discSpace")
-        Check.bitEqViaJSON(Playbook.PLAY.shadeOpen, c.PLAY.shadeOpen, "PLAY.shadeOpen")
-        Check.bitEqViaJSON(Playbook.PLAY.deepCushion, c.PLAY.deepCushion, "PLAY.deepCushion")
-        Check.bitEqViaJSON(Playbook.PLAY.underGap, c.PLAY.underGap, "PLAY.underGap")
+        Check.bitEq(Playbook.PLAY.stackSpacing, 4.2, "PLAY.stackSpacing")
+        Check.bitEq(Playbook.PLAY.stackLead, 11.0, "PLAY.stackLead")
+        Check.eq(Playbook.PLAY.stackHold, 3, "PLAY.stackHold")
+        Check.eq(Playbook.PLAY.maxLiveCuts, 2, "PLAY.maxLiveCuts")
+        Check.bitEq(Playbook.PLAY.cutStagger, 1.1, "PLAY.cutStagger")
+        Check.bitEq(Playbook.PLAY.setupTime, 0.45, "PLAY.setupTime")
+        Check.bitEq(Playbook.PLAY.plantTime, 0.16, "PLAY.plantTime")
+        Check.bitEq(Playbook.PLAY.underCutTime, 3.4, "PLAY.underCutTime")
+        Check.bitEq(Playbook.PLAY.deepCutTime, 3.2, "PLAY.deepCutTime")
+        Check.bitEq(Playbook.PLAY.markDistance, 2.15, "PLAY.markDistance")
+        Check.bitEq(Playbook.PLAY.markMax, 3.0, "PLAY.markMax")
+        Check.bitEq(Playbook.PLAY.discSpace, 1.0, "PLAY.discSpace")
+        Check.bitEq(Playbook.PLAY.shadeOpen, 1.75, "PLAY.shadeOpen")
+        Check.bitEq(Playbook.PLAY.deepCushion, 2.4, "PLAY.deepCushion")
+        Check.bitEq(Playbook.PLAY.underGap, 0.9, "PLAY.underGap")
 
-        Check.bitEqViaJSON(Playbook.FORCE_DEADBAND, c.FORCE_DEADBAND, "FORCE_DEADBAND")
-
+        Check.bitEq(Playbook.FORCE_DEADBAND, 3.0, "FORCE_DEADBAND")
         Check.eq(
-            Playbook.POSITIONAL_FORCES.map(\.rawValue), c.POSITIONAL_FORCES,
-            "POSITIONAL_FORCES")
-        Check.eq(Playbook.ALL_LANES.map(\.rawValue), c.ALL_LANES, "ALL_LANES")
+            Playbook.POSITIONAL_FORCES.map(\.rawValue), ["middle", "sideline"], "POSITIONAL_FORCES")
+        Check.eq(
+            Playbook.ALL_LANES.map(\.rawValue),
+            ["open-under", "open-deep", "break-under", "break-deep", "reset-open", "reset-break"],
+            "ALL_LANES")
+
+        // The weather / timeout tunables — see the header on the aimath finding in
+        // issue #58: a relation survives the value moving, and nothing else in this
+        // suite constrains these seven numbers.
+        Check.bitEq(Playbook.windyChance, 0.10, "windyChance")
+        Check.bitEq(Playbook.calmAcross, 1.5, "calmAcross")
+        Check.bitEq(Playbook.calmAlong, 1.1, "calmAlong")
+        Check.bitEq(Playbook.windySpeed.min, 8.0, "windySpeed.min")
+        Check.bitEq(Playbook.windySpeed.max, 9.5, "windySpeed.max")
+        Check.bitEq(Playbook.timeoutPanicBefore, 3.0, "timeoutPanicBefore")
+        Check.bitEq(Playbook.timeoutSetPlayStall, 2.0, "timeoutSetPlayStall")
+
+        // The minis pitch too — `Playbook.ts` could not express it, but it is what
+        // `depthScale`/`widthScale` divide against, so its numbers are load-bearing for
+        // every shape assertion in `minisPitch`/`minisShape` below.
+        let minis = FieldConstants.minis
+        Check.bitEq(minis.sideline, 9, "minis SIDELINE")
+        Check.bitEq(minis.endLine, 18.5, "minis END_LINE")
+        Check.bitEq(minis.goalLine, 12.5, "minis GOAL_LINE")
+        Check.bitEq(minis.endzoneDepth, 6, "minis ENDZONE_DEPTH")
+        Check.bitEq(minis.brickZ, 6.5, "minis BRICK_Z")
+
+        Check.eq(Playbook.referenceRoster, 7, "referenceRoster")
+        Check.eq(
+            Playbook.referenceField, FieldConstants.standard, "referenceField is the regulation pitch")
     }
 
     // MARK: - maths
 
-    private static func maths(_ g: File) {
-        for c in g.clampCases {
-            // `clamp` is reused from `Move/Attributes.swift` rather than redefined here.
-            // These cases pin that the shared one has the reference's exact chained
-            // ternary — including the lo > hi case, where it returns `lo`.
-            Check.bitEqViaJSON(
-                clamp(c.v, c.lo, c.hi), c.want, "clamp(\(c.v), \(c.lo), \(c.hi))")
+    private static let clampCases: [(v: Double, lo: Double, hi: Double)] = [
+        (0, -1, 1), (-2, -1, 1), (2, -1, 1), (-1, -1, 1), (1, -1, 1),
+        (-1.0000000000000002, -1, 1), (0.9999999999999999, -1, 1),
+        (0, 5, -5), (0.3, 0, 0), (-0, -1, 1),
+    ]
+    private static let lerpCases: [(a: Double, b: Double, t: Double)] = [
+        (0, 1, 0), (0, 1, 1), (0, 1, 0.5), (0, 1, -0.5), (0, 1, 1.5),
+        (-3.25, 7.75, 0.3), (5, 5, 0.7), (1e8, 1e-8, 0.25),
+    ]
+    private static let smoothstepCases: [(e0: Double, e1: Double, x: Double)] = [
+        (0, 1, -1), (0, 1, 0), (0, 1, 0.25), (0, 1, 0.5), (0, 1, 0.75), (0, 1, 1), (0, 1, 2),
+        (1, 0, 0.25), (1, 0, 0.75),
+        (4, 4, 3.9999995), (4, 4, 4), (4, 4, 4.0000005), (4, 4, 5),
+        (4.5, 11, 0), (4.5, 11, 4.5), (4.5, 11, 7.75), (4.5, 11, 11), (4.5, 11, 20),
+    ]
+    private static let dist2Cases: [(ax: Double, az: Double, bx: Double, bz: Double)] = [
+        (0, 0, 0, 0), (3, 0, 0, 4), (-3, -4, 0, 0), (1.5, -2.25, -9.75, 8.125),
+        (-18.5, -50, 18.5, 50), (0.1, 0.2, 0.1, 0.2),
+    ]
+    private static let sigmoidCases: [(x: Double, k: Double)] = [
+        (0, 1), (1, 1), (-1, 1), (3, 2), (-3, 2), (0.5, 0), (10, 1), (-10, 1),
+    ]
+
+    private static func maths() {
+        for c in clampCases {
+            Check.bitEq(
+                clamp(c.v, c.lo, c.hi), Model.clamp(c.v, c.lo, c.hi),
+                "clamp(\(c.v), \(c.lo), \(c.hi))")
         }
-        for c in g.lerpCases {
-            Check.bitEqViaJSON(
-                Playbook.lerp(c.a, c.b, c.t), c.want, "lerp(\(c.a), \(c.b), \(c.t))")
+        for c in lerpCases {
+            Check.bitEq(
+                Playbook.lerp(c.a, c.b, c.t), Model.lerp(c.a, c.b, c.t),
+                "lerp(\(c.a), \(c.b), \(c.t))")
         }
-        for c in g.smoothstepCases {
-            Check.bitEqViaJSON(
-                Playbook.smoothstep(c.edge0, c.edge1, c.x), c.want,
-                "smoothstep(\(c.edge0), \(c.edge1), \(c.x))")
+        for c in smoothstepCases {
+            nearEq(
+                Playbook.smoothstep(c.e0, c.e1, c.x), Model.smoothstep(c.e0, c.e1, c.x),
+                "smoothstep(\(c.e0), \(c.e1), \(c.x))")
         }
-        for c in g.dist2Cases {
-            // `distSq2` is a sum of two products: bit-exact.
-            Check.bitEqViaJSON(
-                Playbook.distSq2(c.ax, c.az, c.bx, c.bz), c.distSq,
+        for c in dist2Cases {
+            Check.bitEq(
+                Playbook.distSq2(c.ax, c.az, c.bx, c.bz), Model.distSq2(c.ax, c.az, c.bx, c.bz),
                 "distSq2(\(c.ax),\(c.az) -> \(c.bx),\(c.bz))")
-            // `dist2` is `Math.hypot`: an envelope.
-            nearUlp(
-                Playbook.dist2(c.ax, c.az, c.bx, c.bz), c.dist,
+            nearEq(
+                Playbook.dist2(c.ax, c.az, c.bx, c.bz), Model.dist2(c.ax, c.az, c.bx, c.bz),
                 "dist2(\(c.ax),\(c.az) -> \(c.bx),\(c.bz))")
         }
-        for c in g.sigmoidCases {
-            nearUlp(Playbook.sigmoid(c.x, c.k), c.want, "sigmoid(\(c.x), k \(c.k))")
+        for c in sigmoidCases {
+            nearEq(Playbook.sigmoid(c.x, c.k), Model.sigmoid(c.x, c.k), "sigmoid(\(c.x), k \(c.k))")
         }
     }
 
     // MARK: - field geometry
 
-    private static func geometry(_ g: File) {
-        for c in g.clampToFieldCases {
-            let got = c.margin.map { pb.clampToField(c.p.vec, margin: $0) }
-                ?? pb.clampToField(c.p.vec)
-            let at = "clampToField(\(c.p.x), \(c.p.z), margin \(c.margin.map { "\($0)" } ?? "default"))"
-            Check.bitEqViaJSON(got.x, c.want.x, "\(at).x")
-            Check.bitEqViaJSON(got.z, c.want.z, "\(at).z")
+    private static func geometry() {
+        let M = pb.edgeMargin
+        var points: [Vec2d] = []
+        for x in [
+            0.0, pb.field.sideline - M, pb.field.sideline - M + 1e-9, pb.field.sideline - M - 1e-9,
+            -pb.field.sideline + M, -pb.field.sideline + M - 1e-9, 100, -100,
+        ] {
+            points.append(Vec2d(x, 0))
         }
-        for c in g.inBoundsCases {
-            Check.eq(
-                pb.inBounds(c.x, c.z, margin: c.margin), c.want,
-                "inBounds(\(c.x), \(c.z), margin \(c.margin))")
+        for z in [
+            pb.field.endLine - M, pb.field.endLine - M + 1e-9, -pb.field.endLine + M,
+            -pb.field.endLine + M - 1e-9, 100, -100,
+        ] {
+            points.append(Vec2d(0, z))
         }
-        for c in g.goalCases {
-            Check.bitEqViaJSON(
-                pb.yardsToGoal(c.z, c.dir), c.yards, "yardsToGoal(\(c.z), dir \(c.dir))")
-            Check.eq(
-                pb.inAttackEndzone(c.z, c.dir), c.attack,
-                "inAttackEndzone(\(c.z), dir \(c.dir))")
-            Check.eq(
-                pb.inOwnEndzone(c.z, c.dir), c.own, "inOwnEndzone(\(c.z), dir \(c.dir))")
+        for margin: Double? in [nil, 0, M, 2.5, 25] {
+            for p in points {
+                let got = margin.map { pb.clampToField(p, margin: $0) } ?? pb.clampToField(p)
+                let want = Model.clampToField(pb, p, margin)
+                let at = "clampToField(\(p.x), \(p.z), margin \(margin.map { "\($0)" } ?? "default"))"
+                nearEq(got.x, want.x, "\(at).x")
+                nearEq(got.z, want.z, "\(at).z")
+            }
+        }
+
+        for margin in [0.0, 0.9, 5.0] {
+            for (x, z) in [
+                (0.0, 0.0),
+                (pb.field.sideline - margin, 0.0), (pb.field.sideline - margin + 1e-9, 0.0),
+                (-(pb.field.sideline - margin), 0.0), (-(pb.field.sideline - margin) - 1e-9, 0.0),
+                (0.0, pb.field.endLine - margin), (0.0, pb.field.endLine - margin + 1e-9),
+                (0.0, -(pb.field.endLine - margin)), (0.0, -(pb.field.endLine - margin) - 1e-9),
+                (30.0, 60.0),
+            ] {
+                Check.eq(
+                    pb.inBounds(x, z, margin: margin), Model.inBounds(pb, x, z, margin),
+                    "inBounds(\(x), \(z), margin \(margin))")
+            }
+        }
+
+        for dir in DIRS {
+            for z in [
+                0.0, 14, -14, pb.field.goalLine, -pb.field.goalLine,
+                pb.field.goalLine - 1e-9, pb.field.goalLine + 1e-9,
+                -pb.field.goalLine + 1e-9, -pb.field.goalLine - 1e-9,
+                pb.field.endLine, -pb.field.endLine, 13, -13,
+            ] {
+                nearEq(
+                    pb.yardsToGoal(z, dir), Model.yardsToGoal(pb, z, dir),
+                    "yardsToGoal(\(z), dir \(dir))")
+                Check.eq(
+                    pb.inAttackEndzone(z, dir), Model.inAttackEndzone(pb, z, dir),
+                    "inAttackEndzone(\(z), dir \(dir))")
+                Check.eq(
+                    pb.inOwnEndzone(z, dir), Model.inOwnEndzone(pb, z, dir),
+                    "inOwnEndzone(\(z), dir \(dir))")
+            }
         }
     }
 
     // MARK: - force / side
 
-    private static func forces(_ g: File) {
-        for c in g.handSideSignCases {
-            Check.eq(
-                Playbook.handSideSign(c.handed, c.dir), c.want,
-                "handSideSign(\(c.handed.rawValue), dir \(c.dir))")
+    private static func forces() {
+        for handed in HANDS {
+            for dir in DIRS {
+                Check.eq(
+                    Playbook.handSideSign(handed, dir), Model.handSideSign(handed, dir),
+                    "handSideSign(\(handed.rawValue), dir \(dir))")
+            }
         }
-        for c in g.openSideSignCases {
-            let at = "\(c.force.rawValue), dir \(c.dir)"
-            Check.eq(Playbook.openSideSign(c.force, c.dir), c.open, "openSideSign(\(at))")
-            Check.eq(Playbook.breakSideSign(c.force, c.dir), c.brk, "breakSideSign(\(at))")
+        for force in FORCES {
+            for dir in DIRS {
+                let at = "\(force.rawValue), dir \(dir)"
+                Check.eq(
+                    Playbook.openSideSign(force, dir), Model.openSideSign(force, dir),
+                    "openSideSign(\(at))")
+                Check.eq(
+                    Playbook.breakSideSign(force, dir), Model.breakSideSign(force, dir),
+                    "breakSideSign(\(at))")
+            }
         }
-        for c in g.openSideForCases {
-            let at =
-                "\(c.force.rawValue), dir \(c.dir), discX \(c.discX), "
-                + "prev \(c.prev.map { "\($0)" } ?? "nil")"
-            Check.eq(
-                Playbook.openSideFor(c.force, c.dir, c.discX, c.prev), c.open,
-                "openSideFor(\(at))")
-            Check.eq(
-                Playbook.breakSideFor(c.force, c.dir, c.discX, c.prev), c.brk,
-                "breakSideFor(\(at))")
+
+        let deadbandXs: [Double] = [
+            0, 1.5, -1.5,
+            3.0 - 1e-9, 3.0, 3.0 + 1e-9, -(3.0 - 1e-9), -3.0, -(3.0 - 1e-9),
+            9.4, -9.4, 18.5, -18.5,
+        ]
+        for force in FORCES {
+            for dir in DIRS {
+                for discX in deadbandXs {
+                    for prev: Playbook.Sign? in [nil, 1, -1] {
+                        let at =
+                            "\(force.rawValue), dir \(dir), discX \(discX), "
+                            + "prev \(prev.map { "\($0)" } ?? "nil")"
+                        Check.eq(
+                            Playbook.openSideFor(force, dir, discX, prev),
+                            Model.openSideFor(force, dir, discX, prev), "openSideFor(\(at))")
+                        Check.eq(
+                            Playbook.breakSideFor(force, dir, discX, prev),
+                            Model.breakSideFor(force, dir, discX, prev), "breakSideFor(\(at))")
+                    }
+                }
+            }
         }
-        for c in g.releaseSideTypeCases {
-            Check.eq(
-                Playbook.releaseSideType(c.handed, c.dir, c.releaseSignX), c.want,
-                "releaseSideType(\(c.handed.rawValue), dir \(c.dir), x \(c.releaseSignX))")
+
+        for handed in HANDS {
+            for dir in DIRS {
+                for x in [0.0, -0.0, 1, -1, 0.001, -0.001, 12.5, -12.5] {
+                    Check.eq(
+                        Playbook.releaseSideType(handed, dir, x),
+                        Model.releaseSideType(handed, dir, x),
+                        "releaseSideType(\(handed.rawValue), dir \(dir), x \(x))")
+                }
+            }
         }
     }
 
     // MARK: - formations
 
-    private static func formations(_ g: File) {
-        for c in g.stackColumnXCases {
-            Check.bitEqViaJSON(
-                Playbook.stackColumnX(c.name, c.a.vec, c.openSign), c.want,
-                "stackColumnX(\(c.name.rawValue), a.x \(c.a.x), open \(c.openSign))")
-        }
+    private static let formationDiscs: [Vec2d] = [
+        Vec2d(0, 0), Vec2d(0, 20), Vec2d(12.5, -8), Vec2d(-12.5, 8), Vec2d(17.4, 0),
+        Vec2d(-17.6, 3), Vec2d(0, -30), Vec2d(0, 30), Vec2d(3.5, 31.9), Vec2d(-9, -44),
+    ]
 
-        for c in g.formationStationsCases {
-            let got = pb.formationStations(c.name, c.a.vec, c.dir, c.openSign)
-            let at =
-                "formationStations(\(c.name.rawValue), disc \(c.a.x),\(c.a.z), "
-                + "dir \(c.dir), open \(c.openSign))"
-            Check.eq(got.count, c.want.count, "\(at).count")
-            guard got.count == c.want.count else { continue }
-            for (i, w) in c.want.enumerated() {
-                Check.bitEqViaJSON(got[i].x, w.x, "\(at)[\(i)].x")
-                Check.bitEqViaJSON(got[i].z, w.z, "\(at)[\(i)].z")
-                Check.eq(got[i].role, w.role, "\(at)[\(i)].role")
-                Check.eq(got[i].depth, w.depth, "\(at)[\(i)].depth")
+    private static func formations() {
+        for name in FORMATIONS {
+            for openSign in SIGNS {
+                for ax in [0.0, 5, -5, 16.6, 16.666666666666668, 16.7, 18.5, -18.5, 50, -50] {
+                    Check.bitEq(
+                        Playbook.stackColumnX(name, Vec2d(ax, 0), openSign),
+                        Model.stackColumnXStatic(name, Vec2d(ax, 0), openSign),
+                        "stackColumnX(\(name.rawValue), a.x \(ax), open \(openSign))")
+                    nearEq(
+                        pb.stackColumnX(name, Vec2d(ax, 0), openSign),
+                        Model.stackColumnX(pb, name, Vec2d(ax, 0), openSign),
+                        "pb.stackColumnX(\(name.rawValue), a.x \(ax), open \(openSign))")
+                }
             }
         }
 
-        for c in g.handlerCountCases {
-            Check.eq(
-                Playbook.handlerCount(c.name), c.handlers, "handlerCount(\(c.name.rawValue))")
-            Check.eq(Playbook.hasColumn(c.name), c.column, "hasColumn(\(c.name.rawValue))")
+        for name in FORMATIONS {
+            for dir in DIRS {
+                for openSign in SIGNS {
+                    for a in formationDiscs {
+                        let got = pb.formationStations(name, a, dir, openSign)
+                        let want = Model.formationStations(pb, name, a, dir, openSign)
+                        let at =
+                            "formationStations(\(name.rawValue), disc \(a.x),\(a.z), "
+                            + "dir \(dir), open \(openSign))"
+                        Check.eq(got.count, want.count, "\(at).count")
+                        guard got.count == want.count else { continue }
+                        for i in 0..<got.count {
+                            nearEq(got[i].x, want[i].x, "\(at)[\(i)].x")
+                            nearEq(got[i].z, want[i].z, "\(at)[\(i)].z")
+                            Check.eq(got[i].role, want[i].role, "\(at)[\(i)].role")
+                            Check.eq(got[i].depth, want[i].depth, "\(at)[\(i)].depth")
+                        }
+                    }
+                }
+            }
         }
 
-        for c in g.chooseFormationCases {
+        for name in FORMATIONS {
             Check.eq(
-                pb.chooseFormation(
-                    c.disc.vec, c.dir, c.prefer, c.windSpeed, c.openSign, c.foeZone),
-                c.want,
-                "chooseFormation(disc \(c.disc.x),\(c.disc.z), dir \(c.dir), "
-                    + "prefer \(c.prefer.rawValue), wind \(c.windSpeed), open \(c.openSign), "
-                    + "foeZone \(c.foeZone))")
+                Playbook.handlerCount(name), Model.handlerCount(name), "handlerCount(\(name.rawValue))")
+            Check.eq(Playbook.hasColumn(name), Model.hasColumn(name), "hasColumn(\(name.rawValue))")
+        }
+
+        for dir in DIRS {
+            for openSign in SIGNS {
+                for prefer in FORMATIONS {
+                    for windSpeed in [0.0, 7.5, 7.500000000000001, 12] {
+                        for foeZone in [false, true] {
+                            for disc in [
+                                Vec2d(0, 0),
+                                Vec2d(0, Double(dir) * 19),
+                                Vec2d(0, Double(dir) * 19.000000000000004),
+                                Vec2d(0, Double(dir) * 18.9),
+                                Vec2d(14.0, 0), Vec2d(14.000000000000002, 0),
+                                Vec2d(-14.000000000000002, 0),
+                                Vec2d(17.9, -4), Vec2d(-17.9, -4),
+                            ] {
+                                let got = pb.chooseFormation(
+                                    disc, dir, prefer, windSpeed, openSign, foeZone)
+                                let want = Model.chooseFormation(
+                                    pb, disc, dir, prefer, windSpeed, openSign, foeZone)
+                                Check.eq(
+                                    got, want,
+                                    "chooseFormation(disc \(disc.x),\(disc.z), dir \(dir), "
+                                        + "prefer \(prefer.rawValue), wind \(windSpeed), "
+                                        + "open \(openSign), foeZone \(foeZone))")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     // MARK: - cuts
 
-    private static func cuts(_ g: File) {
-        for c in g.laneOfCases {
-            Check.eq(
-                Playbook.laneOf(c.x, c.z, c.disc.vec, c.dir, c.openSign), c.want,
-                "laneOf(\(c.x),\(c.z) vs disc \(c.disc.x),\(c.disc.z), dir \(c.dir), "
-                    + "open \(c.openSign))")
+    private static func cuts() {
+        for dir in DIRS {
+            for openSign in SIGNS {
+                let disc = Vec2d(2, -5)
+                for dz in [
+                    -10.0, 0, 1.4999999999999998, 1.5, 1.5000000000000002,
+                    8, 15.999999999999998, 16, 16.000000000000004, 30,
+                ] {
+                    for dx in [-8.0, -1e-9, 0, 1e-9, 8] {
+                        let x = disc.x + dx
+                        let z = disc.z + Double(dir) * dz
+                        Check.eq(
+                            Playbook.laneOf(x, z, disc, dir, openSign),
+                            Model.laneOfStatic(x, z, disc, dir, openSign),
+                            "laneOf(\(x),\(z) vs disc \(disc.x),\(disc.z), dir \(dir), open \(openSign))")
+                        Check.eq(
+                            pb.laneOf(x, z, disc, dir, openSign),
+                            Model.laneOf(pb, x, z, disc, dir, openSign),
+                            "pb.laneOf(\(x),\(z) vs disc \(disc.x),\(disc.z), dir \(dir), open \(openSign))")
+                    }
+                }
+            }
         }
 
-        for c in g.buildCutCases {
-            let got = pb.buildCut(
-                c.kind, c.from.vec, c.disc.vec, c.dir, c.openSign, c.side, c.j)
-            let at =
-                "buildCut(\(c.kind.rawValue), from \(c.from.x),\(c.from.z), "
-                + "disc \(c.disc.x),\(c.disc.z), dir \(c.dir), open \(c.openSign), "
-                + "side \(c.side), j \(c.j))"
-            Check.eq(got.kind, c.want.kind, "\(at).kind")
-            Check.eq(got.lane, c.want.lane, "\(at).lane")
-            Check.bitEqViaJSON(got.setup.x, c.want.setup.x, "\(at).setup.x")
-            Check.bitEqViaJSON(got.setup.z, c.want.setup.z, "\(at).setup.z")
-            Check.bitEqViaJSON(got.target.x, c.want.target.x, "\(at).target.x")
-            Check.bitEqViaJSON(got.target.z, c.want.target.z, "\(at).target.z")
-            Check.eq(got.side, c.want.side, "\(at).side")
-            Check.bitEqViaJSON(got.setupTime, c.want.setupTime, "\(at).setupTime")
-            Check.bitEqViaJSON(got.maxTime, c.want.maxTime, "\(at).maxTime")
+        let cutFromDiscPairs: [(from: Vec2d, disc: Vec2d)] = [
+            (Vec2d(0, 12), Vec2d(0, 0)),
+            (Vec2d(-6, 26), Vec2d(3.5, 2)),
+            (Vec2d(16, 5), Vec2d(17.4, 1)),
+            (Vec2d(1, -28), Vec2d(0, -30)),
+            (Vec2d(-2, -33), Vec2d(-1, -31.5)),
+            (Vec2d(0, 28), Vec2d(0, 0)),
+        ]
+        for kind in KINDS {
+            for dir in DIRS {
+                for openSign in SIGNS {
+                    for side in SIGNS {
+                        for j in [0.0, 0.5, 1.0] {
+                            for pair in cutFromDiscPairs {
+                                let got = pb.buildCut(
+                                    kind, pair.from, pair.disc, dir, openSign, side, j)
+                                let want = Model.buildCut(
+                                    pb, kind, pair.from, pair.disc, dir, openSign, side, j)
+                                let at =
+                                    "buildCut(\(kind.rawValue), from \(pair.from.x),\(pair.from.z), "
+                                    + "disc \(pair.disc.x),\(pair.disc.z), dir \(dir), "
+                                    + "open \(openSign), side \(side), j \(j))"
+                                Check.eq(got.kind, want.kind, "\(at).kind")
+                                Check.eq(got.lane, want.lane, "\(at).lane")
+                                nearEq(got.setup.x, want.setup.x, "\(at).setup.x")
+                                nearEq(got.setup.z, want.setup.z, "\(at).setup.z")
+                                nearEq(got.target.x, want.target.x, "\(at).target.x")
+                                nearEq(got.target.z, want.target.z, "\(at).target.z")
+                                Check.eq(got.side, want.side, "\(at).side")
+                                nearEq(got.setupTime, want.setupTime, "\(at).setupTime")
+                                nearEq(got.maxTime, want.maxTime, "\(at).maxTime")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
     // MARK: - mark
 
-    private static func mark(_ g: File) {
-        for c in g.markPointCases {
-            let got = c.distance.map { Playbook.markPoint(c.thrower.vec, c.dir, c.breakSign, $0) }
-                ?? Playbook.markPoint(c.thrower.vec, c.dir, c.breakSign)
-            let at =
-                "markPoint(dir \(c.dir), break \(c.breakSign), "
-                + "d \(c.distance.map { "\($0)" } ?? "default"))"
-            nearUlp(got.x, c.want.x, "\(at).x")
-            nearUlp(got.z, c.want.z, "\(at).z")
+    private static func mark() {
+        for dir in DIRS {
+            for breakSign in SIGNS {
+                for distance: Double? in [nil, 0, Playbook.PLAY.markDistance, Playbook.PLAY.markMax, 5] {
+                    let thrower = Vec2d(3.5, -7.25)
+                    let got = distance.map { Playbook.markPoint(thrower, dir, breakSign, $0) }
+                        ?? Playbook.markPoint(thrower, dir, breakSign)
+                    let want = Model.markPoint(
+                        thrower, dir, breakSign, distance ?? Playbook.PLAY.markDistance)
+                    let at =
+                        "markPoint(dir \(dir), break \(breakSign), "
+                        + "d \(distance.map { "\($0)" } ?? "default"))"
+                    nearEq(got.x, want.x, "\(at).x")
+                    nearEq(got.z, want.z, "\(at).z")
+                }
+            }
         }
     }
 
     // MARK: - zone
 
-    private static func zone(_ g: File) {
-        for c in g.zoneStationsCases {
-            let got = pb.zoneStations(c.disc.vec, c.dir, c.openSign, c.deepThreat?.vec)
-            let at =
-                "zoneStations(disc \(c.disc.x),\(c.disc.z), dir \(c.dir), "
-                + "open \(c.openSign), threat \(c.deepThreat.map { "\($0.x)" } ?? "nil"))"
-            Check.eq(got.count, c.want.count, "\(at).count")
-            guard got.count == c.want.count else { continue }
-            for (i, w) in c.want.enumerated() {
-                Check.eq(got[i].role, w.role, "\(at)[\(i)].role")
-                if w.role == .cupMark {
-                    // The only station downstream of `Math.hypot`.
-                    nearUlp(got[i].x, w.x, "\(at)[\(i)].x")
-                    nearUlp(got[i].z, w.z, "\(at)[\(i)].z")
-                } else {
-                    Check.bitEqViaJSON(got[i].x, w.x, "\(at)[\(i)].x")
-                    Check.bitEqViaJSON(got[i].z, w.z, "\(at)[\(i)].z")
+    private static func zone() {
+        let zoneDiscs = [Vec2d(0, 0), Vec2d(12, -10), Vec2d(-15, 20), Vec2d(0, 28), Vec2d(4, 31)]
+        let deepThreats: [Vec2d?] = [
+            nil, Vec2d(0, 0), Vec2d(16.36, 30), Vec2d(-16.36, 30), Vec2d(-18.5, 0),
+        ]
+        for dir in DIRS {
+            for openSign in SIGNS {
+                for disc in zoneDiscs {
+                    for threat in deepThreats {
+                        let got = pb.zoneStations(disc, dir, openSign, threat)
+                        let want = Model.zoneStations(pb, disc, dir, openSign, threat)
+                        let at =
+                            "zoneStations(disc \(disc.x),\(disc.z), dir \(dir), open \(openSign), "
+                            + "threat \(threat.map { "\($0.x)" } ?? "nil"))"
+                        Check.eq(got.count, want.count, "\(at).count")
+                        guard got.count == want.count else { continue }
+                        for i in 0..<got.count {
+                            Check.eq(got[i].role, want[i].role, "\(at)[\(i)].role")
+                            nearEq(got[i].x, want[i].x, "\(at)[\(i)].x")
+                            nearEq(got[i].z, want[i].z, "\(at)[\(i)].z")
+                        }
+                    }
                 }
             }
         }
 
-        for c in g.shouldPlayZoneCases {
-            Check.eq(
-                Playbook.shouldPlayZone(c.windSpeed, c.scoreDiff, c.pointsPlayed, c.bias),
-                c.want,
-                "shouldPlayZone(wind \(c.windSpeed), diff \(c.scoreDiff), "
-                    + "points \(c.pointsPlayed), bias \(c.bias))")
-        }
-
-        // ---- the weather ------------------------------------------------------
-        //
-        // The distribution's five constants, then sixty-four days drawn from the shared
-        // generator. Three draws deep on either branch, so a port that reorders them — or
-        // that takes the windy branch on the wrong side of the comparison — fails on the
-        // first seed whose day disagrees.
-        Check.bitEqViaJSON(Playbook.windyChance, g.weather.windyChance, "WEATHER.windyChance")
-        Check.bitEqViaJSON(Playbook.calmAcross, g.weather.calmAcross, "WEATHER.calmAcross")
-        Check.bitEqViaJSON(Playbook.calmAlong, g.weather.calmAlong, "WEATHER.calmAlong")
-        Check.bitEqViaJSON(Playbook.windySpeed.min, g.weather.windyMin, "WEATHER.windyMin")
-        Check.bitEqViaJSON(Playbook.windySpeed.max, g.weather.windyMax, "WEATHER.windyMax")
-        Check.bitEqViaJSON(
-            Playbook.timeoutPanicBefore, g.weather.panicBefore, "TIMEOUT_PLAY.panicBefore")
-        Check.bitEqViaJSON(
-            Playbook.timeoutSetPlayStall, g.weather.setPlayStall, "TIMEOUT_PLAY.setPlayStall")
-
-        for c in g.weatherCases {
-            let got = Playbook.drawWeather(Rng(seed: c.seed))
-            let at = "drawWeather(seed \(c.seed))"
-            Check.eq(got.windy, c.windy, "\(at).windy")
-            Check.bitEqViaJSON(got.wind.x, c.wind.x, "\(at).wind.x")
-            Check.bitEqViaJSON(got.wind.z, c.wind.z, "\(at).wind.z")
-            // The speed is `Math.hypot` on a calm day and a raw `range` draw on a windy
-            // one, so only the first of those needs the ulp envelope.
-            if got.windy {
-                Check.bitEqViaJSON(got.speed, c.speed, "\(at).speed")
-            } else {
-                nearUlp(got.speed, c.speed, "\(at).speed")
+        for windSpeed in [0.0, 4.5, 7, 7.75, 11, 20] {
+            for scoreDiff in [0, 2, 3, 4, -5] {
+                for pointsPlayed in [0, 6, 7, 20] {
+                    for bias in [0.0, 0.15, 0.5, -0.4] {
+                        Check.eq(
+                            Playbook.shouldPlayZone(windSpeed, scoreDiff, pointsPlayed, bias),
+                            Model.shouldPlayZone(windSpeed, scoreDiff, pointsPlayed, bias),
+                            "shouldPlayZone(wind \(windSpeed), diff \(scoreDiff), "
+                                + "points \(pointsPlayed), bias \(bias))")
+                    }
+                }
             }
         }
 
-        // ---- the timeout decision --------------------------------------------
-        for c in g.timeoutCases {
-            let got = Playbook.timeoutIntent(
-                Playbook.TimeoutRead(
-                    stall: c.stall, stallMax: c.stallMax, remaining: c.remaining,
-                    throwsThisPoint: c.throwsThisPoint, receiving: c.receiving,
-                    stoppedThisPossession: c.stoppedThisPossession,
-                    ours: c.ours, theirs: c.theirs, toWin: c.toWin))
-            Check.eq(
-                got.rawValue, c.want,
-                "timeoutIntent(stall \(c.stall), left \(c.remaining), "
-                    + "throws \(c.throwsThisPoint), recv \(c.receiving), "
-                    + "stopped \(c.stoppedThisPossession), "
-                    + "\(c.ours)-\(c.theirs) to \(c.toWin))")
+        // The weather draw, over enough seeds that both modes are represented. Three
+        // draws deep on either branch, so a port that reorders them fails on the first
+        // seed whose day disagrees.
+        for seed in UInt32(1)...64 {
+            let got = Playbook.drawWeather(Rng(seed: seed))
+            let want = Model.drawWeather(Rng(seed: seed))
+            let at = "drawWeather(seed \(seed))"
+            Check.eq(got.windy, want.windy, "\(at).windy")
+            nearEq(got.wind.x, want.wind.x, "\(at).wind.x")
+            nearEq(got.wind.z, want.wind.z, "\(at).wind.z")
+            nearEq(got.speed, want.speed, "\(at).speed")
+        }
+
+        // The timeout decision.
+        for stall in [0.0, 1, 2, 2.5, 6.9, 7, 8, 9.5] {
+            for remaining in [0, 1, 2] {
+                for throwsThisPoint in [0, 1] {
+                    for receiving in [true, false] {
+                        for stoppedThisPossession in [false, true] {
+                            for (ours, theirs) in [(0, 0), (3, 2), (5, 5), (5, 4), (4, 5), (6, 2)] {
+                                let r = Playbook.TimeoutRead(
+                                    stall: stall, stallMax: 10, remaining: remaining,
+                                    throwsThisPoint: throwsThisPoint, receiving: receiving,
+                                    stoppedThisPossession: stoppedThisPossession, ours: ours,
+                                    theirs: theirs, toWin: 7)
+                                Check.eq(
+                                    Playbook.timeoutIntent(r), Model.timeoutIntent(r),
+                                    "timeoutIntent(stall \(stall), left \(remaining), "
+                                        + "throws \(throwsThisPoint), recv \(receiving), "
+                                        + "stopped \(stoppedThisPossession), \(ours)-\(theirs))")
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -610,9 +980,10 @@ enum PlaybookTests {
 
     /// Doc comments assert behaviour; behaviour can be checked.
     ///
-    /// Every one of these would still pass every fixture above if the sign were flipped
-    /// on both sides of the port, because a fixture only records what the reference
-    /// does — not what it is supposed to mean. These say what it means.
+    /// Every one of these would still pass every comparison above if the sign were
+    /// flipped on both sides of the port, because a `Model` comparison only shows the
+    /// port agrees with a second transcription — not that either transcription means
+    /// what the doc comment says. These say what it means.
     private static func claims() {
         let gl = pb.field.goalLine
 
@@ -1062,9 +1433,9 @@ enum PlaybookTests {
             "smoothstep rises between its edges")
 
         // JavaScript's `||` falls through on NaN as well as on +0 and -0, and the port
-        // reproduces all three. The golden sampled the zeros but not NaN, so deleting
-        // `|| span.isNaN` from the port changed nothing and all 20,419 assertions still
-        // passed — a mutation test found that hole.
+        // reproduces all three. The golden that used to cover this sampled the zeros
+        // but not NaN, so deleting `|| span.isNaN` from the port changed nothing under
+        // that fixture — a mutation test found that hole.
         //
         // It is observable, and not symmetrically. With `edge1` NaN the span is falsy, the
         // divide uses 1e-6, `t` saturates and the reference returns exactly 1. Drop the
@@ -1161,7 +1532,7 @@ enum PlaybookTests {
         // **This check used to assert the bug.** Its comment said "pitch-relative" and the
         // assertion under it said `chooseFormation` at the centre of the minis pitch
         // returns `.endzone` — which is exactly the symptom, not the property. 13 m is a
-        // fifth of a regulation half and the whole of a minis one, so the minis game was
+        // fifth of a regulation half and the WHOLE of a minis one, so the minis game was
         // in its endzone set from the pull onwards; and since that set makes every player
         // a handler, nobody cut and the offence threw backwards for fifteen minutes. A
         // check that pins the broken behaviour is worse than no check, because it turns
@@ -1539,15 +1910,5 @@ enum PlaybookTests {
         let front = (rel.max() ?? 0) / p.field.goalLine
         let back = (rel.min() ?? 0) / p.field.goalLine
         return DownfieldFractions(front: front, back: back, span: front - back)
-    }
-
-    // MARK: - helpers
-
-    /// An ulp-relative envelope, for the `hypot`/`exp` results only.
-    private static func nearUlp(_ got: Double, _ want: Double, _ what: String) {
-        let d = abs(got - want)
-        let unit = want == 0 ? Double.ulpOfOne : want.ulp
-        let tol = ULPS * unit
-        Check.ok(d <= tol, "\(what): off by \(d) (\(d / unit) ulp; got \(got), want \(want))")
     }
 }
