@@ -336,8 +336,13 @@ let allSuites: [Suite] = [
     Suite(name: "humandefence", run: HumanDefenceTests.run, minAssertions: 20),
     Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
-    Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
+    Suite(name: "calls", run: CallsTests.run, minAssertions: 30),
     Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4477),
+    // Issue #58: the off-ball game, measured off bodies rather than recorded. Thirty
+    // assertions over pooled aggregates — a small count carrying a large measurement, which
+    // is the shape of every property assertion in here: each one is a statement about
+    // hundreds of thousands of frames rather than one comparison.
+    Suite(name: "shape", run: ShapeTests.run, minAssertions: 30),
     Suite(name: "replay", run: ReplayTests.run, minAssertions: 258),
     // Floor lowered from 35 to 34 for the same reason as `engine` above — issue #56.
     Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 34),
