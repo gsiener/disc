@@ -717,7 +717,18 @@ struct ShapeObserver {
         let receiver = e.receiver
         for intent in intents where intent.team == offence {
             let now = intent.debug.state
-            if prevState[intent.id] == "break", now != "break", intent.id != receiver {
+            if prevState[intent.id] == "break", now != "break", intent.id != receiver,
+                let p = e.players.first(where: { $0.id == intent.id }),
+                // ONLY CUTS THAT DIED IN THE WAY. A cut that expires already clear of the
+                // lane — an under that finishes in front of the thrower, most of them —
+                // has nothing to clear, and counting it enters a zero into the mean. Left
+                // in, they are the overwhelming majority of dead cuts and they drag the
+                // mean to 0.23 s, which is a number no amount of loitering can move: a
+                // deliberately broken clear, with the body left standing where the cut
+                // died, still measured 0.23 s and passed a 2.0 s bound. The claim is about
+                // bodies that are in the way, so the sample is bodies that are in the way.
+                !ShapeObserver.outOfTheWay(p, disc: disc, dir: dir, openSign: openSign)
+            {
                 pending.append(DeadCut(id: intent.id, t: t, possession: offence))
             }
             prevState[intent.id] = now
