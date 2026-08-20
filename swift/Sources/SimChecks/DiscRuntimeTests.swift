@@ -508,6 +508,15 @@ enum DiscRuntimeTests {
             Check.ok(
                 rt.predictPath(horizon: 0, step: 0).count >= 2,
                 "predictPath always returns at least two points")
+
+            // The step ceiling itself, isolated: a step strictly between the two
+            // candidate bounds (1/20 and 1/10) tells them apart. `FlightSample.t` is
+            // `i * dt` with no accumulation, so the clamped dt is recoverable bit-exact
+            // from the second sample alone, without touching the physics at all.
+            let capped = rt.predictPath(horizon: 1, step: 0.08)
+            Check.bitEq(
+                capped[1].t, 1.0 / 20.0,
+                "a step above the ceiling clamps to exactly 1/20 s, not the raw ask")
         }
 
         /// Drive `p` through exactly the sequence `predictPath` documents: the horizon
