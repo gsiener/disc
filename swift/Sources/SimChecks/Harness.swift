@@ -313,16 +313,22 @@ let allSuites: [Suite] = [
     // construction site, both sides reading the same player at the same instant). That is
     // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
     Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381115),
-    Suite(name: "gamestate", run: GameStateTests.run, minAssertions: 2223),
-    // Issue #48/#2: `Game.doPull`, ported. A rules event with no AI in it, against
-    // fixtures captured directly from the reference rather than a property. See
-    // PullTests.swift's header for why this and `Engine.autoPull()` run with zero
-    // ticks between construction and the pull.
-    Suite(name: "pull", run: PullTests.run, minAssertions: 177),
-    // Issue #56: `Game.ts`'s `lineUpForPull()`, ported into `Engine.stagePoint`. Fixtures
-    // captured directly, at the same zero-tick instant `pull` reads at. See
+    // Issue #58: `gamestate` no longer loads a golden. Nine hand-written scripts and 2,223
+    // recorded comparisons become 89,808 assertions against the machine itself — every cell
+    // of the phase x action table driven, every phase reached and shown not to be a dead
+    // end, and twenty seeds of a referee picking legal actions with the laws of the sport
+    // checked after each one. See GameStateTests.swift's header.
+    Suite(name: "gamestate", run: GameStateTests.run, minAssertions: 89808),
+    // Issue #58: `pull` no longer loads a golden. The recorded release parameters become
+    // the bearing law they encode, the fit's constants pinned to their values, and WFDF 12
+    // and 13 driven through `GameState` — including the brick-or-sideline choice, which the
+    // fixture never captured at all. See PullTests.swift's header.
+    Suite(name: "pull", run: PullTests.run, minAssertions: 616),
+    // Issue #58: `lineup` no longer loads a golden. 336 recorded coordinates become the
+    // opening formation's own laws — seed-independent, evenly spaced, symmetric, on the
+    // line each team defends, facing the way it attacks — on both pitches. See
     // LineupTests.swift's header.
-    Suite(name: "lineup", run: LineupTests.run, minAssertions: 361),
+    Suite(name: "lineup", run: LineupTests.run, minAssertions: 1752),
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 408),
     Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 651),
