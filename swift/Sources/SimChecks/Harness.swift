@@ -356,6 +356,11 @@ let allSuites: [Suite] = [
     Suite(name: "inputscript", run: InputScriptTests.run, minAssertions: 422),
     Suite(name: "boxscore", run: BoxScoreTests.run, minAssertions: 35),
     Suite(name: "matchdiff", run: MatchDiffTests.run, minAssertions: 41),
+    // Issue #58: the tuning constants, pinned to their values. A relation is the right
+    // assertion for a law and the wrong one for a tuning number — `CATCH_DEAD < CATCH_FLOOR`
+    // stays true while `CATCH_DEAD` moves. Until this existed, the only things holding these
+    // fifteen numbers were fixtures that are being deleted.
+    Suite(name: "constants", run: ConstantsTests.run, minAssertions: 32),
     Suite(name: "divergences", run: DivergenceTests.run, minAssertions: 34),
     Suite(name: "probecontract", run: ProbeContractTests.run, minAssertions: 224),
 ]
