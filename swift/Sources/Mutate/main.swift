@@ -147,8 +147,18 @@ for (i, m) in mutations.enumerated() {
 print("\nred \(counts[.red] ?? 0)  survived \(counts[.survived] ?? 0)"
     + "  not-applied \(counts[.notApplied] ?? 0)  build-failed \(counts[.buildFailed] ?? 0)")
 
+// **Rebuild before leaving.** The source is restored after each mutation, but the binary
+// is not — so without this the last mutation stays compiled into `.build/release/SimTests`,
+// and the next person to run the suite gets a failure that is not real. That happened once
+// and cost a bisect of a bug that did not exist.
+print("\nrebuilding from restored source…")
+if shell(["swift", "build", "-c", "release", "--product", "SimTests"], cwd: swiftDir) != 0 {
+    print("the restored tree does not build — check for a mutation left behind")
+    exit(2)
+}
+
 if gaps.isEmpty {
-    print("\nEvery mutation was caught.")
+    print("Every mutation was caught.")
     exit(0)
 }
 print("\nNot caught:")
