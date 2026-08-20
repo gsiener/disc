@@ -1,117 +1,185 @@
 import Foundation
 import UltimateSim
 
-/// `humanReleaseParams`, against `src/sim/Game.ts`.
+/// `humanReleaseParams` — charge, tilt and release quality mapped to disc release
+/// parameters — checked against an independent restatement of its own arithmetic, and
+/// against the claims its doc comment makes about what a throw feels like in the hand.
 ///
-/// The mapping itself is five lines of arithmetic and the golden pins all of it bit for
-/// bit. That is the cheap half. The half worth having is below `feel()`: the reference's
-/// doc comment makes specific claims about what a throw feels like in the hand, and every
-/// one of them is a claim about a FLIGHT, not about a number. A tap is short. Full charge
-/// is long. More charge is always more distance. The curve does not invert as you charge.
-/// A table of release parameters cannot fail any of those, which is exactly why the
-/// original bug survived review — the numbers looked reasonable and the game played
-/// wrong. So the claims are asserted by building the release and flying the real aero to
-/// the ground, and the two counterfactual mappings are flown beside it so the assertions
-/// can fail in the direction the bug actually went.
+/// # Two kinds of contract, two kinds of check
+///
+/// The mapping itself is five lines of arithmetic: a linear speed ramp, a fixed angle
+/// slope, a clamped spin term, a signed hyzer, a quality-scaled nose. Nothing in it is
+/// transcendental, so `Model` below restates it from scratch — literal constants, not
+/// `MIN_THROW_SPEED`/`HUCK_HYZER`, and a hand-written clamp rather than a call to
+/// `clamp` — so a transcription slip in the production formula (a wrong offset, a
+/// swapped clamp bound, a dropped `spinSign`) cannot hide behind a matching mistake in
+/// the check. `throwSpeed` and `spinSign` are read from the aero spec table rather than
+/// re-derived: they belong to `Throws.swift`, a different subsystem with its own suite,
+/// and re-deriving them here would only be a second, riskier copy of data this mapping
+/// merely consumes. The grid sweeps every clamp from both sides — power runs from -1 to
+/// 1.75 against a [0,1] clamp, quality from -1 to 1.5 against a spin clamp of [0.1,1] —
+/// so a moved rail is caught at the rail, not just somewhere in the middle.
+///
+/// The half a table of numbers cannot check is what the release actually *does* when you
+/// fly it. The doc comment on `humanReleaseParams` makes specific claims — a tap is
+/// short, full charge is long, more charge is always more distance, the curve does not
+/// invert as you charge, a hyzer that opposes the throw's own turnover — and every one of
+/// them is a claim about a FLIGHT. A table of parameters can satisfy all five and still
+/// be the bug: the original regression here was measured, not derived, so `feel()` below
+/// builds the release and flies it on the real aero to the ground, and flies the
+/// regression itself — the one-unsigned-hyzer mapping, and the no-hyzer mapping before
+/// it — beside it, so the assertions can fail in the direction the bug actually went.
+///
+/// # Why this needs no fixture
+///
+/// The arithmetic is checked against an independent model, not a recorded value — see
+/// above. The flights are checked against physical claims a flight either satisfies or
+/// does not — a dump does not carry 40 m, a curve does not reverse mid-charge — not
+/// against a previously-flown trajectory. What a fixture-diff comparison against the
+/// TypeScript's own flown numbers used to add on top of that was a second aero
+/// integration to agree with, which is `FlightTests`' job and is redundant here: the
+/// laws in `feel()` are what tell you the *mapping* is right, and `FlightTests` is what
+/// tells you the *aero it flies through* is right. Carrying both would be asserting the
+/// same fact about the aero port twice, from two files that cannot independently fail.
+///
+/// `HumanTargeting.swift` — aim-cone selection and the lead-error assist — is the other
+/// half of the human release path and was never covered by this golden (the TypeScript
+/// generator never called it; it has no TypeScript counterpart to have generated one
+/// from). It is exercised in `EngineTests.theAssistLeadsARunningReceiver`, against the
+/// same kind of property this file uses: the assist nudges toward a lead it does not
+/// solve for outright, and declines entirely outside its window.
 enum HumanReleaseTests {
 
-    struct Case: Decodable {
-        let type: String
-        let power: Double
-        let quality: Double
-        let tilt: Double
-        let speed: Double
-        let angle: Double
-        let spin: Double
-        let bank: Double
-        let nose: Double
-    }
-    struct Sweep: Decodable {
-        let type: String
-        let mapping: String
-        let carry: [Double]
-        let drift: [Double]
-        let hang: [Double]
-    }
-    struct TiltProbe: Decodable {
-        let tilt: Double
-        let carry: Double
-        let drift: Double
-    }
-    struct QualityProbe: Decodable {
-        let quality: Double
-        let carry: Double
-        let drift: Double
-    }
-    struct Feel: Decodable {
-        let releaseY: Double
-        let charges: [Double]
-        let sweeps: [Sweep]
-        let tiltProbe: [TiltProbe]
-        let qualityProbe: [QualityProbe]
-    }
-    struct File: Decodable {
-        let note: String
-        let minThrowSpeed: Double
-        let huckHyzer: Double
-        let powers: [Double]
-        let qualities: [Double]
-        let tilts: [Double]
-        let cases: [Case]
-        let feel: Feel
+    // MARK: - the arithmetic, restated independently
+
+    /// `humanReleaseParams`, written from scratch rather than called into. See the file
+    /// header for why every constant here is a literal rather than a shared symbol.
+    enum Model {
+        static func release(_ type: ThrowType, power: Double, quality: Double, tilt: Double)
+            -> HumanRelease
+        {
+            let p = power < 0 ? 0.0 : (power > 1 ? 1.0 : power)
+            let top = throwSpeed(type, 1)
+            let minSpeed = 9.0
+            let hyzer = 0.20
+            let gain = top - minSpeed
+            let speed = minSpeed + (gain > 0 ? gain : 0.0) * p
+            let angle = 0.02 + 0.10 * p
+            let spinRaw = 0.35 + 0.55 * quality
+            let spin = spinRaw < 0.1 ? 0.1 : (spinRaw > 1 ? 1.0 : spinRaw)
+            let bank = tilt * 0.85 + hyzer * p * p * THROW_SPECS[type]!.spinSign
+            let nose = (1 - quality) * 0.08
+            return HumanRelease(speed: speed, angle: angle, spin: spin, bank: bank, nose: nose)
+        }
     }
 
-    /// How far a flown landing point may differ from the reference's, metres.
-    ///
-    /// Wider than the release tolerance by design, and not because the integrator is
-    /// loose. A flight ends on a threshold test — `pos.y > 0.05` — so a difference of one
-    /// ulp near the ground changes the number of steps taken, and one step at landing
-    /// speed is around 0.12 m of travel. Anything this suite is trying to catch is metres
-    /// wide: the regression it exists for is a 20 m swing and a sign flip.
-    static let flightTol = 0.5
+    /// The grid. Each axis includes 0, 1, a negative and an above-range value, so both
+    /// rails of both clamps — power's [0,1], the spin term's [0.1,1] — are hit from
+    /// outside, not merely approached. Unchanged from the generator this suite replaces.
+    static let powers: [Double] = [-1, -0.25, 0, 0.125, 0.25, 0.5, 0.75, 1, 1.75]
+    static let qualities: [Double] = [-1, -0.5, 0, 0.35, 0.5, 1, 1.5]
+    static let tilts: [Double] = [-1.4, -1, 0, 1, 1.4]
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "humanrelease")
+        Check.bitEq(
+            MIN_THROW_SPEED, 9.0,
+            "MIN_THROW_SPEED is 9 m/s — the release speed at zero charge, below every "
+                + "throw spec's own floor on purpose")
+        Check.bitEq(
+            HUCK_HYZER, 0.20,
+            "HUCK_HYZER is 0.20 — the power-squared hyzer that stops a full-charge disc "
+                + "turning over")
 
-        Check.eq(
-            g.cases.count,
-            ThrowType.allCases.count * g.powers.count * g.qualities.count * g.tilts.count,
-            "the grid is the full cross product of type x power x quality x tilt")
-        Check.bitEqViaJSON(MIN_THROW_SPEED, g.minThrowSpeed, "MIN_THROW_SPEED")
-        Check.bitEqViaJSON(HUCK_HYZER, g.huckHyzer, "HUCK_HYZER")
-
-        // A grid that only samples inside the range proves nothing about a clamp. Assert
-        // the fixture straddles both rails of both clamps before trusting what it says.
+        // A grid that only samples inside the range proves nothing about a clamp.
         Check.ok(
-            g.powers.contains(where: { $0 < 0 }) && g.powers.contains(where: { $0 > 1 }),
+            powers.contains(where: { $0 < 0 }) && powers.contains(where: { $0 > 1 }),
             "the power grid runs off both ends of [0,1]")
         Check.ok(
-            g.qualities.contains(where: { 0.35 + 0.55 * $0 < 0.1 })
-                && g.qualities.contains(where: { 0.35 + 0.55 * $0 > 1 }),
+            qualities.contains(where: { 0.35 + 0.55 * $0 < 0.1 })
+                && qualities.contains(where: { 0.35 + 0.55 * $0 > 1 }),
             "the quality grid runs off both ends of the spin clamp")
         Check.ok(
-            g.tilts.contains(where: { $0 < 0 }) && g.tilts.contains(where: { $0 > 0 }),
+            tilts.contains(where: { $0 < 0 }) && tilts.contains(where: { $0 > 0 }),
             "the tilt grid covers both curve directions")
 
         // Every output is built from + - * / min max clamp, all correctly rounded, so a
-        // difference here is a logic bug rather than a libm difference.
-        for c in g.cases {
-            guard let type = ThrowType(rawValue: c.type) else {
-                Check.ok(false, "unknown throw type \(c.type)")
-                continue
+        // difference from the independent model is a logic bug rather than a libm one.
+        for type in ThrowType.allCases {
+            for power in powers {
+                for quality in qualities {
+                    for tilt in tilts {
+                        let r = humanReleaseParams(
+                            type, power: power, quality: quality, tilt: tilt)
+                        let m = Model.release(type, power: power, quality: quality, tilt: tilt)
+                        let at = "\(type.rawValue) p\(power) q\(quality) t\(tilt)"
+                        Check.bitEq(r.speed, m.speed, "\(at) speed")
+                        Check.bitEq(r.angle, m.angle, "\(at) angle")
+                        Check.bitEq(r.spin, m.spin, "\(at) spin")
+                        Check.bitEq(r.bank, m.bank, "\(at) bank")
+                        Check.bitEq(r.nose, m.nose, "\(at) nose")
+                    }
+                }
             }
-            let r = humanReleaseParams(
-                type, power: c.power, quality: c.quality, tilt: c.tilt)
-            let at = "\(c.type) p\(c.power) q\(c.quality) t\(c.tilt)"
-            Check.bitEqViaJSON(r.speed, c.speed, "\(at) speed")
-            Check.bitEqViaJSON(r.angle, c.angle, "\(at) angle")
-            Check.bitEqViaJSON(r.spin, c.spin, "\(at) spin")
-            Check.bitEqViaJSON(r.bank, c.bank, "\(at) bank")
-            Check.bitEqViaJSON(r.nose, c.nose, "\(at) nose")
         }
 
-        flownAgainstReference(g)
-        feel(g)
+        laws()
+        flownFeel()
+    }
+
+    // MARK: - laws the grid's discrete points do not, on their own, state
+
+    /// Properties that hold over the whole domain, not just the grid's sample points —
+    /// stated directly rather than inferred from a finite set of bit-exact matches.
+    private static func laws() {
+        // Power maps monotonically to speed: charging harder never asks for less speed,
+        // for any throw. Swept far outside [0,1] too, because the clamp must hold there.
+        for type in ThrowType.allCases {
+            var prevSpeed = -Double.infinity
+            var power = -0.5
+            while power <= 1.5 + 1e-9 {
+                let speed = humanReleaseParams(type, power: power, quality: 1, tilt: 0).speed
+                Check.ok(
+                    speed >= prevSpeed,
+                    "\(type.rawValue): speed never falls as charge rises (p=\(power), "
+                        + "got \(speed), previous \(prevSpeed))")
+                prevSpeed = speed
+                power += 0.05
+            }
+            // And it stays inside the throw's own band, however power is clamped.
+            let top = throwSpeed(type, 1)
+            Check.near(
+                humanReleaseParams(type, power: 0, quality: 1, tilt: 0).speed, 9.0, 1e-12,
+                "\(type.rawValue): zero charge is the floor")
+            Check.near(
+                humanReleaseParams(type, power: 1, quality: 1, tilt: 0).speed, top, 1e-12,
+                "\(type.rawValue): full charge is the throw's own top speed")
+        }
+
+        // The spin clamp holds continuously in quality, not only at the grid's sample
+        // points — a quality sweep well past both rails must never leave [0.1, 1].
+        var quality = -2.0
+        while quality <= 2.0 + 1e-9 {
+            let spin = humanReleaseParams(.backhand, power: 0.5, quality: quality, tilt: 0).spin
+            Check.inRange(spin, 0.1, 1.0, "quality \(quality): spin stays inside its clamp")
+            quality += 0.1
+        }
+
+        // The speed clamp holds continuously in power too: whatever the caller passes,
+        // the release speed never leaves [MIN_THROW_SPEED, the throw's own top].
+        for type in ThrowType.allCases {
+            let top = throwSpeed(type, 1)
+            var power = -3.0
+            while power <= 4.0 + 1e-9 {
+                let speed = humanReleaseParams(
+                    type, power: power, quality: 1, tilt: 0
+                ).speed
+                Check.inRange(
+                    speed, 9.0, top,
+                    "\(type.rawValue) power \(power): release speed stays inside "
+                        + "[MIN_THROW_SPEED, top]")
+                power += 0.25
+            }
+        }
     }
 
     // MARK: - the two counterfactual mappings
@@ -166,6 +234,9 @@ enum HumanReleaseTests {
 
     /// Where a human release leaves the hand, metres. Matches `Game.humanThrow`.
     static let releaseY = 1.55
+
+    /// Charge levels a sweep flies at, 0 through full in tenths.
+    static let charges: [Double] = stride(from: 0.0, through: 1.0, by: 0.1).map { $0 }
 
     /// Build the release and fly it to the ground, exactly as `Game.humanThrow` does:
     /// `power` is 1 and the release speed is supplied absolutely, because the whole point
@@ -235,48 +306,23 @@ enum HumanReleaseTests {
         return st
     }
 
-    // MARK: - the flights, against the reference's own
-
-    /// The same releases, flown here and flown in TypeScript, compared where they land.
-    ///
-    /// This is what makes the claims below worth anything: an envelope assertion only
-    /// says the Swift sim is plausible, whereas these say it is the SAME sim. Both
-    /// mappings are flown, so the fixture also records what the broken one did.
-    private static func flownAgainstReference(_ g: File) {
-        for sw in g.feel.sweeps {
-            guard let type = ThrowType(rawValue: sw.type) else {
-                Check.ok(false, "unknown throw type \(sw.type)")
-                continue
-            }
-            for (i, p) in g.feel.charges.enumerated() {
-                let f = fly(type, release(sw.mapping, type, power: p, quality: 1, tilt: 0))
-                let at = "\(sw.mapping) \(sw.type) charge \(p)"
-                Check.near(f.carry, sw.carry[i], flightTol, "\(at) carry")
-                Check.near(f.drift, sw.drift[i], flightTol, "\(at) drift")
-                // One step of slack: the flight ends on a threshold, not on a step count.
-                Check.near(f.hang, sw.hang[i], 2 * FIXED_DT, "\(at) hang")
-            }
-        }
-
-        for pr in g.feel.tiltProbe {
-            let f = fly(.backhand, humanReleaseParams(.backhand, power: 0.8, quality: 1, tilt: pr.tilt))
-            Check.near(f.carry, pr.carry, flightTol, "tilt \(pr.tilt) carry")
-            Check.near(f.drift, pr.drift, flightTol, "tilt \(pr.tilt) drift")
-        }
-        for pr in g.feel.qualityProbe {
-            let f = fly(.backhand, humanReleaseParams(.backhand, power: 0.8, quality: pr.quality, tilt: 0))
-            Check.near(f.carry, pr.carry, flightTol, "quality \(pr.quality) carry")
-            Check.near(f.drift, pr.drift, flightTol, "quality \(pr.quality) drift")
-        }
-    }
-
     // MARK: - the claims the mapping makes in prose, asserted as flights
 
-    private static func feel(_ g: File) {
-        let charges = g.feel.charges
-
-        // The speed ramp is only a ramp if the top is above the floor, and the `max(0,…)`
-        // guard is only unreachable while that holds. It holds for all six today.
+    private static func flownFeel() {
+        // The speed ramp is only a ramp if the top is above the floor. The check below —
+        // asserted for all six types — is also the reachability proof for the
+        // `Swift.max(0, top - MIN_THROW_SPEED)` guard in `humanReleaseParams`: when
+        // `top > MIN_THROW_SPEED` holds, `top - MIN_THROW_SPEED` is already positive, so
+        // `Swift.max(0, …)` returns its argument unchanged and the guard is a no-op. It
+        // is a no-op for every type today — push's top is 14 m/s, the lowest of the six,
+        // 5 m/s clear of the 9 m/s floor — so a mutation that deletes the guard computes
+        // the bit-identical speed for every `type` and every `power`, and no assertion
+        // against the current spec table can tell the two formulas apart. That is not
+        // "rare", the way the gauss clamp in `RngTests` is rare; it is mathematically
+        // identical over the whole reachable domain, and stays that way until some throw
+        // spec's top speed drops under 9 m/s. See `swift/mutations.txt`, humanrelease
+        // section, for why that mutation is listed as deliberately omitted rather than
+        // silently absent.
         for type in ThrowType.allCases {
             Check.ok(
                 throwSpeed(type, 1) > MIN_THROW_SPEED,
@@ -416,7 +462,7 @@ enum HumanReleaseTests {
             sloppy.carry < clean.carry,
             "a poor release costs distance (\(sloppy.carry) m vs \(clean.carry) m clean)")
         // It costs it through the nose, which is the mechanism the mapping claims.
-        Check.bitEqViaJSON(
+        Check.bitEq(
             humanReleaseParams(.backhand, power: 0.8, quality: 1, tilt: 0).nose, 0,
             "a clean release has no added nose")
         Check.ok(
