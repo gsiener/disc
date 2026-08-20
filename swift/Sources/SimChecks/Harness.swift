@@ -301,7 +301,7 @@ let allSuites: [Suite] = [
     Suite(name: "simmath", run: SimMathTests.run, minAssertions: 392341),
     Suite(name: "flight", run: FlightTests.run, minAssertions: 3972),
     Suite(name: "throws", run: ThrowsTests.run, minAssertions: 6153),
-    Suite(name: "rules", run: RulesTests.run, minAssertions: 582),
+    Suite(name: "rules", run: RulesTests.run, minAssertions: 935920),
     Suite(name: "move", run: MoveTests.run, minAssertions: 9018),
     Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
     Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
