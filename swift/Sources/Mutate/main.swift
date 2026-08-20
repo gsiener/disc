@@ -98,22 +98,39 @@ func evaluate(_ m: Mutation) -> Outcome {
 ///
 ///     name        | file | find | replace | suite,suite
 ///
-/// Blank lines and `#` comments are ignored. Pipes are the separator because Swift source is
-/// full of commas and colons and nothing else was unambiguous.
+/// Blank lines and `#` comments are ignored. The separator is `" | "` — pipe with a space on
+/// each side — and not a bare `|`: Swift source is full of `||`, and a `find` or `replace`
+/// string containing one silently produced extra fields and was silently dropped rather than
+/// mutated. That happened here, twice, in a real conversion (`probeThrow`'s two `||`
+/// conditions in `DiscRuntime.swift`) — the run reported 13 mutations where the file held 15
+/// and said nothing about the two that vanished. A line the parser cannot make five fields of
+/// is now a hard error rather than a quiet gap, for the same reason `Suite.minAssertions`
+/// fails loudly on a suite that silently stopped asserting.
 func parse(_ text: String) -> [Mutation] {
-    text.components(separatedBy: "\n").compactMap { line in
+    var mutations: [Mutation] = []
+    var bad: [(Int, String)] = []
+    for (i, line) in text.components(separatedBy: "\n").enumerated() {
         let t = line.trimmingCharacters(in: .whitespaces)
-        guard !t.isEmpty, !t.hasPrefix("#") else { return nil }
-        let f = t.components(separatedBy: "|").map {
+        guard !t.isEmpty, !t.hasPrefix("#") else { continue }
+        let f = t.components(separatedBy: " | ").map {
             $0.trimmingCharacters(in: .whitespaces)
         }
-        guard f.count == 5 else { return nil }
-        return Mutation(
+        guard f.count == 5 else {
+            bad.append((i + 1, t))
+            continue
+        }
+        mutations.append(Mutation(
             name: f[0], file: f[1], find: f[2], replace: f[3],
             suites: f[4].components(separatedBy: ",").map {
                 $0.trimmingCharacters(in: .whitespaces)
-            })
+            }))
     }
+    if !bad.isEmpty {
+        print("could not parse \(bad.count) line(s) — not five \" | \"-separated fields:")
+        for (n, t) in bad { print("  line \(n): \(t)") }
+        exit(2)
+    }
+    return mutations
 }
 
 let specPath = CommandLine.arguments.count > 1
