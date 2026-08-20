@@ -367,6 +367,77 @@ jobs:
         working-directory: swift
         run: .build/release/SimTests
 
+  # **The same seed must play the same match in every build configuration**, and no suite
+  # running inside a single build can check that — by construction, the bug is the
+  # difference between two builds.
+  #
+  # This exists because it happened. LLVM's `SimplifyLibCalls` pass fuses a neighbouring
+  # `sin(x)` / `cos(x)` on the same argument into Darwin's `__sincos_stret`, whose sine
+  # differs from `sin` by an ulp; the pass runs at `-O` and not at `-Onone`. One ulp in a
+  # marker's bearing became a different possession by the end of the match, `stoppage` ran
+  # five fewer assertions in debug than release, and the release-only CI above was green
+  # through all of it. `UltimateSim/SinCos.swift` is the fix; this job is what keeps it
+  # fixed, and it would catch the next transform of the same shape without knowing anything
+  # about `sincos`.
+  #
+  # `engine` and `stoppage` are the two suites that simulate whole matches, which is what it
+  # takes to amplify an ulp into an observable difference — the bit-exact component suites
+  # agreed with each other throughout. Running only those two keeps the debug half (~6x
+  # slower than release) to about nine minutes instead of forty.
+  cross-config:
+    name: Debug and release play the same match
+    runs-on: macos-15
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # See `sim-tests` above for why this is here — checkout mtimes defeat the cache.
+      - name: Restore source mtimes from git history
+        run: |
+          set -euo pipefail
+          git ls-files -z swift | while IFS= read -r -d '' f; do
+            touch -t "$(git log -1 --date='format:%Y%m%d%H%M.%S' --format=%cd -- "$f")" "$f"
+          done
+
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: swift/.build
+          key: spm-crossconfig-${{ runner.os }}-${{ hashFiles('swift/Package.swift', 'swift/Sources/**/*.swift') }}
+          restore-keys: |
+            spm-crossconfig-${{ runner.os }}-
+
+      - name: Build both configurations
+        working-directory: swift
+        run: |
+          set -euo pipefail
+          swift build -c debug --product SimTests
+          swift build -c release --product SimTests
+
+      # Compared on the per-suite assertion counts the runner already prints. Those counts are
+      # data-dependent — `stoppage` emits one assertion per timeout that resumed a live
+      # possession — so a match that plays differently reports a different number, which is
+      # precisely the signal wanted.
+      - name: The two configurations agree
+        working-directory: swift
+        run: |
+          set -euo pipefail
+          .build/debug/SimTests   engine stoppage | grep -E '^  (engine|stoppage) ' \
+            | awk '{print $1, $2}' > /tmp/debug.counts
+          .build/release/SimTests engine stoppage | grep -E '^  (engine|stoppage) ' \
+            | awk '{print $1, $2}' > /tmp/release.counts
+          echo "debug:";   cat /tmp/debug.counts
+          echo "release:"; cat /tmp/release.counts
+          if ! diff -u /tmp/debug.counts /tmp/release.counts; then
+            echo
+            echo "Debug and release played different matches from the same seed."
+            echo "See swift/Sources/UltimateSim/SinCos.swift — every sin and cos in the"
+            echo "simulation must go through simSin/simCos, or the optimiser substitutes"
+            echo "a different libm routine in one configuration and not the other."
+            exit 1
+          fi
+
   # The iOS app, built for the simulator so no signing identity is needed.
   # The .xcodeproj is generated from ios/project.yml (see the note there — the
   # pbxproj is deliberately not committed), so xcodegen runs first. The spec

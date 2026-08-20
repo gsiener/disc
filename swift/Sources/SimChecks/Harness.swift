@@ -293,7 +293,7 @@ struct Suite: Sendable {
 /// verified in an isolated worktree — not a round number and not a guess. Update it
 /// deliberately, in the same commit as whatever changed the suite's real coverage.
 let allSuites: [Suite] = [
-    Suite(name: "rng", run: RngTests.run, minAssertions: 1294),
+    Suite(name: "rng", run: RngTests.run, minAssertions: 6042),
     Suite(name: "coeffs", run: CoeffsTests.run, minAssertions: 3790),
     Suite(name: "simmath", run: SimMathTests.run, minAssertions: 7749),
     Suite(name: "flight", run: FlightTests.run, minAssertions: 3972),
@@ -337,7 +337,7 @@ let allSuites: [Suite] = [
     Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
     Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
-    Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4482),
+    Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4477),
     Suite(name: "replay", run: ReplayTests.run, minAssertions: 258),
     // Floor lowered from 35 to 34 for the same reason as `engine` above — issue #56.
     Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 34),

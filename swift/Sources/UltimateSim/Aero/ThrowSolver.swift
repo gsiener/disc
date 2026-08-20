@@ -105,7 +105,7 @@ public enum ThrowSolver {
         _ probe: DiscRuntime, _ req: inout ThrowRequest,
         heading: Double, want: Double, catchY: Double, lofted: Bool
     ) -> (angle: Double, lat: Double, reach: Double, floor: Double) {
-        req.aim = Vec3d(sin(heading), 0, cos(heading))
+        req.aim = Vec3d(simSin(heading), 0, simCos(heading))
         let step = (elevHi - elevLo) / Double(elevScan)
 
         var prevA = elevLo
@@ -245,7 +245,7 @@ public enum ThrowSolver {
         // solve for, and a bare `0.20` here is how this bug family started.
         let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop)
         let lofted = want >= loftRange
-        let windCross = -wind.x * cos(heading0) + wind.z * sin(heading0)
+        let windCross = -wind.x * simCos(heading0) + wind.z * simSin(heading0)
         var bank = 0.0
         var angle = 0.02
         var lat = 0.0
@@ -298,7 +298,7 @@ public enum ThrowSolver {
             // Secant on bank: one extra probe buys the local dLat/dBank.
             req.bank = bank + bankProbe
             req.angle = angle
-            req.aim = Vec3d(sin(heading0), 0, cos(heading0))
+            req.aim = Vec3d(simSin(heading0), 0, simCos(heading0))
             let r2 = probe.probeThrow(req, catchY: catchY, maxT: 6)
             let slope = (r2.lat - lat) / bankProbe
             req.bank = bank
@@ -331,15 +331,15 @@ public enum ThrowSolver {
             // raw `want` — the fixed target's own projection onto `h` — because handing a
             // rotated `h` the unprojected `want` throws PAST the target by construction
             // (measured: 19-22 m past a 25-32 m throw at the `headingMax` corner).
-            let ux0 = sin(heading0)
-            let uz0 = cos(heading0)
+            let ux0 = simSin(heading0)
+            let uz0 = simCos(heading0)
             func worldLat0(_ h: Double) -> (lat0: Double, angle: Double) {
                 req.bank = bank
-                let wantAlongH = want * cos(h - heading0)
+                let wantAlongH = want * simCos(h - heading0)
                 let e2 = solveElevation(
                     probe, &req, heading: h, want: wantAlongH, catchY: catchY, lofted: lofted)
                 req.angle = e2.angle
-                req.aim = Vec3d(sin(h), 0, cos(h))
+                req.aim = Vec3d(simSin(h), 0, simCos(h))
                 let r = probe.probeThrow(req, catchY: catchY, maxT: 6)
                 let dx = r.x - req.from.x
                 let dz = r.z - req.from.z
@@ -367,7 +367,7 @@ public enum ThrowSolver {
 
         req.bank = bank
         req.angle = angle
-        req.aim = Vec3d(sin(heading), 0, cos(heading))
+        req.aim = Vec3d(simSin(heading), 0, simCos(heading))
         return Solution(angle: angle, bank: bank, heading: heading)
     }
 }

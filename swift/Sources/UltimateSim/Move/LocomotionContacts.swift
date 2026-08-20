@@ -119,8 +119,8 @@ extension Locomotion {
                     // the stream position matters: the draw happens here, before the
                     // foul draw in `contactReaction`.
                     let ang = rng.next() * Double.pi * 2
-                    dx = Foundation.cos(ang)
-                    dz = Foundation.sin(ang)
+                    dx = simCos(ang)
+                    dz = simSin(ang)
                     dist = 1e-4
                 }
                 let nx = dx / dist

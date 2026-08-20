@@ -257,8 +257,8 @@ public func accumulateSeparation(
                 // along the same axis — a seeded angle here would be deterministic
                 // too, but not *stable*, and an unstable axis is a shudder.
                 let k = Double((a.id * 31 + b.id) % 16) * (Double.pi / 8)
-                sx = cos(k)
-                sz = sin(k)
+                sx = simCos(k)
+                sz = simSin(k)
                 dist = 1e-4
             }
             let nx = sx / dist, nz = sz / dist

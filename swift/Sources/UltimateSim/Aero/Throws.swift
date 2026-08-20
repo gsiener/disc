@@ -193,8 +193,8 @@ public func throwDisc(
     heading = heading.normalized
 
     let elev = spec.elevation + angle
-    var vdir = heading.scaled(Foundation.cos(elev))
-    vdir.y += Foundation.sin(elev)
+    var vdir = heading.scaled(simCos(elev))
+    vdir.y += simSin(elev)
     vdir = vdir.normalized
 
     // Release frame. `right` is the thrower's right looking down the aim.
@@ -211,11 +211,11 @@ public func throwDisc(
     // velocity; on an overhead the wrist sets the plane against the ground.
     var normal: Vec3d
     if spec.planeRef == .world {
-        normal = Vec3d(0, 1, 0).scaled(Foundation.cos(nose))
-            .addingScaled(heading, -Foundation.sin(nose))
+        normal = Vec3d(0, 1, 0).scaled(simCos(nose))
+            .addingScaled(heading, -simSin(nose))
     } else {
-        normal = upPerp.scaled(Foundation.cos(nose))
-            .addingScaled(vdir, -Foundation.sin(nose))
+        normal = upPerp.scaled(simCos(nose))
+            .addingScaled(vdir, -simSin(nose))
     }
     // Turning the disc over is literally that: the same plane, other face up.
     if spec.invert { normal = -normal }

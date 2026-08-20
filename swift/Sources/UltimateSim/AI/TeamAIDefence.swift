@@ -309,8 +309,8 @@ extension TeamAI {
                     // marker spirals in rather than orbiting out.
                     let step = clamp(dBear, -0.65, 0.65)
                     let r = Playbook.PLAY.markDistance
-                    tx = thrower.pos.x + Foundation.cos(bearNow + step) * r
-                    tz = thrower.pos.z + Foundation.sin(bearNow + step) * r
+                    tx = thrower.pos.x + simCos(bearNow + step) * r
+                    tz = thrower.pos.z + simSin(bearNow + step) * r
                 }
                 // Respect disc space: back out rather than crowd the thrower. The check
                 // anticipates a step of travel so momentum cannot carry the marker inside
@@ -325,8 +325,8 @@ extension TeamAI {
                     // is already on, so a marker who arrives open-side is pinned there for
                     // the whole stall.
                     let bail = bearNow + clamp(dBear, -0.55, 0.55)
-                    tx = thrower.pos.x + Foundation.cos(bail) * (Playbook.PLAY.discSpace + 1.75)
-                    tz = thrower.pos.z + Foundation.sin(bail) * (Playbook.PLAY.discSpace + 1.75)
+                    tx = thrower.pos.x + simCos(bail) * (Playbook.PLAY.discSpace + 1.75)
+                    tz = thrower.pos.z + simSin(bail) * (Playbook.PLAY.discSpace + 1.75)
                 }
                 // Closing effort tapers so the mark settles at range instead of barrelling
                 // through the thrower; backing out of disc space is done at full effort and
