@@ -299,12 +299,16 @@ jobs:
   sim-tests:
     name: Swift differential suite (SimTests)
     runs-on: macos-15
-    # Not on `pull_request`: at ~5m45s this was the second-largest piece of the wall clock a
-    # push waits on, and unlike `syntax-gate` / `ios-build` it cannot be made to run faster —
-    # the 2.2M assertions are the point. It still runs on every push to `main` (nothing merges
-    # unverified) and nightly on the schedule above, so a regression is caught within a day
-    # even on a run of PR-only pushes.
-    if: github.event_name != 'pull_request'
+    # **This runs on pull requests, and the note that used to sit here explaining why it did
+    # not was wrong.** It said the suite still runs on every push to `main`, so "nothing
+    # merges unverified" — but a push to `main` *is* the merge. Verification landed strictly
+    # after the fact, and a red result meant reverting rather than not merging.
+    #
+    # What that cost, measured on the pull request that fixed #59: it changed thirteen Swift
+    # files, added a fourteenth and rewrote a check suite, and merged on five green checks —
+    # four of which were TypeScript jobs (`syntax-gate`, `typecheck`, and both golden
+    # freshness gates) testing the reference that #58 is deleting. Not one Swift assertion
+    # ran. The ~5m45s this saves is not worth a merge gate that cannot see the product.
     # Generous: release-mode build plus ~2.2M assertions.
     timeout-minutes: 30
     steps:
@@ -384,10 +388,12 @@ jobs:
   # takes to amplify an ulp into an observable difference — the bit-exact component suites
   # agreed with each other throughout. Running only those two keeps the debug half (~6x
   # slower than release) to about nine minutes instead of forty.
+  # Runs on pull requests for the same reason `sim-tests` does, and with one of its own: the
+  # pull request most likely to reintroduce this is the one that adds a `sin` or a `cos`, and
+  # a gate that only fires after the merge tells you about it in a revert rather than a review.
   cross-config:
     name: Debug and release play the same match
     runs-on: macos-15
-    if: github.event_name != 'pull_request'
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
