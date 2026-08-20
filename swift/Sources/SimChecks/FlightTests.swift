@@ -1,162 +1,34 @@
 import Foundation
 import UltimateSim
 
-/// Integrated trajectories against `src/sim/DiscPhysics.ts`.
+/// Integrated disc flight, against the physics it is claimed to obey.
 ///
-/// **This is the first suite that cannot be bit-exact, and the tolerance is shaped to
-/// say so honestly.** A trajectory runs the aero coefficients through RK4 hundreds of
-/// times, and those call `sin`, `cos`, `atan2`, `exp` and `tanh` — none specified to the
-/// last ulp by any libm. A single ulp at release compounds. So the tolerance **widens
-/// with horizon**: tight in the first second, looser by the sixth. A flat epsilon would
-/// be either too loose at release to catch a real bug, or failing late for reasons that
-/// are not bugs.
+/// **This was the first suite that could not be bit-exact, and now it is the first family
+/// stated entirely as law rather than as record.** A trajectory runs the aero coefficients
+/// through RK4 hundreds of times, calling `sin`, `cos`, `atan2`, `exp` and `tanh` — none
+/// specified to the last ulp by any libm — so a recorded trajectory could only ever be
+/// matched to a widening tolerance, tight at release and loose by the sixth second. That
+/// tolerance was already a confession: the suite's own header used to say the physical
+/// assertions below "matter more" than the comparison sitting beside them, "and if they
+/// ever disagree with the fixtures, believe them." Believing them exclusively is this suite,
+/// unchanged in method, just no longer keeping a fixture around to defer to.
 ///
-/// The suite reports the worst deviation it actually saw, so the tolerance stays a
-/// measured margin rather than a number chosen to make the test pass.
-///
-/// Physical assertions sit alongside the goldens and matter more than they do. They
-/// would survive a deliberate retune of the coefficients, and they encode what the
-/// flight model *means* — if they ever disagree with the fixtures, believe them.
+/// None of what follows is a `Model` in the sense the other converted suites use one — RK4
+/// over a canonical set of aerodynamic forces has no second, differently-shaped statement of
+/// itself worth writing, and reimplementing it a second time would risk the exact
+/// transcription bug that pattern exists to avoid. What a flight *has* instead is physics:
+/// energy that only falls in still air, a curve that bends opposite ways under opposite
+/// bank, a carry that does not depend on the caller's frame rate, a result unmoved by a
+/// mirror in the plane the model has no reason to prefer a side of.
 enum FlightTests {
 
-    struct Sample: Decodable {
-        let t: Double
-        let pos: [Double]
-        let vel: [Double]
-        let orient: [Double]
-        let omega: [Double]
-        let alpha: Double
-        let airspeed: Double
-        let spin: Double
-        let atRest: Bool
-        let touchedGround: Bool
-    }
-    struct Initial: Decodable {
-        let pos: [Double]
-        let vel: [Double]
-        let nose: Double
-        let bank: Double
-        let invert: Bool
-        let spin: Double
-        let orient: [Double]
-    }
-    struct Case: Decodable {
-        let name: String
-        let note: String
-        let initial: Initial?
-        let seconds: Double
-        let samples: [Sample]
-
-        enum CodingKeys: String, CodingKey {
-            case name, note, seconds, samples
-            case initial = "init"
-        }
-    }
-    struct File: Decodable {
-        let note: String
-        let fixedDt: Double
-        let cases: [Case]
-    }
-
-    /// Where the widening below stops. Issue #20 found the same shape in
-    /// `DiscRuntimeTests`, uncapped: `1e-9 * pow(10, t/2)` reaches a planet-sized budget
-    /// by t=60s, silently stopping the assertion from checking anything. No real fixture
-    /// here asks for it — the longest flight in `flight.json` is t≈7.0s — but the formula
-    /// itself had no ceiling, so a future long-flight case would have gotten a tolerance
-    /// too loose to mean anything rather than a clear failure.
-    private static let toleranceHorizon = 10.0
-
-    /// Position tolerance in metres at elapsed time `t`.
-    ///
-    /// About a nanometre at release, a micrometre by six seconds. Both are far below
-    /// anything the game could perceive — a disc is 273 mm across — while still being
-    /// tight enough that a wrong coefficient or a transposed term fails immediately.
-    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
-
-    /// Velocity drifts a little faster than position, since position is its integral and
-    /// integration smooths.
-    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "flight")
-        Check.near(g.fixedDt, 1.0 / 120.0, 1e-18, "fixture stepped at the engine's fixed dt")
-        Check.eq(g.cases.count, 5, "flight goldens cover five scenarios")
-
-        for c in g.cases {
-            replay(c)
-        }
-
+        Check.near(FIXED_DT, 1.0 / 120.0, 1e-18, "the engine's fixed dt is what it has always been")
         physicalProperties()
+        symmetryAndDeterminism()
     }
 
-    /// Re-run a scenario in Swift from the same release state and compare sample by sample.
-    private static func replay(_ c: Case) {
-        guard let start = c.initial else {
-            Check.ok(false, "\(c.name) has no initial state")
-            return
-        }
-
-        var s = DiscState()
-        s.pos = Vec3d(start.pos[0], start.pos[1], start.pos[2])
-        s.vel = Vec3d(start.vel[0], start.vel[1], start.vel[2])
-        s.omega = Vec3d(0, 0, start.spin)
-        // Taken from the fixture rather than rebuilt here. Rebuilding it would need
-        // `makeBasis` and `setFromRotationMatrix`, which are not ported yet — and more to
-        // the point, a release frame rebuilt by the test could be wrong in exactly the
-        // same way as the code under test and agree with it for the wrong reason.
-        s.orient = Quatd(start.orient[0], start.orient[1], start.orient[2], start.orient[3])
-
-        var sampleIndex = 0
-        let stepsTotal = Int((c.seconds * 120).rounded())
-
-        // Sample zero is the release state, before any integration.
-        compare(s, c.samples[0], c.name, 0)
-        sampleIndex = 1
-
-        for i in 0..<stepsTotal {
-            s.step(dt: FIXED_DT)
-            if (i + 1) % 6 == 0 {
-                if sampleIndex < c.samples.count {
-                    compare(s, c.samples[sampleIndex], c.name, sampleIndex)
-                    sampleIndex += 1
-                }
-            }
-        }
-
-        Check.eq(sampleIndex, c.samples.count, "\(c.name) consumed every sample")
-    }
-
-    private static func compare(_ s: DiscState, _ want: Sample, _ name: String, _ i: Int) {
-        let t = want.t
-        let pTol = posTol(t)
-        let vTol = velTol(t)
-
-        let dp = [s.pos.x - want.pos[0], s.pos.y - want.pos[1], s.pos.z - want.pos[2]]
-        for (axis, d) in zip(["x", "y", "z"], dp) {
-            Check.ok(
-                abs(d) <= pTol,
-                "\(name) sample \(i) (t=\(t)) pos.\(axis) — off by \(d), tolerance \(pTol)")
-        }
-
-        Check.ok(
-            abs(s.vel.x - want.vel[0]) <= vTol && abs(s.vel.y - want.vel[1]) <= vTol
-                && abs(s.vel.z - want.vel[2]) <= vTol,
-            "\(name) sample \(i) (t=\(t)) velocity within \(vTol)")
-
-        // The quaternion can carry an overall sign flip and represent the same rotation,
-        // so compare the rotation, not the components.
-        let q = s.orient
-        let dotAbs = abs(q.x * want.orient[0] + q.y * want.orient[1]
-            + q.z * want.orient[2] + q.w * want.orient[3])
-        Check.ok(
-            dotAbs >= 1 - 1e-6 * pow(10.0, t / 2.0),
-            "\(name) sample \(i) (t=\(t)) orientation aligned — |dot| \(dotAbs)")
-
-        Check.eq(s.atRest, want.atRest, "\(name) sample \(i) atRest")
-        Check.eq(s.touchedGround, want.touchedGround, "\(name) sample \(i) touchedGround")
-    }
-
-    /// What the flight model means, independent of what the reference happens to compute.
     private static func physicalProperties() {
         let aero = AeroCoeffs.standard
         let body = DiscBody.standard
@@ -234,6 +106,82 @@ enum FlightTests {
         for _ in 0..<4 { coarse.step(dt: 0.25) }
         Check.near(fine.pos.x, coarse.pos.x, 1e-9, "a coarse dt sub-steps to the same place")
         Check.near(fine.pos.y, coarse.pos.y, 1e-9, "sub-stepping matches in y")
+    }
+
+    /// What the fixture's five recorded scenarios used to stand in for: that flying twice
+    /// from the same state gives the same answer, and that the model has no reason to
+    /// prefer one side of the plane it flies through.
+    private static func symmetryAndDeterminism() {
+        // Determinism. `DiscState.step` reads no global mutable state — two identical
+        // releases run in lock-step must land on the same bit, every step, not just at
+        // the end, or a divergence mid-flight could cancel out by the time anyone looked.
+        var a = release(speed: 21, nose: 0.03, bank: 0.15, invert: false, spin: -54, height: 1.6)
+        var b = a
+        for _ in 0..<(120 * 4) {
+            a.step(dt: FIXED_DT)
+            b.step(dt: FIXED_DT)
+            Check.bitEq(a.pos.x, b.pos.x, "two identical releases stay bit-identical in x")
+            Check.bitEq(a.pos.y, b.pos.y, "and in y")
+            Check.bitEq(a.pos.z, b.pos.z, "and in z")
+        }
+
+        // Mirror symmetry, kept deliberately simple: no spin and no bank, so there is no
+        // chirality anywhere in the state for a reflection to disagree with. A disc thrown
+        // flat with a sideways velocity component +vz must fly the exact mirror of one
+        // thrown identically with -vz — nothing in drag, lift or gravity has an opinion
+        // about which side of the x-axis the disc is aimed toward. A sign error confined
+        // to one axis of the force assembly would pass every straight-line check above,
+        // where the flight never leaves the x-y plane, and fail only here.
+        func flatRelease(vz: Double) -> DiscState {
+            var s = DiscState()
+            s.pos = Vec3d(0, 1.6, 0)
+            s.vel = Vec3d(20, 0, vz)
+            s.omega = .zero
+            // Face flush into the direction of travel, wings level — the orientation a
+            // flat, unspun disc would need for the velocity to be doing all the work.
+            let vdir = s.vel.normalized
+            let up = Vec3d(0, 1, 0)
+            let right = vdir.cross(up).normalized
+            let normal = right.cross(vdir).normalized
+            s.orient = quatFromBasis(vdir, right, normal)
+            return s
+        }
+        var plain = flatRelease(vz: 3)
+        var mirrored = flatRelease(vz: -3)
+        var worstMirrorGap = 0.0
+        for _ in 0..<(120 * 3) {
+            plain.step(dt: FIXED_DT)
+            mirrored.step(dt: FIXED_DT)
+            worstMirrorGap = Swift.max(worstMirrorGap, abs(plain.pos.x - mirrored.pos.x))
+            worstMirrorGap = Swift.max(worstMirrorGap, abs(plain.pos.y - mirrored.pos.y))
+            worstMirrorGap = Swift.max(worstMirrorGap, abs(plain.pos.z + mirrored.pos.z))
+        }
+        Check.ok(
+            worstMirrorGap < 1e-6,
+            "a flat, unspun release mirrored in vz flies the mirror of the original — "
+                + "worst gap \(worstMirrorGap) m over 3 s")
+
+        // Carry increases with launch speed. Not a specific number — that is the 37 m
+        // assertion above's job — just that the model does not have a dead zone or a
+        // reversal somewhere in the speed range a real throw uses.
+        var lastCarry = 0.0
+        for speed in [12.0, 16.0, 20.0, 24.0] {
+            var s = release(speed: speed, nose: 0.05, bank: 0, invert: false, spin: -52, height: 1.6)
+            for _ in 0..<(120 * 6) where !s.atRest { s.step(dt: FIXED_DT) }
+            let carry = Foundation.hypot(s.pos.x, s.pos.z)
+            Check.ok(
+                carry > lastCarry,
+                "carry increases with launch speed: \(speed) m/s -> \(carry) m, "
+                    + "previous \(lastCarry) m")
+            lastCarry = carry
+        }
+
+        // A disc released near the ground comes to rest near the ground, not somewhere
+        // its potential energy would suggest a bounce.
+        var low = release(speed: 10, nose: 0.05, bank: 0, invert: false, spin: -40, height: 0.3)
+        for _ in 0..<(120 * 8) where !low.atRest { low.step(dt: FIXED_DT) }
+        Check.ok(low.atRest, "a disc released low comes to rest")
+        Check.inRange(low.pos.y, -0.01, 0.2, "and finishes at ground level, not airborne or buried")
     }
 
     /// Build a release state the way the fixture generator does.

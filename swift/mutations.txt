@@ -44,3 +44,8 @@ catchband: solveRelease catchY floor removed | swift/Sources/UltimateSim/Aero/Th
 catchband: solveRelease catchY ceiling removed | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop) | let catchY = Swift.max(catchY0, CatchDecision.standingFloor) | catchband
 catchband: catchDrop 0.25 -> 0.35 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let catchDrop = 0.25 | public static let catchDrop = 0.35 | catchband
 catchband: CATCH_FLOOR eroded 0.85 -> 0.30 | swift/Sources/UltimateSim/AI/AIMath.swift | public let CATCH_FLOOR = 0.85 | public let CATCH_FLOOR = 0.30 | catchband
+flight: gravity g dropped from force | swift/Sources/UltimateSim/DiscPhysics.swift | var fx = 0.0, fy = -b.mass * c.g, fz = 0.0 | var fx = 0.0, fy = 0.0, fz = 0.0 | flight
+flight: gravity halved | swift/Sources/UltimateSim/DiscPhysics.swift | var fx = 0.0, fy = -b.mass * c.g, fz = 0.0 | var fx = 0.0, fy = -b.mass * c.g * 0.5, fz = 0.0 | flight
+flight: lift sign flipped | swift/Sources/UltimateSim/DiscPhysics.swift | lift = qdyn * CL | lift = -qdyn * CL | flight
+flight: drag halved | swift/Sources/UltimateSim/DiscPhysics.swift | drag = qdyn * CD | drag = qdyn * CD * 0.5 | flight
+flight: dynamic pressure drops velocity-squared term | swift/Sources/UltimateSim/DiscPhysics.swift | let qdyn = 0.5 * c.rho * V * V * b.area | let qdyn = 0.5 * c.rho * V * b.area | flight
