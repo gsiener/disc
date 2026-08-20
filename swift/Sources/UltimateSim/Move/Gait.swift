@@ -87,8 +87,8 @@ public func advanceGait(
     let dz = velZ * inv
 
     // Right-hand vector for the current facing (yaw 0 = +Z, +yaw toward +X).
-    let fx = sin(p.facing)
-    let fz = cos(p.facing)
+    let fx = simSin(p.facing)
+    let fz = simCos(p.facing)
     let rx = -fz
     let rz = fx
 

@@ -238,9 +238,9 @@ public struct Quatd: Equatable, Sendable {
 
         if dot < 0.9995 {
             let theta = Foundation.acos(dot)
-            let sin = Foundation.sin(theta)
-            s = Foundation.sin(s * theta) / sin
-            t = Foundation.sin(t * theta) / sin
+            let sin = simSin(theta)
+            s = simSin(s * theta) / sin
+            t = simSin(t * theta) / sin
             return Quatd(
                 self.x * s + x * t,
                 self.y * s + y * t,
@@ -263,7 +263,7 @@ public struct Quatd: Equatable, Sendable {
     public static func fromAxisAngle(_ axis: Vec3d, _ angle: Double) -> Quatd {
         // three.js Quaternion.setFromAxisAngle — assumes `axis` is already unit.
         let half = angle / 2
-        let s = Foundation.sin(half)
-        return Quatd(axis.x * s, axis.y * s, axis.z * s, Foundation.cos(half))
+        let s = simSin(half)
+        return Quatd(axis.x * s, axis.y * s, axis.z * s, simCos(half))
     }
 }

@@ -184,7 +184,7 @@ extension Engine {
         let req = ThrowRequest(
             type: type,
             from: from,
-            aim: Vec3d(sin(yaw), 0, cos(yaw)),
+            aim: Vec3d(simSin(yaw), 0, simCos(yaw)),
             // `power: 1` because the release below is fully specified: `speed` overrides
             // it, and the remaining terms come from the mapping rather than the table.
             power: 1,

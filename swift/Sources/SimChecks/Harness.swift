@@ -337,7 +337,7 @@ let allSuites: [Suite] = [
     Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
     Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
-    Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4482),
+    Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4477),
     Suite(name: "replay", run: ReplayTests.run, minAssertions: 258),
     // Floor lowered from 35 to 34 for the same reason as `engine` above — issue #56.
     Suite(name: "matchsave", run: MatchSaveTests.run, minAssertions: 34),

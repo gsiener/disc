@@ -1163,7 +1163,7 @@ public struct Playbook: Sendable {
         let speed = rng.range(windySpeed.min, windySpeed.max)
         let bearing = rng.range(-Double.pi, Double.pi)
         return Weather(
-            wind: Vec2d(cos(bearing) * speed, sin(bearing) * speed), speed: speed, windy: true)
+            wind: Vec2d(simCos(bearing) * speed, simSin(bearing) * speed), speed: speed, windy: true)
     }
 
     // MARK: timeouts

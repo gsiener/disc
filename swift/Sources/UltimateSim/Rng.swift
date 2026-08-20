@@ -77,7 +77,7 @@ public final class Rng {
     /// must stay, or a draw of exactly 0 returns infinity.
     public func gauss() -> Double {
         let u = Swift.max(1e-7, next())
-        return (-2 * Foundation.log(u)).squareRoot() * Foundation.cos(2 * Double.pi * next())
+        return (-2 * Foundation.log(u)).squareRoot() * simCos(2 * Double.pi * next())
     }
 
     /// A child generator derived from this one's current state, without disturbing it.

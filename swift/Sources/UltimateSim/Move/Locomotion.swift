@@ -377,8 +377,8 @@ public final class Locomotion {
             // Two separate `cos(ang / 2)` calls in the reference, multiplied together
             // rather than squared. Same value, and kept as two calls on purpose.
             v0 =
-                s * Swift.max(0, Foundation.cos(ang / 2))
-                * Swift.max(0, Foundation.cos(ang / 2))
+                s * Swift.max(0, simCos(ang / 2))
+                * Swift.max(0, simCos(ang / 2))
             if ang > Locomotion.CUT_ANGLE { extra = cap.plantDur }
         }
 
@@ -987,8 +987,8 @@ public final class Locomotion {
         if m != .auto { return m }
         if dx == 0 && dz == 0 { return .run }
 
-        var fxv = Foundation.sin(p.facing)
-        var fzv = Foundation.cos(p.facing)
+        var fxv = simSin(p.facing)
+        var fzv = simCos(p.facing)
         if let f = desired.face {
             let l = Foundation.hypot(f.x, f.z)
             if l > 1e-5 {
@@ -1077,7 +1077,7 @@ public final class Locomotion {
         // The plant itself costs energy on top of the geometric speed scrub.
         let agi = clamp01(p.attr.agility / 100)
         let loss =
-            Locomotion.CUT_LOSS_BASE * (1 - 0.45 * agi) * (1 - Foundation.cos(p.cutAngle)) * 0.5
+            Locomotion.CUT_LOSS_BASE * (1 - 0.45 * agi) * (1 - simCos(p.cutAngle)) * 0.5
         let k = Swift.max(0, 1 - loss)
         p.vel.x *= k
         p.vel.z *= k
@@ -1100,8 +1100,8 @@ public final class Locomotion {
                 dx = p.vel.x / speed
                 dz = p.vel.z / speed
             } else {
-                dx = Foundation.sin(p.facing)
-                dz = Foundation.cos(p.facing)
+                dx = simSin(p.facing)
+                dz = simCos(p.facing)
             }
         }
         // ALIAS SITE, as in `startCut`.
@@ -1125,8 +1125,8 @@ public final class Locomotion {
                 dx /= l
                 dz /= l
             } else {
-                dx = Foundation.sin(p.facing)
-                dz = Foundation.cos(p.facing)
+                dx = simSin(p.facing)
+                dz = simCos(p.facing)
             }
             p.vel.x += dx * push
             p.vel.z += dz * push

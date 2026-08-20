@@ -953,8 +953,8 @@ public final class Engine {
         guard let lp = loco.get(p.id) else { return Vec3d(p.pos.x, 1.25, p.pos.z) }
         let right: Double = p.handed == .left ? -1 : 1
         let f = lp.facing
-        let fx = sin(f)
-        let fz = cos(f)
+        let fx = simSin(f)
+        let fz = simCos(f)
         return Vec3d(
             lp.pos.x + fz * right * 0.34 + fx * 0.16,
             lp.groundY + lp.hipHeight * 1.10,
@@ -1034,7 +1034,7 @@ public final class Engine {
         var req = ThrowRequest(
             type: type,
             from: from,
-            aim: Vec3d(sin(atan2(tx, tz)), 0, cos(atan2(tx, tz))),
+            aim: Vec3d(simSin(atan2(tx, tz)), 0, simCos(atan2(tx, tz))),
             power: power,
             angle: 0.02,
             spin: spin,

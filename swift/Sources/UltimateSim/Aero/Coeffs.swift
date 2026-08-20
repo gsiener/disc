@@ -189,7 +189,7 @@ extension AeroCoeffs {
         // The `s > 0` guard is kept from the reference rather than folded into the
         // blend. It is not an optimisation: it keeps the attached branch free of a
         // multiply by zero, which is how a signed zero would otherwise appear here.
-        if s > 0 { cl = attached * (1 - s) + CLplate * sin(2 * alpha) * s }
+        if s > 0 { cl = attached * (1 - s) + CLplate * simSin(2 * alpha) * s }
         let r = reverseBlend(alpha)
         return r > 0 ? cl * (1 - r * (1 - revLift)) : cl
     }
@@ -201,7 +201,7 @@ extension AeroCoeffs {
         let attached = CD0 + CDa * d * d
         var cd = attached
         if s > 0 {
-            let sa = sin(alpha)
+            let sa = simSin(alpha)
             cd = attached * (1 - s) + (CD0 + CDplate * sa * sa) * s
         }
         let r = reverseBlend(alpha)
