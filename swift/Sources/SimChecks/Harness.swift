@@ -305,7 +305,7 @@ let allSuites: [Suite] = [
     Suite(name: "move", run: MoveTests.run, minAssertions: 9018),
     Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
     Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
-    Suite(name: "aimath", run: AIMathTests.run, minAssertions: 2180),
+    Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9934),
     Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 14154),
     // Lowered from 476751 deliberately: `TeamAITests.structural` now runs on frame zero

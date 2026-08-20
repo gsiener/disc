@@ -668,7 +668,7 @@ enum TeamAITests {
             // `a[3]` is the reference's `extend`, deliberately unread. It is write-only in
             // `src/sim/AI.ts` too — nothing there consumes it either — so the port no longer
             // carries it on `.bid`. What it holds is `layoutExtend(p)` for the bidding
-            // player, which `AIMathTests` already pins bit for bit against `aimath.json`.
+            // player, which `AIMathTests` already pins against its specification.
         case .jump(let height):
             approx(height, dbl(a[1]), "\(tag) jump height")
         case .stall(let count):
