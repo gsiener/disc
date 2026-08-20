@@ -1,0 +1,33 @@
+# Mutations, one per line:  name | file | find | replace | suites
+#
+# `find` is an exact string, not a pattern. A pattern that matches nothing reports a
+# survivor, and a survivor that is really a typo sends you hunting for a gap that is not
+# there — so a mutation that does not apply is an error, not a pass.
+#
+# Add a family's mutations in the same commit as the suite meant to catch them.
+
+# --- rng
+rng: shift width 11 -> 12 | swift/Sources/UltimateSim/Rng.swift | t ^= t &<< 11 | t ^= t &<< 12 | rng
+rng: warm-up 16 -> 15 | swift/Sources/UltimateSim/Rng.swift | for _ in 0..<16 { _ = next() } | for _ in 0..<15 { _ = next() } | rng
+rng: gauss clamp removed | swift/Sources/UltimateSim/Rng.swift | let u = Swift.max(1e-7, next()) | let u = next() | rng
+rng: int loses the top end | swift/Sources/UltimateSim/Rng.swift | Double(hi + 1) | Double(hi) | rng
+
+# --- simmath
+simmath: cross x-component sign | swift/Sources/UltimateSim/SimMath.swift | y * v.z - z * v.y | z * v.y - y * v.z | simmath
+simmath: dot drops the y term | swift/Sources/UltimateSim/SimMath.swift | x * v.x + y * v.y + z * v.z | x * v.x + z * v.z | simmath
+
+# --- aimath / constants
+constants: CATCH_DEAD 0.25 -> 0.30 | swift/Sources/UltimateSim/AI/AIMath.swift | public let CATCH_DEAD = 0.25 | public let CATCH_DEAD = 0.30 | constants
+aimath: energy weight in maxSpeed | swift/Sources/UltimateSim/AI/AIMath.swift | baseMaxSpeed(p.attr) * (0.80 + 0.20 * p.energy) | baseMaxSpeed(p.attr) * (0.75 + 0.25 * p.energy) | aimath
+
+# --- coeffs
+coeffs: CL0 0.15 -> 0.16 | swift/Sources/UltimateSim/Aero/Coeffs.swift | CL0: 0.15, | CL0: 0.16, | coeffs
+coeffs: alpha0 -0.07 -> -0.06 | swift/Sources/UltimateSim/Aero/Coeffs.swift | alpha0: -0.07, | alpha0: -0.06, | coeffs
+coeffs: stall width 0.35 -> 0.40 | swift/Sources/UltimateSim/Aero/Coeffs.swift | aStallWidth: 0.35, | aStallWidth: 0.40, | coeffs
+coeffs: flat-plate lift sin(2a) -> sin(a) | swift/Sources/UltimateSim/Aero/Coeffs.swift | CLplate * simSin(2 * alpha) | CLplate * simSin(alpha) | coeffs
+
+# --- rules
+rules: stallMax 10 -> 9 | swift/Sources/UltimateSim/Rules.swift | stallMax: 10, | stallMax: 9, | rules
+rules: stallInterval 1 -> 0.9 | swift/Sources/UltimateSim/Rules.swift | stallInterval: 1, | stallInterval: 0.9, | rules
+rules: markerRange 3 -> 4 | swift/Sources/UltimateSim/Rules.swift | markerRange: 3, | markerRange: 4, | rules
+rules: stallResumeCap 9 -> 8 | swift/Sources/UltimateSim/Rules.swift | stallResumeCap: 9, | stallResumeCap: 8, | rules

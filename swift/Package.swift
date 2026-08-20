@@ -59,6 +59,12 @@ let package = Package(
         // rather than parsing it, for the reasons its own headers give.
         .executableTarget(name: "SourceChecks"),
 
+        // Deliberately breaks the simulation and checks something notices. A suite written
+        // against passing code proves nothing; the evidence it is load-bearing is that it
+        // fails when the thing it describes is broken. Issue #58's coverage argument rests
+        // on this, so it is a committed tool rather than a shell script somebody retypes.
+        .executableTarget(name: "Mutate"),
+
         // The flight view, shared by the iOS app and the macOS window so there is one
         // implementation and not two that drift. `FlightUI` imports SwiftUI but nothing
         // platform-specific; `UltimateSim` stays clean of both.
