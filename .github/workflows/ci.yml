@@ -82,6 +82,61 @@ jobs:
       - name: Reachability — every public UltimateSim func has a caller outside SimChecks
         run: npm run reference:reachability
 
+  # **The layering `Package.swift` describes, as an assertion.**
+  #
+  # `Package.swift` says `UltimateSim` "imports nothing from Metal, RealityKit, SwiftUI or
+  # UIKit, and it never will", and that `ProbeContract` "must not import SwiftUI, RealityKit,
+  # UIKit, or UltimateSim". Both were prose, and prose does not fail. `tools/test-imports.ts`
+  # exists because the same sentence about the TypeScript reference went unenforced for 68
+  # commits while a render dependency crept in behind an import — that job dies with #58, and
+  # this is the half of it that should outlive the reference, because it guards the product.
+  #
+  # An allowlist rather than a denylist. A denylist only catches the frameworks somebody
+  # thought to name; the whole failure is a dependency nobody predicted. Widening the list is
+  # a deliberate edit in a reviewable diff, which is exactly the conversation worth having.
+  #
+  # ubuntu-latest and no toolchain: this is grep over ~30k lines, so it returns in seconds and
+  # costs nothing next to the macOS jobs below.
+  layering:
+    name: Target layering (imports)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: UltimateSim depends on nothing but the standard library
+        run: |
+          set -euo pipefail
+          bad=$(grep -rhoE '^import [A-Za-z_]+' swift/Sources/UltimateSim/ \
+                | sort -u | grep -vxE 'import (Foundation)' || true)
+          if [ -n "$bad" ]; then
+            echo "UltimateSim imports something outside its allowlist:"
+            echo "$bad"
+            echo
+            echo "The simulation is a plain library with no platform dependency: the renderer"
+            echo "depends on it, it never depends on the renderer. That is what keeps a"
+            echo "renderer swap cheap. If this dependency is genuinely wanted, widen the"
+            echo "allowlist in this job in the same commit and say why."
+            exit 1
+          fi
+          echo "UltimateSim: Foundation only."
+
+      - name: ProbeContract stays dependency-free
+        run: |
+          set -euo pipefail
+          bad=$(grep -rhoE '^import [A-Za-z_]+' swift/Sources/ProbeContract/ \
+                | sort -u | grep -vxE 'import (Foundation|CoreGraphics)' || true)
+          if [ -n "$bad" ]; then
+            echo "ProbeContract imports something outside its allowlist:"
+            echo "$bad"
+            echo
+            echo "It is the launch and probe contract shared by both sides of the process"
+            echo "boundary (issue #21); importing UltimateSim or a UI framework would make it"
+            echo "a dependency rather than a contract."
+            exit 1
+          fi
+          echo "ProbeContract: Foundation and CoreGraphics only."
+
   # `tsc --noEmit` over the whole tree. Clean at the time of writing, and nothing ran it
   # (#15) — so a type error could reach `main` and only be found by whoever next typed the
   # command locally.
