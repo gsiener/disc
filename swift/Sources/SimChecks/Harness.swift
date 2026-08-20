@@ -300,7 +300,11 @@ let allSuites: [Suite] = [
     // model — see SimMathTests.swift's header.
     Suite(name: "simmath", run: SimMathTests.run, minAssertions: 392341),
     Suite(name: "flight", run: FlightTests.run, minAssertions: 3972),
-    Suite(name: "throws", run: ThrowsTests.run, minAssertions: 6153),
+    // Issue #58: `throws` no longer loads a golden. 36 recorded flights become 211,410
+    // assertions against the release geometry in closed form, an independently written
+    // frame model, two flight symmetries, and exact-value pins on the throw table — see
+    // ThrowsTests.swift's header.
+    Suite(name: "throws", run: ThrowsTests.run, minAssertions: 211410),
     Suite(name: "rules", run: RulesTests.run, minAssertions: 935920),
     Suite(name: "move", run: MoveTests.run, minAssertions: 9018),
     Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
