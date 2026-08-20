@@ -31,3 +31,9 @@ rules: stallMax 10 -> 9 | swift/Sources/UltimateSim/Rules.swift | stallMax: 10, 
 rules: stallInterval 1 -> 0.9 | swift/Sources/UltimateSim/Rules.swift | stallInterval: 1, | stallInterval: 0.9, | rules
 rules: markerRange 3 -> 4 | swift/Sources/UltimateSim/Rules.swift | markerRange: 3, | markerRange: 4, | rules
 rules: stallResumeCap 9 -> 8 | swift/Sources/UltimateSim/Rules.swift | stallResumeCap: 9, | stallResumeCap: 8, | rules
+trycatch: catchReach 0.82 -> 0.90 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let catchReach = 0.82 | public static let catchReach = 0.90 | trycatch
+trycatch: layoutReach 1.55 -> 1.75 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let layoutReach = 1.55 | public static let layoutReach = 1.75 | trycatch
+trycatch: passiveDefenderGap 0.55 -> 0.75 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let passiveDefenderGap = 0.55 | public static let passiveDefenderGap = 0.75 | trycatch
+trycatch: standingFloor 0.20 -> 0.30 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let standingFloor = 0.20 | public static let standingFloor = 0.30 | trycatch
+trycatch: defenceScale 0.62 -> 0.72 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let defenceScale = 0.62 | public static let defenceScale = 0.72 | trycatch
+trycatch: interceptionSplit 0.55 -> 0.65 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let interceptionSplit = 0.55 | public static let interceptionSplit = 0.65 | trycatch
