@@ -731,6 +731,51 @@ enum DiscRuntimeTests {
             Check.bitEq(r.dist, r.x - req.from.x, "aim along +x: dist is exactly dx")
             Check.bitEq(r.lat, r.z - req.from.z, "aim along +x: lat is exactly dz")
         }
+
+        // The ground-touch stop condition, isolated. A catch plane set below the ground —
+        // no throw ever descends through it, since the ground physically stops the disc
+        // first — means the ONLY way `probeThrow`'s loop can end before `maxT` is via
+        // `|| p.touchedGround`. Without that clause the loop would run the full `steps`
+        // and return wherever the disc happened to be at the clock's end, not where it
+        // actually stopped.
+        do {
+            let rt = DiscRuntime()
+            rt.groundAt = ground("flat")
+            let req = ThrowRequest(
+                type: .backhand, from: Vec3d(0, 1.2, 0), aim: Vec3d(1, 0, 0),
+                power: 0.4, angle: 0, spin: 0.5)
+            let r = rt.probeThrow(req, catchY: -100, maxT: 6)
+            Check.ok(
+                r.t < 6 - 1e-6,
+                "a catch plane below the ground stops the probe at ground contact, well "
+                    + "under maxT (got t=\(r.t))")
+        }
+
+        // The NaN guard on the aim length, `hl = (h == 0 || h.isNaN) ? 1 : h` — reachable,
+        // but provably WITHOUT effect on this function's output, unlike the `h == 0` half
+        // asserted above. `jsHypot2` returns NaN only when one of its own inputs already
+        // is (see its own definition: `if a.isNaN || b.isNaN { return .nan }`), so `h.isNaN`
+        // implies `hx.isNaN || hz.isNaN`. `ux = hx / hl` and `uz = hz / hl`, so whichever of
+        // `hx`/`hz` is NaN produces a NaN `ux` or `uz` from its own numerator alone,
+        // independent of `hl`. `dist = dx*ux + dz*uz` and `lat = -dx*uz + dz*ux` each sum a
+        // term built from BOTH `ux` and `uz`, so that one NaN component poisons both
+        // outputs whether or not the guard fires and no matter what `hl` resolves to.
+        // Asserted below rather than only argued: a genuinely NaN component in the aim
+        // still produces a NaN `dist`/`lat` with the guard fully intact, which is the fact
+        // that makes "the guard changes nothing here" true rather than assumed.
+        do {
+            let rt = DiscRuntime()
+            rt.groundAt = ground("flat")
+            let req = ThrowRequest(
+                type: .backhand, from: Vec3d(0, 1.5, 0), aim: Vec3d(.nan, 0, 5),
+                power: 0.5, angle: 0, spin: 0.5)
+            let r = rt.probeThrow(req, catchY: 1.2, maxT: 4)
+            Check.ok(
+                r.dist.isNaN && r.lat.isNaN,
+                "a NaN aim component poisons both dist and lat with the guard present — "
+                    + "got dist=\(r.dist), lat=\(r.lat) — so removing its .isNaN half "
+                    + "changes nothing the guard was not already failing to protect")
+        }
     }
 
     // MARK: - a light integration touch: a real flight feeding the field's own geometry
