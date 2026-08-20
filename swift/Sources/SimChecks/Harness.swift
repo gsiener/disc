@@ -311,7 +311,7 @@ let allSuites: [Suite] = [
     Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9934),
-    Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 14154),
+    Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 93489),
     // Lowered from 476751 deliberately: `TeamAITests.structural` now runs on frame zero
     // instead of all 1,370 frames, because the wiring it checks cannot vary by frame (one
     // construction site, both sides reading the same player at the same instant). That is

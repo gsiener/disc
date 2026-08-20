@@ -1,903 +1,593 @@
 import Foundation
 import UltimateSim
 
-/// The disc runtime against `src/entities/Disc.ts`.
+/// The disc runtime — the bookkeeping layer between "a player wants to throw" and the
+/// validated flight physics `FlightTests` already covers.
 ///
-/// **These are traces, not a table, and the shape of the fixture is the point.** Almost
-/// everything `DiscRuntime` can get wrong, it gets wrong only after several frames: the
-/// clock and the release timer accumulate, the trail is a ring buffer that misbehaves
-/// only once it is full or once samples begin ageing out, `groundY` is re-queried from a
-/// closure every frame and does not reach ground contact until later, and the `probe`
-/// scratch state is shared between `predictPath` and `probeThrow` so a leak between them
-/// shows up only on the second call. So each case holds one runtime across hundreds of
-/// fixed steps, scripts the state machine mid-flight, and compares the whole runtime.
+/// # Why this is not a replayed trace any more
 ///
-/// ## What is asserted bit-for-bit and what is not
+/// `discruntime.json` held six multi-step traces: each one drove a runtime for hundreds of
+/// fixed steps, scripted a catch or a block or a landing mid-flight, and dumped the whole
+/// runtime every sixth frame for comparison against the TypeScript. That caught real bugs —
+/// the trail is a ring buffer that only misbehaves once it is full or once samples start
+/// ageing out, and `groundY` is re-queried from a closure every frame and does not reach
+/// ground contact until later — by walking one path through the bookkeeping and comparing
+/// every step of it. But it is still one recorded path, chosen once, and a bug in a
+/// combination the recording never visited is invisible to it forever.
 ///
-/// The runtime's own arithmetic is `+ − × ÷`, `min`, `max`, `clamp` and `Math.hypot`, all
-/// of which are reproducible exactly — so the clock, the release timer, `state.t`, the
-/// wear ledger, every trail timestamp, the seeded trail geometry and the ground closure
-/// are `bitEqViaJSON`, and every discrete field is `eq`.
+/// So this suite states what `DiscRuntime` actually is, in three registers:
 ///
-/// Anything downstream of the flight integration is not, and cannot be: RK4 runs `sin`,
-/// `cos`, `atan2`, `exp` and `tanh` hundreds of times and no libm specifies those to the
-/// last ulp. Those use a tolerance that WIDENS WITH HORIZON, identical in shape to
-/// `FlightTests` — about a nanometre at release, a micrometre by six seconds — and the
-/// suite reports the worst deviation it actually saw so the margin stays measured rather
-/// than chosen. As written, roughly two fifths of the toleranced assertions land exactly
-/// and the worst deviation on the whole suite is 8.8e-14 rad/s, on `omega.y` 114 frames
-/// into a cross-wind hammer. That is drift in the last two bits, not a porting bug.
+///  - **A tiny, total state machine.** Three modes, three public transitions, each cell
+///    driven from every starting mode. See `modeMachine()`.
+///  - **Two subsystems with a specification worth restating independently.** The trail's
+///    eviction rule (`decayTrail`) and the scuff geometry (`orientToNormal` +
+///    `markScuff`) are both documented precisely enough in `DiscRuntime.swift`'s own
+///    comments to write a second, independently-typed version of the rule and check the
+///    real one against it — the same reasoning `RngTests.Model` uses for `xorshift128`,
+///    and for the same benefit: a bug in the real implementation cannot hide behind a
+///    matching bug in the check, because the two were written from the spec, not from
+///    each other. Neither `orientToNormal` nor `decayTrail` is reachable from outside
+///    `UltimateSim` — they are `internal`, not `public` — so this is arrived at through
+///    `hold()`/`markScuff()`/`step()`, the same surface any real caller has.
+///  - **Self-consistency, not re-derivation, for the two methods that touch the flight
+///    integrator.** `predictPath` and `probeThrow` each keep their own scratch copy of
+///    `DiscState` and step it by hand. Neither does anything to that copy that a caller
+///    could not also do with the public `DiscState.step` — so both are checked by driving
+///    an independent copy through the identical public sequence of calls and comparing
+///    the two **bit-for-bit**. This is not a weaker check than a golden: unlike a
+///    recorded value, it cannot go stale when the aero coefficients retune, and unlike a
+///    reimplementation of RK4 it cannot acquire a transcription bug of its own — there is
+///    only one flight model, called twice.
 ///
-/// ## What was skipped, and why
+/// What this suite does NOT re-derive: RK4 itself, and ground-contact restitution
+/// (`resolveGround`). Both are `FlightTests`' job — a disc released low comes to rest at
+/// ground level is asserted there — and both are exactly the case that suite's own header
+/// warns about: no independent second statement of either is worth writing, and forcing
+/// one would risk the transcription bug the pattern exists to avoid. What `DiscRuntime`
+/// adds on top of that physics — the clock, the mode gate, the trail, the scuff, the two
+/// prediction queries — is what is asserted here.
 ///
-/// `src/entities/Disc.ts` is an engine entity and roughly two thirds of it is the
-/// renderer: `DiscSystem`, the lathed profile and its `THREE.BufferGeometry`, four texture
-/// bakes, a shader injection for rotational motion blur, a pixel-budget readability
-/// compensator, a sun-shadow decal, a ribbon trail mesh and a wear `DataTexture`. None of
-/// that has a Swift counterpart in a module that imports Foundation and nothing else. The
-/// simulation half is `DiscRuntime`, and it is what this suite covers, in full.
+/// # A trap avoided
+///
+/// The first draft of the trail model evicted by age using `clock`, the runtime's own
+/// running total — and initially failed on nothing, which was the tell rather than the
+/// reassurance (`FlightTests`' header describes the same shape of false confidence for a
+/// mirror check that wasn't testing what it looked like it was). The reason: `clock` is
+/// read AFTER `step()` has already advanced it, so an eviction computed against the
+/// runtime's own post-step clock will always agree with the runtime's own post-step
+/// eviction, however the eviction rule is written — even a `decayTrail` with the
+/// comparison backwards would still "agree" with a check that copies the very value it
+/// just produced. The model below is driven by the SUITE's own accumulated clock, kept as
+/// a value the runtime never hands back, so the two really are two independent counts of
+/// the same thing rather than one number compared to itself.
 enum DiscRuntimeTests {
 
-    // MARK: - fixture
+    // MARK: - a deterministic sample source, for sweeps wider than a hand-written grid
 
-    struct Frame: Decodable {
-        let i: Int
-        let t: Double
-        let clock: Double
-        let sinceRelease: Double
-        let mode: String
-        let holderId: Int
-        let wear: Double
-        let pos: [Double]
-        let vel: [Double]
-        let orient: [Double]
-        let omega: [Double]
-        /// Optional because a poisoned state makes both NaN, and `JSON.stringify(NaN)`
-        /// emits `null`. `alpha` cannot: `refreshDerived` leaves it at zero when the
-        /// airspeed comparison against 1e-5 is false, which a NaN airspeed always is.
-        let spin: Double?
-        let alpha: Double
-        let airspeed: Double?
-        let groundY: Double
-        let atRest: Bool
-        let touchedGround: Bool
-        let trailCount: Int
-        let trailAge: Double
-        let trailFirstT: Double?
-        let trailFirstPos: [Double]?
-        let trailFirstSpeed: Double?
-        let trailLastT: Double?
-        let trailLastPos: [Double]?
-        let trailLastSpeed: Double?
-        let inBounds: Bool
+    /// A 64-bit xorshift, independent of `UltimateSim.Rng` for the same reason
+    /// `GameStateTests.Sample` is: a suite that chooses its own inputs with the thing it
+    /// is testing is not choosing them independently.
+    private struct Sample {
+        private var s: UInt64
+        init(_ seed: UInt64) { s = seed | 1 }
+        mutating func next() -> UInt64 {
+            s ^= s << 13
+            s ^= s >> 7
+            s ^= s << 17
+            return s
+        }
+        mutating func unit(_ lo: Double, _ hi: Double) -> Double {
+            lo + (hi - lo) * Double(next() >> 11) * (1.0 / 9_007_199_254_740_992.0)
+        }
+        mutating func int(_ lo: Int, _ hi: Int) -> Int {
+            lo + Int(next() % UInt64(hi - lo + 1))
+        }
+        mutating func bool() -> Bool { next() & 1 == 1 }
     }
-
-    struct Action: Decodable {
-        let at: Int
-        let kind: String
-        let playerId: Int?
-        let normal: [Double]?
-        let spinPhase: Double?
-        let strength: Double?
-        let horizon: Double?
-        let step: Double?
-        let useStateLike: Bool?
-        let pos: [Double]?
-        let vel: [Double]?
-    }
-
-    struct PreHold: Decodable {
-        let playerId: Int
-        let pos: [Double]
-        let normal: [Double]
-        let spinPhase: Double
-        let frames: Int
-    }
-
-    struct Req: Decodable {
-        let type: String
-        let from: [Double]
-        let aim: [Double]
-        let power: Double
-        let angle: Double
-        let spin: Double
-        let hand: String?
-        let bank: Double?
-        let nose: Double?
-        let speed: Double?
-    }
-
-    struct Release: Decodable {
-        let vel: [Double]
-        let frame: Frame
-    }
-
-    struct Event: Decodable {
-        let at: Int
-        let kind: String
-        let frame: Frame?
-    }
-
-    struct Prediction: Decodable {
-        let at: Int
-        let horizon: Double
-        let step: Double
-        let useStateLike: Bool
-        let pos: [Double]?
-        let vel: [Double]?
-        let mode: String
-        /// `[t, x, y, z]` per sample.
-        let path: [[Double]]
-    }
-
-    struct ScuffValue: Decodable {
-        let rr: Double
-        let ang: Double
-        let top: Bool
-        let strength: Double
-    }
-
-    struct ScuffRecord: Decodable {
-        let at: Int
-        let wear: Double
-        let scuff: ScuffValue?
-    }
-
-    struct CrossingRecord: Decodable {
-        let prev: [Double]
-        let cur: [Double]
-        let point: [Double]?
-        let edge: String?
-        let t: Double?
-    }
-
-    struct Trace: Decodable {
-        let name: String
-        let note: String
-        let ground: String
-        let wind: [Double]
-        let trailCapacity: Int
-        let trailSeconds: Double
-        let preHold: PreHold?
-        let preHoldFrames: [Frame]
-        let req: Req
-        let release: Release
-        let frames: Int
-        let sampleEvery: Int
-        let watchBounds: Bool
-        let script: [Action]
-        let samples: [Frame]
-        let events: [Event]
-        let predictions: [Prediction]
-        let scuffs: [ScuffRecord]
-        let leftAtFrame: Int
-        let crossing: CrossingRecord?
-        let final: Frame
-    }
-
-    struct ProbeCase: Decodable {
-        let ground: String
-        let type: String
-        let catchY: Double
-        let from: [Double]
-        let aim: [Double]
-        let power: Double
-        let angle: Double
-        let spin: Double
-        let hand: String?
-        let bank: Double?
-        let nose: Double?
-        let speed: Double?
-        let wind: [Double]
-        let maxT: Double
-        let dist: Double
-        let lat: Double
-        let t: Double
-        let x: Double
-        let z: Double
-    }
-
-    struct ScuffCase: Decodable {
-        let normal: [Double]
-        let phase: Double
-        let orient: [Double]?
-        let wearBefore: Double?
-        let first: ScuffValue?
-        let second: ScuffValue?
-        let wearAfter: Double?
-        let saturation: [Double]?
-    }
-
-    struct TrailCase: Decodable {
-        let kind: String
-        let now: Double?
-        let trail: [[Double]]?
-        let trailAge: Double?
-        let count: Int?
-        let trailSeconds: Double?
-        let trailCapacity: Int?
-        let counts: [Int]?
-    }
-
-    struct FieldBox: Decodable {
-        let sideline: Double
-        let endLine: Double
-        let eps: Double
-    }
-
-    struct Defaults: Decodable {
-        let mode: String
-        let holderId: Int
-        let lastThrowTeam: Int
-        let sinceRelease: Double
-        let wear: Double
-        let trailCapacity: Int
-        let trailSeconds: Double
-        let now: Double
-        let trailAge: Double
-        let groundAtOrigin: Double
-        let wind: [Double]
-    }
-
-    struct GroundSample: Decodable {
-        let x: Double
-        let z: Double
-        let flat: Double
-        let sloped: Double
-    }
-
-    struct File: Decodable {
-        let note: String
-        let fixedDt: Double
-        let halfHeight: Double
-        let diameter: Double
-        let field: FieldBox
-        let defaults: Defaults
-        let groundSamples: [GroundSample]
-        let traces: [Trace]
-        let probes: [ProbeCase]
-        let scuffs: [ScuffCase]
-        let trails: [TrailCase]
-    }
-
-    // MARK: - tolerances
-
-    /// Where the widening below stops. Issue #20: uncapped, `1e-9 * pow(10, t/2)` reaches
-    /// a *planet-sized* budget by t=60s — at which point the assertion has stopped
-    /// checking anything, silently, which is the opposite of what a tolerance is for. No
-    /// real fixture asks: the longest flight across every case in `discruntime.json` is
-    /// t≈4.9s (verified against the committed fixture, not assumed), comfortably inside
-    /// the doc comments' own designed envelope of "a micrometre by six seconds." The cap
-    /// sits at ten so today's real data is unaffected and a future flight this suite was
-    /// never designed for still gets a real, if generous, budget rather than an infinite
-    /// one.
-    private static let toleranceHorizon = 10.0
-
-    /// Position tolerance in metres at elapsed flight time `t`, identical in shape to
-    /// `FlightTests`: about a nanometre at release, a micrometre by six seconds. A disc is
-    /// 273 mm across, so both are far below anything the game could perceive, while still
-    /// being tight enough that a transposed term fails on the first frame.
-    static func posTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
-
-    /// Velocity drifts faster than position, because position is its integral and
-    /// integration smooths.
-    static func velTol(_ t: Double) -> Double { 1e-8 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
-
-    /// Quaternion components. Unit-magnitude, so this is an absolute angle budget of the
-    /// same order as the position one.
-    static func quatTol(_ t: Double) -> Double { 1e-9 * pow(10.0, Swift.min(t, toleranceHorizon) / 2.0) }
-
-    // `within()` was here — a tolerance assertion that also recorded the worst
-    // ratio-to-tolerance seen, via `worstRatio`/`worstAbs`/`worstLabel`, three
-    // `nonisolated(unsafe) static var`s that `run()` never reset between calls. Deleted
-    // in favour of `Check.near`, which does the same margin tracking, correctly scoped to
-    // one run via the accumulator rather than the whole process — see issue #20 and
-    // `Harness.swift`'s `Accumulator.worstMargin`. Every call site below is renamed, not
-    // rewritten: `within`'s signature was already `Check.near`'s.
 
     // MARK: - ground closures
 
-    /// The two ground closures the fixture was generated against.
-    ///
-    /// Built from `+ − ×` and `max` only, deliberately: a `sin`/`cos` terrain would put
-    /// every trace behind a tolerance for a reason that has nothing to do with the disc.
-    /// The operation order is transcribed rather than simplified.
+    /// The two ground shapes exercised throughout. Built from `+ − ×` and `max` only,
+    /// deliberately: a `sin`/`cos` terrain would put every check behind a tolerance for a
+    /// reason that has nothing to do with the disc runtime.
     static func ground(_ name: String) -> (Double, Double) -> Double {
         switch name {
-        case "flat": return { _, _ in 0 }
         case "sloped":
-            return { x, z in
-                0.03 * x - 0.02 * z + 0.25 * Swift.max(0, 1 - 0.05 * (x * x + z * z))
-            }
-        default: return { _, _ in 0 }
+            return { x, z in 0.03 * x - 0.02 * z + 0.25 * Swift.max(0, 1 - 0.05 * (x * x + z * z)) }
+        default:
+            return { _, _ in 0 }
         }
-    }
-
-    static func hand(_ s: String?) -> ThrowOptions.Hand? {
-        switch s {
-        case "L": return .left
-        case "R": return .right
-        default: return nil
-        }
-    }
-
-    static func request(_ r: Req) -> ThrowRequest {
-        ThrowRequest(
-            type: ThrowType(rawValue: r.type)!,
-            from: Vec3d(r.from[0], r.from[1], r.from[2]),
-            aim: Vec3d(r.aim[0], r.aim[1], r.aim[2]),
-            power: r.power, angle: r.angle, spin: r.spin,
-            hand: hand(r.hand), bank: r.bank, nose: r.nose, speed: r.speed)
     }
 
     // MARK: - run
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "discruntime")
-
-        Check.bitEqViaJSON(g.fixedDt, FIXED_DT, "fixture stepped at the engine's fixed dt")
-        Check.bitEqViaJSON(
-            g.halfHeight, DiscBody.standard.halfHeight, "fixture used the standard half-height")
-        Check.bitEqViaJSON(
-            g.diameter, DiscBody.standard.diameter, "fixture used the standard diameter")
-        Check.eq(g.traces.count, 6, "six multi-step traces")
-
-        defaults(g.defaults)
-        grounds(g.groundSamples)
-        for tr in g.traces { replay(tr, field: g.field) }
-        for (i, p) in g.probes.enumerated() { probe(p, i) }
-        for (i, s) in g.scuffs.enumerated() { scuff(s, i) }
-        for (i, t) in g.trails.enumerated() { trailCase(t, i) }
+        defaults()
+        modeMachine()
+        trailLaws()
+        scuffLaws()
+        predictionLaws()
+        probeLaws()
+        boundaryLaw()
         proseClaims()
     }
 
-    // MARK: - defaults and ground
+    // MARK: - defaults, pinned directly
 
-    private static func defaults(_ d: Defaults) {
+    /// A fresh runtime's defaults are constants `DiscRuntime` declares itself, so — per
+    /// issue #58's standing finding — they are pinned by value here, not only checked for
+    /// existence. `AIMathTests` once asserted `CATCH_DEAD < CATCH_FLOOR`, which survived
+    /// `CATCH_DEAD` moving; the fixtures that pinned the actual number are exactly what is
+    /// being deleted, which is the failure mode this guards against for these constants.
+    private static func defaults() {
         let rt = DiscRuntime()
-        Check.eq(rt.mode.rawValue, d.mode, "a fresh runtime starts on the ground")
-        Check.eq(rt.holderId, d.holderId, "a fresh runtime is held by nobody")
-        Check.eq(rt.lastThrowTeam, d.lastThrowTeam, "default last-throw team")
-        Check.bitEqViaJSON(rt.sinceRelease, d.sinceRelease, "sinceRelease starts enormous")
-        Check.bitEqViaJSON(rt.wear, d.wear, "a fresh disc is unworn")
-        Check.eq(rt.trailCapacity, d.trailCapacity, "default trail capacity")
-        Check.bitEqViaJSON(rt.trailSeconds, d.trailSeconds, "default trail seconds")
-        Check.bitEqViaJSON(rt.now, d.now, "the clock starts at zero")
-        Check.bitEqViaJSON(rt.trailAge, d.trailAge, "an empty trail reports the sentinel age")
-        Check.bitEqViaJSON(
-            rt.groundAt(3, -4), d.groundAtOrigin, "the default ground query is flat at zero")
-        Check.bitEqViaJSON(rt.wind.x, d.wind[0], "default wind x")
-        Check.bitEqViaJSON(rt.wind.y, d.wind[1], "default wind y")
-        Check.bitEqViaJSON(rt.wind.z, d.wind[2], "default wind z")
+        Check.eq(rt.mode, .ground, "a fresh runtime starts on the ground")
+        Check.eq(rt.holderId, -1, "a fresh runtime is held by nobody")
+        Check.eq(rt.lastThrowTeam, 0, "default last-throw team is 0")
+        Check.bitEq(rt.sinceRelease, 1e3, "sinceRelease starts enormous — never self-caught")
+        Check.bitEq(rt.wear, 0, "a fresh disc is unworn")
+        Check.eq(rt.trailCapacity, 72, "default trail capacity")
+        Check.bitEq(rt.trailSeconds, 0.80, "default trail seconds")
+        Check.bitEq(rt.now, 0, "the clock starts at zero")
+        Check.bitEq(rt.trailAge, 1e3, "an empty trail reports the sentinel age, not NaN")
+        Check.bitEq(rt.wind.x, 0, "default wind x")
+        Check.bitEq(rt.wind.y, 0, "default wind y")
+        Check.bitEq(rt.wind.z, 0, "default wind z")
+        for (x, z) in [(0.0, 0.0), (3.0, -4.0), (117.0, -52.0)] {
+            Check.bitEq(rt.groundAt(x, z), 0, "the default ground query is flat everywhere (\(x), \(z))")
+        }
+        Check.eq(rt.state.atRest, false, "a fresh state is not at rest")
+        Check.eq(rt.state.touchedGround, false, "a fresh state has not touched ground")
+        Check.eq(rt.trail.isEmpty, true, "a fresh runtime has no trail")
     }
 
-    private static func grounds(_ samples: [GroundSample]) {
-        let flat = ground("flat")
-        let sloped = ground("sloped")
-        for s in samples {
-            Check.bitEqViaJSON(flat(s.x, s.z), s.flat, "flat ground at (\(s.x), \(s.z))")
-            Check.bitEqViaJSON(sloped(s.x, s.z), s.sloped, "sloped ground at (\(s.x), \(s.z))")
-        }
-    }
+    // MARK: - the mode machine: three states, three total transitions
 
-    // MARK: - traces
-
-    private static func replay(_ tr: Trace, field f: FieldBox) {
-        let rt = DiscRuntime()
-        rt.groundAt = ground(tr.ground)
-        rt.wind = Vec3d(tr.wind[0], tr.wind[1], tr.wind[2])
-        rt.trailCapacity = tr.trailCapacity
-        rt.trailSeconds = tr.trailSeconds
-
-        // Held before the throw: `step` must advance the clock and decay the trail while
-        // doing no physics whatsoever.
-        if let ph = tr.preHold {
-            rt.hold(
-                ph.playerId, Vec3d(ph.pos[0], ph.pos[1], ph.pos[2]),
-                Vec3d(ph.normal[0], ph.normal[1], ph.normal[2]), ph.spinPhase)
-            compare(rt, tr.preHoldFrames[0], "\(tr.name) pre-hold 0", field: f)
-            for i in 0..<ph.frames {
-                rt.step(dt: FIXED_DT)
-                compare(rt, tr.preHoldFrames[i + 1], "\(tr.name) pre-hold \(i + 1)", field: f)
-            }
-        }
-
-        let releaseVel = rt.release(request(tr.req))
-        // `throwDisc` builds the release frame from `cos`/`sin` of the elevation, so this
-        // is the one place in the trace that is transcendental at t = 0. 1e-12 is the same
-        // budget `ThrowsTests` measured for the same construction.
-        Check.near(releaseVel.x, tr.release.vel[0], 1e-12, "\(tr.name) release vel.x")
-        Check.near(releaseVel.y, tr.release.vel[1], 1e-12, "\(tr.name) release vel.y")
-        Check.near(releaseVel.z, tr.release.vel[2], 1e-12, "\(tr.name) release vel.z")
-        compare(rt, tr.release.frame, "\(tr.name) release", field: f)
-
-        var predictions = tr.predictions.makeIterator()
-        var scuffs = tr.scuffs.makeIterator()
-        var events = tr.events.makeIterator()
-        var samples = tr.samples.makeIterator()
-        var pendingPredictions = tr.predictions.count
-        var pendingScuffs = tr.scuffs.count
-        var pendingEvents = tr.events.count
-        var pendingSamples = tr.samples.count
-
-        let scuffOnTouch = tr.script.first { $0.kind == "scuffOnTouch" }
-        var scuffed = false
-
-        var prev = rt.state.pos
-        var leftAtFrame = -1
-
-        for i in 1...tr.frames {
-            for a in tr.script where a.at == i {
-                switch a.kind {
-                case "hold":
-                    rt.hold(
-                        a.playerId!, rt.state.pos,
-                        Vec3d(a.normal![0], a.normal![1], a.normal![2]), a.spinPhase!)
-                    if let e = events.next() {
-                        pendingEvents -= 1
-                        Check.eq(e.at, i, "\(tr.name) hold event frame")
-                        Check.eq(e.kind, "hold", "\(tr.name) hold event kind")
-                        compare(rt, e.frame!, "\(tr.name) after hold at \(i)", field: f)
-                    }
-                case "settle":
-                    rt.settle(rt.state.pos)
-                    if let e = events.next() {
-                        pendingEvents -= 1
-                        Check.eq(e.at, i, "\(tr.name) settle event frame")
-                        Check.eq(e.kind, "settle", "\(tr.name) settle event kind")
-                        compare(rt, e.frame!, "\(tr.name) after settle at \(i)", field: f)
-                    }
-                case "markScuff":
-                    rt.markScuff(a.strength!)
-                    if let s = scuffs.next() {
-                        pendingScuffs -= 1
-                        compareScuff(rt, s, "\(tr.name) scuff at \(i)", tol: posTol(rt.state.t))
-                    }
-                case "poisonVelocity":
-                    // Not expressible as a number in JSON, hence a named action.
-                    rt.state.vel = Vec3d(.infinity, 0, 0)
-                    if let e = events.next() {
-                        pendingEvents -= 1
-                        Check.eq(e.kind, "poisonVelocity", "\(tr.name) poison event kind")
-                    }
-                case "predict":
-                    let usesLike = a.useStateLike!
-                    let path = rt.predictPath(
-                        pos: usesLike ? Vec3d(a.pos![0], a.pos![1], a.pos![2]) : nil,
-                        vel: usesLike ? Vec3d(a.vel![0], a.vel![1], a.vel![2]) : nil,
-                        horizon: a.horizon!, step: a.step!)
-                    if let want = predictions.next() {
-                        pendingPredictions -= 1
-                        comparePath(
-                            path, want, "\(tr.name) predict at \(i)", elapsed: rt.state.t,
-                            mode: rt.mode)
-                    }
-                default:
-                    break
-                }
-            }
-
-            rt.step(dt: FIXED_DT)
-
-            if let onTouch = scuffOnTouch, !scuffed, rt.state.touchedGround {
-                scuffed = true
-                rt.markScuff(onTouch.strength!)
-                if let s = scuffs.next() {
-                    pendingScuffs -= 1
-                    Check.eq(s.at, i, "\(tr.name) first ground contact is frame \(s.at)")
-                    compareScuff(rt, s, "\(tr.name) landing scuff", tol: posTol(rt.state.t))
-                }
-            }
-
-            if tr.watchBounds && leftAtFrame < 0 && !inBounds(rt.state.pos, f) {
-                leftAtFrame = i
-                if let want = tr.crossing {
-                    let c = FieldConstants.standard.boundaryCrossing(prev, rt.state.pos)
-                    Check.near(prev.x, want.prev[0], posTol(rt.state.t), "\(tr.name) crossing prev.x")
-                    Check.near(prev.z, want.prev[2], posTol(rt.state.t), "\(tr.name) crossing prev.z")
-                    Check.near(
-                        rt.state.pos.x, want.cur[0], posTol(rt.state.t), "\(tr.name) crossing cur.x")
-                    Check.near(
-                        rt.state.pos.z, want.cur[2], posTol(rt.state.t), "\(tr.name) crossing cur.z")
-                    Check.eq(c != nil, want.point != nil, "\(tr.name) the segment leaves the field")
-                    if let c, let pt = want.point, let wt = want.t, let we = want.edge {
-                        Check.eq(c.edge.rawValue, we, "\(tr.name) crossing edge")
-                        Check.near(c.point.x, pt[0], posTol(rt.state.t), "\(tr.name) crossing point.x")
-                        Check.near(c.point.z, pt[2], posTol(rt.state.t), "\(tr.name) crossing point.z")
-                        Check.near(c.t, wt, 1e-7, "\(tr.name) crossing parameter")
-                    }
-                }
-            }
-            prev = rt.state.pos
-
-            if i % tr.sampleEvery == 0, let want = samples.next() {
-                pendingSamples -= 1
-                compare(rt, want, "\(tr.name) frame \(i)", field: f)
-            }
-        }
-
-        if tr.watchBounds {
-            Check.eq(leftAtFrame, tr.leftAtFrame, "\(tr.name) leaves the field on the same frame")
-            Check.ok(leftAtFrame > 0, "\(tr.name) really does leave the field")
-        }
-        Check.eq(pendingSamples, 0, "\(tr.name) consumed every sample")
-        Check.eq(pendingPredictions, 0, "\(tr.name) consumed every prediction")
-        Check.eq(pendingScuffs, 0, "\(tr.name) consumed every scuff")
-        Check.eq(pendingEvents, 0, "\(tr.name) consumed every event")
-        compare(rt, tr.final, "\(tr.name) final", field: f)
-    }
-
-    /// The whole runtime, not just the position.
-    private static func compare(
-        _ rt: DiscRuntime, _ want: Frame, _ at: String, field f: FieldBox
-    ) {
-        let s = rt.state
-        let pT = posTol(want.t)
-        let vT = velTol(want.t)
-        let qT = quatTol(want.t)
-
-        // Exact: pure accumulation of the fixed step, and discrete state.
-        Check.bitEqViaJSON(s.t, want.t, "\(at) flight time")
-        Check.bitEqViaJSON(rt.now, want.clock, "\(at) runtime clock")
-        Check.bitEqViaJSON(rt.sinceRelease, want.sinceRelease, "\(at) sinceRelease")
-        Check.bitEqViaJSON(rt.wear, want.wear, "\(at) wear")
-        Check.eq(rt.mode.rawValue, want.mode, "\(at) mode")
-        Check.eq(rt.holderId, want.holderId, "\(at) holderId")
-        Check.eq(s.atRest, want.atRest, "\(at) atRest")
-        Check.eq(s.touchedGround, want.touchedGround, "\(at) touchedGround")
-        Check.eq(rt.trail.count, want.trailCount, "\(at) trail count")
-        Check.bitEqViaJSON(rt.trailAge, want.trailAge, "\(at) trail age")
-        Check.eq(inBounds(s.pos, f), want.inBounds, "\(at) in bounds")
-        // Cross-check that the fixture's field really is the one `Rules` carries, so the
-        // threaded comparison above and the shared geometry cannot drift apart.
-        Check.eq(
-            FieldConstants.standard.isInBounds(s.pos), want.inBounds,
-            "\(at) in bounds agrees with the regulation field")
-
-        // Integrated: tolerance that widens with horizon.
-        Check.near(s.pos.x, want.pos[0], pT, "\(at) pos.x")
-        Check.near(s.pos.y, want.pos[1], pT, "\(at) pos.y")
-        Check.near(s.pos.z, want.pos[2], pT, "\(at) pos.z")
-        Check.near(s.vel.x, want.vel[0], vT, "\(at) vel.x")
-        Check.near(s.vel.y, want.vel[1], vT, "\(at) vel.y")
-        Check.near(s.vel.z, want.vel[2], vT, "\(at) vel.z")
-        Check.near(s.omega.x, want.omega[0], vT, "\(at) omega.x")
-        Check.near(s.omega.y, want.omega[1], vT, "\(at) omega.y")
-        Check.near(s.omega.z, want.omega[2], vT, "\(at) omega.z")
-        Check.near(s.groundY, want.groundY, pT, "\(at) groundY")
-
-        // A quaternion and its negation are the same rotation, so align the sign before
-        // comparing components. Comparing components rather than only `|dot|` catches an
-        // axis transposition that leaves the magnitude intact.
-        let d = s.orient.x * want.orient[0] + s.orient.y * want.orient[1]
-            + s.orient.z * want.orient[2] + s.orient.w * want.orient[3]
-        let sign = d < 0 ? -1.0 : 1.0
-        Check.near(sign * s.orient.x, want.orient[0], qT, "\(at) orient.x")
-        Check.near(sign * s.orient.y, want.orient[1], qT, "\(at) orient.y")
-        Check.near(sign * s.orient.z, want.orient[2], qT, "\(at) orient.z")
-        Check.near(sign * s.orient.w, want.orient[3], qT, "\(at) orient.w")
-
-        if let ws = want.spin {
-            Check.near(s.spin, ws, vT, "\(at) spin")
-        } else {
-            Check.eq(s.spin.isNaN, true, "\(at) spin is NaN once the state has been poisoned")
-        }
-        // `alpha` and `airspeed` are only compared in flight. See `DiscRuntime.hold`: the
-        // reference leaves both stale when a disc is taken into a hand and this port
-        // cannot, because `DiscState.spin` is `private(set)` and the only way to zero it
-        // from outside `DiscPhysics.swift` re-derives all three. Nothing in the sim
-        // branches on either, and the next flight step recomputes both.
-        if want.mode == "flight" {
-            Check.near(s.alpha, want.alpha, 1e-9 * pow(10.0, want.t / 2.0), "\(at) alpha")
-            if let wa = want.airspeed {
-                Check.near(s.airspeed, wa, vT, "\(at) airspeed")
-            } else {
-                Check.eq(s.airspeed.isNaN, true, "\(at) airspeed is NaN once poisoned")
-            }
-        } else {
-            Check.bitEqViaJSON(s.alpha, 0, "\(at) alpha is zero off flight")
-            Check.bitEqViaJSON(s.airspeed, 0, "\(at) airspeed is zero off flight")
-            Check.bitEqViaJSON(s.spin, 0, "\(at) spin is zero off flight")
-        }
-
-        // The trail's ends. Timestamps are clock arithmetic and therefore exact; the
-        // geometry is the flight and therefore is not.
-        if let wt = want.trailLastT {
-            let last = rt.trail.last!
-            Check.bitEqViaJSON(last.t, wt, "\(at) newest trail sample time")
-            Check.near(last.x, want.trailLastPos![0], pT, "\(at) newest trail x")
-            Check.near(last.y, want.trailLastPos![1], pT, "\(at) newest trail y")
-            Check.near(last.z, want.trailLastPos![2], pT, "\(at) newest trail z")
-            Check.near(last.speed, want.trailLastSpeed!, vT, "\(at) newest trail speed")
-        } else {
-            Check.eq(rt.trail.isEmpty, true, "\(at) trail is empty")
-        }
-        if let wt = want.trailFirstT {
-            let first = rt.trail.first!
-            Check.bitEqViaJSON(first.t, wt, "\(at) oldest trail sample time")
-            Check.near(first.x, want.trailFirstPos![0], pT, "\(at) oldest trail x")
-            Check.near(first.y, want.trailFirstPos![1], pT, "\(at) oldest trail y")
-            Check.near(first.z, want.trailFirstPos![2], pT, "\(at) oldest trail z")
-            Check.near(first.speed, want.trailFirstSpeed!, vT, "\(at) oldest trail speed")
-        }
-    }
-
-    /// The fixture carries the field it measured in-bounds against, so the comparison is
-    /// threaded rather than reaching for a module constant. This game runs on two pitches.
-    private static func inBounds(_ p: Vec3d, _ f: FieldBox) -> Bool {
-        abs(p.x) <= f.sideline + f.eps && abs(p.z) <= f.endLine + f.eps
-    }
-
-    private static func compareScuff(
-        _ rt: DiscRuntime, _ want: ScuffRecord, _ at: String, tol: Double
-    ) {
-        Check.bitEqViaJSON(rt.wear, want.wear, "\(at) wear after")
-        guard let w = want.scuff, let got = rt.pendingScuff else {
-            Check.eq(rt.pendingScuff == nil, want.scuff == nil, "\(at) scuff presence")
-            return
-        }
-        Check.near(got.rr, w.rr, Swift.max(tol, 1e-12), "\(at) rr")
-        Check.near(got.ang, w.ang, Swift.max(tol, 1e-12), "\(at) ang")
-        Check.eq(got.top, w.top, "\(at) which face struck")
-        Check.bitEqViaJSON(got.strength, w.strength, "\(at) strength")
-    }
-
-    private static func comparePath(
-        _ got: [FlightSample], _ want: Prediction, _ at: String, elapsed: Double, mode: DiscMode
-    ) {
-        Check.eq(mode.rawValue, want.mode, "\(at) mode at the call")
-        Check.eq(got.count, want.path.count, "\(at) sample count")
-        let n = Swift.min(got.count, want.path.count)
-        for i in 0..<n {
-            let w = want.path[i]
-            // Sample times are `i * dt` with a clamped `dt`, so they are exact.
-            Check.bitEqViaJSON(got[i].t, w[0], "\(at) sample \(i) t")
-            let tol = posTol(elapsed + w[0])
-            Check.near(got[i].x, w[1], tol, "\(at) sample \(i) x")
-            Check.near(got[i].y, w[2], tol, "\(at) sample \(i) y")
-            Check.near(got[i].z, w[3], tol, "\(at) sample \(i) z")
-        }
-        Check.ok(got.count >= 2, "\(at) always returns at least two points")
-    }
-
-    // MARK: - probeThrow
-
-    private static func probe(_ c: ProbeCase, _ i: Int) {
-        let rt = DiscRuntime()
-        rt.groundAt = ground(c.ground)
-        rt.wind = Vec3d(c.wind[0], c.wind[1], c.wind[2])
-        let req = ThrowRequest(
-            type: ThrowType(rawValue: c.type)!,
-            from: Vec3d(c.from[0], c.from[1], c.from[2]),
-            aim: Vec3d(c.aim[0], c.aim[1], c.aim[2]),
-            power: c.power, angle: c.angle, spin: c.spin,
-            hand: hand(c.hand), bank: c.bank, nose: c.nose, speed: c.speed)
-        let r = rt.probeThrow(req, catchY: c.catchY, maxT: c.maxT)
-        let at = "probe \(i) \(c.type)/\(c.ground)/catchY=\(c.catchY)"
-
-        // The stop time is an integer number of fixed steps, so it is exact — and if the
-        // two implementations ever disagreed about WHICH frame crossed the catch plane
-        // this is the assertion that would say so, rather than a position drifting.
-        Check.bitEqViaJSON(r.t, c.t, "\(at) flight time at the catch plane")
-        let tol = posTol(c.t)
-        Check.near(r.dist, c.dist, tol, "\(at) distance down the aim line")
-        Check.near(r.lat, c.lat, tol, "\(at) lateral offset")
-        Check.near(r.x, c.x, tol, "\(at) x")
-        Check.near(r.z, c.z, tol, "\(at) z")
-    }
-
-    // MARK: - scuff geometry
-
-    private static func scuff(_ c: ScuffCase, _ i: Int) {
-        let rt = DiscRuntime()
-        rt.groundAt = ground("flat")
-        rt.hold(1, Vec3d(0, 1, 0), Vec3d(c.normal[0], c.normal[1], c.normal[2]), c.phase)
-        let at = "scuff \(i) normal=\(c.normal) phase=\(c.phase)"
-
-        if let saturation = c.saturation {
-            for (k, w) in saturation.enumerated() {
-                rt.markScuff(1)
-                Check.bitEqViaJSON(rt.wear, w, "\(at) wear after \(k + 1) full-strength strikes")
-            }
-            Check.bitEqViaJSON(rt.wear, 1, "\(at) wear saturates at one")
-            return
-        }
-
-        // The orientation comes from `setFromUnitVectors` and `setFromAxisAngle`, so it is
-        // `sin`/`cos` of the phase and a `sqrt` — one transcendental deep, not hundreds.
-        if let want = c.orient {
-            let d = rt.state.orient.x * want[0] + rt.state.orient.y * want[1]
-                + rt.state.orient.z * want[2] + rt.state.orient.w * want[3]
-            let sign = d < 0 ? -1.0 : 1.0
-            Check.near(sign * rt.state.orient.x, want[0], 1e-15, "\(at) orient.x")
-            Check.near(sign * rt.state.orient.y, want[1], 1e-15, "\(at) orient.y")
-            Check.near(sign * rt.state.orient.z, want[2], 1e-15, "\(at) orient.z")
-            Check.near(sign * rt.state.orient.w, want[3], 1e-15, "\(at) orient.w")
-        }
-
-        Check.bitEqViaJSON(rt.wear, c.wearBefore!, "\(at) wear before the strike")
-        rt.markScuff(0.6)
-        let first = rt.pendingScuff!
-        Check.near(first.rr, c.first!.rr, 1e-15, "\(at) first rr")
-        Check.near(first.ang, c.first!.ang, 1e-15, "\(at) first ang")
-        Check.eq(first.top, c.first!.top, "\(at) first face")
-        Check.bitEqViaJSON(first.strength, c.first!.strength, "\(at) first strength")
-
-        rt.markScuff(0.9)
-        let second = rt.pendingScuff!
-        Check.near(second.rr, c.second!.rr, 1e-15, "\(at) second rr")
-        Check.near(second.ang, c.second!.ang, 1e-15, "\(at) second ang")
-        Check.eq(second.top, c.second!.top, "\(at) second face")
-        Check.bitEqViaJSON(second.strength, c.second!.strength, "\(at) second strength")
-        Check.bitEqViaJSON(rt.wear, c.wearAfter!, "\(at) wear accumulates rather than replaces")
-    }
-
-    // MARK: - the trail ring buffer
-
-    // `setTrail-from-cold` and `setTrail-then-decay` were here, exercising
-    // `DiscRuntime.setTrail(_:)` — deleted with the method itself (#5): no caller
-    // anywhere outside these two fixture-driven cases, and no FlightUI consumer of
-    // `DiscRuntime.trail` to seed. `tools/goldens/discruntime.ts`'s `trailCases()`
-    // no longer emits either kind.
-    private static func trailCase(_ c: TrailCase, _ i: Int) {
-        let at = "trail \(i) \(c.kind)"
-        switch c.kind {
-        case "capacity-only":
+    /// `DiscMode` has exactly three values and exactly three public ways to change it —
+    /// `hold`, `settle`, `release` — and every one of them is unconditional: the mode it
+    /// names is where the runtime lands, regardless of where it started. That is small
+    /// enough to drive every cell for real rather than sample it, the way
+    /// `GameStateTests.everyCellOfTheTransitionTableIsDriven` does for the ten-phase game
+    /// machine.
+    private static func modeMachine() {
+        func fresh(_ mode: DiscMode) -> DiscRuntime {
             let rt = DiscRuntime()
-            rt.groundAt = ground("flat")
-            rt.trailSeconds = c.trailSeconds!
-            rt.trailCapacity = c.trailCapacity!
-            rt.release(
-                ThrowRequest(
-                    type: .backhand, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0),
-                    power: 0.8, angle: 0.05, spin: 0.6))
-            for (k, want) in c.counts!.enumerated() {
-                rt.step(dt: FIXED_DT)
-                Check.eq(rt.trail.count, want, "\(at) count after step \(k)")
+            switch mode {
+            case .ground:
+                rt.settle(Vec3d(-3, 0, 5))
+            case .held:
+                rt.hold(11, Vec3d(2, 1.1, -2), Vec3d(0, 1, 0), 0.2)
+            case .flight:
+                _ = rt.release(
+                    ThrowRequest(
+                        type: .backhand, from: Vec3d(0, 1.5, 0), aim: Vec3d(1, 0, 0),
+                        power: 0.5, angle: 0, spin: 0.5))
             }
-            Check.eq(
-                rt.trail.count, c.trailCapacity!,
-                "\(at) capacity, not the seconds budget, is what evicts")
-            Check.bitEqViaJSON(rt.trailAge, c.trailAge!, "\(at) newest sample is this frame")
-            for (k, w) in c.trail!.enumerated() {
-                let s = rt.trail[k]
-                Check.bitEqViaJSON(s.t, w[3], "\(at) sample \(k) time")
-                Check.near(s.x, w[0], posTol(s.t), "\(at) sample \(k) x")
-                Check.near(s.y, w[1], posTol(s.t), "\(at) sample \(k) y")
-                Check.near(s.z, w[2], posTol(s.t), "\(at) sample \(k) z")
-                Check.near(s.speed, w[4], velTol(s.t), "\(at) sample \(k) speed")
+            return rt
+        }
+
+        var cells = 0
+        for start: DiscMode in [.ground, .held, .flight] {
+            // hold() — always lands in .held, always takes the caller's id/pos/normal,
+            // always clears vel/omega, always clears the trail.
+            do {
+                let rt = fresh(start)
+                rt.hold(5, Vec3d(4, 1.2, -1), Vec3d(0.3, 0.9, 0), 0.7)
+                Check.eq(rt.mode, .held, "from \(start): hold() lands in held")
+                Check.eq(rt.holderId, 5, "from \(start): hold() sets the caller's holder id")
+                Check.bitEq(rt.state.pos.x, 4, "from \(start): hold() places x")
+                Check.bitEq(rt.state.pos.y, 1.2, "from \(start): hold() places y")
+                Check.bitEq(rt.state.pos.z, -1, "from \(start): hold() places z")
+                Check.bitEq(rt.state.vel.x, 0, "from \(start): hold() zeroes vel.x")
+                Check.bitEq(rt.state.vel.y, 0, "from \(start): hold() zeroes vel.y")
+                Check.bitEq(rt.state.vel.z, 0, "from \(start): hold() zeroes vel.z")
+                Check.eq(rt.state.atRest, false, "from \(start): a held disc is not at rest")
+                Check.eq(rt.state.touchedGround, false, "from \(start): a held disc has not touched ground")
+                Check.eq(rt.trail.isEmpty, true, "from \(start): hold() clears the trail")
+                cells += 1
             }
+            // settle() — always lands in .ground, at the target xz and groundAt(target) +
+            // halfHeight, at rest, having touched ground, WITHOUT clearing the trail.
+            do {
+                let rt = fresh(start)
+                rt.groundAt = { x, z in 1.5 + 0.1 * x - 0.2 * z }
+                let before = rt.trail
+                rt.settle(Vec3d(6, 99, -8))
+                Check.eq(rt.mode, .ground, "from \(start): settle() lands on the ground")
+                Check.eq(rt.holderId, -1, "from \(start): settle() releases any holder")
+                Check.bitEq(rt.state.pos.x, 6, "from \(start): settle() places x")
+                Check.bitEq(
+                    rt.state.pos.y, 1.5 + 0.1 * 6 - 0.2 * -8 + DiscBody.standard.halfHeight,
+                    "from \(start): settle() rests on the target's own ground height")
+                Check.bitEq(rt.state.pos.z, -8, "from \(start): settle() places z")
+                Check.eq(rt.state.atRest, true, "from \(start): a settled disc is at rest")
+                Check.eq(rt.state.touchedGround, true, "from \(start): a settled disc has touched ground")
+                Check.eq(rt.trail.count, before.count, "from \(start): settle() does not clear the trail")
+                cells += 1
+            }
+            // release() — always lands in .flight, always frees any holder, always resets
+            // sinceRelease to exactly zero, always starts a fresh one-sample trail.
+            do {
+                let rt = fresh(start)
+                let v = rt.release(
+                    ThrowRequest(
+                        type: .forehand, from: Vec3d(1, 1.4, 2), aim: Vec3d(0, 0, 1),
+                        power: 0.6, angle: 0, spin: 0.5, hand: .right))
+                Check.eq(rt.mode, .flight, "from \(start): release() lands in flight")
+                Check.eq(rt.holderId, -1, "from \(start): release() frees any holder")
+                Check.bitEq(rt.sinceRelease, 0, "from \(start): release() resets the release timer")
+                Check.eq(rt.trail.count, 1, "from \(start): release() starts a fresh one-sample trail")
+                Check.eq(rt.state.atRest, false, "from \(start): a released disc is not at rest")
+                Check.eq(rt.state.touchedGround, false, "from \(start): a released disc has not touched ground")
+                Check.bitEq(v.x, rt.state.vel.x, "from \(start): the returned velocity is state.vel.x")
+                Check.bitEq(v.y, rt.state.vel.y, "from \(start): the returned velocity is state.vel.y")
+                Check.bitEq(v.z, rt.state.vel.z, "from \(start): the returned velocity is state.vel.z")
+                cells += 1
+            }
+        }
+        Check.eq(cells, 9, "every one of the nine (mode × transition) cells was driven")
 
-        case "empty":
-            let rt = DiscRuntime()
-            Check.bitEqViaJSON(rt.now, c.now!, "\(at) clock")
-            Check.bitEqViaJSON(rt.trailAge, c.trailAge!, "\(at) sentinel age")
-            Check.eq(rt.trail.count, c.count!, "\(at) count")
+        // The reference's `release()` hands back a module-scratch vector that the NEXT
+        // release on ANY runtime overwrites out from under the caller — documented in
+        // `DiscRuntime.swift` as a latent bug preserved as a comment, not as behaviour,
+        // because Swift's `Vec3d` is a value. Assert the value semantics directly: take a
+        // release's returned velocity, release a SECOND, unrelated runtime, and confirm
+        // the first value is untouched.
+        let a = DiscRuntime()
+        let va = a.release(
+            ThrowRequest(type: .backhand, from: .zero, aim: Vec3d(1, 0, 0), power: 0.7, angle: 0, spin: 0.5))
+        let b = DiscRuntime()
+        _ = b.release(
+            ThrowRequest(type: .hammer, from: Vec3d(9, 9, 9), aim: Vec3d(0, 0, 1), power: 0.9, angle: 0, spin: 0.5))
+        Check.bitEq(va.x, a.state.vel.x, "a release's returned velocity survives a second runtime's release")
+        Check.bitEq(va.y, a.state.vel.y, "…in y")
+        Check.bitEq(va.z, a.state.vel.z, "…in z")
 
-        default:
-            Check.ok(false, "\(at) is an unknown trail case")
+        // "The game system is the single driver": a runtime not in flight does no physics,
+        // however hard it is stepped, in EITHER of the two non-flight modes.
+        for start: DiscMode in [.held, .ground] {
+            let rt = fresh(start)
+            let before = rt.state.pos
+            for _ in 0..<300 { rt.step(dt: FIXED_DT) }
+            Check.bitEq(rt.state.pos.x, before.x, "mode \(start): step() does not move x")
+            Check.bitEq(rt.state.pos.y, before.y, "mode \(start): step() does not move y")
+            Check.bitEq(rt.state.pos.z, before.z, "mode \(start): step() does not move z")
+            Check.bitEq(rt.state.t, 0, "mode \(start): a runtime that never flew accrues no flight time")
         }
     }
 
+    // MARK: - the trail ring buffer, against an independent model of its eviction rule
 
-    // MARK: - the module's prose, asserted as behaviour
+    /// `decayTrail`'s rule, transcribed from `DiscRuntime.swift`'s own comment rather than
+    /// called — it is `private`, unreachable from this module — and driven by a clock this
+    /// suite accumulates itself, not one read back off the runtime. See the header for why
+    /// that distinction is the one that makes this a real second implementation rather
+    /// than a value compared to itself.
+    private struct TrailModel {
+        var entries: [(t: Double, x: Double, y: Double, z: Double, speed: Double)] = []
 
-    /// Every claim below is written down in `DiscRuntime`'s own documentation or in the
-    /// reference's. They would survive a retune of the flight model, and if they ever
-    /// disagree with the fixtures, believe them.
-    private static func proseClaims() {
-        // "The game system is the single driver — it decides when the disc is in a hand,
-        // in the air or on the grass." So a runtime that is not in flight does no physics,
-        // however hard it is stepped.
-        do {
+        mutating func clear() { entries.removeAll() }
+
+        mutating func push(_ e: (t: Double, x: Double, y: Double, z: Double, speed: Double)) {
+            entries.append(e)
+        }
+
+        /// `cut = now - trailSeconds`; drop every leading entry older than the cut, THEN
+        /// drop from the front again down to capacity. Same order as `decayTrail`: age
+        /// first, capacity second.
+        mutating func evict(now: Double, seconds: Double, capacity: Int) {
+            let cut = now - seconds
+            var drop = 0
+            while drop < entries.count && entries[drop].t < cut { drop += 1 }
+            if drop > 0 { entries.removeFirst(drop) }
+            while entries.count > capacity { entries.removeFirst() }
+        }
+    }
+
+    private static func assertTrailMatches(_ rt: DiscRuntime, _ model: TrailModel, _ at: String) {
+        Check.eq(rt.trail.count, model.entries.count, "\(at) trail count")
+        let n = Swift.min(rt.trail.count, model.entries.count)
+        for k in 0..<n {
+            let got = rt.trail[k]
+            let want = model.entries[k]
+            Check.bitEq(got.t, want.t, "\(at) sample \(k) t")
+            Check.bitEq(got.x, want.x, "\(at) sample \(k) x")
+            Check.bitEq(got.y, want.y, "\(at) sample \(k) y")
+            Check.bitEq(got.z, want.z, "\(at) sample \(k) z")
+            Check.bitEq(got.speed, want.speed, "\(at) sample \(k) speed")
+        }
+        Check.ok(rt.trail.count <= rt.trailCapacity, "\(at) never exceeds capacity")
+        if let oldest = rt.trail.first {
+            Check.ok(
+                rt.now - oldest.t <= rt.trailSeconds + 1e-9,
+                "\(at) the oldest sample is within the seconds budget")
+        }
+    }
+
+    private static func trailLaws() {
+        struct Config {
+            let name: String
+            let ground: String
+            let capacity: Int
+            let seconds: Double
+            let preHoldFrames: Int
+            let flightFrames: Int
+            let settleAt: Int?  // frame at which to settle (keeps the trail) then continue
+            let holdAt: Int?  // frame at which to hold (clears the trail) then continue
+        }
+        let configs = [
+            Config(
+                name: "capacity binds, seconds never does", ground: "flat", capacity: 9,
+                seconds: 10, preHoldFrames: 0, flightFrames: 200, settleAt: nil, holdAt: nil),
+            Config(
+                name: "seconds binds, capacity never does", ground: "sloped", capacity: 500,
+                seconds: 0.1, preHoldFrames: 0, flightFrames: 180, settleAt: nil, holdAt: nil),
+            Config(
+                name: "both bind, at different frames", ground: "flat", capacity: 16,
+                seconds: 0.2, preHoldFrames: 0, flightFrames: 260, settleAt: nil, holdAt: nil),
+            Config(
+                name: "settle keeps the trail decaying by age", ground: "sloped",
+                capacity: 40, seconds: 0.5, preHoldFrames: 0, flightFrames: 260,
+                settleAt: 140, holdAt: nil),
+            Config(
+                name: "a catch mid-flight clears the trail outright", ground: "flat",
+                capacity: 30, seconds: 5, preHoldFrames: 12, flightFrames: 150,
+                settleAt: nil, holdAt: 80),
+        ]
+
+        for cfg in configs {
             let rt = DiscRuntime()
-            rt.groundAt = { x, _ in 0.5 + 0.1 * x }
-            rt.wind = Vec3d(9, 0, -9)
-            rt.hold(4, Vec3d(2, 1.3, -1), Vec3d(0, 1, 0), 0.3)
-            let before = rt.state
-            // 1/120 is not representable in binary, so the expected clock is accumulated
-            // the same way rather than written as 5. Comparing against a round number here
-            // would be asserting the rounding of the multiplication, not the sum.
+            rt.groundAt = ground(cfg.ground)
+            rt.wind = Vec3d(0.4, 0, -0.3)
+            rt.trailCapacity = cfg.capacity
+            rt.trailSeconds = cfg.seconds
+            var model = TrailModel()
             var clock = 0.0
-            var since = 1e3
-            for _ in 0..<600 {
+
+            if cfg.preHoldFrames > 0 {
+                rt.hold(2, Vec3d(0, 1.2, 0), Vec3d(0, 1, 0), 0)
+                model.clear()
+                for i in 0..<cfg.preHoldFrames {
+                    rt.step(dt: FIXED_DT)
+                    clock += FIXED_DT
+                    model.evict(now: clock, seconds: cfg.seconds, capacity: cfg.capacity)
+                    assertTrailMatches(rt, model, "\(cfg.name) pre-hold \(i)")
+                }
+            }
+
+            _ = rt.release(
+                ThrowRequest(
+                    type: .backhand, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0.2),
+                    power: 0.6, angle: 0.04, spin: 0.55))
+            model.clear()
+            model.push(
+                (t: rt.trail[0].t, x: rt.trail[0].x, y: rt.trail[0].y, z: rt.trail[0].z,
+                 speed: rt.trail[0].speed))
+            model.evict(now: clock, seconds: cfg.seconds, capacity: cfg.capacity)
+            assertTrailMatches(rt, model, "\(cfg.name) release")
+
+            for i in 1...cfg.flightFrames {
+                if let settleAt = cfg.settleAt, i == settleAt {
+                    rt.settle(rt.state.pos)
+                    // settle() does not clear the trail — model unchanged here.
+                }
+                if let holdAt = cfg.holdAt, i == holdAt {
+                    rt.hold(3, rt.state.pos, Vec3d(0, 1, 0), 0)
+                    model.clear()
+                }
+                let wasFlight = rt.mode == .flight
                 rt.step(dt: FIXED_DT)
                 clock += FIXED_DT
-                since += FIXED_DT
-            }
-            Check.bitEqViaJSON(rt.state.pos.x, before.pos.x, "a held disc does not move in x")
-            Check.bitEqViaJSON(rt.state.pos.y, before.pos.y, "a held disc does not move in y")
-            Check.bitEqViaJSON(rt.state.pos.z, before.pos.z, "a held disc does not move in z")
-            Check.bitEqViaJSON(rt.state.t, 0, "a held disc accrues no flight time")
-            Check.bitEqViaJSON(rt.now, clock, "the runtime clock runs regardless")
-            Check.near(rt.now, 5, 1e-12, "five seconds of held frames really is five seconds")
-            Check.bitEqViaJSON(rt.sinceRelease, since, "so does the release timer")
-            Check.eq(rt.trail.isEmpty, true, "and a held disc leaves no trail")
-        }
-
-        // "Seconds since release; blocks self-catches for a few frames."
-        do {
-            let rt = DiscRuntime()
-            Check.ok(rt.sinceRelease > 100, "an unthrown disc cannot be self-caught")
-            rt.release(
-                ThrowRequest(
-                    type: .backhand, from: Vec3d(0, 1.5, 0), aim: Vec3d(1, 0, 0),
-                    power: 0.5, angle: 0, spin: 0.5))
-            Check.bitEqViaJSON(rt.sinceRelease, 0, "release resets the timer to exactly zero")
-            var since = 0.0
-            for _ in 0..<12 {
-                rt.step(dt: FIXED_DT)
-                since += FIXED_DT
-            }
-            Check.bitEqViaJSON(rt.sinceRelease, since, "and it accrues one dt per step")
-        }
-
-        // "A TRAIL THAT IS THE REAL PATH. Not a spline hint — the actual sampled flight."
-        do {
-            let rt = DiscRuntime()
-            rt.release(
-                ThrowRequest(
-                    type: .backhand, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0.3),
-                    power: 0.7, angle: 0.04, spin: 0.6))
-            var positions: [Vec3d] = [rt.state.pos]
-            for _ in 0..<40 {
-                rt.step(dt: FIXED_DT)
-                positions.append(rt.state.pos)
-            }
-            Check.eq(rt.trail.count, positions.count, "the trail has one sample per step")
-            for (k, p) in positions.enumerated() {
-                Check.bitEqViaJSON(rt.trail[k].x, p.x, "trail sample \(k) is the real path x")
-                Check.bitEqViaJSON(rt.trail[k].y, p.y, "trail sample \(k) is the real path y")
-                Check.bitEqViaJSON(rt.trail[k].z, p.z, "trail sample \(k) is the real path z")
+                if wasFlight, let last = rt.trail.last {
+                    model.push((t: last.t, x: last.x, y: last.y, z: last.z, speed: last.speed))
+                }
+                model.evict(now: clock, seconds: cfg.seconds, capacity: cfg.capacity)
+                assertTrailMatches(rt, model, "\(cfg.name) frame \(i)")
             }
         }
+        Check.eq(configs.count, 5, "every trail configuration ran")
+    }
 
-        // "Park it rather than poisoning every consumer downstream."
-        do {
-            let rt = DiscRuntime()
-            rt.groundAt = { _, _ in 1.25 }
-            rt.release(
-                ThrowRequest(
-                    type: .forehand, from: Vec3d(0, 3, 0), aim: Vec3d(1, 0, 0),
-                    power: 0.5, angle: 0, spin: 0.5))
-            rt.step(dt: FIXED_DT)
-            rt.state.vel = Vec3d(.nan, 0, 0)
-            rt.step(dt: FIXED_DT)
-            Check.ok(rt.state.isFinite, "a poisoned state is parked, not propagated")
-            Check.bitEqViaJSON(rt.state.pos.x, 0, "parked at x = 0")
-            Check.bitEqViaJSON(
-                rt.state.pos.z, 0, "parked at z = 0")
-            Check.bitEqViaJSON(
-                rt.state.pos.y, 1.25 + DiscBody.standard.halfHeight,
-                "parked resting on the ground it last queried")
-            Check.eq(rt.state.atRest, true, "and it is at rest")
-            Check.eq(rt.state.touchedGround, true, "and counts as having touched the ground")
+    // MARK: - scuff geometry and wear, against an independent model of the spec
+
+    /// `orientToNormal` and `markScuff`, transcribed from `DiscRuntime.swift`'s own
+    /// documentation rather than called — both are `internal`, unreachable outside
+    /// `UltimateSim`, so `hold()` + `markScuff()` is the only way in from here, exactly as
+    /// for any real caller.
+    ///
+    /// `hypot2` here is plain `Foundation.hypot`, not `jsHypot2` — this suite cannot reach
+    /// `jsHypot2` either, and does not need to: the geometry is one transcendental deep
+    /// (`sin`/`cos` of the phase, and the final `atan2`), not RK4's hundreds, so a
+    /// tolerance of 1e-12 comfortably separates "different rounding" from "wrong
+    /// formula." The 0.055 wear-per-strike and 1.05 radius-fudge below are transcribed
+    /// values, not references to a symbol — `markScuff` has no exported constant for
+    /// either — so a production edit to either literal is exactly what this model will
+    /// stop agreeing with, which is the pinning issue #58 asks for where there is no
+    /// named symbol to pin.
+    private enum ScuffModel {
+        static func orient(normal: Vec3d, phase: Double) -> Quatd {
+            var n = normal.normalized
+            if n.lengthSq < 1e-6 { n = Vec3d(0, 1, 0) }
+            let q1 = Quatd.fromUnitVectors(Vec3d(0, 0, 1), n)
+            let q2 = Quatd.fromAxisAngle(Vec3d(0, 0, 1), phase)
+            return (q1 * q2).normalized
         }
 
-        // "predictPath ... step is clamped and the sample count is bounded", so no caller
-        // can ask for an unbounded amount of integration.
+        static func scuff(orient: Quatd) -> (rr: Double, ang: Double, top: Bool) {
+            let n = Vec3d(0, 0, 1).applying(orient)
+            let top = n.y >= 0
+            let down = Vec3d(0, -1, 0).applying(orient.conjugated)
+            let rr = clamp(Foundation.hypot(down.x, down.y) * 1.05, 0, 1)
+            let ang = Foundation.atan2(down.y, down.x)
+            return (rr, ang, !top)
+        }
+
+        static func wear(_ prev: Double, strength: Double) -> Double {
+            clamp(prev + strength * 0.055, 0, 1)
+        }
+    }
+
+    private static func scuffLaws() {
+        var rng = Sample(0xD15C)
+        var cases: [(normal: Vec3d, phase: Double)] = [
+            // Hand-picked to reach both faces, the clamp, and the degenerate fallback.
+            (Vec3d(0, 1, 0), 0), (Vec3d(0, -1, 0), 0),
+            (Vec3d(1, 0, 0), 0),  // in-plane normal: forces rr toward/at the clamp
+            (Vec3d(0, 0, 1), 1.1),
+            (Vec3d(0, 0, 0), 0.4),  // degenerate — falls back to world up
+        ]
+        for _ in 0..<250 {
+            cases.append(
+                (Vec3d(rng.unit(-1, 1), rng.unit(-1, 1), rng.unit(-1, 1)), rng.unit(-.pi, .pi)))
+        }
+
+        var sawClamp = false
+        for (i, c) in cases.enumerated() {
+            let rt = DiscRuntime()
+            rt.groundAt = ground("flat")
+            rt.hold(1, Vec3d(0, 1, 0), c.normal, c.phase)
+
+            // hold() itself: the disc's face points at the requested normal (or world up,
+            // for the degenerate input).
+            let wantOrient = ScuffModel.orient(normal: c.normal, phase: c.phase)
+            let d = rt.state.orient.x * wantOrient.x + rt.state.orient.y * wantOrient.y
+                + rt.state.orient.z * wantOrient.z + rt.state.orient.w * wantOrient.w
+            let sign = d < 0 ? -1.0 : 1.0
+            let at = "scuff \(i) normal=\(c.normal) phase=\(c.phase)"
+            Check.near(sign * rt.state.orient.x, wantOrient.x, 1e-12, "\(at) orient.x")
+            Check.near(sign * rt.state.orient.y, wantOrient.y, 1e-12, "\(at) orient.y")
+            Check.near(sign * rt.state.orient.z, wantOrient.z, 1e-12, "\(at) orient.z")
+            Check.near(sign * rt.state.orient.w, wantOrient.w, 1e-12, "\(at) orient.w")
+
+            var wantWear = 0.0
+            for (k, strength) in [0.6, 0.9, 0.3].enumerated() {
+                rt.markScuff(strength)
+                wantWear = ScuffModel.wear(wantWear, strength: strength)
+                let want = ScuffModel.scuff(orient: wantOrient)
+                let got = rt.pendingScuff!
+                Check.near(got.rr, want.rr, 1e-12, "\(at) strike \(k) rr")
+                Check.near(got.ang, want.ang, 1e-12, "\(at) strike \(k) ang")
+                Check.eq(got.top, want.top, "\(at) strike \(k) which face struck")
+                Check.bitEq(got.strength, strength, "\(at) strike \(k) strength recorded as given")
+                Check.bitEq(rt.wear, wantWear, "\(at) strike \(k) wear accumulates per the model")
+                if want.rr >= 1 - 1e-9 { sawClamp = true }
+            }
+        }
+        Check.eq(cases.count, 255, "the scuff sweep ran every case")
+        Check.ok(sawClamp, "the sweep actually reached the rr clamp at least once")
+
+        // Wear saturates at 1 and stays there — a thousand full-strength strikes, model
+        // and runtime compared at every single one.
+        let rt = DiscRuntime()
+        rt.hold(1, Vec3d(0, 1, 0), Vec3d(0, 1, 0), 0)
+        var w = 0.0
+        for i in 0..<1000 {
+            rt.markScuff(1)
+            w = ScuffModel.wear(w, strength: 1)
+            Check.bitEq(rt.wear, w, "wear after strike \(i) matches the model")
+        }
+        Check.bitEq(rt.wear, 1, "wear saturates at exactly one")
+    }
+
+    // MARK: - predictPath, against an independently driven copy of the same physics
+
+    private static func predictionLaws() {
+        // The bounds a caller cannot escape, whatever it asks for.
         do {
             let rt = DiscRuntime()
-            rt.release(
+            _ = rt.release(
                 ThrowRequest(
                     type: .backhand, from: Vec3d(0, 30, 0), aim: Vec3d(1, 0, 0),
                     power: 1, angle: 0.3, spin: 1))
             Check.eq(
                 rt.predictPath(horizon: 1e6, step: 1e-9).count, 241,
-                "a huge horizon and a tiny step still cost 240 integrations")
+                "a huge horizon and a tiny step still cost at most 240 integrations")
             Check.eq(
                 rt.predictPath(horizon: -5, step: 1e9).count, 3,
-                "a negative horizon still returns the floor of two steps")
+                "a negative horizon still returns the floor of two steps plus the origin")
             Check.ok(
                 rt.predictPath(horizon: 0, step: 0).count >= 2,
                 "predictPath always returns at least two points")
         }
 
-        // "We integrate the real state when it is ours and in the air, and a matching
-        // state otherwise." A live flight must ignore the caller's guess entirely.
+        /// Drive `p` through exactly the sequence `predictPath` documents: the horizon
+        /// floor and the step clamp applied first, then re-querying `groundAt` every
+        /// iteration, stopping early on ground contact. `rt` is untouched by this.
+        func replicate(
+            _ rt: DiscRuntime, seed p0: DiscState, horizon: Double, step: Double
+        ) -> [(t: Double, x: Double, y: Double, z: Double)] {
+            var p = p0
+            p.touchedGround = false
+            p.atRest = false
+            var out: [(Double, Double, Double, Double)] = [(0, p.pos.x, p.pos.y, p.pos.z)]
+            let dt = Swift.max(FIXED_DT, Swift.min(1.0 / 20.0, step))
+            let n = Swift.max(2, Swift.min(240, Int((Swift.max(0.1, horizon) / dt).rounded())))
+            for i in 1...n {
+                p.groundY = rt.groundAt(p.pos.x, p.pos.z)
+                p.step(dt: dt, wind: rt.wind, coeffs: rt.coeffs, body: rt.body)
+                out.append((Double(i) * dt, p.pos.x, p.pos.y, p.pos.z))
+                if p.touchedGround { break }
+            }
+            return out
+        }
+
+        func compare(_ got: [FlightSample], _ want: [(Double, Double, Double, Double)], _ at: String) {
+            Check.eq(got.count, want.count, "\(at) sample count")
+            for i in 0..<Swift.min(got.count, want.count) {
+                Check.bitEq(got[i].t, want[i].0, "\(at) sample \(i) t")
+                Check.bitEq(got[i].x, want[i].1, "\(at) sample \(i) x")
+                Check.bitEq(got[i].y, want[i].2, "\(at) sample \(i) y")
+                Check.bitEq(got[i].z, want[i].3, "\(at) sample \(i) z")
+            }
+        }
+
+        let scenarios:
+            [(String, String, Vec3d, ThrowType, Int, Double, Double)] = [
+                ("flat, mid-flight, coarse step", "flat", Vec3d(0.5, 0, 0), .backhand, 40, 2.5, 1.0 / 30),
+                ("sloped, wind, fine step", "sloped", Vec3d(-0.8, 0, 1.2), .hammer, 90, 4, 1.0 / 120),
+                ("just after release", "flat", .zero, .blade, 1, 1.0, 1.0 / 60),
+                ("long horizon", "sloped", Vec3d(0.2, 0, -0.6), .scoober, 150, 6, 1.0 / 30),
+            ]
+        for (name, gname, wind, type, warmup, horizon, step) in scenarios {
+            let rt = DiscRuntime()
+            rt.groundAt = ground(gname)
+            rt.wind = wind
+            _ = rt.release(
+                ThrowRequest(
+                    type: type, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0.3),
+                    power: 0.65, angle: 0.03, spin: 0.55))
+            for _ in 0..<warmup { rt.step(dt: FIXED_DT) }
+            let got = rt.predictPath(horizon: horizon, step: step)
+            let want = replicate(rt, seed: rt.state, horizon: horizon, step: step)
+            compare(got, want, "predictPath live: \(name)")
+        }
+
+        // Off-flight: the caller's pos/vel seed the copy, but orientation and angular
+        // velocity still come from the runtime's own state, per `DiscRuntime.swift`.
         do {
             let rt = DiscRuntime()
-            rt.release(
+            rt.groundAt = ground("sloped")
+            rt.wind = Vec3d(0.3, 0, 0.1)
+            _ = rt.release(
+                ThrowRequest(
+                    type: .push, from: Vec3d(0, 1.3, 0), aim: Vec3d(1, 0, 0),
+                    power: 0.5, angle: 0, spin: 0.4))
+            for _ in 0..<10 { rt.step(dt: FIXED_DT) }
+            rt.settle(rt.state.pos)
+            let callerPos = Vec3d(-12, 8, 5)
+            let callerVel = Vec3d(3, -6, 1)
+            let got = rt.predictPath(pos: callerPos, vel: callerVel, horizon: 2.2, step: 1.0 / 45)
+            var seed = rt.state
+            seed.pos = callerPos
+            seed.vel = callerVel
+            let want = replicate(rt, seed: seed, horizon: 2.2, step: 1.0 / 45)
+            compare(got, want, "predictPath off-flight")
+        }
+
+        // Live flight ignores the caller's guess entirely.
+        do {
+            let rt = DiscRuntime()
+            _ = rt.release(
                 ThrowRequest(
                     type: .backhand, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0),
                     power: 0.6, angle: 0.05, spin: 0.5))
@@ -906,23 +596,17 @@ enum DiscRuntimeTests {
             let theirs = rt.predictPath(
                 pos: Vec3d(-40, 25, 17), vel: Vec3d(-3, -9, 2), horizon: 2, step: 1.0 / 30.0)
             for k in 0..<ours.count {
-                Check.bitEqViaJSON(theirs[k].x, ours[k].x, "live flight ignores the caller's x")
-                Check.bitEqViaJSON(theirs[k].y, ours[k].y, "live flight ignores the caller's y")
-                Check.bitEqViaJSON(theirs[k].z, ours[k].z, "live flight ignores the caller's z")
+                Check.bitEq(theirs[k].x, ours[k].x, "live flight ignores the caller's x")
+                Check.bitEq(theirs[k].y, ours[k].y, "live flight ignores the caller's y")
+                Check.bitEq(theirs[k].z, ours[k].z, "live flight ignores the caller's z")
             }
-            rt.settle(Vec3d(0, 0, 0))
-            let after = rt.predictPath(
-                pos: Vec3d(-40, 25, 17), vel: Vec3d(-3, -9, 2), horizon: 2, step: 1.0 / 30.0)
-            Check.bitEqViaJSON(after[0].x, -40, "off flight, the caller's position is taken")
-            Check.bitEqViaJSON(after[0].y, 25, "off flight, the caller's height is taken")
-            Check.bitEqViaJSON(after[0].z, 17, "off flight, the caller's z is taken")
         }
 
         // The `DiscPeer` conformance is the same call, so the AI cannot get a different
         // answer from the one the game gets.
         do {
             let rt = DiscRuntime()
-            rt.release(
+            _ = rt.release(
                 ThrowRequest(
                     type: .hammer, from: Vec3d(1, 1.8, 2), aim: Vec3d(0, 0, 1),
                     power: 0.7, angle: 0, spin: 0.5))
@@ -932,58 +616,185 @@ enum DiscRuntimeTests {
             ai.vel = Vec3d(1, 2, 3)
             let peer: DiscPeer = rt
             let viaPeer = peer.predictPath(ai, horizon: 3, step: 1.0 / 40.0)
-            let direct = rt.predictPath(
-                pos: ai.pos, vel: ai.vel, horizon: 3, step: 1.0 / 40.0)
+            let direct = rt.predictPath(pos: ai.pos, vel: ai.vel, horizon: 3, step: 1.0 / 40.0)
             Check.eq(viaPeer.count, direct.count, "the peer contract returns the same path length")
             for k in 0..<viaPeer.count {
-                Check.bitEqViaJSON(viaPeer[k].x, direct[k].x, "peer sample \(k) x")
-                Check.bitEqViaJSON(viaPeer[k].y, direct[k].y, "peer sample \(k) y")
-                Check.bitEqViaJSON(viaPeer[k].z, direct[k].z, "peer sample \(k) z")
+                Check.bitEq(viaPeer[k].x, direct[k].x, "peer sample \(k) x")
+                Check.bitEq(viaPeer[k].y, direct[k].y, "peer sample \(k) y")
+                Check.bitEq(viaPeer[k].z, direct[k].z, "peer sample \(k) z")
             }
         }
+    }
 
-        // "Settle() does NOT clear the trail" — that is what leaves a ribbon behind a disc
-        // that was swatted down — where hold() does.
+    // MARK: - probeThrow, against an independently driven copy of the same physics
+
+    /// `probeThrow` keeps its own scratch `DiscState`, built by the same `throwDisc` call
+    /// `release()` makes, and steps it with the same per-frame `groundAt` re-query
+    /// `DiscRuntime.step()` uses. That means a second runtime driven by hand through the
+    /// public `release()` + `step()` sequence has to reach the identical crossing frame,
+    /// bit for bit — there is only one flight model and one ground query, called through
+    /// two different call sites. This is the check that would catch `req.speed` silently
+    /// stopping being forwarded, which is exactly the regression `DiscRuntime.swift`'s own
+    /// header records having happened once.
+    private static func probeLaws() {
+        let grounds: [(String, (Double, Double) -> Double)] = [
+            ("flat", ground("flat")), ("sloped", ground("sloped")),
+        ]
+        let winds = [Vec3d.zero, Vec3d(0.8, 0, -0.4), Vec3d(-1.2, 0, 0.6)]
+        let catchYs = [1.9, 1.35, 0.85, 0.25]
+
+        var swept = 0
+        for (gname, g) in grounds {
+            for type in ThrowType.allCases {
+                for wind in winds {
+                    for catchY in catchYs {
+                        swept += 1
+                        let req = ThrowRequest(
+                            type: type, from: Vec3d(-1, 1.55, -8), aim: Vec3d(0.3, 0, 1),
+                            power: 0.65, angle: 0.02, spin: 0.5,
+                            hand: type == .forehand ? .left : .right, bank: 0.05, nose: -0.01,
+                            speed: 31)
+
+                        let rt = DiscRuntime()
+                        rt.groundAt = g
+                        rt.wind = wind
+                        let ans = rt.probeThrow(req, catchY: catchY, maxT: 5)
+
+                        let replay = DiscRuntime()
+                        replay.groundAt = g
+                        replay.wind = wind
+                        _ = replay.release(req)
+                        var prevY = replay.state.pos.y
+                        let steps = Int((5.0 / FIXED_DT).rounded())
+                        for _ in 0..<steps {
+                            replay.step(dt: FIXED_DT)
+                            if (replay.state.pos.y <= catchY && prevY > catchY) || replay.state.touchedGround {
+                                break
+                            }
+                            prevY = replay.state.pos.y
+                        }
+                        let at = "probe \(type)/\(gname) wind=\(wind) catchY=\(catchY)"
+                        Check.bitEq(ans.t, replay.state.t, "\(at) crossing time matches an independent replay")
+                        Check.bitEq(ans.x, replay.state.pos.x, "\(at) crossing x")
+                        Check.bitEq(ans.z, replay.state.pos.z, "\(at) crossing z")
+
+                        // dist/lat is a rotation of (dx, dz) onto the aim line, which
+                        // preserves length whenever the aim has a real horizontal part.
+                        let dx = ans.x - req.from.x, dz = ans.z - req.from.z
+                        let h = Foundation.hypot(req.aim.x, req.aim.z)
+                        if h > 1e-9 {
+                            let mag = dx * dx + dz * dz
+                            Check.near(
+                                ans.dist * ans.dist + ans.lat * ans.lat, mag,
+                                Swift.max(1e-9, mag * 1e-9),
+                                "\(at) the aim-line projection preserves distance")
+                        }
+                    }
+                }
+            }
+        }
+        Check.eq(swept, grounds.count * ThrowType.allCases.count * winds.count * catchYs.count,
+                  "the probe sweep ran every combination")
+
+        // Degenerate aim: `hypot(hx, hz) || 1` is the guard, and a purely vertical aim is
+        // the only thing that reaches it — dist/lat collapse to exactly zero regardless of
+        // where the disc actually goes.
         do {
             let rt = DiscRuntime()
-            rt.release(
+            rt.groundAt = ground("flat")
+            let req = ThrowRequest(
+                type: .backhand, from: Vec3d(0, 1.5, 0), aim: Vec3d(0, 1, 0),
+                power: 0.5, angle: 0, spin: 0.5)
+            let r = rt.probeThrow(req, catchY: 1.2, maxT: 4)
+            Check.bitEq(r.dist, 0, "straight-up aim: dist is exactly zero")
+            Check.bitEq(r.lat, 0, "straight-up aim: lat is exactly zero")
+        }
+
+        // Aim exactly along +x: the projection basis is the identity, so dist/lat equal
+        // dx/dz exactly, bit for bit — no hypot rounding anywhere in the way.
+        do {
+            let rt = DiscRuntime()
+            rt.groundAt = ground("flat")
+            let req = ThrowRequest(
+                type: .backhand, from: Vec3d(2, 1.5, 3), aim: Vec3d(1, 0, 0),
+                power: 0.6, angle: 0.05, spin: 0.5)
+            let r = rt.probeThrow(req, catchY: 1.0, maxT: 5)
+            Check.bitEq(r.dist, r.x - req.from.x, "aim along +x: dist is exactly dx")
+            Check.bitEq(r.lat, r.z - req.from.z, "aim along +x: lat is exactly dz")
+        }
+    }
+
+    // MARK: - a light integration touch: a real flight feeding the field's own geometry
+
+    /// `isInBounds`/`boundaryCrossing` are `RulesTests`' subsystem, exhaustively covered
+    /// there. What is genuinely `DiscRuntime`'s to prove is narrower: that a disc it
+    /// actually flies, fed into that geometry, produces a crossing that really sits on the
+    /// edge it claims and really lies within the stepped segment.
+    private static func boundaryLaw() {
+        let rt = DiscRuntime()
+        rt.groundAt = ground("flat")
+        rt.wind = Vec3d(0, 0, 2.0)
+        _ = rt.release(
+            ThrowRequest(
+                type: .backhand, from: Vec3d(14, 1.6, -10), aim: Vec3d(1, 0, 0.6),
+                power: 0.5, angle: 0.12, spin: 0.7, speed: 30))
+        var prev = rt.state.pos
+        var crossing: Crossing? = nil
+        var left = false
+        for _ in 1...300 {
+            rt.step(dt: FIXED_DT)
+            if !FieldConstants.standard.isInBounds(rt.state.pos) {
+                left = true
+                crossing = FieldConstants.standard.boundaryCrossing(prev, rt.state.pos)
+                break
+            }
+            prev = rt.state.pos
+        }
+        Check.ok(left, "a wide, wind-assisted pull leaves the regulation field")
+        guard let c = crossing else {
+            Check.ok(false, "boundaryCrossing finds the exit the flown disc actually made")
+            return
+        }
+        switch c.edge {
+        case .sidelinePlusX:
+            Check.near(c.point.x, FieldConstants.standard.sideline, 1e-9, "crossing sits on the +x sideline")
+        case .sidelineMinusX:
+            Check.near(c.point.x, -FieldConstants.standard.sideline, 1e-9, "crossing sits on the -x sideline")
+        case .endlinePlusZ:
+            Check.near(c.point.z, FieldConstants.standard.endLine, 1e-9, "crossing sits on the +z end line")
+        case .endlineMinusZ:
+            Check.near(c.point.z, -FieldConstants.standard.endLine, 1e-9, "crossing sits on the -z end line")
+        }
+        Check.inRange(c.t, 0, 1, "the crossing parameter falls within the stepped segment")
+    }
+
+    // MARK: - the module's remaining prose, asserted as behaviour
+
+    /// What is left here is what the sections above do not already cover: parking a
+    /// pathological release, and `groundAt` being threaded rather than global. Both would
+    /// survive a retune of the flight model, and if they ever disagree with the assertions
+    /// above, believe these.
+    private static func proseClaims() {
+        // "A non-finite state can only come from a pathological release; park it rather
+        // than poisoning every consumer downstream."
+        do {
+            let rt = DiscRuntime()
+            rt.groundAt = { _, _ in 1.25 }
+            _ = rt.release(
                 ThrowRequest(
-                    type: .backhand, from: Vec3d(0, 1.6, 0), aim: Vec3d(1, 0, 0),
-                    power: 0.6, angle: 0.05, spin: 0.5))
-            for _ in 0..<20 { rt.step(dt: FIXED_DT) }
-            let n = rt.trail.count
-            Check.ok(n > 1, "a flown disc has a trail")
-            rt.settle(Vec3d(3, 0, 0))
-            Check.eq(rt.trail.count, n, "settle keeps the trail")
-            rt.hold(2, Vec3d(3, 1, 0), Vec3d(0, 1, 0), 0)
-            Check.eq(rt.trail.count, 0, "hold clears it")
-        }
-
-        // Wear accumulates and clamps; it is never assigned.
-        do {
-            let rt = DiscRuntime()
-            rt.hold(1, Vec3d(0, 1, 0), Vec3d(0, 1, 0), 0)
-            rt.markScuff(0.5)
-            Check.bitEqViaJSON(rt.wear, 0.5 * 0.055, "one strike adds its share")
-            rt.markScuff(0.5)
-            Check.bitEqViaJSON(rt.wear, clamp(0.5 * 0.055 + 0.5 * 0.055, 0, 1), "two strikes add")
-            for _ in 0..<1000 { rt.markScuff(1) }
-            Check.bitEqViaJSON(rt.wear, 1, "wear saturates at one and stays there")
-        }
-
-        // The disc that struck is the face that is NOT up.
-        do {
-            let rt = DiscRuntime()
-            rt.hold(1, Vec3d(0, 1, 0), Vec3d(0, 1, 0), 0)
-            rt.markScuff(0.4)
-            Check.eq(
-                rt.pendingScuff!.top, false,
-                "a disc lying face up is scuffed on its underside")
-            rt.hold(1, Vec3d(0, 1, 0), Vec3d(0, -1, 0), 0)
-            rt.markScuff(0.4)
-            Check.eq(
-                rt.pendingScuff!.top, true,
-                "a disc lying face down is scuffed on its plate")
+                    type: .forehand, from: Vec3d(0, 3, 0), aim: Vec3d(1, 0, 0),
+                    power: 0.5, angle: 0, spin: 0.5))
+            rt.step(dt: FIXED_DT)
+            rt.state.vel = Vec3d(.nan, 0, 0)
+            rt.step(dt: FIXED_DT)
+            Check.ok(rt.state.isFinite, "a poisoned state is parked, not propagated")
+            Check.bitEq(rt.state.pos.x, 0, "parked at x = 0")
+            Check.bitEq(rt.state.pos.z, 0, "parked at z = 0")
+            Check.bitEq(
+                rt.state.pos.y, 1.25 + DiscBody.standard.halfHeight,
+                "parked resting on the ground it last queried")
+            Check.eq(rt.state.atRest, true, "and it is at rest")
+            Check.eq(rt.state.touchedGround, true, "and counts as having touched the ground")
         }
 
         // `hold` with a degenerate normal must not produce NaN — the reference guards a
@@ -993,13 +804,12 @@ enum DiscRuntimeTests {
             rt.hold(1, Vec3d(0, 1, 0), Vec3d(0, 0, 0), 0)
             let up = DiscRuntime()
             up.hold(1, Vec3d(0, 1, 0), Vec3d(0, 1, 0), 0)
-            Check.bitEqViaJSON(
-                rt.state.orient.x, up.state.orient.x, "a zero normal falls back to world up")
-            Check.bitEqViaJSON(rt.state.orient.w, up.state.orient.w, "and stays a unit quaternion")
+            Check.bitEq(rt.state.orient.x, up.state.orient.x, "a zero normal falls back to world up")
+            Check.bitEq(rt.state.orient.w, up.state.orient.w, "and stays a unit quaternion")
         }
 
-        // `groundAt` is threaded, not global: two runtimes over different terrain settle at
-        // different heights from the same call.
+        // `groundAt` is threaded, not global: two runtimes over different terrain settle
+        // at different heights from the same call.
         do {
             let low = DiscRuntime()
             low.groundAt = { _, _ in 0 }
@@ -1007,9 +817,8 @@ enum DiscRuntimeTests {
             high.groundAt = { x, z in 2 + 0.1 * x - 0.05 * z }
             low.settle(Vec3d(5, 0, -3))
             high.settle(Vec3d(5, 0, -3))
-            Check.bitEqViaJSON(
-                low.state.pos.y, DiscBody.standard.halfHeight, "flat terrain settles at the lip")
-            Check.bitEqViaJSON(
+            Check.bitEq(low.state.pos.y, DiscBody.standard.halfHeight, "flat terrain settles at the lip")
+            Check.bitEq(
                 high.state.pos.y, 2 + 0.1 * 5 - 0.05 * -3 + DiscBody.standard.halfHeight,
                 "sloped terrain settles on its own surface")
         }
