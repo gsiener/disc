@@ -306,7 +306,13 @@ let allSuites: [Suite] = [
     // ThrowsTests.swift's header.
     Suite(name: "throws", run: ThrowsTests.run, minAssertions: 211410),
     Suite(name: "rules", run: RulesTests.run, minAssertions: 935920),
-    Suite(name: "move", run: MoveTests.run, minAssertions: 9018),
+    // Issue #58: `move` no longer loads a golden. 9,018 recorded comparisons become
+    // 64,700 assertions against an independently-typed model of every derive/gait/
+    // ground/compliance/aerial formula (typed from Attributes.swift's own "reference
+    // athlete" doc figures, not transcribed from `derive`), plus full branch coverage
+    // of `compliance`'s state table and physical laws for the rest. See
+    // MoveTests.swift's header — including a stale doc comment it found (brakeMax).
+    Suite(name: "move", run: MoveTests.run, minAssertions: 64700),
     Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
     Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
