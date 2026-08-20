@@ -76,9 +76,6 @@ jobs:
       - name: ADR-0008 — the reference does not import the client
         run: npm run reference:imports
 
-      - name: ADR-0004 — a field question cannot be asked without a field
-        run: npm run reference:structure
-
   # **The layering `Package.swift` describes, as an assertion.**
   #
   # `Package.swift` says `UltimateSim` "imports nothing from Metal, RealityKit, SwiftUI or
@@ -423,14 +420,17 @@ jobs:
         working-directory: swift
         run: .build/release/SimTests
 
-      # A capability nothing calls is a suite asserting against itself, and it passes
-      # forever — five have shipped that way (issue #5). Runs here because this job already
-      # has the package built; it is a source scan and costs about a second.
-      - name: Reachability — every public UltimateSim func has a caller outside SimChecks
+      # Invariants over the source tree, which is the one place `SimChecks` cannot look —
+      # ADR-0002 puts the checks inside the shipped app, and a phone has no sources. Two
+      # audits: a capability nothing calls is a suite asserting against itself and passes
+      # forever (five have shipped that way, issue #5); and ADR-0004's rule that a field
+      # question cannot be asked without a field, which is the most expensive bug this
+      # project has had. Runs here because this job already has the package built.
+      - name: Source invariants (reachability, ADR-0004)
         working-directory: swift
         run: |
-          swift build -c release --product Reachability
-          REPO_ROOT="$GITHUB_WORKSPACE" .build/release/Reachability --quiet
+          swift build -c release --product SourceChecks
+          REPO_ROOT="$GITHUB_WORKSPACE" .build/release/SourceChecks --quiet
 
   # **The same seed must play the same match in every build configuration**, and no suite
   # running inside a single build can check that — by construction, the bug is the

@@ -52,10 +52,12 @@ let package = Package(
         ),
         .executableTarget(name: "SimTests", dependencies: ["SimChecks"]),
 
-        // Source-level audit of the product: every public `UltimateSim` func, and whether
-        // anything a player can reach calls it. Deliberately dependency-free — it reads the
-        // tree as text rather than parsing it, for the reasons its own header gives.
-        .executableTarget(name: "Reachability"),
+        // Invariants over the source tree — the reachability of every public `UltimateSim`
+        // func, and ADR-0004's rule that a field question cannot be asked without a field.
+        // Not suites: ADR-0002 requires the checks to run inside the shipped app, and on a
+        // phone there is no source tree to read. Dependency-free, and reads the tree as text
+        // rather than parsing it, for the reasons its own headers give.
+        .executableTarget(name: "SourceChecks"),
 
         // The flight view, shared by the iOS app and the macOS window so there is one
         // implementation and not two that drift. `FlightUI` imports SwiftUI but nothing
