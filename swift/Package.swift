@@ -52,6 +52,11 @@ let package = Package(
         ),
         .executableTarget(name: "SimTests", dependencies: ["SimChecks"]),
 
+        // Source-level audit of the product: every public `UltimateSim` func, and whether
+        // anything a player can reach calls it. Deliberately dependency-free — it reads the
+        // tree as text rather than parsing it, for the reasons its own header gives.
+        .executableTarget(name: "Reachability"),
+
         // The flight view, shared by the iOS app and the macOS window so there is one
         // implementation and not two that drift. `FlightUI` imports SwiftUI but nothing
         // platform-specific; `UltimateSim` stays clean of both.

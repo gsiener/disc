@@ -79,9 +79,6 @@ jobs:
       - name: ADR-0004 — a field question cannot be asked without a field
         run: npm run reference:structure
 
-      - name: Reachability — every public UltimateSim func has a caller outside SimChecks
-        run: npm run reference:reachability
-
   # **The layering `Package.swift` describes, as an assertion.**
   #
   # `Package.swift` says `UltimateSim` "imports nothing from Metal, RealityKit, SwiftUI or
@@ -425,6 +422,15 @@ jobs:
       - name: Run the differential suite
         working-directory: swift
         run: .build/release/SimTests
+
+      # A capability nothing calls is a suite asserting against itself, and it passes
+      # forever — five have shipped that way (issue #5). Runs here because this job already
+      # has the package built; it is a source scan and costs about a second.
+      - name: Reachability — every public UltimateSim func has a caller outside SimChecks
+        working-directory: swift
+        run: |
+          swift build -c release --product Reachability
+          REPO_ROOT="$GITHUB_WORKSPACE" .build/release/Reachability --quiet
 
   # **The same seed must play the same match in every build configuration**, and no suite
   # running inside a single build can check that — by construction, the bug is the
