@@ -294,7 +294,7 @@ struct Suite: Sendable {
 /// deliberately, in the same commit as whatever changed the suite's real coverage.
 let allSuites: [Suite] = [
     Suite(name: "rng", run: RngTests.run, minAssertions: 6042),
-    Suite(name: "coeffs", run: CoeffsTests.run, minAssertions: 3790),
+    Suite(name: "coeffs", run: CoeffsTests.run, minAssertions: 101663),
     // Issue #58: `simmath` no longer loads a golden. 7,749 recorded comparisons become
     // 392,341 assertions against closed forms and an independently written rotation
     // model — see SimMathTests.swift's header.
