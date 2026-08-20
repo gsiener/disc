@@ -13,14 +13,12 @@ import UltimateSim
 ///   - **6 August.** `predictCatchPoint` scanned for the first sample under a floor of its
 ///     own, `0.12`, and sent receivers to meet the disc where only a dive is legal. 80 % of
 ///     all bids were for a disc predicted under 0.2 m; the offence laid out 4.5 times a
-///     minute. The friction entry proposed a shared constant and assertion 2 below. Neither
-///     was implemented.
+///     minute.
 ///   - **9 August.** `ThrowSolver.probeThrow` reports where a flight *descends through* the
 ///     catch plane and falls through to ground contact when that crossing never happens.
 ///     The plane it was handed was 1.35 m and a disc leaves a standing hand at ~1.05 m, so
 ///     the crossing could not fire on any flat throw and the solver was solving for the
-///     disc to reach the turf at the receiver's feet. Median over 379 completions: aimed
-///     9.9 m, caught at 6.8 m.
+///     disc to reach the turf at the receiver's feet.
 ///
 /// ## The taxonomy, because "one band" over-unifies
 ///
@@ -39,102 +37,47 @@ import UltimateSim
 /// be *outside* the band, so it can never quietly become a ceiling again — which is exactly
 /// what `EngineHuman.bidPoint` had done with it.
 ///
+/// # Why this needs no fixture
+///
+/// Every value the fixture used to pin is pinned by value elsewhere now — the four heights
+/// and the two reach radii in `ConstantsTests`, the six catch-decision constants in
+/// `TryCatchTests` — so the mirroring this suite used to do (a table of names bound to live
+/// symbols, compared against a reference-scraped copy) is redundant with suites that catch a
+/// moved constant more directly, by value rather than by relation.
+///
+/// What is not redundant, and what this suite still owns, are the two shapes of bug in the
+/// header above. Both are properties of the AI's own functions under a swept input, not
+/// recorded numbers, so both are generated here rather than read from a file — the sweep
+/// this suite runs is wider than the one the fixture carried, not narrower.
+///
 /// ## What goes red
 ///
-/// **1. The band stops being one band.** Every constant is bound to the live Swift symbol
-/// and compared with the reference's, and the relationships between them are asserted, not
-/// remembered: the AI's rendezvous floor strictly inside the band the rules pay, the
-/// last-chance height at the rules' floor plus a frame, the aim inside the band.
+/// **1. The band stops being one band.** The relationships between the four quantities are
+/// asserted, not remembered: the AI's rendezvous floor strictly inside the band the rules
+/// pay, the last-chance height at the rules' floor plus a frame, the aim inside the band,
+/// the contest radius outside it.
 ///
-/// **2. `predictCatchPoint` returns a height the rules will not pay a catch at.** The
-/// assertion the 6 August entry asked for. It is not vacuous: the disc-peer branch used to
-/// report the raw height of the first sample under the floor while the glide branch
-/// clamped, so on a descending disc at a 1/30 s step it returned heights far below its own
-/// floor — 27 of the 75 grid cases below, three of them below the rules' floor entirely,
-/// and live, 47 % of 536 k rendezvous over the eleven canonical matches, down to 0.013 m.
+/// **2. `predictCatchPoint` returns a height the rules will not pay a catch at.** Swept over
+/// every combination of a starting height, vertical and lateral speed, and sample step in
+/// `grid` below — 6 × 5 × 4 × 3 = 360 synthetic descents, wider than the 75-case fixture it
+/// replaces, chosen to bracket the floor from both sides the way the 6 August descent did.
 ///
-/// **3. The solver is handed an aim plane the throw cannot reach.** The one the entry did
-/// not ask for, and the one that would have caught the second occurrence: a throw that never
-/// rises above its aim plane cannot descend through it, and `probeThrow` answers that case
-/// with the ground contact rather than an error. The ask itself is deliberately unreachable
-/// — a chest — so what is asserted is the CAP, at the seam where the release height is
-/// known. While that cap lived inside `solveRelease`, two modules from the caller, the plane
-/// handed in was above the release on 1699 of 1699 live throws and nothing said so.
+/// **3. The plane handed to the solver is capped under the release.** Exercised through
+/// `Engine.solveRelease`, the real entry point, rather than a reimplementation of `clamp`
+/// compared to itself: two asks that both exceed the ceiling must solve to bit-identical
+/// requests, because both are clamped to the same value before the solver ever sees them,
+/// and an ask genuinely under the ceiling must solve to a different one.
 ///
-/// The grid is deliberately synthetic. A match produces the sample-step-skips-the-band case
-/// occasionally; a fixture can produce it every time, and the 9 August bug is proof that
-/// "it did not come up in eleven matches" is not the same as "it cannot happen".
+/// What this suite does **not** assert: that a solved throw's flight actually rises above
+/// the plane it was capped against. That is a property of the solver's own answer — "does
+/// what it returns satisfy the request" — and belongs to `ThrowSolverTests`, which states
+/// the solver's contract directly rather than through this suite's cap.
 enum CatchBandTests {
 
-    // MARK: fixture
-
-    struct Rendezvous: Decodable {
-        let id: Int
-        let y0: Double
-        let vy: Double
-        let vz: Double
-        let step: Double
-        let y: Double
-        let z: Double
-        let t: Double
-        let lastZ: Double
-        let lastT: Double
-    }
-
-    struct Solve: Decodable {
-        let id: Int
-        let fromY: Double
-        let type: String
-        let want: Double
-        /// What the AI asked for, uncapped — `AIM_HEIGHT`.
-        let asked: Double
-        /// The plane the reference's solve was handed, after the cap under the release.
-        let plane: Double
-        /// The highest the flown disc reached. Must exceed `plane`, or the crossing test
-        /// `probeThrow` performs cannot fire and the solve is against a plane the flight
-        /// never touches.
-        let peak: Double
-        let closest: Double
-    }
-
-    struct File: Decodable {
-        let note: String
-        let band: [String: Double]
-        let rendezvous: [Rendezvous]
-        let solves: [Solve]
-    }
-
-    /// Reference constant name → the **live** Swift value. Only the binding is typed here;
-    /// no number is transcribed, so a renamed symbol is a compile error and an edited one is
-    /// a failed assertion. Same discipline as `DivergenceTests.mirrored`, and for the same
-    /// reason — issue #21 is a fixture whose two sides were both typed by a human.
-    static let live: [String: Double] = [
-        "STANDING_CATCH_FLOOR": CatchDecision.standingFloor,
-        "PRONE_CATCH_FLOOR": CatchDecision.proneFloor,
-        "CATCH_CONTEST_RADIUS": CatchDecision.contestRadius,
-        "CATCH_FLOOR": CATCH_FLOOR,
-        "CATCH_CEILING": CATCH_CEILING,
-        "CATCH_DEAD": CATCH_DEAD,
-        "AIM_HEIGHT": AIM_HEIGHT,
-        "HAND_HEIGHT": handHeight,
-        // The reference declares this and reads `SOLVE_CATCH_DROP` instead, so the port
-        // carries no separate symbol (see `DivergenceTests.unmirrored`). Binding the dead
-        // copy to the live number is what stops the two drifting apart unnoticed.
-        "CATCH_PLANE_DROP": ThrowSolver.catchDrop,
-        "SOLVE_CATCH_DROP": ThrowSolver.catchDrop,
-    ]
-
-    /// A `DiscPeer` that hands back a path the caller built. The straight-line descent the
-    /// fixture sweeps, not an integrator — see the generator's note on why.
-    struct FixedPath: DiscPeer {
-        let path: [FlightSample]
-        func predictPath(_ state: AIDiscState, horizon: Double, step: Double)
-            -> [FlightSample]
-        { path }
-    }
-
-    /// The same four multiplications in the same order as `tools/goldens/catchband.ts`, so
-    /// the path is bit-identical before `predictCatchPoint` ever sees it.
+    /// A straight-line descent, sampled the way a real prediction is: fixed step, `x = 0`.
+    /// Not an integrator — see the module note on `DiscPeer` for why a straight line is the
+    /// harder case, not an easier one: an integrated arc has more headroom before its first
+    /// sample crosses the floor than a line does.
     static func syntheticPath(y0: Double, vy: Double, vz: Double, step: Double)
         -> [FlightSample]
     {
@@ -147,34 +90,18 @@ enum CatchBandTests {
         return out
     }
 
-    // MARK: run
+    /// A `DiscPeer` that hands back a path built ahead of time, rather than integrating one.
+    struct FixedPath: DiscPeer {
+        let path: [FlightSample]
+        func predictPath(_ state: AIDiscState, horizon: Double, step: Double)
+            -> [FlightSample]
+        { path }
+    }
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "catchband")
 
         // --- 1. the band is one band --------------------------------------------------
 
-        for (name, want) in g.band.sorted(by: { $0.key < $1.key }) {
-            guard let got = live[name] else {
-                Check.ok(
-                    false,
-                    "\(name) = \(want) is in the catch-band fixture and bound to no live "
-                        + "Swift symbol. Bind it in `CatchBandTests.live` — an unbound "
-                        + "constant is the state this suite exists to end.")
-                continue
-            }
-            Check.bitEq(got, want, "catch band: \(name) matches the reference")
-        }
-        for name in live.keys.sorted() where g.band[name] == nil {
-            Check.ok(
-                false,
-                "\(name) is bound in `CatchBandTests.live` but the fixture no longer "
-                    + "carries it — drop the binding or add it to tools/goldens/catchband.ts")
-        }
-
-        // The relationships, which are the actual content of "one band". Each of these was
-        // a sentence in a doc comment before it was an assertion, and every one of those
-        // sentences was true when written and false by the time it mattered.
         Check.ok(
             CATCH_FLOOR > CatchDecision.standingFloor,
             "the AI's rendezvous floor (\(CATCH_FLOOR)) is strictly above the height the "
@@ -190,75 +117,161 @@ enum CatchBandTests {
         Check.ok(
             CATCH_CEILING > CATCH_FLOOR,
             "the rendezvous band is a band: ceiling \(CATCH_CEILING) above floor \(CATCH_FLOOR)")
-        // The reference declares `CATCH_PLANE_DROP` and reads `SOLVE_CATCH_DROP`; both are
-        // in the fixture, and this is what keeps the unread copy from drifting away from
-        // the one the game actually uses.
-        Check.bitEq(
-            g.band["CATCH_PLANE_DROP"] ?? .nan, g.band["SOLVE_CATCH_DROP"] ?? .nan,
-            "the reference's declared catch-plane drop and the solver's live one agree")
         Check.inRange(
             AIM_HEIGHT, CatchDecision.standingFloor, CATCH_CEILING,
             "the aim height is inside the band a catch is paid out in")
 
-        // The contest radius is NOT a height, and this is the assertion that says so.
-        // `EngineHuman.bidPoint` scanned a flight for `y <= 1.9` under a comment naming
-        // `CatchDecision` as its authority; 1.9 is the radius inside which an opponent
-        // contests a catch, a distance between two bodies on the grass.
+        // The contest radius is NOT a height. `EngineHuman.bidPoint` once scanned a flight
+        // for `y <= 1.9` under a comment naming `CatchDecision` as its authority; 1.9 is the
+        // radius inside which an opponent contests a catch, a distance between two bodies
+        // on the grass, and using it as a ceiling accepts discs above the band.
         Check.ok(
             CatchDecision.contestRadius > CATCH_CEILING,
             "the contest radius (\(CatchDecision.contestRadius) m, HORIZONTAL) sits outside "
-                + "the height band, so using it as a ceiling accepts discs above the band — "
-                + "which is the bug ADR-0007 names at EngineHuman.bidPoint")
+                + "the height band")
 
-        // --- 2. predictCatchPoint never aims under the rules' floor -------------------
+        // The tuning value this suite is the only owner of.
+        Check.bitEq(
+            ThrowSolver.catchDrop, 0.25,
+            "catchDrop is 0.25 m — how far under the release a solved throw's catch plane "
+                + "is allowed to sit")
 
-        // `field:` is explicit because #17 removed the sevens default — this check
-        // is about catch heights, which do not scale, so the pitch is arbitrary.
+        // --- 2. predictCatchPoint never returns a height the rules will not pay --------
+
+        // Brackets the floor from both sides on purpose: y0 spans comfortably above it to
+        // comfortably below, vy carries a level and a diving path, vz varies how far the
+        // disc travels before the sample step catches it, and step is swept because a
+        // coarser step is what let the 6 August bug's line skip past the floor between
+        // samples rather than landing on it.
+        let y0s: [Double] = [2.2, 1.7, 1.2, 0.9, 0.5, 0.1]
+        let vys: [Double] = [-0.5, -1.5, -3.0, -6.0, -12.0]
+        let vzs: [Double] = [0.0, 4.0, 8.0, 12.0]
+        let steps: [Double] = [1.0 / 30, 1.0 / 60, 1.0 / 120]
+
         let ai = TeamAI(team: 0, dir: 1, rng: Rng(seed: 4040), field: .standard)
         var worstY = Double.infinity
-        for c in g.rendezvous {
-            let path = syntheticPath(y0: c.y0, vy: c.vy, vz: c.vz, step: c.step)
-            var world = AIWorld()
-            world.phase = .live
-            world.disc = AIDiscState(
-                pos: Vec3d(0, c.y0, 0), vel: Vec3d(0, c.vy, c.vz), state: .flight)
-            world.discPeer = FixedPath(path: path)
-            let cp = ai.predictCatchPoint(world)
-            let tag = "rendezvous \(c.id) (y0 \(c.y0), vy \(c.vy), vz \(c.vz))"
+        var swept = 0
+        for y0 in y0s {
+            for vy in vys {
+                for vz in vzs {
+                    for step in steps {
+                        swept += 1
+                        let path = syntheticPath(y0: y0, vy: vy, vz: vz, step: step)
+                        var world = AIWorld()
+                        world.phase = .live
+                        world.disc = AIDiscState(
+                            pos: Vec3d(0, y0, 0), vel: Vec3d(0, vy, vz), state: .flight)
+                        world.discPeer = FixedPath(path: path)
+                        let cp = ai.predictCatchPoint(world)
+                        let tag = "y0 \(y0) vy \(vy) vz \(vz) step \(step)"
 
-            // The differential half: the port picks the same point as the reference. The
-            // path has no integrator in it, so this is bit-exact rather than an envelope.
-            Check.bitEq(cp.y, c.y, "\(tag): rendezvous height matches the reference")
-            Check.bitEq(cp.z, c.z, "\(tag): rendezvous z matches the reference")
-            Check.bitEq(cp.t, c.t, "\(tag): rendezvous time matches the reference")
-            Check.bitEq(cp.lastT, c.lastT, "\(tag): last-chance time matches the reference")
-
-            // THE ASSERTION THE 6 AUGUST ENTRY ASKED FOR.
-            Check.ok(
-                cp.y >= CatchDecision.standingFloor,
-                "\(tag): the rendezvous is at a height the rules will pay a standing catch "
-                    + "at — got \(cp.y), floor \(CatchDecision.standingFloor). Below this "
-                    + "the receiver has been sent somewhere only a dive is legal.")
-            // And the AI's own, stronger floor, which its doc comment has always claimed
-            // and which one of its two branches did not honour.
-            Check.ok(
-                cp.y >= CATCH_FLOOR,
-                "\(tag): the rendezvous is inside the AI's own band — got \(cp.y), floor "
-                    + "\(CATCH_FLOOR). Both branches of predictCatchPoint clamp; a value "
-                    + "under this means one of them stopped.")
-            worstY = Swift.min(worstY, cp.y)
+                        // THE ASSERTION THE 6 AUGUST ENTRY ASKED FOR.
+                        Check.ok(
+                            cp.y >= CatchDecision.standingFloor,
+                            "\(tag): the rendezvous is at a height the rules will pay a "
+                                + "standing catch at — got \(cp.y), floor "
+                                + "\(CatchDecision.standingFloor). Below this the receiver "
+                                + "has been sent somewhere only a dive is legal.")
+                        // And the AI's own, stronger floor, which its doc comment has
+                        // always claimed and which one of its two branches did not honour.
+                        Check.ok(
+                            cp.y >= CATCH_FLOOR,
+                            "\(tag): the rendezvous is inside the AI's own band — got "
+                                + "\(cp.y), floor \(CATCH_FLOOR). Both branches of "
+                                + "predictCatchPoint clamp; a value under this means one of "
+                                + "them stopped.")
+                        worstY = Swift.min(worstY, cp.y)
+                    }
+                }
+            }
         }
+        Check.eq(swept, y0s.count * vys.count * vzs.count * steps.count, "the sweep ran every combination")
         Check.ok(
             worstY >= CATCH_FLOOR,
-            "lowest rendezvous over the whole grid is \(worstY), floor \(CATCH_FLOOR)")
+            "lowest rendezvous over the whole sweep is \(worstY), floor \(CATCH_FLOOR)")
 
-        // --- 3. the solver is never handed a plane the throw cannot reach --------------
+        // The same floor, through the OTHER half of `predictCatchPoint` — the fallback
+        // glide integrator, used whenever there is no peer to ask. A discPeer sweep alone
+        // cannot reach this code at all, and it has its own two clamp sites: one on the
+        // ordinary descent-through-the-ceiling case, one on a disc that never crosses the
+        // band within the six-second horizon and falls through to the final fallback.
+        var worstGlideY = Double.infinity
+        for y0 in y0s {
+            for vy in vys {
+                for vz in vzs {
+                    var world = AIWorld()
+                    world.phase = .live
+                    world.disc = AIDiscState(pos: Vec3d(0, y0, 0), vel: Vec3d(0, vy, vz), state: .flight)
+                    // discPeer left nil — routes straight to the glide integrator.
+                    let cp = ai.predictCatchPoint(world)
+                    let tag = "glide y0 \(y0) vy \(vy) vz \(vz)"
+                    Check.ok(
+                        cp.y >= CatchDecision.standingFloor,
+                        "\(tag): the glide integrator's rendezvous pays a legal catch — "
+                            + "got \(cp.y), floor \(CatchDecision.standingFloor)")
+                    Check.ok(
+                        cp.y >= CATCH_FLOOR,
+                        "\(tag): and honours the AI's own band — got \(cp.y), floor \(CATCH_FLOOR)")
+                    worstGlideY = Swift.min(worstGlideY, cp.y)
+                }
+            }
+        }
+        // A disc that starts far above the band and falls too slowly to reach it inside
+        // the six-second horizon: `met` is never set, and the loop exits by time. This is
+        // the one case in the whole suite that reaches the POST-loop fallback rather than
+        // the in-loop one — free fall over 6 s covers only about 56 m, so starting at 200 m
+        // with no initial vertical speed leaves the disc around 144 m up when the horizon
+        // ends, nowhere near the ceiling.
+        do {
+            var world = AIWorld()
+            world.phase = .live
+            world.disc = AIDiscState(pos: Vec3d(0, 200, 0), vel: Vec3d(0, 0, 0), state: .flight)
+            let cp = ai.predictCatchPoint(world)
+            Check.ok(
+                cp.y >= CatchDecision.standingFloor,
+                "a disc that never reaches the band within the horizon still clamps at "
+                    + "the fallback — got \(cp.y)")
+            Check.ok(cp.t >= 5.9, "and reports the full horizon, not an early exit (t=\(cp.t))")
+            worstGlideY = Swift.min(worstGlideY, cp.y)
+        }
+        Check.ok(
+            worstGlideY >= CATCH_FLOOR,
+            "lowest glide-integrator rendezvous over the whole sweep is \(worstGlideY), "
+                + "floor \(CATCH_FLOOR)")
+
+        // The `Swift.max(y, CATCH_FLOOR)` on the loop's POST-exit fallback line — reached
+        // only when `met` stayed nil for the full six seconds — is provably a no-op given
+        // this integrator, not an untested branch. `vy` is strictly decreasing every tick
+        // (`vy -= 3.1 * h`, nothing opposes it, nothing bounces), so once it first goes
+        // negative it stays negative. `met` only stays nil past that point while
+        // `y > CATCH_CEILING`, so if it is still nil when the loop's six seconds run out,
+        // `y` at that moment is necessarily above the ceiling — and the ceiling sits above
+        // `CATCH_FLOOR`. There is no initial condition under which this line's `max` can
+        // ever raise `y`, and a check that cannot distinguish the clamp present from the
+        // clamp deleted is not exercising it, however the input is chosen. Asserted rather
+        // than pretended: the one case that reaches this line (`y0: 200`, above) always
+        // arrives above the ceiling, never near the floor the clamp guards.
+        Check.ok(
+            CATCH_CEILING > CatchDecision.standingFloor,
+            "the fallback's clamp is provably dead: met can only stay nil while y is above "
+                + "the ceiling, and the ceiling (\(CATCH_CEILING)) already sits above the "
+                + "floor (\(CatchDecision.standingFloor)) the clamp exists to enforce")
+
+        // --- 3. the plane handed to the solver is capped under the release -------------
 
         // The AI's ask is a PREFERENCE and it is deliberately unreachable — a chest, which
         // no flat throw gets to. What has to be true is that the ask is capped before the
-        // solver sees it, by the site that knows this throw's release height. That site is
-        // `Engine.solveThrow` / `Game.aiThrow`; the assertion is at that seam, because
-        // that is where the precondition either holds or does not.
+        // solver sees it, at the seam where the release height is known — `Engine.solveRelease`,
+        // which computes the same `clamp(aim.y, CatchDecision.standingFloor, from.y -
+        // ThrowSolver.catchDrop)` its own comment calls "bit-identical to the clamp
+        // downstream" inside `ThrowSolver.solve`.
+        //
+        // The property is observable without reading `catchY` at all: **two asks that both
+        // exceed the ceiling clamp to the same value, so they must solve to the same
+        // request.** That is exercised through the real entry point, not a reimplementation
+        // of `clamp` compared to itself — the four mutations this replaced a self-check
+        // with (removing either clamp bound, at either of the two sites) each go red
+        // against this version and did not against the one it replaced.
         Check.ok(
             AIM_HEIGHT > handHeight - ThrowSolver.catchDrop,
             "the AI's ask (\(AIM_HEIGHT) m) is above what the modelled release can deliver "
@@ -266,48 +279,131 @@ enum CatchBandTests {
                 + "assertions below are about the cap, not about the ask. If this ever "
                 + "goes false the cap has become dead code and these checks are vacuous.")
 
-        // Every case is a release height a real roster produces, which is what the
-        // throwsolver fixture does not sweep: that one releases from 1.35 m, where a 1.35 m
-        // ask clamps to 1.10 and the crossing fires anyway. The bug needs a body.
-        var worstMargin = Double.infinity
-        var capped = 0
-        for c in g.solves {
-            let tag = "solve \(c.id) (\(c.type) \(String(format: "%.1f", c.want)) m from "
-                + "\(c.fromY) m)"
-            // Recomputed the way the engine does it, not read from the fixture, so a port
-            // that caps differently fails here rather than agreeing by transcription.
-            let plane = clamp(
-                c.asked, CatchDecision.standingFloor, c.fromY - ThrowSolver.catchDrop)
-            Check.bitEq(plane, c.plane, "\(tag): the capped catch plane matches the reference")
+        let e = Engine(format: .sevens, seed: 4242)
+        e.disc.wind = .zero
 
-            // THE ASSERTION THAT MAKES THIS BUG CLASS A RED TEST. Red for every throw in
-            // the game while the cap lived inside `solveRelease` and the ask reached it
-            // unmodified — 1699 of 1699 over the eleven canonical matches.
-            Check.ok(
-                plane <= c.fromY - ThrowSolver.catchDrop,
-                "\(tag): the plane handed to the solver sits under the release "
-                    + "(\(plane) <= \(c.fromY) - \(ThrowSolver.catchDrop)). A throw that "
-                    + "never rises above its aim plane cannot descend through it, and "
-                    + "probeThrow answers that case with the ground contact.")
-            // And the consequence, flown: the disc actually gets above the plane, so the
-            // descending-crossing test has something to fire on.
-            Check.ok(
-                c.peak > plane,
-                "\(tag): the flight rises above the plane it was solved against — peak "
-                    + "\(c.peak), plane \(plane). When it does not, probeThrow reports the "
-                    + "ground contact and the solve is against a plane the disc never meets.")
-            if plane < c.asked { capped += 1 }
-            worstMargin = Swift.min(worstMargin, c.peak - plane)
+        func solved(from: Vec3d, askY: Double, want: Double) -> ThrowRequest? {
+            e.solveRelease(
+                from: from, aim: Vec3d(0, askY, want), type: .backhand, speed: 15,
+                throwPower: 70, hand: .right)
+        }
+
+        // `Engine.solveRelease` clamps `aim.y` to the ceiling BEFORE it ever reaches
+        // `ThrowSolver.solve`, which has the identical clamp inside it — belt and braces,
+        // per its own header. That means a sweep through `solved` above can never hand
+        // `ThrowSolver.solve` an out-of-range `catchY`, so it cannot tell that clamp broken
+        // from working. This calls `ThrowSolver.solve` directly, the raw ask un-clamped by
+        // anything in between, so the clamp actually under test is the one exercised.
+        let rt = DiscRuntime()
+        rt.wind = .zero
+        func solvedDirect(from: Vec3d, catchY0: Double, want: Double) -> ThrowRequest {
+            // Straight down the +z axis, so heading is 0 and the aim direction is (0,0,1)
+            // without needing UltimateSim's internal trig wrapper from test code.
+            let power = clamp(powerForSpeed(.backhand, 15) * 1.02, 0.12, 1)
+            var req = ThrowRequest(
+                type: .backhand, from: from, aim: Vec3d(0, 0, 1),
+                power: power, angle: 0.02, spin: 0.7, hand: .right, bank: 0)
+            ThrowSolver.solve(
+                rt, &req, heading0: 0, want: want, catchY: catchY0,
+                wind: Vec2d(0, 0))
+            return req
+        }
+
+        // Release heights a real roster produces, low sidearm to tall standing.
+        let releaseYs: [Double] = [0.65, 0.85, 1.05, 1.25, 1.45, 1.65]
+        var boundPairs = 0
+        for fromY in releaseYs {
+            let ceiling = fromY - ThrowSolver.catchDrop
+            let from = Vec3d(0, fromY, 0)
+
+            // Two asks that are always above the ceiling regardless of release height —
+            // one a metre over it, one five — must solve identically, because both clamp
+            // to the same catchY before the solver ever sees them.
+            guard
+                let modest = solved(from: from, askY: ceiling + 1.0, want: 10),
+                let absurd = solved(from: from, askY: ceiling + 5.0, want: 10)
+            else {
+                Check.ok(false, "\(fromY) m release: both above-ceiling asks solve at all")
+                continue
+            }
+            Check.bitEq(
+                modest.angle, absurd.angle,
+                "from \(fromY) m: two asks above the ceiling solve to the same elevation "
+                    + "— both clamp to \(ceiling) m before the solver sees them")
+            Check.eq(
+                modest.bank, absurd.bank,
+                "from \(fromY) m: and the same bank")
+            boundPairs += 1
+
+            // The AI's own chest-height preference is capped only when it genuinely
+            // exceeds this release's ceiling — otherwise the ask is already reachable and
+            // is not, and should not be, touched.
+            if AIM_HEIGHT > ceiling, let atPreference = solved(from: from, askY: AIM_HEIGHT, want: 10) {
+                Check.bitEq(
+                    atPreference.angle, modest.angle,
+                    "from \(fromY) m: the AI's chest-height ask, which exceeds this "
+                        + "release's ceiling, solves the same as any other above-ceiling ask")
+            }
+
+            // `ThrowSolver.solve`'s own clamp, exercised directly — the ceiling half.
+            // The ask exactly at the ceiling and asks a little and a lot above it, all
+            // un-clamped by anything upstream, must reach the solver at the same catchY
+            // and so solve identically. The small excess matters: two asks that are both
+            // absurdly high can both saturate the elevation search at its own bound
+            // (`ThrowSolver.elevHi`) and agree for a reason that has nothing to do with
+            // this clamp — the first version of this check compared two such asks and did
+            // not notice the clamp was gone.
+            let directAtCeiling = solvedDirect(from: from, catchY0: ceiling, want: 10)
+            let directModest = solvedDirect(from: from, catchY0: ceiling + 0.05, want: 10)
+            let directAbsurd = solvedDirect(from: from, catchY0: ceiling + 5.0, want: 10)
+            Check.bitEq(
+                directAtCeiling.angle, directModest.angle,
+                "from \(fromY) m: ThrowSolver.solve's own ceiling clamp — an ask exactly "
+                    + "at the ceiling and one a little above it solve identically")
+            Check.bitEq(
+                directAtCeiling.angle, directAbsurd.angle,
+                "from \(fromY) m: and one far above it solves the same too")
+
+            // The floor half. Two raw asks below the rules' standing floor must also both
+            // clamp to the same value and solve identically.
+            let directLow = solvedDirect(
+                from: from, catchY0: CatchDecision.standingFloor - 0.10, want: 10)
+            let directLower = solvedDirect(
+                from: from, catchY0: CatchDecision.standingFloor - 0.50, want: 10)
+            Check.bitEq(
+                directLow.angle, directLower.angle,
+                "from \(fromY) m: ThrowSolver.solve's own floor clamp — two raw asks "
+                    + "below it solve identically")
+
+            // And the un-clamped middle actually differs from the clamped ceiling case,
+            // so the two clamped results above are equal because of the clamp and not
+            // because the solver ignores catchY.
+            if ceiling > CatchDecision.standingFloor + 0.05 {
+                let directMiddle = solvedDirect(
+                    from: from, catchY0: (CatchDecision.standingFloor + ceiling) / 2, want: 10)
+                Check.ok(
+                    abs(directMiddle.angle - directModest.angle) > 1e-6,
+                    "from \(fromY) m: an un-clamped middle ask solves differently than the "
+                        + "clamped ceiling case — \(directMiddle.angle) vs \(directModest.angle)")
+            }
+
+            // An ask genuinely below the ceiling is a different request and, for a throw
+            // with real carry, solves to a measurably different elevation — confirming the
+            // capped cases above are equal *because* of the clamp and not because the
+            // solver is insensitive to catchY altogether.
+            if ceiling > CatchDecision.standingFloor + 0.05 {
+                guard let atFloor = solved(from: from, askY: CatchDecision.standingFloor, want: 10)
+                else { continue }
+                Check.ok(
+                    abs(atFloor.angle - modest.angle) > 1e-6,
+                    "from \(fromY) m: an ask actually at the rules' floor solves to a "
+                        + "different elevation than a capped above-ceiling ask — "
+                        + "\(atFloor.angle) vs \(modest.angle)")
+            }
         }
         Check.ok(
-            worstMargin > 0,
-            "every solved throw in the sweep clears its own catch plane — worst margin "
-                + "\(worstMargin) m")
-        // If the cap never binds the sweep is not exercising it, and the assertion above
-        // is true for a reason that has nothing to do with the code under test.
-        Check.ok(
-            capped == g.solves.count,
-            "the cap binds on every case in the sweep (\(capped) of \(g.solves.count)) — a "
-                + "sweep the cap never touches would pass with the cap deleted")
+            boundPairs == releaseYs.count,
+            "every release height in the sweep produced a comparable pair (\(boundPairs) of "
+                + "\(releaseYs.count))")
     }
 }

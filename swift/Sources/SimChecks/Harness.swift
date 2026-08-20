@@ -335,7 +335,7 @@ let allSuites: [Suite] = [
     Suite(name: "lineup", run: LineupTests.run, minAssertions: 1752),
     Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 33),
-    Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 651),
+    Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 1022),
     // Floor lowered from 1587533 with issue #56's stagePoint formation fix: a genuinely
     // different pulling-team opening shape shifts match trajectories (different
     // score/turnover timing downstream of a real pull-position change) enough to move

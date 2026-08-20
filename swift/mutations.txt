@@ -37,3 +37,10 @@ trycatch: passiveDefenderGap 0.55 -> 0.75 | swift/Sources/UltimateSim/Play/Catch
 trycatch: standingFloor 0.20 -> 0.30 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let standingFloor = 0.20 | public static let standingFloor = 0.30 | trycatch
 trycatch: defenceScale 0.62 -> 0.72 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let defenceScale = 0.62 | public static let defenceScale = 0.72 | trycatch
 trycatch: interceptionSplit 0.55 -> 0.65 | swift/Sources/UltimateSim/Play/CatchDecision.swift | public static let interceptionSplit = 0.55 | public static let interceptionSplit = 0.65 | trycatch
+# predictCatchPoint clamp site 3 (the post-loop fallback in TeamAIDefence) is deliberately not listed: it is provably dead — see the reachability proof in CatchBandTests.run(). A mutation of it will always SURVIVE, correctly, and is not a suite gap.
+catchband: predictCatchPoint clamp site 1 removed | swift/Sources/UltimateSim/AI/TeamAIDefence.swift | t: s.t, x: s.x, y: Swift.max(s.y, CATCH_FLOOR), z: s.z) | t: s.t, x: s.x, y: s.y, z: s.z) | catchband
+catchband: predictCatchPoint clamp site 2 removed | swift/Sources/UltimateSim/AI/TeamAIDefence.swift | met = (x: x, y: Swift.max(y, CATCH_FLOOR), z: z, t: t + h) | met = (x: x, y: y, z: z, t: t + h) | catchband
+catchband: solveRelease catchY floor removed | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop) | let catchY = Swift.min(catchY0, req.from.y - catchDrop) | catchband
+catchband: solveRelease catchY ceiling removed | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop) | let catchY = Swift.max(catchY0, CatchDecision.standingFloor) | catchband
+catchband: catchDrop 0.25 -> 0.35 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let catchDrop = 0.25 | public static let catchDrop = 0.35 | catchband
+catchband: CATCH_FLOOR eroded 0.85 -> 0.30 | swift/Sources/UltimateSim/AI/AIMath.swift | public let CATCH_FLOOR = 0.85 | public let CATCH_FLOOR = 0.30 | catchband
