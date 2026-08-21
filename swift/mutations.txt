@@ -79,3 +79,24 @@ move: slopeMultiplier sensitivity 1.6 -> 2.0 | swift/Sources/UltimateSim/Move/Gr
 move: gradeAlong sign flipped on x | swift/Sources/UltimateSim/Move/Ground.swift | let gx = -n.x / n.y | let gx = n.x / n.y | move
 move: PERSONAL_RADIUS 0.63 -> 0.80 | swift/Sources/UltimateSim/Move/Separation.swift | public let PERSONAL_RADIUS = 0.63 | public let PERSONAL_RADIUS = 0.80 | move
 move: DISC_FREE_R below DISC_GRAB_R | swift/Sources/UltimateSim/Move/Separation.swift | public let DISC_FREE_R = 3.20 | public let DISC_FREE_R = 1.00 | move
+
+playbook: PLAY.stackSpacing 4.2 -> 4.5 | swift/Sources/UltimateSim/AI/Playbook.swift | public static let stackSpacing = 4.2 | public static let stackSpacing = 4.5 | playbook
+playbook: PLAY.stackLead 11.0 -> 10.0 | swift/Sources/UltimateSim/AI/Playbook.swift | public static let stackLead = 11.0 | public static let stackLead = 10.0 | playbook
+playbook: FORCE_DEADBAND 3.0 -> 2.5 | swift/Sources/UltimateSim/AI/Playbook.swift | public static let FORCE_DEADBAND = 3.0 | public static let FORCE_DEADBAND = 2.5 | playbook
+playbook: handSideSign rightHandX sign flipped | swift/Sources/UltimateSim/AI/Playbook.swift | let rightHandX = -dir | let rightHandX = dir | playbook
+playbook: openSideFor towardMiddle sign flipped | swift/Sources/UltimateSim/AI/Playbook.swift | let towardMiddle: Sign = discX > 0 ? -1 : 1 | let towardMiddle: Sign = discX > 0 ? 1 : -1 | playbook
+playbook: stackColumnX instance clamp bound widened | swift/Sources/UltimateSim/AI/Playbook.swift | return clamp(a.x * 0.3, -5 * w, 5 * w) | return clamp(a.x * 0.3, -6 * w, 6 * w) | playbook
+playbook: vertical reset offset 6.5 -> 7.0 | swift/Sources/UltimateSim/AI/Playbook.swift | push(vs + vReset, a.z - Double(dir) * 6.5 * dz, .handler, 0) | push(vs + vReset, a.z - Double(dir) * 7.0 * dz, .handler, 0) | playbook
+playbook: rowShift clamp lower bound sign flipped | swift/Sources/UltimateSim/AI/Playbook.swift | clamp(anchor, -band - lo, band - hi) | clamp(anchor, -band + lo, band - hi) | playbook
+playbook: chooseFormation endzone boundary <= -> < | swift/Sources/UltimateSim/AI/Playbook.swift | if yardsToGoal(disc.z, dir) <= 13 * depthScale { return .endzone } | if yardsToGoal(disc.z, dir) < 13 * depthScale { return .endzone } | playbook
+playbook: chooseFormation wind threshold > -> >= | swift/Sources/UltimateSim/AI/Playbook.swift | if windSpeed > 7.5 { return .vertical } | if windSpeed >= 7.5 { return .vertical } | playbook
+playbook: laneOf under/deep boundary 16 -> 15 | swift/Sources/UltimateSim/AI/Playbook.swift | if downfield < 16 * depthScale { return open ? .openUnder : .breakUnder } | if downfield < 15 * depthScale { return open ? .openUnder : .breakUnder } | playbook
+playbook: deep cut reach cap 38 -> 40 | swift/Sources/UltimateSim/AI/Playbook.swift | 38 * dz, Swift.max((24 + 8 * j) * dz, ahead + 13 * dz + 6 * j * dz)) | 40 * dz, Swift.max((24 + 8 * j) * dz, ahead + 13 * dz + 6 * j * dz)) | playbook
+playbook: dump maxTime 2.0 -> 2.5 | swift/Sources/UltimateSim/AI/Playbook.swift | maxTime = 2.0 | maxTime = 2.5 | playbook
+playbook: markPoint dx magnitude 0.90 -> 0.95 | swift/Sources/UltimateSim/AI/Playbook.swift | let dx = Double(breakSign) * 0.90 | let dx = Double(breakSign) * 0.95 | playbook
+playbook: zoneStations cupR 4.4 -> 4.0 | swift/Sources/UltimateSim/AI/Playbook.swift | let cupR = 4.4 | let cupR = 4.0 | playbook
+playbook: shouldPlayZone leadPull 0.35 -> 0.30 | swift/Sources/UltimateSim/AI/Playbook.swift | let leadPull = scoreDiff >= 3 && pointsPlayed > 6 ? 0.35 : 0 | let leadPull = scoreDiff >= 3 && pointsPlayed > 6 ? 0.30 : 0 | playbook
+playbook: RESET_BAND 10.5 -> 9.5 | swift/Sources/UltimateSim/AI/Playbook.swift | static let RESET_BAND = 10.5 | static let RESET_BAND = 9.5 | playbook
+playbook: SWING_BAND 13.0 -> 12.0 | swift/Sources/UltimateSim/AI/Playbook.swift | static let SWING_BAND = 13.0 | static let SWING_BAND = 12.0 | playbook
+playbook: PIN_MARGIN 2.0 -> 1.0 | swift/Sources/UltimateSim/AI/Playbook.swift | static let PIN_MARGIN = 2.0 | static let PIN_MARGIN = 1.0 | playbook
+playbook: windyChance 0.10 -> 0.20 | swift/Sources/UltimateSim/AI/Playbook.swift | public static let windyChance = 0.10 | public static let windyChance = 0.20 | playbook
