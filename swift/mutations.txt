@@ -100,3 +100,24 @@ playbook: RESET_BAND 10.5 -> 9.5 | swift/Sources/UltimateSim/AI/Playbook.swift |
 playbook: SWING_BAND 13.0 -> 12.0 | swift/Sources/UltimateSim/AI/Playbook.swift | static let SWING_BAND = 13.0 | static let SWING_BAND = 12.0 | playbook
 playbook: PIN_MARGIN 2.0 -> 1.0 | swift/Sources/UltimateSim/AI/Playbook.swift | static let PIN_MARGIN = 2.0 | static let PIN_MARGIN = 1.0 | playbook
 playbook: windyChance 0.10 -> 0.20 | swift/Sources/UltimateSim/AI/Playbook.swift | public static let windyChance = 0.10 | public static let windyChance = 0.20 | playbook
+
+cut angle 45 -> 50 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let CUT_ANGLE = 45 * Double.pi / 180 | public static let CUT_ANGLE = 50 * Double.pi / 180 | locomotion
+cut min speed 2.2 -> 3.0 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let CUT_MIN_SPEED = 2.2 | public static let CUT_MIN_SPEED = 3.0 | locomotion
+plant grip 1.8 -> 2.0 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let PLANT_GRIP = 1.8 | public static let PLANT_GRIP = 2.0 | locomotion
+plant brake 1.35 -> 1.50 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let PLANT_BRAKE = 1.35 | public static let PLANT_BRAKE = 1.50 | locomotion
+cut loss base 0.28 -> 0.35 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let CUT_LOSS_BASE = 0.28 | public static let CUT_LOSS_BASE = 0.35 | locomotion
+cut refractory 0.22 -> 0.35 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let CUT_REFRACTORY = 0.22 | public static let CUT_REFRACTORY = 0.35 | locomotion
+jump gather 0.12 -> 0.20 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let JUMP_GATHER = 0.12 | public static let JUMP_GATHER = 0.20 | locomotion
+layout gather 0.06 -> 0.10 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let LAYOUT_GATHER = 0.06 | public static let LAYOUT_GATHER = 0.10 | locomotion
+jump horiz keep 0.88 -> 0.80 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let JUMP_HORIZ_KEEP = 0.88 | public static let JUMP_HORIZ_KEEP = 0.80 | locomotion
+air control 0.7 -> 0.5 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let AIR_CONTROL = 0.7 | public static let AIR_CONTROL = 0.5 | locomotion
+slide decel 15.7 -> 20.0 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let SLIDE_DECEL = 15.7 | public static let SLIDE_DECEL = 20.0 | locomotion
+land horiz keep 0.62 -> 0.50 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let LAND_HORIZ_KEEP = 0.62 | public static let LAND_HORIZ_KEEP = 0.50 | locomotion
+collide restitution 0.03 -> 0.10 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let COLLIDE_RESTITUTION = 0.03 | public static let COLLIDE_RESTITUTION = 0.10 | locomotion
+pivot r 0.75 -> 1.00 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let PIVOT_R = 0.75 | public static let PIVOT_R = 1.00 | locomotion
+pivot arrest 30.0 -> 15.0 | swift/Sources/UltimateSim/Move/Locomotion.swift | public static let PIVOT_ARREST = 30.0 | public static let PIVOT_ARREST = 15.0 | locomotion
+classify jog boundary 0.45 -> 0.30 | swift/Sources/UltimateSim/Move/Locomotion.swift | if f < 0.45 { return .jog } | if f < 0.30 { return .jog } | locomotion
+fall recovers on a slower slide 0.30 -> 0.15 | swift/Sources/UltimateSim/Move/Locomotion.swift | if p.stateT >= p.stateDur && s < 0.30 { enter(p, .recovery, getUpTime(p)) } | if p.stateT >= p.stateDur && s < 0.15 { enter(p, .recovery, getUpTime(p)) } | locomotion
+endCut agility term 0.45 -> 0.20 | swift/Sources/UltimateSim/Move/Locomotion.swift | Locomotion.CUT_LOSS_BASE * (1 - 0.45 * agi) * (1 - simCos(p.cutAngle)) * 0.5 | Locomotion.CUT_LOSS_BASE * (1 - 0.20 * agi) * (1 - simCos(p.cutAngle)) * 0.5 | locomotion
+invMass strength term 0.35 -> 0.50 | swift/Sources/UltimateSim/Move/LocomotionContacts.swift | let eff = p.attr.mass * (1 + 0.35 * str) * (p.prone ? 2.5 : 1) | let eff = p.attr.mass * (1 + 0.50 * str) * (p.prone ? 2.5 : 1) | locomotion
+stumble resist base 2.0 -> 3.0 | swift/Sources/UltimateSim/Move/LocomotionContacts.swift | let resist = 2.0 + 2.5 * bal + 1.5 * str | let resist = 3.0 + 2.5 * bal + 1.5 * str | locomotion
