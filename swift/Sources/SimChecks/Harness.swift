@@ -321,7 +321,7 @@ let allSuites: [Suite] = [
     // of groundPhase's state machine driven through step(), physical laws for
     // the integrator and the contact resolver, and a self-driven trace for
     // claims only a trajectory can settle. See LocomotionTests.swift's header.
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23659),
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23665),
     Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 21897),
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9990),

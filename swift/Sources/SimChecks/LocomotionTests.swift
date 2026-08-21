@@ -1299,6 +1299,20 @@ enum LocomotionTests {
             _ = loco.step(p, DesiredMove(), dt)
             Check.eq(p.state, .fall, "already slow, but stateDur has not elapsed: stays down")
         }
+        do {
+            // The threshold check runs AFTER `slide()` has already decelerated this
+            // tick's velocity by SLIDE_DECEL * dt (15.7 * 1/120 ≈ 0.131 m/s) — so the
+            // speed that matters is the post-slide one, not whatever is set here. 0.35
+            // pre-slide lands at ≈0.219 post-slide: strictly between the recovery
+            // threshold's two candidate values (0.30 in source, 0.15 as a deliberate
+            // mutant). The two existing slow cases above use 0.05 m/s, which stays under
+            // both even before sliding, so neither can tell the two thresholds apart.
+            let p = stateTestPlayer(state: .fall, stateT: 1.0, stateDur: 0.30, prone: true)
+            p.vel = Vec3d(0.35, 0, 0)
+            let loco = freshLoco()
+            _ = loco.step(p, DesiredMove(), dt)
+            Check.eq(p.state, .recovery, "stateDur elapsed, under 0.30 but not under 0.15: recovers")
+        }
 
         // ---- recovery: decays velocity, clears prone at stateDur
         for (label, stateT, stateDur, wantDone) in [
@@ -1345,8 +1359,11 @@ enum LocomotionTests {
         let capLoco = freshLoco()
         let capPlayer = capLoco.create(CreateOpts(id: 1))
         let topSpeed = UltimateSim.derive(capPlayer.attr, stamina: 100, speed: 0, mode: .sprint).topSpeed
+        // 0.40 sits strictly between the jog/run boundary's two candidate values
+        // (0.45 in source, 0.30 as a deliberate mutant) — 0.20 alone cannot tell them
+        // apart, since it sits under both.
         let bins: [(Double, LocoStateName)] = [
-            (0.0, .idle), (0.20, .jog), (0.60, .run), (0.85, .sprint),
+            (0.0, .idle), (0.20, .jog), (0.40, .jog), (0.60, .run), (0.85, .sprint),
         ]
         for (frac, want) in bins {
             let loco = freshLoco()
@@ -1896,6 +1913,72 @@ enum LocomotionTests {
             loco.resolveCollisions(dt, list: [a, b])
             Check.eq(a.state, .idle, "a gentle graze does not stumble A")
             Check.eq(b.state, .idle, "a gentle graze does not stumble B")
+        }
+
+        // The resist threshold's base term, isolated. resist = 2.0 + 2.5*bal + 1.5*str,
+        // and for two default-attribute bodies (balance 70, strength 60) that is 4.65 —
+        // the head-on collision above uses impact 6, which clears both 4.65 and a
+        // deliberate mutant of 5.65 with room either way, so it cannot tell the base
+        // term's value apart from a mutation to it. An impact between the two, 5.2,
+        // clears 4.65 but not 5.65.
+        do {
+            let a = LocoPlayer(id: 1, attr: .defaultAttrs, pos: Vec3d(0, 0, 0), vel: Vec3d(2.6, 0, 0))
+            let b = LocoPlayer(id: 2, attr: .defaultAttrs, pos: Vec3d(0.5, 0, 0), vel: Vec3d(-2.6, 0, 0))
+            let loco = freshLoco()
+            loco.separate = false
+            loco.resolveCollisions(dt, list: [a, b])
+            Check.ok(
+                a.state == .stumble || b.state == .stumble,
+                "an impact of 5.2 clears the real resist threshold (4.65) — somebody stumbles")
+        }
+
+        // The invMass strength coefficient, isolated. Every collision test above pairs
+        // two default-attribute bodies, so both sides get the identical effective mass
+        // and the positional correction splits 50/50 regardless of what the strength
+        // coefficient actually is — no magnitude chosen for a symmetric pairing can ever
+        // read it. Only an asymmetric-strength collision does, so that is what this
+        // builds: a maximally strong body against a maximally weak one, both stationary
+        // and already overlapping so only the positional correction fires (there is no
+        // closing velocity, so the impulse branch never engages) — and the expected
+        // split is computed here from the same formula production uses, independently
+        // of any recorded value.
+        do {
+            var strong = Attributes.defaultAttrs
+            strong.strength = 100
+            var weak = Attributes.defaultAttrs
+            weak.strength = 0
+            let a = LocoPlayer(id: 1, attr: strong, pos: Vec3d(0, 0, 0), vel: .zero)
+            let b = LocoPlayer(id: 2, attr: weak, pos: Vec3d(0.4, 0, 0), vel: .zero)
+            let rsum = a.radius + b.radius
+            let penBefore = rsum - 0.4
+
+            // Mirrors invMass's own formula rather than guessing at it a second way — it
+            // is the definition invMass is defined by, not an independent restatement:
+            // p.attr.mass * (1 + 0.35 * str) * (prone ? 2.5 : 1).
+            func effMass(_ strength: Double) -> Double {
+                let str = clamp01(strength / 100)
+                return Attributes.defaultAttrs.mass * (1 + 0.35 * str)
+            }
+            let invA = 1 / effMass(100)
+            let invB = 1 / effMass(0)
+            let invSum = invA + invB
+            let corr = Swift.max(0, penBefore - Locomotion.COLLIDE_SLOP) * Locomotion.COLLIDE_BETA
+            let expectedShiftA = corr * (invA / invSum)
+            let expectedShiftB = corr * (invB / invSum)
+
+            let loco2 = freshLoco()
+            loco2.separate = false
+            loco2.resolveCollisions(dt, list: [a, b])
+
+            // The strong body is displaced LESS — asserted as a direction before a
+            // magnitude, because a coefficient sign error would show up here first.
+            let shiftA = abs(a.pos.x - 0)
+            let shiftB = abs(b.pos.x - 0.4)
+            Check.ok(
+                shiftA < shiftB,
+                "the stronger body is displaced less by the same overlap (\(shiftA) vs \(shiftB))")
+            Check.near(shiftA, expectedShiftA, 1e-9, "the strong body's push matches invMass's own ratio")
+            Check.near(shiftB, expectedShiftB, 1e-9, "and so does the weak body's, on the other side")
         }
 
         // A committed body (already airborne/laid out) is never stumbled by
