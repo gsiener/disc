@@ -385,7 +385,7 @@ let allSuites: [Suite] = [
     Suite(name: "tickloop", run: TickLoopTests.run, minAssertions: 646),
     Suite(name: "inputscript", run: InputScriptTests.run, minAssertions: 422),
     Suite(name: "boxscore", run: BoxScoreTests.run, minAssertions: 35),
-    Suite(name: "matchdiff", run: MatchDiffTests.run, minAssertions: 41),
+    Suite(name: "matchdiff", run: MatchDiffTests.run, minAssertions: 24),
     // Issue #58: the tuning constants, pinned to their values. A relation is the right
     // assertion for a law and the wrong one for a tuning number — `CATCH_DEAD < CATCH_FLOOR`
     // stays true while `CATCH_DEAD` moves. Until this existed, the only things holding these

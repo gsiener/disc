@@ -121,3 +121,6 @@ fall recovers on a slower slide 0.30 -> 0.15 | swift/Sources/UltimateSim/Move/Lo
 endCut agility term 0.45 -> 0.20 | swift/Sources/UltimateSim/Move/Locomotion.swift | Locomotion.CUT_LOSS_BASE * (1 - 0.45 * agi) * (1 - simCos(p.cutAngle)) * 0.5 | Locomotion.CUT_LOSS_BASE * (1 - 0.20 * agi) * (1 - simCos(p.cutAngle)) * 0.5 | locomotion
 invMass strength term 0.35 -> 0.50 | swift/Sources/UltimateSim/Move/LocomotionContacts.swift | let eff = p.attr.mass * (1 + 0.35 * str) * (p.prone ? 2.5 : 1) | let eff = p.attr.mass * (1 + 0.50 * str) * (p.prone ? 2.5 : 1) | locomotion
 stumble resist base 2.0 -> 3.0 | swift/Sources/UltimateSim/Move/LocomotionContacts.swift | let resist = 2.0 + 2.5 * bal + 1.5 * str | let resist = 3.0 + 2.5 * bal + 1.5 * str | locomotion
+
+matchdiff: strip call reclassified as foul unconditionally | swift/Sources/UltimateSim/Play/EngineCalls.swift | let type: CallType = call.kind == .strip ? .strip : .foul | let type: CallType = .foul | matchdiff
+matchdiff: strip tally dropped | swift/Sources/UltimateSim/Play/EngineCalls.swift | case .strip: calls.tally.strip += 1 | case .strip: break | matchdiff
