@@ -320,7 +320,7 @@ let allSuites: [Suite] = [
     // comments and literal constants rather than transcribed from the functions under
     // test — plus the property-based `claims()`/`minisPitch()`/`minisShape()` suites,
     // which never touched a fixture. See PlaybookTests.swift's header.
-    Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 22786),
+    Suite(name: "playbook", run: PlaybookTests.run, minAssertions: 23026),
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9990),
     Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 93492),

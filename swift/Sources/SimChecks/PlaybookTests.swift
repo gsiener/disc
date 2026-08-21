@@ -927,7 +927,14 @@ enum PlaybookTests {
         for windSpeed in [0.0, 4.5, 7, 7.75, 11, 20] {
             for scoreDiff in [0, 2, 3, 4, -5] {
                 for pointsPlayed in [0, 6, 7, 20] {
-                    for bias in [0.0, 0.15, 0.5, -0.4] {
+                    // `leadPull` is 0.35 with no windPull term of its own, so a mutation
+                    // to that one number only shows up when `windPull + bias` sits in a
+                    // narrow band just below the 0.5 threshold — 0.0 and 0.15 are both
+                    // outside it (0 -> 0.35 either way still <=0.5 at 0.30 but the sum
+                    // at 0.15 lands exactly on 0.5 for both values). 0.1 and 0.18 are
+                    // chosen to fall inside that band at windSpeed 0/4.5, where windPull
+                    // is exactly 0.
+                    for bias in [0.0, 0.1, 0.15, 0.18, 0.5, -0.4] {
                         Check.eq(
                             Playbook.shouldPlayZone(windSpeed, scoreDiff, pointsPlayed, bias),
                             Model.shouldPlayZone(windSpeed, scoreDiff, pointsPlayed, bias),
