@@ -313,9 +313,17 @@ let allSuites: [Suite] = [
     // of `compliance`'s state table and physical laws for the rest. See
     // MoveTests.swift's header — including a stale doc comment it found (brakeMax).
     Suite(name: "move", run: MoveTests.run, minAssertions: 64700),
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 87643),
+    // Issue #58: `locomotion` no longer loads a golden. 87,643 comparisons
+    // against a scripted replay become 23,665 assertions in four registers:
+    // independent models for advanceGait/accumulateSeparation/contestAir/
+    // create() (built on the already-proven derive/predictPos/reachAt/
+    // compliance from MoveTests, not re-deriving them), an enumerated sweep
+    // of groundPhase's state machine driven through step(), physical laws for
+    // the integrator and the contact resolver, and a self-driven trace for
+    // claims only a trajectory can settle. See LocomotionTests.swift's header.
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23665),
     // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
-    // become 22,786 assertions against `Model` — a second, independently typed
+    // become 23,026 assertions against `Model` — a second, independently typed
     // implementation of every formula in Playbook.swift, hand-typed from its own doc
     // comments and literal constants rather than transcribed from the functions under
     // test — plus the property-based `claims()`/`minisPitch()`/`minisShape()` suites,
