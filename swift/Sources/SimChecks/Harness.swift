@@ -389,9 +389,10 @@ let allSuites: [Suite] = [
     // Issue #58: the tuning constants, pinned to their values. A relation is the right
     // assertion for a law and the wrong one for a tuning number — `CATCH_DEAD < CATCH_FLOOR`
     // stays true while `CATCH_DEAD` moves. Until this existed, the only things holding these
-    // fifteen numbers were fixtures that are being deleted.
+    // fifteen numbers were fixtures that are being deleted. `LAYOUT_CEILING`'s pin also
+    // absorbs what `divergences` used to police: the one declared TS/Swift disagreement
+    // this project ever had, now just a value with its own reasoning, not a registry entry.
     Suite(name: "constants", run: ConstantsTests.run, minAssertions: 32),
-    Suite(name: "divergences", run: DivergenceTests.run, minAssertions: 34),
     Suite(name: "probecontract", run: ProbeContractTests.run, minAssertions: 224),
 ]
 

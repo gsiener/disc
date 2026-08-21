@@ -142,21 +142,19 @@ public let BID_LEAD = 0.45
 /// longest completion in two of the three seeds from 33 m to 26 m: the deep game was
 /// being taken away by defenders belly-flopping under hucks.
 ///
-/// **This is a DECLARED DIVERGENCE from the oracle** — the first one, under
-/// [ADR-0007](../../../../docs/adr/0007-when-correct-and-matching-the-oracle-disagree.md).
-/// It is declared in `tools/goldens/divergences.ts` against the reference's `1.85`, and
-/// `SimChecks/DivergenceTests.swift` asserts that this value, the declaration, and
-/// `src/sim/AI.ts`'s own source still say what the registry claims they say. Editing it
-/// without editing the registry is a red suite, by construction.
-///
-/// The inertness above was re-measured before this was wired up: three full reference
-/// matches, 202k evaluations of the two in-flight branches, `land.y` never above 1.4498.
+/// 1.10 is a deliberate correction, measured rather than guessed. A defender's bid guard
+/// used to sit at 1.85; measured over three full matches and 202k evaluations of the
+/// in-flight branch that reads it, `land.y` never once exceeded 1.4498 — the guard was
+/// inert, gated behind a height `predictCatchPoint`'s own `CATCH_CEILING` clamp (1.45) had
+/// already made unreachable. A defender was leaving his feet for a disc he could only ever
+/// have jumped at, and spending two seconds on the turf when he missed. 1.10 is the height
+/// a prone body actually reaches, and `ConstantsTests` pins it.
 ///
 /// It guards the **bid**, at `TeamAIDefence.defenceInFlight`. It deliberately does not
 /// touch the two neighbouring `land.y > 1.85` / `land.y > 1.9` clauses, which are *jump*
-/// gates — the same number in the opposite role. Those still mirror the reference, and
-/// lowering them would switch on a branch that has never once executed rather than tighten
-/// a bid. See ADR-0007's Consequences.
+/// gates — the same number in the opposite role, and correct in that role: a jump gate
+/// wants the ceiling a standing leap can reach, not the one a dive can. Lowering those
+/// would switch on a branch that has never once executed rather than tighten a bid.
 public let LAYOUT_CEILING = 1.10
 
 /// How far from the disc a player will actually be when it arrives, metres.

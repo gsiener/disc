@@ -54,7 +54,14 @@ enum ConstantsTests {
             meaning: "the highest a standing catch reaches, hands above the head"),
         Pin(name: "LAYOUT_CEILING", live: LAYOUT_CEILING, want: 1.10,
             meaning: "the highest a disc can arrive and still be a dive — a layout is "
-                + "horizontal, so a prone body's reach ceiling is a little over a metre"),
+                + "horizontal, so a prone body's reach ceiling is a little over a metre. "
+                + "1.10 was a deliberate correction, not a port: a defender's bid guard used "
+                + "to sit at 1.85, and measured over three full matches across 202k "
+                + "evaluations of that branch, land.y never once exceeded 1.4498 — the guard "
+                + "was inert, gated behind a height predictCatchPoint's own CATCH_CEILING "
+                + "clamp (1.45) had already made unreachable. A defender was leaving his feet "
+                + "for a disc he could only ever have jumped at, and spending two seconds on "
+                + "the turf when he missed. 1.10 is the height a prone body actually reaches"),
 
         // MARK: - reach
         Pin(name: "STANDING_REACH", live: STANDING_REACH, want: 0.82,

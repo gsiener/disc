@@ -174,10 +174,8 @@ public let DEFAULT_TEAM_CONFIG = TeamConfig(
 
 /// Shortest route a COMMANDED cut may resolve to, metres. Below this the cutter
 /// arrives on the frame it departs and the player who asked for a cut sees nothing
-/// move. Sized just over the 1.5 m the game suite asserts.
-/// Public so `SimChecks/DivergenceTests.swift` can read the live value: the
-/// registry can only police a number it can reach through the module's API, because
-/// on device there is no source tree to parse (ADR-0002, ADR-0007).
+/// move. Sized just over the 1.5 m the game suite asserts. Public so `ConstantsTests`
+/// can pin the live value.
 public let MIN_CUT_RUN = 1.8
 
 // MARK: - TeamAI
