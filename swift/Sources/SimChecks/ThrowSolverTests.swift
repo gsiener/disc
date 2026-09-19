@@ -1,205 +1,247 @@
 import Foundation
 import UltimateSim
 
-/// The AI throw solver, differed against the reference.
+/// The AI throw solver, stated as a contract instead of remembered as numbers.
 ///
-/// **This is the first differential suite the integration layer has ever had.** Every other
-/// suite here compares a ported *component* against a golden; `Engine` had none, because its
-/// header claimed for most of the project that `src/sim/Game.ts` was "not a port target …
-/// integration glue rather than simulation". That was wrong, and the throw solver is the
-/// clearest case: it is a self-contained numerical function, it was invented here instead of
-/// translated, and the invention was wrong in three separate ways.
+/// This suite used to differ the solver against a golden fixture — 960 solved
+/// throws recorded out of the reference, compared field by field. That worked
+/// until converting it surfaced a genuine production bug instead of a
+/// test-conversion issue: `ThrowSolver.solve` returned elevations and banks
+/// whose flown trajectories missed the requested target by metres, sometimes
+/// tens of metres, and its own convergence check already knew it (issue #65).
+/// A fixture cannot state "the answer satisfies the request"; it can only
+/// remember what the answer was, bugs included. So this suite asks the solver
+/// for throws and flies them, the way `CatchBandTests` flies descents.
 ///
-/// Property assertions were added after the fact and they do help — one of them measures the
-/// solver flown against nobody, which is the only way to see it at all. But a property check
-/// asks "is this plausible"; a golden asks "is this the same". For a function that is a
-/// transcription of a reference function, the second question is the right one, and mutation
-/// testing showed why: four separate breaks of this solver — deleting the lateral-drift
-/// correction, discarding the elevation bisection, replacing `powerForSpeed` with a constant,
-/// and solving to the ground instead of chest height — all left 2.2 million assertions green.
+/// # What is swept
 ///
-/// The solve has since moved out of `Engine.swift` into `Aero/ThrowSolver.swift`, and gained a
-/// second axis: it solves the release BANK as well as the elevation, by secant on the probe's
-/// lateral error. `bank` is compared below for exactly the reason the rest of this list is —
-/// a port that dropped the secant agrees on power, spin and heading right up until the disc
-/// leaves the hand.
+/// Five throw types (every type the AI throws — `AIThrowType` has five cases;
+/// `blade` lives in the aero table only) × eight range fractions of the AI's
+/// own `maxThrowRange` × eight headings × three winds × both hands: 1,920
+/// asks, driven through the real entry point (`Engine.solveRelease`) with the
+/// release speed the engine actually feeds it (`throwReleaseSpeed`, not the
+/// arrival clock — asking with the wrong speed measures the speed model, not
+/// the solver) and a fixed 70-power arm, so the sweep cannot move when the
+/// roster generator does.
 ///
-/// What is compared, per case:
+/// The headings matter because a disc banks: lateral error changes sign with
+/// the heading, and a forehand and a backhand curve opposite ways. The hands
+/// matter because bank mirrors with the hand and the secant reads its sign
+/// off the flight rather than a table — a mirrored-sign bug passes every
+/// right-handed case. The winds are the fixture's three regimes: still air,
+/// the breeze matches used to be limited to, and the strong crosswind that
+/// found this solver blind (issue #32).
 ///
-///   - the **solved request** — power, elevation, spin, and the corrected heading. This is
-///     the solver's own output and the thing a mutation changes first.
-///   - the **released velocity**, so a solver that agrees but hands the disc runtime
-///     something different still fails.
-///   - the **flown result** — closest approach to the aim, and where it came to rest — so
-///     that agreement is end-to-end and not just at the seam.
+/// # What goes red
 ///
-/// Tolerances rather than bit-equality, and the reason is specific. `powerForSpeed` is
-/// division and could be pinned exactly, but everything downstream of it runs through the
-/// elevation search, which evaluates the flight integrator — `atan2`, `sin`, `cos`, `exp` and a
-/// thousand accumulated steps. A libm that differs by an ulp moves the seventh halving's
-/// comparison and can select a neighbouring elevation, which is a discrete branch flip, not
-/// drift. So the assertion is a stated envelope and the *worst observed* deviation is
-/// reported alongside it, which is what tells you when something is creeping.
+/// **1. A solved throw that does not go where it was asked.** Every ask at or
+/// under half of believed range in still air or breeze must land within
+/// `max(1.5 m, 12% of the ask)` of its aim — 960 assertions, zero misses
+/// measured. This is the #65 regression test in its permanent form: with the
+/// bank ceiling back at 0.35, the overhead throws at 0.3–0.35 miss by metres
+/// and this fails. Short asks are covered twice over, here and by
+/// `shortAsksStayShort` below.
+///
+/// **2. A solved throw that holds its line but falls short is still holding
+/// its line.** Past half range the arm model and the flight model disagree
+/// (the AI asks for hucks neither model can throw), so distance falls short
+/// by design — but the bank secant's job has no range limit, and a lateral
+/// miss there means the line was never held. At 0.7 and 0.9 of range in still
+/// air or breeze, the lateral offset at closest approach must meet the same
+/// budget the total miss meets closer in. Measured worst case is 61% of it.
+///
+/// **3. The strong-wind corner gets a backstop, not a budget.** At 9.5 m/s four
+/// reachable asks miss by 8–11 m — all backhand at 270°, both hands, 0.30 and
+/// 0.35 of range — and the long fractions spray. That corner belongs to issue
+/// #66 (power-lift ceiling, heading-step budget, or a joint solve), not to
+/// this suite. What this suite owns there is that no reachable ask ever comes
+/// back tens of metres off: every ask at or under 0.35 of range in strong
+/// wind must land within 12 m, 3× under the 36.5 m worst case that motivated
+/// all of this. When #66 lands, this backstop is deleted and the budget scope
+/// extends over the gale.
+///
+/// The four share one mechanism, and it is visible in the solution, not just
+/// the miss: heading 270° against wind (9.5, 2.0) reads a crosswind of almost
+/// exactly the 2.0 m/s `windDeadband`, so the heading secant stays out and the
+/// calm-day trim — clamped at 0.15 rad, sized for aerodynamic fade — is left
+/// holding a 5 m wind residual. All four solve to a pegged trim (0.150 rad)
+/// and a pegged bank (1.0 rad). An ulp the other way on the deadband
+/// comparison would run the secant instead, so this corner may read
+/// differently across libms — the backstop's headroom absorbs exactly that.
+///
+/// **4. A solve that escapes its own brackets.** Elevation within
+/// `[elevLo, elevHi]`, bank within `±bankMax`, heading within `headingMax` of
+/// the caller's aim — on every one of the 1,920 asks, in every wind. These
+/// are structural: the clamps guarantee them bit-for-bit, so they cost
+/// nothing and catch a secant that escapes its ceiling or a clamp that gets
+/// deleted, which no value pin can see (the constant hasn't moved).
+///
+/// The tuning constants themselves — the bracket, the scan counts, the
+/// tolerances, the ceilings — are pinned by value in `ConstantsTests`, where
+/// values live. A relation is the right assertion for a law and the wrong one
+/// for a tuning value: `latTolerance < reachTolerance` stays true while the
+/// tolerance doubles and the secant stops early, which is exactly the drift
+/// the pins exist to catch.
+///
+/// # What this suite does not assert
+///
+/// Bit-equality with the reference implementation. The elevation search
+/// evaluates the flight integrator — `atan2`, `sin`, `cos`, `exp`, a thousand
+/// accumulated steps — and a libm that differs by an ulp can flip a discrete
+/// branch in the final halving. The old suite's tolerances existed for exactly
+/// this; the budgets here have orders more headroom than those tolerances did.
 enum ThrowSolverTests {
 
-    private struct Vec: Decodable {
-        let x: Double
-        let y: Double?
-        let z: Double
-    }
+    /// The three wind regimes, in the fixture's order: still air, the breeze
+    /// matches used to be limited to, and the strong crosswind of issue #32.
+    /// Index 2 is the gale the budget does not cover — see the header.
+    static let winds: [Vec2d] = [Vec2d(0, 0), Vec2d(1.2, -0.8), Vec2d(9.5, 2.0)]
 
-    private struct Solved: Decodable {
-        let power: Double
-        /// Absolute release speed, m/s, or null where the solve stayed inside the throw
-        /// table's own band. This is the solver's fourth output and the one that makes a
-        /// dump possible at all — see the THROW SOFTER note in `Aero/ThrowSolver.swift`.
-        let speed: Double?
-        let angle: Double
-        let spin: Double
-        /// Release bank, rad. The solver's second axis — see `Aero/ThrowSolver.swift`.
-        let bank: Double
-        let aimX: Double
-        let aimZ: Double
-    }
+    static let fractions = [0.05, 0.10, 0.15, 0.3, 0.35, 0.5, 0.7, 0.9]
 
-    private struct Flight: Decodable {
-        let closest: Double
-        let steps: Int
-        let restX: Double
-        let restZ: Double
-    }
+    static let hands: [ThrowOptions.Hand] = [.right, .left]
 
-    private struct Case: Decodable {
-        let type: String
-        let fraction: Double
-        let range: Double
-        let speed: Double
-        let from: Vec
-        let aim: Vec
-        let solved: Solved
-        let released: Vec
-        let flight: Flight
-    }
-
-    private struct Sweep: Decodable {
-        let wind: Vec
-        let cases: [Case]
-    }
-
-    private struct File: Decodable {
-        let note: String
-        let sweeps: [Sweep]
-    }
+    /// Backstop for the strong-wind corner issue #66 owns: no reachable ask
+    /// comes back tens of metres off. Measured worst is 11.0 m against this
+    /// 12.0 line; the 36.5 m worst case that motivated the #65 fix is 3× above
+    /// it. When #66 lands, this backstop is deleted and the budget scope
+    /// extends over the gale.
+    static let galeBackstop = 12.0
 
     static func run() throws {
-        let file = try Goldens.load(File.self, "throwsolver")
-        // Three sweeps since issue #32: still air, the breeze the match used to be
-        // limited to, and the strong wind issue #20 made reachable and #32 found this
-        // solver blind to — see the fixture's own note and `ThrowSolver.solve`'s header.
-        Check.eq(file.sweeps.count, 3, "the solver fixture sweeps still air, a breeze, and real wind")
+        // A fixed arm, so the sweep cannot move when the roster generator does —
+        // the fixture's fixed 70-power arm, spelled the same way. Only throwPower
+        // and energy feed anything below: `maxThrowRange` and `throwReleaseSpeed`
+        // read power (and energy), `solveRelease` derives spin from power.
+        let attr = AIAttributes(
+            speed: 70, acceleration: 70, agility: 70, jumping: 70, catching: 70,
+            throwAccuracy: [:], throwPower: 70, decision: 70, stamina: 70,
+            defAwareness: 70)
+        let arm = AIPlayer(id: 0, team: 0, attr: attr, archetype: .handler)
+        arm.energy = 1
 
-        // One engine for `solveRelease`; a separate runtime to fly in.
+        // One engine for `solveRelease`; a separate runtime to fly in. The wind
+        // is set from the sweep, not left at the engine's own: `solveRelease`
+        // bisects against `Engine.disc`, and that runtime carries the match's
+        // breeze — so the solved elevation is a function of the wind as much as
+        // of the aim.
         let e = Engine(format: .sevens, seed: 1)
         let rt = DiscRuntime()
 
-        var skipped = 0
+        let from = Vec3d(0, 1.35, 0)
         var total = 0
 
-        for sweep in file.sweeps {
-            // **The wind is set from the fixture, not left at the engine's own.**
-            //
-            // `solveRelease` bisects against `Engine.disc`, and that runtime carries the
-            // match's breeze — so the solved elevation is a function of the wind as much as of
-            // the aim. This suite was first written against a still-air fixture and an engine
-            // that had just been given weather, and it disagreed by up to 0.6 rad with both
-            // sides correct. The bisection's last halving is a discrete branch: a nudged probe
-            // picks a neighbouring angle rather than drifting by an ulp.
-            e.disc.wind = Vec3d(sweep.wind.x, 0, sweep.wind.z)
-            rt.wind = Vec3d(sweep.wind.x, 0, sweep.wind.z)
-            total += sweep.cases.count
-            for c in sweep.cases {
-                guard let type = ThrowType(rawValue: c.type) else {
-                    skipped += 1
+        for (wi, wind) in winds.enumerated() {
+            e.disc.wind = Vec3d(wind.x, 0, wind.z)
+            rt.wind = Vec3d(wind.x, 0, wind.z)
+            let gale = wi == 2
+            for type in AI_THROW_TYPES {
+                guard let physType = ThrowType(rawValue: type.rawValue) else {
+                    Check.ok(false, "\(type.rawValue) is missing from the aero table")
                     continue
                 }
-                let from = Vec3d(c.from.x, c.from.y ?? 0, c.from.z)
-                let aim = Vec3d(c.aim.x, c.aim.y ?? 0, c.aim.z)
-                guard
-                    let req = e.solveRelease(
-                        from: from, aim: aim, type: type, speed: c.speed,
-                        throwPower: 70, hand: .right)
-                else {
-                    Check.ok(false, "\(c.type) at \(c.range) m solves at all")
-                    continue
+                let reach = maxThrowRange(arm, type, 0)
+                for fraction in fractions {
+                    let range = reach * fraction
+                    for step in 0..<8 {
+                        let heading0 = Double(step) * .pi / 4
+                        let aim = Vec3d(
+                            from.x + sin(heading0) * range, from.y,
+                            from.z + cos(heading0) * range)
+                        let speed = throwReleaseSpeed(arm, type, range)
+                        for hand in hands {
+                            total += 1
+                            guard
+                                let req = e.solveRelease(
+                                    from: from, aim: aim, type: physType, speed: speed,
+                                    throwPower: arm.attr.throwPower, hand: hand)
+                            else {
+                                Check.ok(
+                                    false,
+                                    "\(type.rawValue) \(hand) \(Int(fraction * 100))% "
+                                        + "\(String(format: "%.1f", range))m solves at all")
+                                continue
+                            }
+
+                            let label =
+                                "\(type.rawValue) \(hand) \(Int(fraction * 100))% "
+                                + "\(String(format: "%.1f", range))m @\(step * 45)° "
+                                + "wind\(wi)"
+
+                            // The envelope: the solver's own brackets, on every ask.
+                            Check.inRange(
+                                req.angle, ThrowSolver.elevLo, ThrowSolver.elevHi,
+                                "\(label): launch elevation inside the wrist bracket")
+                            Check.inRange(
+                                req.bank ?? 0, -ThrowSolver.bankMax, ThrowSolver.bankMax,
+                                "\(label): bank inside its ceiling")
+                            let solvedHeading = atan2(req.aim.x, req.aim.z)
+                            // atan2 wraps; the secant clamps without wrapping, so
+                            // compare the wrapped deviation, not the raw values.
+                            let dev = abs(
+                                atan2(
+                                    sin(solvedHeading - heading0),
+                                    cos(solvedHeading - heading0)))
+                            Check.ok(
+                                dev <= ThrowSolver.headingMax,
+                                "\(label): heading within its ceiling of the aim "
+                                    + "(\(String(format: "%.3f", dev)) rad)")
+
+                            // Fly it to rest, tracking the closest approach and the
+                            // lateral offset where it happened.
+                            let tx = aim.x - from.x
+                            let tz = aim.z - from.z
+                            let want = (tx * tx + tz * tz).squareRoot()
+                            let ux = tx / want
+                            let uz = tz / want
+                            _ = rt.release(req)
+                            var closest = Double.infinity
+                            var latAtClosest = 0.0
+                            for _ in 0..<(120 * 8) {
+                                rt.step(dt: 1.0 / 120)
+                                let dx = rt.state.pos.x - from.x
+                                let dz = rt.state.pos.z - from.z
+                                let d = Foundation.hypot(dx - tx, dz - tz)
+                                if d < closest {
+                                    closest = d
+                                    latAtClosest = abs(-dx * uz + dz * ux)
+                                }
+                                if rt.state.atRest { break }
+                            }
+
+                            let budget = Swift.max(1.5, 0.12 * want)
+                            if !gale, fraction <= 0.5 {
+                                // The contract: a reachable ask in air the solver
+                                // claims arrives. Zero misses measured.
+                                Check.near(
+                                    closest, 0, budget,
+                                    "\(label): lands within budget of the aim")
+                            } else if gale, fraction <= 0.35 {
+                                // Issue #66's corner: the budget does not hold
+                                // here yet (four backhand misses by 8–11 m, long
+                                // fractions spray), so this is a backstop
+                                // against the tens-of-metres class, not a
+                                // convergence claim.
+                                Check.near(
+                                    closest, 0, galeBackstop,
+                                    "\(label): gale miss under the backstop (issue #66)")
+                            }
+                            if !gale, fraction == 0.7 || fraction == 0.9 {
+                                // Past half range the arm model over-promises and
+                                // distance falls short by design — but the miss
+                                // must be shortfall along the line, not spray:
+                                // the bank secant holds the line at any range.
+                                Check.near(
+                                    latAtClosest, 0, budget,
+                                    "\(label): long miss is shortfall, not spray")
+                            }
+                        }
+                    }
                 }
-
-                let label = "\(c.type) \(Int(c.fraction * 100))% \(String(format: "%.1f", c.range))m"
-
-
-                // The solved request.
-                //
-                // **`power` USED to be held to bit equality and no longer can be.** The
-                // rationale was that it had no integrator behind it: `powerForSpeed` is a
-                // subtraction and a division, and pinning it exactly is what catches a
-                // constant substituted for it. That stopped being true when the solver
-                // gained the power lift — a throw the flight model cannot reach at the
-                // asked-for speed is now re-solved at `power * sqrt(want / reach)`, and
-                // `reach` is a probe result, so the value arrives through the integrator
-                // and a square root. Measured, V8 and Darwin then disagree by one ulp on
-                // 73 of 480 cases, all of them hammers and scoobers past a third of range.
-                //
-                // 1e-12 is four decades under the smallest power in the fixture (0.12), so
-                // a substituted constant is still caught at a glance; what is given up is
-                // the last bit, not the assertion.
-                Check.near(req.power, c.solved.power, 1e-12, "\(label): release power")
-                // The absolute speed, including its absence. A port that kept the old
-                // power-only solve answers every short case with the maximum-distance
-                // angle instead, and this is where that shows.
-                switch (req.speed, c.solved.speed) {
-                case (nil, nil):
-                    break
-                case let (mine?, want?):
-                    Check.near(mine, want, 1e-9, "\(label): absolute release speed")
-                default:
-                    Check.ok(
-                        false,
-                        "\(label): release speed is present in both or neither "
-                            + "(\(String(describing: req.speed)) vs "
-                            + "\(String(describing: c.solved.speed)))")
-                }
-                Check.near(req.angle, c.solved.angle, 1e-9, "\(label): launch elevation")
-                Check.bitEqViaJSON(req.spin, c.solved.spin, "\(label): spin")
-                // Bank is solved, not tabulated, so it is as much the solver's output as the
-                // elevation is — and a port that dropped the secant would still agree on
-                // everything else until the disc flew.
-                Check.near(req.bank ?? 0, c.solved.bank, 1e-9, "\(label): release bank")
-                Check.near(req.aim.x, c.solved.aimX, 1e-9, "\(label): corrected heading x")
-                Check.near(req.aim.z, c.solved.aimZ, 1e-9, "\(label): corrected heading z")
-
-                // The velocity handed to the disc.
-                let vel = rt.release(req)
-                Check.near(vel.x, c.released.x, 1e-9, "\(label): release velocity x")
-                Check.near(vel.y, c.released.y ?? 0, 1e-9, "\(label): release velocity y")
-                Check.near(vel.z, c.released.z, 1e-9, "\(label): release velocity z")
-
-                // And the flight it produces, end to end.
-                var closest = Double.infinity
-                var steps = 0
-                for _ in 0..<(120 * 8) {
-                    rt.step(dt: 1.0 / 120)
-                    steps += 1
-                    closest = Swift.min(closest, distXZ(aim, rt.state.pos))
-                    if rt.state.atRest { break }
-                }
-                Check.eq(steps, c.flight.steps, "\(label): the flight lasts as long")
-                Check.near(closest, c.flight.closest, 1e-6, "\(label): closest approach to the aim")
-                Check.near(rt.state.pos.x, c.flight.restX, 1e-6, "\(label): comes to rest at x")
-                Check.near(rt.state.pos.z, c.flight.restZ, 1e-6, "\(label): comes to rest at z")
             }
         }
 
-        Check.eq(skipped, 0, "every throw type in the fixture exists in the aero table")
-        Check.ok(total > 200, "the solver fixture has cases (\(total))")
+        Check.eq(total, 1920, "the sweep asks every case (5 types × 8 fractions × 8 headings × 3 winds × 2 hands)")
 
         shortAsksStayShort()
     }

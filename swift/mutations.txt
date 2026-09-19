@@ -124,3 +124,33 @@ stumble resist base 2.0 -> 3.0 | swift/Sources/UltimateSim/Move/LocomotionContac
 
 matchdiff: strip call reclassified as foul unconditionally | swift/Sources/UltimateSim/Play/EngineCalls.swift | let type: CallType = call.kind == .strip ? .strip : .foul | let type: CallType = .foul | matchdiff
 matchdiff: strip tally dropped | swift/Sources/UltimateSim/Play/EngineCalls.swift | case .strip: calls.tally.strip += 1 | case .strip: break | matchdiff
+
+# --- throwsolver
+# Converted off its golden in issue #58. Every line below was verified RED
+# against the spec suite before it was listed here — including the four breaks
+# the old header names (lateral correction, bisection, powerForSpeed, chest
+# height), which once left 2.2 million assertions green with no golden failing.
+throwsolver: bank secant removed | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | bank = clamp(bank + clamp(-lat / slope, -bankStep, bankStep), -bankMax, bankMax) | bank = 0.0 | throwsolver
+throwsolver: bankMax 1.0 -> 0.35 (issue #65 revert) | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let bankMax = 1.0 | public static let bankMax = 0.35 | throwsolver
+throwsolver: passes 6 -> 3 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let passes = 6 | public static let passes = 3 | throwsolver
+throwsolver: elevation bisection discarded (cell edge, no refinement) | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | req.angle = bestA | req.angle = loA | throwsolver
+throwsolver: powerForSpeed replaced by constant | swift/Sources/UltimateSim/Play/Engine.swift | let power = clamp(powerForSpeed(type, speed) * 1.02, 0.12, 1) | let power = clamp(0.5 * 1.02, 0.12, 1) | throwsolver
+throwsolver: solve to the ground instead of chest height (ceiling removed) | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | let catchY = clamp(catchY0, CatchDecision.standingFloor, req.from.y - catchDrop) | let catchY = Swift.max(catchY0, CatchDecision.standingFloor) | throwsolver
+throwsolver: heading secant disabled (deadband never clears) | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let windDeadband = 2.0 | public static let windDeadband = 200.0 | throwsolver
+throwsolver: speedDrops 2 -> 0 (dumps bomb) | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let speedDrops = 2 | public static let speedDrops = 0 | throwsolver
+throwsolver: powerLifts 2 -> 0 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let powerLifts = 2 | public static let powerLifts = 0 | throwsolver
+throwsolver: calm heading trim removed | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | heading -= clamp(atan2(lat, want), -headingTrim, headingTrim) | heading -= 0 | throwsolver
+throwsolver: elevHalvings 5 -> 2 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let elevHalvings = 5 | public static let elevHalvings = 2 | throwsolver
+throwsolver: elevScan 12 -> 6 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let elevScan = 12 | public static let elevScan = 6 | throwsolver
+throwsolver: speedMin 9.0 -> 12.0 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let speedMin = 9.0 | public static let speedMin = 12.0 | throwsolver
+throwsolver: loftRange 25.0 -> 15.0 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let loftRange = 25.0 | public static let loftRange = 15.0 | throwsolver
+throwsolver: headingMax 1.4 -> 0.15 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let headingMax = 1.4 | public static let headingMax = 0.15 | throwsolver
+throwsolver: latTolerance 0.25 -> 1.0 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let latTolerance = 0.25 | public static let latTolerance = 1.0 | throwsolver
+throwsolver: headingTrim 0.15 -> 0.05 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let headingTrim = 0.15 | public static let headingTrim = 0.05 | throwsolver
+throwsolver: reachTolerance 0.5 -> 5.0 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let reachTolerance = 0.5 | public static let reachTolerance = 5.0 | throwsolver
+throwsolver: bankProbe 0.05 -> 0.5 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let bankProbe = 0.05 | public static let bankProbe = 0.5 | throwsolver
+throwsolver: bankStep 0.30 -> 0.03 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let bankStep = 0.30 | public static let bankStep = 0.03 | throwsolver
+throwsolver: headingProbe 0.05 -> 0.5 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let headingProbe = 0.05 | public static let headingProbe = 0.5 | throwsolver
+throwsolver: headingStep 0.5 -> 0.05 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let headingStep = 0.5 | public static let headingStep = 0.05 | throwsolver
+throwsolver: elevLo -0.34 -> -0.20 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let elevLo = -0.34 | public static let elevLo = -0.20 | throwsolver
+throwsolver: elevHi 0.62 -> 0.50 | swift/Sources/UltimateSim/Aero/ThrowSolver.swift | public static let elevHi = 0.62 | public static let elevHi = 0.50 | throwsolver

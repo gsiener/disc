@@ -92,6 +92,58 @@ enum ConstantsTests {
         Pin(name: "BOUNDARY_ROOM_MARGIN", live: boundaryRoomMargin, want: 0.55,
             meaning: "how far inside the line a target is kept, so a receiver arriving "
                 + "at speed does not carry itself out"),
+
+        // MARK: - the throw solver
+        //
+        // `ThrowSolver`'s search brackets, iteration counts, tolerances and
+        // ceilings, declared in `Aero/ThrowSolver.swift`. Converted off the
+        // throwsolver golden in issue #58: relations live in `ThrowSolverTests`
+        // (a secant that escapes its ceiling trips the envelope laws there),
+        // but a relation is the wrong assertion for a tuning value — so the
+        // values live here, where a changed constant fails loudly instead of
+        // drifting silently inside a still-true inequality.
+        Pin(name: "SOLVE_ELEV_LO", live: ThrowSolver.elevLo, want: -0.34,
+            meaning: "low end of the launch-elevation bracket, rad — the range of a human wrist"),
+        Pin(name: "SOLVE_ELEV_HI", live: ThrowSolver.elevHi, want: 0.62,
+            meaning: "high end of the launch-elevation bracket, rad"),
+        Pin(name: "SOLVE_ELEV_SCAN", live: Double(ThrowSolver.elevScan), want: 12,
+            meaning: "coarse steps across the bracket, used to find the flat root's cell"),
+        Pin(name: "SOLVE_ELEV_HALVINGS", live: Double(ThrowSolver.elevHalvings), want: 5,
+            meaning: "bisection halvings inside the bracketed elevation cell"),
+        Pin(name: "SOLVE_PASSES", live: Double(ThrowSolver.passes), want: 6,
+            meaning: "elevation solves per throw; the bank secant moves at most one step "
+                + "per pass from a standing start of zero, and overhead roots sit far out"),
+        Pin(name: "SOLVE_LAT_TOL", live: ThrowSolver.latTolerance, want: 0.25,
+            meaning: "lateral error in metres the solver stops caring about"),
+        Pin(name: "SOLVE_BANK_PROBE", live: ThrowSolver.bankProbe, want: 0.05,
+            meaning: "finite-difference step in rad for the bank secant"),
+        Pin(name: "SOLVE_BANK_STEP", live: ThrowSolver.bankStep, want: 0.30,
+            meaning: "most bank one secant step may ask for — the secant is local, the curve is not"),
+        Pin(name: "SOLVE_BANK_MAX", live: ThrowSolver.bankMax, want: 1.0,
+            meaning: "bank ceiling in rad; 0.35 capped the secant below every overhead "
+                + "throw's root (issue #65)"),
+        Pin(name: "SOLVE_REACH_TOL", live: ThrowSolver.reachTolerance, want: 0.5,
+            meaning: "how far short the flight may fall in metres before the solver reaches for more arm"),
+        Pin(name: "SOLVE_POWER_LIFTS", live: Double(ThrowSolver.powerLifts), want: 2,
+            meaning: "how many times one solve may lift the power toward an unreachable ask"),
+        Pin(name: "SOLVE_SPEED_MIN", live: ThrowSolver.speedMin, want: 9.0,
+            meaning: "slowest release in m/s the solver will ask an arm for — a person's slowest throw"),
+        Pin(name: "SOLVE_SPEED_DROPS", live: Double(ThrowSolver.speedDrops), want: 2,
+            meaning: "how many times one solve may drop toward the absolute release speed for a dump"),
+        Pin(name: "SOLVE_HEADING_TRIM", live: ThrowSolver.headingTrim, want: 0.15,
+            meaning: "clamp in rad on the residual heading trim — the calm-day case only"),
+        Pin(name: "SOLVE_WIND_DEADBAND", live: ThrowSolver.windDeadband, want: 2.0,
+            meaning: "crosswind in m/s below which the solve runs the calm-day trim rather than the wind secant"),
+        Pin(name: "SOLVE_HEADING_PROBE", live: ThrowSolver.headingProbe, want: 0.05,
+            meaning: "finite-difference step in rad for the heading secant"),
+        Pin(name: "SOLVE_HEADING_STEP", live: ThrowSolver.headingStep, want: 0.5,
+            meaning: "most heading one secant step may ask for in rad"),
+        Pin(name: "SOLVE_HEADING_MAX", live: ThrowSolver.headingMax, want: 1.4,
+            meaning: "total heading offset in rad from the caller's aim — a sanity ceiling on the secant"),
+        Pin(name: "SOLVE_CATCH_DROP", live: ThrowSolver.catchDrop, want: 0.25,
+            meaning: "how far under the throwing hand the solved catch plane is forced to sit, in metres"),
+        Pin(name: "SOLVE_LOFT_RANGE", live: ThrowSolver.loftRange, want: 25.0,
+            meaning: "at and beyond this ask distance in metres the solver throws the lofted root"),
     ]
 
     static func run() throws {
@@ -101,7 +153,7 @@ enum ConstantsTests {
 
         // A pin bound to the wrong symbol would pass while pinning nothing, so assert the
         // set is the size it should be rather than trusting the literal above to be whole.
-        Check.eq(pins.count, 15, "every tuning constant is pinned")
+        Check.eq(pins.count, 35, "every tuning constant is pinned")
         Check.eq(Set(pins.map(\.name)).count, pins.count, "no constant is pinned twice")
 
         // Each meaning has to be a sentence, not a shrug. The number is the easy half.

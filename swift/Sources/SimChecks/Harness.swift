@@ -357,7 +357,12 @@ let allSuites: [Suite] = [
     // line each team defends, facing the way it attacks — on both pitches. See
     // LineupTests.swift's header.
     Suite(name: "lineup", run: LineupTests.run, minAssertions: 1752),
-    Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 12618),
+    // Issue #58: `throwsolver` no longer loads a golden. 12,618 recorded
+    // comparisons become a generated 1,920-ask sweep stating the solver's
+    // contract directly — budget where it converges, a backstop where issue
+    // #66 owns the corner, envelope brackets everywhere — plus the short-ask
+    // property that never needed a fixture. See ThrowSolverTests.swift.
+    Suite(name: "throwsolver", run: ThrowSolverTests.run, minAssertions: 7461),
     Suite(name: "trycatch", run: TryCatchTests.run, minAssertions: 33),
     Suite(name: "catchband", run: CatchBandTests.run, minAssertions: 1022),
     // Floor lowered from 1587533 with issue #56's stagePoint formation fix: a genuinely
@@ -396,7 +401,9 @@ let allSuites: [Suite] = [
     // fifteen numbers were fixtures that are being deleted. `LAYOUT_CEILING`'s pin also
     // absorbs what `divergences` used to police: the one declared TS/Swift disagreement
     // this project ever had, now just a value with its own reasoning, not a registry entry.
-    Suite(name: "constants", run: ConstantsTests.run, minAssertions: 32),
+    // Extended with the twenty `ThrowSolver` search brackets, counts, tolerances and
+    // ceilings when throwsolver converted off its golden — same reason, same tripwire.
+    Suite(name: "constants", run: ConstantsTests.run, minAssertions: 72),
     Suite(name: "probecontract", run: ProbeContractTests.run, minAssertions: 224),
 ]
 
