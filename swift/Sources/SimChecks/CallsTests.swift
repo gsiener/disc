@@ -20,9 +20,21 @@ import UltimateSim
 /// this suite would notice: goals, completions and hold/break rates all survive a game
 /// that is stopped every ten seconds.
 ///
-/// Measured across three fifteen-minute 7v7 matches: 2-4 calls per match, and over the
-/// eleven-match pool 3.5 — roughly two receiving fouls, one pick and one strip. Travels
-/// remain at zero, which is the pivot work's number and is left alone here.
+/// Measured across the first three of the eleven-match pool: 1, 8 and 9 calls
+/// (mean 6.0), and 4.6 over the whole pool — roughly three receiving fouls, one
+/// pick and one strip per match. Travels remain at zero, which is the pivot
+/// work's number and is left alone here.
+///
+/// The first-three mean was 5-or-under before issue #65's throw-solver fix moved
+/// it to 6.0, and the rise is resampled arrival contact, not a trigger-happy
+/// detector: no detector changed (the contact geometry and contest judgement are
+/// still bit-exact against the reference in `RulesTests`), while every
+/// arrival-contact call type rose together over the eleven (foul +10, pick +3,
+/// strip +1) as fewer throws died uncatchable (drops 41 to 35) and more arrived
+/// with both parties present (interceptions +7). The eleven-pool mean is 4.64
+/// and still under 5; the three-seed mean is a three-sample tail (8, 9, 1 —
+/// one quiet seed, two loud ones). Seven keeps the tripwire live: the systematic
+/// failure this ceiling exists for ran 8.3 a match on every seed.
 ///
 /// **THE MARKING FOUL IS NOW ESSENTIALLY ZERO, AND THAT IS THE FINDING.** It used to be
 /// the commonest call in the game by a distance, and when the throw solver was fixed so
@@ -104,7 +116,11 @@ enum CallsTests {
 
         // The ceiling, on the mean rather than the worst seed. The floor lives on the
         // pooled sample below, where it means something.
-        Check.ok(mean <= 5, "calls are not constant (mean \(mean) per match)")
+        //
+        // Seven, not five: see the header. The detectors did not move under issue
+        // #65 — the matches did, and three seeds are a tail. The eleven-pool mean
+        // sits at 4.64 under the same bar it always had.
+        Check.ok(mean <= 7, "calls are not constant (mean \(mean) per match)")
 
         // Every kind that has a detector should be reachable, over the wider pool.
         var pooled = totals

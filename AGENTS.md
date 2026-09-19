@@ -164,11 +164,13 @@ where that is meaningful and refuses where it is not, `staleness` reads
 provenance and history instead. `npm run reference:goldens:test` asserts the
 tooling itself, in its own throwaway worktree, in about half a minute.
 
-### Twelve assertions are red on a clean checkout. None of them is yours.
+### Eleven assertions are red on a clean checkout. None of them is yours.
 
 Measured at `1877bd7` and confirmed identical in a detached worktree at `98ac3d1`
 — `test-game` 147/1, `test-ai` 64/6, `test-move` 34/3, `test-camera` 69/2,
-`test-locomotion` and `test-anim` fully green. Do not chase these and do not
+`test-locomotion` and `test-anim` fully green — minus the `test-game` row below,
+which issue #65's bank-secant fix turned green (`test-game` is 149/0 as of that
+commit: `77777` 94%, `33333` 94%, both inside 80-97%). Do not chase these and do not
 report them as yours.
 
 **This table said six for a while, and `test-move` was missing from it entirely.**
@@ -191,7 +193,7 @@ completion unchanged at 78.9%. `test-ai` is 65/5 as of that commit.
 
 | suite | red | assertion | cause |
 |---|---|---|---|
-| `test-game.ts` | 1 | `with no single seed outside 80-97%` (`77777` 98%, `33333` 67%) | tracked in #39 — `33333` is the pre-existing outlier, `77777` arrived with #36 |
+| `test-game.ts` | 0 since issue #65 | `with no single seed outside 80-97%` used to fail (`77777` 98%, `33333` 67%) | fixed by the bank-secant fix — was tracked in #39, now passes at 94%/94% |
 | `test-ai.ts` | 1 | `completion holds across seeds (75-92)` (74.2% pooled over 318 throws) | cause not verified |
 | `test-ai.ts` | 1 | `a reset handler is stationed behind the disc` (88.7% of 81,487 held frames) | cause not verified |
 | `test-ai.ts` | 2 | `nobody dives for a disc he could run down`; `a bid that is made is a bid that was needed` | both fire on a sample of **one bid** — a band measured against n=1 is the shape `20260810-per-seed-bands-again` warns about; pool before believing either |

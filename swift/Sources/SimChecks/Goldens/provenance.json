@@ -95,9 +95,9 @@
     "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
   },
   "throwsolver": {
-    "node": "v26.7.0",
+    "node": "v26.9.0",
     "platform": "darwin/arm64",
-    "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
+    "commit": "d54ef3ac4cb8c825ae304d80ed79403e69d0e38b"
   },
   "trycatch": {
     "node": "v26.7.0",

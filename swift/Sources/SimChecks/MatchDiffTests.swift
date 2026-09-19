@@ -73,16 +73,16 @@ enum MatchDiffTests {
         static let matches = 11
 
         static let turnovers: [String: Int] = [
-            "block": 36, "caught-out-of-bounds": 0, "double-touch": 0, "drop": 41,
-            "interception": 59, "out-of-bounds": 0, "pull-drop": 21, "stall-out": 0,
+            "block": 38, "caught-out-of-bounds": 1, "double-touch": 0, "drop": 35,
+            "interception": 66, "out-of-bounds": 3, "pull-drop": 10, "stall-out": 0,
             "throwaway": 0, "travel-violation": 0,
         ]
         static let calls: [String: Int] = [
-            "contested": 11, "foul": 22, "pick": 8, "strip": 7, "travel": 0,
+            "contested": 10, "foul": 32, "pick": 11, "strip": 8, "travel": 0,
         ]
         static let totals: [String: Int] = [
-            "attempts": 1414, "blocks": 95, "completions": 1275, "goals": 170,
-            "points": 180, "stallOuts": 0,
+            "attempts": 1390, "blocks": 104, "completions": 1244, "goals": 168,
+            "points": 179, "stallOuts": 0,
         ]
     }
 
