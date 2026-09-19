@@ -35,16 +35,27 @@ public enum ThrowSolver {
     public static let elevScan = 12
     /// Halvings inside the bracketed cell.
     public static let elevHalvings = 5
-    /// Elevation solves, each of which may be followed by a bank correction.
-    public static let passes = 3
+    /// Elevation solves, each of which may be followed by a bank correction. Six
+    /// because the bank secant moves at most `bankStep` per pass from a standing
+    /// start of zero, and the measured roots for overhead throws sit at 0.7-0.9 rad
+    /// (issue #65) — three passes only ever reached 0.6 before the last-pass break,
+    /// so the loop reported its own failure to converge and returned anyway.
+    /// Converged cases break early; only misses pay for the extra passes.
+    public static let passes = 6
     /// Lateral error the solver stops caring about, m.
     public static let latTolerance = 0.25
     /// Finite-difference step for the bank secant, rad.
     public static let bankProbe = 0.05
     /// Most bank one secant step may ask for, rad.
     public static let bankStep = 0.30
-    /// Bank ceiling, rad.
-    public static let bankMax = 0.35
+    /// Bank ceiling, rad. Was 0.35 (twenty degrees), which capped the secant below
+    /// every overhead throw's root: measured at the power floor in still air, a
+    /// hammer at 8-9 m zeros its lateral error at 0.7-0.9 rad of bank with distance
+    /// holding, and a scoober at 6.8 m at about -0.85 (issue #65). Every
+    /// reachable-distance miss in the golden envelope sat pegged exactly at ±0.35.
+    /// 1.0 clears those roots with headroom; flat throws that already converge break
+    /// out of the loop long before reaching it.
+    public static let bankMax = 1.0
     /// How far short the flight may fall before the solver reaches for more arm, m.
     public static let reachTolerance = 0.5
     /// How many times one solve may lift the power. See `solve`.

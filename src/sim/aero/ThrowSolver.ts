@@ -85,8 +85,13 @@ export const SOLVE_ELEV_HI = 0.62;
 export const SOLVE_ELEV_SCAN = 12;
 /** Halvings inside the bracketed cell. Five takes 0.08 rad to 2.5 mrad. */
 export const SOLVE_ELEV_HALVINGS = 5;
-/** Elevation solves, each of which may be followed by a bank correction. */
-export const SOLVE_PASSES = 3;
+/** Elevation solves, each of which may be followed by a bank correction. Six because
+ * the bank secant moves at most `SOLVE_BANK_STEP` per pass from a standing start of
+ * zero, and the measured roots for overhead throws sit at 0.7-0.9 rad (issue #65) —
+ * three passes only ever reached 0.6 before the last-pass break, so the loop
+ * reported its own failure to converge and returned anyway. Converged cases break
+ * early; only misses pay for the extra passes. */
+export const SOLVE_PASSES = 6;
 /** Lateral error the solver stops caring about, m. */
 export const SOLVE_LAT_TOL = 0.25;
 /** Finite-difference step for the bank secant, rad. */
@@ -94,11 +99,15 @@ export const SOLVE_BANK_PROBE = 0.05;
 /** Most bank one secant step may ask for, rad — the secant is local, the curve is not. */
 export const SOLVE_BANK_STEP = 0.30;
 /**
- * Bank ceiling, rad. Twenty degrees of hyzer is a hard huck; past that the disc
- * stops flying and starts knifing, and the solver would be buying line-holding
- * with distance it cannot spare.
+ * Bank ceiling, rad. Was 0.35 (twenty degrees — "a hard huck past which the disc
+ * stops flying and starts knifing"), which capped the secant below every overhead
+ * throw's root: measured at the power floor in still air, a hammer at 8-9 m zeros
+ * its lateral error at 0.7-0.9 rad of bank with distance holding, and a scoober at
+ * 6.8 m at about -0.85 (issue #65). Every reachable-distance miss in the golden
+ * envelope sat pegged exactly at ±0.35. 1.0 clears those roots with headroom;
+ * flat throws that already converge break out of the loop long before reaching it.
  */
-export const SOLVE_BANK_MAX = 0.35;
+export const SOLVE_BANK_MAX = 1.0;
 /**
  * How far short the flight may fall before the solver reaches for more arm, m.
  * Under this it is inside a receiver's own reach and not worth another 18 probes.
