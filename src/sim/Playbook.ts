@@ -334,10 +334,43 @@ function rowShift(anchor: number, lo: number, hi: number, band: number): number 
  * X of the column a stack set is built on. One source of truth: the formation
  * builds the stack here, the AI clears cutters back to here, and the HUD can
  * draw the same line without guessing.
+ *
+ * A vertical column stands near the middle of the field — `a.x * 0.3` — right
+ * up until that would put it inside its own cutting lane, at which point it
+ * migrates to the mirror of mid-field across the disc's own line. The old
+ * formula had no second half: derived from the disc's x with no reference to
+ * which side is open, the column landed inside the open-side under lane
+ * whenever the force opened toward the middle (issue #64). Under force middle
+ * the open side flips with the disc, so a mid-field column and the lane
+ * coincide and the cutters run through their own stack — 0.81 bodies per held
+ * frame against the 0.45 the shape owes.
+ *
+ * The migration is a linear blend on the mid-field candidate's own lateral
+ * offset from the disc, fully mid-field at 1.5 m and fully mirrored at 3.0 m,
+ * so there is no snap and no state: the column is a pure function of the
+ * anchor and the open side, exactly as before. Mirrored, not merely break-side
+ * of the disc: seating the column a metre or three off the disc crowds
+ * sustained possessions — the thrower, the mark and five rejoining cutters in
+ * a few metres — and a uniform near-disc column demonstrably inverted the
+ * elite/weak turnover ratio. The mirror keeps the thrower's neighborhood as
+ * empty as mid-field did while standing break-side of every lane. The lane
+ * only ever occupies positive lateral offsets (1.5–12 m open-side) and the
+ * blend crosses zero on the way to the mirror, so it never rests inside.
+ *
+ * Deliberately NOT gated on the force: the offence is never told the force
+ * (it reads the mark — see `readForce`), so the geometry keys off the
+ * offence's own open-side read, which is all `stackColumnX` ever takes. Under
+ * a fixed force the mid-field candidate sits break-side of a worked disc for
+ * the overwhelming majority of frames, so fixed-force matches stay on the old
+ * formula almost everywhere — the blend only ever fires on break-side
+ * excursions, briefly.
  */
 export function stackColumnX(name: FormationName, a: Vec2, openSign: Sign): number {
   if (name === 'side') return (-openSign as Sign) * 12.5;
-  return clamp(a.x * 0.3, -5, 5);
+  const mid = clamp(a.x * 0.3, -5, 5);
+  const lat = (mid - a.x) * (openSign as number);
+  const t = clamp((lat - 1.5) / 1.5, 0, 1);
+  return mid + (2 * a.x - mid - mid) * t;
 }
 
 export function formationStations(

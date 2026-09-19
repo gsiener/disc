@@ -114,6 +114,15 @@ public final class GameState {
 
     private var throwOrigin = Vec3d()
     private var throwerOfPass: PlayerId?
+    /// Passes a call nullified after release, per team. Telemetry only — nothing
+    /// in the simulation reads it, like `Engine.CallTally`.
+    ///
+    /// The release happened (the event stream says so) but the box score must
+    /// not count it (`attempts == completions + throwaways + throwsDropped`,
+    /// which the reference keeps too) — so the stream and the box disagree by
+    /// exactly this count whenever a receiving foul or strip voids a flight.
+    /// `EventTests.streamReconciles` asserts the three-way reconciliation.
+    public private(set) var voidedThrowAttempts = [0, 0]
     /// Chain of players who have touched the disc this possession.
     private var chain: [PlayerId] = []
     /// Payload of the most recent goal — for the HUD, replays and test harnesses.
@@ -1069,6 +1078,7 @@ public final class GameState {
         guard let id = throwerOfPass, let p = playersById[id] else { return }
         withPlayer(id) { $0.attempts = max(0, $0.attempts - 1) }
         teams[p.team].attempts = max(0, teams[p.team].attempts - 1)
+        voidedThrowAttempts[p.team] += 1
         throwerOfPass = nil
     }
 

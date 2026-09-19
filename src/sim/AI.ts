@@ -2180,17 +2180,17 @@ export class TeamAI {
          *
          * The column rule below is a cutter's rule: get out of the throwing
          * lane by rejoining the line. Applied to a handler it does the opposite
-         * of what the reset is for — `stackAxisX` is about x = 0 and the clear
-         * steers at `p.pos.z + dir * 1.2`, so a reset finishing a dump on the
-         * open side was sent INTO the middle of the field and FORWARD, past the
-         * disc, on every dead reset. He is the one player on the team whose job
+         * of what the reset is for — `stackAxisX` is mid-field until that would stand in its lane, then break-side of the disc
+         * and the clear steers at `p.pos.z + dir * 1.2`, so a reset finishing
+         * a dump on the open side was sent across the field and FORWARD, past
+         * the disc, on every dead reset. He is the one player on the team whose job
          * is defined by being behind it.
          */
         if (p.role === 'handler' || !hasColumn(this.formation)) {
           // A ROW CLEARS BACK ALONG ITS OWN LANE. There is no column to run to,
-          // and `stackAxisX` is about x = 0 for every set that is not a side
-          // stack — so steering everybody at it collapsed a 22 m-wide endzone
-          // set into a knot in the middle of the field on every dead cut, in
+          // and `stackAxisX` is mid-field until that would stand in its lane, then break-side of the disc for every set that
+          // is not a side stack — so steering everybody at it collapsed a 22 m-wide
+          // endzone set into a knot off the disc on every dead cut, in
           // the one situation the broadcast camera is closest to.
           tx = st.x; tz = st.z;
           effort = 0.85; mode = 'sprint';
