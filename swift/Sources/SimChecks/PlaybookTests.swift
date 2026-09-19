@@ -185,14 +185,20 @@ enum PlaybookTests {
             _ name: Playbook.FormationName, _ a: Vec2d, _ openSign: Playbook.Sign
         ) -> Double {
             if name == .side { return Double(-openSign) * 12.5 }
-            return clamp(a.x * 0.3, -5, 5)
+            let mid = clamp(a.x * 0.3, -5, 5)
+            let lat = (mid - a.x) * Double(openSign)
+            let t = clamp((lat - 1.5) / 1.5, 0, 1)
+            return mid + (2 * a.x - mid - mid) * t
         }
         static func stackColumnX(
             _ p: Playbook, _ name: Playbook.FormationName, _ a: Vec2d, _ openSign: Playbook.Sign
         ) -> Double {
             let w = p.widthScale
             if name == .side { return Double(-openSign) * 12.5 * w }
-            return clamp(a.x * 0.3, -5 * w, 5 * w)
+            let mid = clamp(a.x * 0.3, -5 * w, 5 * w)
+            let lat = (mid - a.x) * Double(openSign)
+            let t = clamp((lat - 1.5) / 1.5, 0, 1)
+            return mid + (2 * a.x - mid - mid) * t
         }
 
         static func rowShift(_ anchor: Double, _ lo: Double, _ hi: Double, _ band: Double) -> Double {

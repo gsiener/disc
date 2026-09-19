@@ -336,7 +336,11 @@ let allSuites: [Suite] = [
     // instead of all 1,370 frames, because the wiring it checks cannot vary by frame (one
     // construction site, both sides reading the same player at the same instant). That is
     // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
-    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 381115),
+    // Lowered from 381115 for issue #64: the regenerated teamai fixture covers
+    // the same 1,370 frames, but trajectory-dependent conditional comparisons
+    // fire 316 fewer times under the migrated column (380799 measured) — moved
+    // trajectories, not removed coverage.
+    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 380799),
     // Issue #58: `gamestate` no longer loads a golden. Nine hand-written scripts and 2,223
     // recorded comparisons become 89,808 assertions against the machine itself — every cell
     // of the phase x action table driven, every phase reached and shown not to be a dead

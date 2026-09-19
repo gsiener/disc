@@ -170,6 +170,29 @@ enum HumanCutTests {
             reached += 1
             dirsSeen.insert(Int(e.attackDirection(of: 0)))
 
+            // The reset tap goes FIRST since issue #64: the deep tap drafts a
+            // cutter and the draft can consume the very backfield body the
+            // reset question needs — under the re-seated column one seed's
+            // behind-disc handlers were both drafted deep, leaving 0 of 8
+            // with a backfield space and the reset bar asserting nothing. The
+            // disc has not moved either way (the computer is not playing our
+            // side), so whichever goes first, the second is still the same
+            // thrower asking a second question rather than a second match.
+            if let at = probe(e, downfield: false) {
+                resetAsked += 1
+                if let back = e.humanCallCut(atX: at.x, atZ: at.z) {
+                    if back.kind == .dump || back.kind == .swing { resetRight += 1 }
+                    else { wrong.append("seed \(seed) reset -> \(back.kind.rawValue)") }
+                } else {
+                    wrong.append("seed \(seed) reset refused")
+                }
+            }
+
+            // The same possession, one `calledCutInterval` later — the disc has not moved,
+            // because the computer is not playing our side, so this is the same thrower
+            // asking a second question rather than a second match.
+            for _ in 0..<Int((Engine.calledCutInterval + 0.1) / dt) { e.step(dt: dt) }
+            guard e.carrier != nil, e.possession == 0 else { continue }
             if let at = probe(e, downfield: true) {
                 deepAsked += 1
                 if let deep = e.humanCallCut(atX: at.x, atZ: at.z) {
@@ -179,21 +202,6 @@ enum HumanCutTests {
                     else { wrong.append("seed \(seed) deep -> \(deep.kind.rawValue)") }
                 } else {
                     wrong.append("seed \(seed) deep refused")
-                }
-            }
-
-            // The same possession, one `calledCutInterval` later — the disc has not moved,
-            // because the computer is not playing our side, so this is the same thrower
-            // asking a second question rather than a second match.
-            for _ in 0..<Int((Engine.calledCutInterval + 0.1) / dt) { e.step(dt: dt) }
-            guard e.carrier != nil, e.possession == 0 else { continue }
-            if let at = probe(e, downfield: false) {
-                resetAsked += 1
-                if let back = e.humanCallCut(atX: at.x, atZ: at.z) {
-                    if back.kind == .dump || back.kind == .swing { resetRight += 1 }
-                    else { wrong.append("seed \(seed) reset -> \(back.kind.rawValue)") }
-                } else {
-                    wrong.append("seed \(seed) reset refused")
                 }
             }
         }

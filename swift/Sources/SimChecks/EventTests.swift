@@ -199,8 +199,11 @@ enum EventTests {
                 + "\(Int(match.clock))s, score \(match.score[0])-\(match.score[1]), "
                 + "\(a.attempts + b.attempts) attempts)")
         Check.eq(
-            t.released[0] + t.released[1], a.attempts + b.attempts,
-            "one release event per throw attempt")
+            t.released[0] + t.released[1],
+            a.attempts + b.attempts + match.game.voidedThrowAttempts[0]
+                + match.game.voidedThrowAttempts[1],
+            "every release event is either a counted attempt or a voided one "
+                + "(voids: \(match.game.voidedThrowAttempts))")
         Check.eq(t.caught[0], a.completions, "our catches reconcile with our completions")
         Check.eq(t.caught[1], b.completions, "their catches reconcile with their completions")
         Check.eq(

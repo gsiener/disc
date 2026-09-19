@@ -303,7 +303,13 @@ enum TickLoopTests {
     /// the scenarios that replay this tick, so the cooldown state at any given tick is
     /// identical between discovery and replay.
     private static func findLayoutTurnover() -> (seed: UInt32, tick: Int)? {
-        for seed: UInt32 in [11, 23, 37, 53, 71, 89, 103, 127] {
+        // Reseeded after issue #64: the column migration moved layout contests
+        // off every seed in the old list [11, 23, 37, 53, 71, 89, 103, 127]
+        // (none produces a layout turnover in 300 s any more), so the sweep
+        // carries seeds that do. The list is a means of finding the event, not
+        // an assertion — if geometry moves contests again, this fails with
+        // "cannot exercise" and wants reseeding, not widening.
+        for seed: UInt32 in [3, 13, 29, 41, 107, 113] {
             let d = TickLoopDriver(match: Engine(format: .minis, seed: seed))
             d.match.autoTeams = [0, 1]
             var now = 0.0

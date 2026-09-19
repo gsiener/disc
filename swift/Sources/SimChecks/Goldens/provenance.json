@@ -85,9 +85,9 @@
     "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
   },
   "teamai": {
-    "node": "v26.7.0",
+    "node": "v26.9.0",
     "platform": "darwin/arm64",
-    "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
+    "commit": "9bfeeb74f5aea449e64a4854adc3d48d791eb4f0"
   },
   "throws": {
     "node": "v26.7.0",

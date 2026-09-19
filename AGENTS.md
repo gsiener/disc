@@ -164,14 +164,17 @@ where that is meaningful and refuses where it is not, `staleness` reads
 provenance and history instead. `npm run reference:goldens:test` asserts the
 tooling itself, in its own throwaway worktree, in about half a minute.
 
-### Eleven assertions are red on a clean checkout. None of them is yours.
+### Seven assertions are red on a clean checkout. None of them is yours.
 
 Measured at `1877bd7` and confirmed identical in a detached worktree at `98ac3d1`
 — `test-game` 147/1, `test-ai` 64/6, `test-move` 34/3, `test-camera` 69/2,
-`test-locomotion` and `test-anim` fully green — minus the `test-game` row below,
-which issue #65's bank-secant fix turned green (`test-game` is 149/0 as of that
-commit: `77777` 94%, `33333` 94%, both inside 80-97%). Do not chase these and do not
-report them as yours.
+`test-locomotion` and `test-anim` fully green — minus the rows below, which
+issues #65 and #64 turned green. `test-game` is 149/0 since #65 (`77777` 94%,
+`33333` 94%, both inside 80-97%). Since #64's column migration: `test-ai` is
+67/3 (the reset-handler and abort assertions pass — open lanes put a handler
+behind the disc and let up-lines convert; the bid pair still fires on n=1),
+and `test-move`'s hard floor passes (min pair separation moved with the new
+trajectories). Do not chase these and do not report them as yours.
 
 **This table said six for a while, and `test-move` was missing from it entirely.**
 Two rows it used to carry — `ratings change on-field outcomes` and
@@ -194,12 +197,13 @@ completion unchanged at 78.9%. `test-ai` is 65/5 as of that commit.
 | suite | red | assertion | cause |
 |---|---|---|---|
 | `test-game.ts` | 0 since issue #65 | `with no single seed outside 80-97%` used to fail (`77777` 98%, `33333` 67%) | fixed by the bank-secant fix — was tracked in #39, now passes at 94%/94% |
-| `test-ai.ts` | 1 | `completion holds across seeds (75-92)` (74.2% pooled over 318 throws) | cause not verified |
-| `test-ai.ts` | 1 | `a reset handler is stationed behind the disc` (88.7% of 81,487 held frames) | cause not verified |
+| `test-ai.ts` | 1 | `completion holds across seeds (75-92)` (74.4% pooled over 356 throws) | cause not verified |
+| `test-ai.ts` | 0 since issue #64 | `a reset handler is stationed behind the disc` used to fail (88.7%) | fixed by open lanes — passes since the column migration |
 | `test-ai.ts` | 2 | `nobody dives for a disc he could run down`; `a bid that is made is a bid that was needed` | both fire on a sample of **one bid** — a band measured against n=1 is the shape `20260810-per-seed-bands-again` warns about; pool before believing either |
-| `test-ai.ts` | 1 | `and the abort back to the reset is live code` (0 aborts of 2 up-lines) | n=2. Same caveat |
-| `test-move.ts` | 3 | `no pair sits inside 0.80 m for more than 5 s` (longest 5.0 s); `the hard floor still holds — nothing interpenetrates` (min pair 0.524 m); `groundY matches the surface under the body` (worst 9.91 mm) | **absent from this table until 2026-08-12** — nobody had written them down. Cause not verified; the first is exactly on its bound |
-| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)` (95.9% < 97.5%); `marker framed, LIVE_POSSESSION` (99.2% < 99.9%) | not yet investigated |
+| `test-ai.ts` | 0 since issue #64 | `and the abort back to the reset is live code` used to fail (0 aborts of 2 up-lines) | fixed by open lanes — up-lines convert since the column migration |
+| `test-ai.ts` | 0 since issue #64 | `ratings change on-field outcomes` never failed — but it goes red on every column geometry that moves it, passing and failing across near-identical formulas (0.60–1.54 on the same 3 seeds) | **the 3-seed A/B is chaotic: pooled over 12 seeds the OLD geometry itself scores 1.05 against its own 0.7 bar.** Recalibrated to twelve seeds with the bar at pooled evidence (0.85); yards un-gated per its own comment, which the code contradicted |
+| `test-move.ts` | 2 | `no pair sits inside 0.80 m for more than 5 s` (longest 5.0 s); `groundY matches the surface under the body` (worst 9.91 mm) | **absent from this table until 2026-08-12** — nobody had written them down. Cause not verified; the first is exactly on its bound. `the hard floor still holds` passes since #64 (min pair separation moved with the new trajectories) |
+| `test-camera.ts` | 2 | `lead room on the attacking side, settled (>3s)` (97.4% < 97.5%); `marker framed, LIVE_POSSESSION` (99.6% < 99.9%) | not yet investigated — both improved since #64 (were 95.9%/99.2%) but still red |
 
 The friction log's rule from `20260810-per-seed-bands-again` still applies where
 it's genuinely noise — *"a bound whose value came from a measurement of one seed
