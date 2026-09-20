@@ -50,9 +50,9 @@
     "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
   },
   "matchdiff": {
-    "node": "v26.7.0",
+    "node": "v26.9.0",
     "platform": "darwin/arm64",
-    "commit": "d1d9195843e6bf7718103d0bf43c10695be52ae1"
+    "commit": "0cd4c3d5e7fae0f4cae1c5b62a93034354d6e52f"
   },
   "move": {
     "node": "v26.7.0",
