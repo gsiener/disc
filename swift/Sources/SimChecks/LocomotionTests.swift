@@ -98,6 +98,7 @@ enum LocomotionTests {
         jumpLayoutMechanics()
         pivotMechanics()
         collisionMechanics()
+        collisionAcceptance()
         separationAcceptance()
         gaitCaps()
         sprintAndCut()
@@ -2011,6 +2012,123 @@ enum LocomotionTests {
             loco.resolveCollisions(dt, list: [a, b])
             Check.bitEqViaJSON(a.vel.x, -2, "no impulse on an already-separating pair (a)")
             Check.bitEqViaJSON(b.vel.x, 2, "no impulse on an already-separating pair (b)")
+        }
+    }
+
+    // MARK: - collision acceptance
+
+    /// Phase 1b (`tools/test-locomotion.ts` section 8): player-player collision
+    /// as behaviour. Overlapped bodies rest at the personal-space sum with the
+    /// hard radius cleared and no jitter; a runner transfers momentum without
+    /// interpenetrating, stumbles somebody, and emits a contact event naming
+    /// the runner; a pack untangles without gaining energy. The restitution
+    /// laws and stumble thresholds are `collisionMechanics`' subject, not this
+    /// section's. Same ratings, durations and bounds as the reference suite.
+    private static func collisionAcceptance() {
+        let dt = 1.0 / 120.0
+
+        // Two bodies spawned overlapping rest at the soft tier, not the hard
+        // floor: a body's width apart, jitter-free.
+        do {
+            let loco = freshLoco()
+            let a = loco.create(CreateOpts(
+                id: 1, attr: averageAttrs, pos: Vec3d(-0.15, 0, 0)))
+            let b = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0.15, 0, 0)))
+            let rsum = a.radius + b.radius
+            let psum = a.personal + b.personal
+            var dists: [Double] = []
+            for _ in 0..<(120 * 6) {
+                _ = loco.step(a, DesiredMove(), dt)
+                _ = loco.step(b, DesiredMove(), dt)
+                loco.resolveCollisions(dt)
+                dists.append(locoGap(a, b))
+            }
+            let tail = dists.suffix(60)
+            var jitter = 0.0
+            let tailArr = Array(tail)
+            for i in 1..<tailArr.count {
+                jitter = Swift.max(jitter, tailArr[i - 1] - tailArr[i])
+            }
+            let settle = tailArr[tailArr.count - 1]
+            Check.inRange(
+                settle, psum - 0.05, psum + 0.002, "resting separation")
+            Check.ok(
+                settle > rsum, "the hard radius is still cleared")
+            Check.ok(jitter < 1e-9, "no jitter at rest")
+            Check.ok(
+                locoSpd(a) < 0.02 && locoSpd(b) < 0.02,
+                "no residual velocity at rest")
+        }
+
+        // A runner into a stationary body: no interpenetration, momentum
+        // transfers, somebody stumbles, the contact names the runner.
+        do {
+            let box = EventBox()
+            let loco = Locomotion()
+            loco.attach(LocoHost(events: { box.events.append($0) }))
+            let r = loco.create(CreateOpts(id: 1, attr: averageAttrs))
+            let t = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0, 0, 22)))
+            let rsum = r.radius + t.radius
+            var worstPen = 0.0
+            var vBefore = 0.0
+            var hit = false
+            for i in 0..<(120 * 8) {
+                if !hit { vBefore = locoSpd(r) }
+                _ = loco.step(
+                    r, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                _ = loco.step(t, DesiredMove(), dt)
+                loco.resolveCollisions(dt)
+                let d = locoGap(t, r)
+                if d < rsum { hit = true }
+                worstPen = Swift.max(worstPen, rsum - d)
+                if hit && i > 60
+                    && (t.state == .stumble || t.state == .fall) { break }
+            }
+            Check.ok(
+                worstPen < 0.03, "bodies never interpenetrate meaningfully")
+            Check.ok(
+                locoSpd(t) > 0.5, "momentum transferred to the target")
+            Check.ok(
+                t.state == .stumble || t.state == .fall
+                    || r.state == .stumble,
+                "hard contact causes a stumble or fall")
+            var foulOn: Int? = nil
+            for e in box.events {
+                if case .contact(_, _, _, let fo, _) = e, foulOn == nil {
+                    foulOn = fo
+                }
+            }
+            Check.eq(
+                foulOn, r.id, "contact event emitted with a foul candidate")
+        }
+
+        // A pack shoved together untangles without exploding.
+        do {
+            let loco = freshLoco()
+            let rrng = Rng(seed: 7)
+            var pack: [LocoPlayer] = []
+            for i in 0..<7 {
+                pack.append(loco.create(CreateOpts(
+                    id: i, attr: averageAttrs,
+                    pos: Vec3d(rrng.range(-0.4, 0.4), 0, rrng.range(-0.4, 0.4)))))
+            }
+            var maxV = 0.0
+            for _ in 0..<(120 * 3) {
+                for q in pack { _ = loco.step(q, DesiredMove(), dt) }
+                loco.resolveCollisions(dt)
+                for q in pack { maxV = Swift.max(maxV, locoSpd(q)) }
+            }
+            var worst = Double.infinity
+            let rsum = pack[0].radius * 2
+            for i in 0..<pack.count {
+                for j in (i + 1)..<pack.count {
+                    worst = Swift.min(worst, locoGap(pack[i], pack[j]))
+                }
+            }
+            Check.ok(worst > rsum - 0.02, "pile-up untangles")
+            Check.ok(maxV < 0.6, "untangle adds no energy")
         }
     }
 
