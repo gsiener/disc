@@ -329,9 +329,10 @@ let allSuites: [Suite] = [
     // Bumped from 23665 for issue #58 Phase 1b: `separationAcceptance` ports
     // `tools/test-move.ts` sections 1-4 (27 assertions, measured 23692),
     // `gaitCaps` ports `tools/test-locomotion.ts` section 3 (11 more, 23703),
-    // `sprintAndCut` ports sections 1-2 (12 more, measured 23715), and
-    // `footPlants` ports section 4 (10 more, measured 23725).
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23725),
+    // `sprintAndCut` ports sections 1-2 (12 more, measured 23715),
+    // `footPlants` ports section 4 (10 more, measured 23725), and
+    // `leapAndContest` ports section 5 (7 more, measured 23732).
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23732),
     // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
     // become 23,026 assertions against `Model` — a second, independently typed
     // implementation of every formula in Playbook.swift, hand-typed from its own doc

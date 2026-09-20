@@ -102,6 +102,7 @@ enum LocomotionTests {
         gaitCaps()
         sprintAndCut()
         footPlants()
+        leapAndContest()
         staminaTests()
 
         flatWorldClaims()
@@ -2700,6 +2701,101 @@ enum LocomotionTests {
 
     private final class EventBox {
         var events: [LocoEvent] = []
+    }
+
+    // MARK: - leap and aerial contests
+
+    /// Phase 1b (`tools/test-locomotion.ts` section 5): the vertical leap and
+    /// contested discs. A standing leap gathers first and hangs inside human
+    /// bands, a run-up adds to it, a well-timed jumper out-reaches a late one,
+    /// and inside position wins a tied contest. Same ratings, durations and
+    /// bounds as the reference suite.
+    private static func leapAndContest() {
+        let dt = 1.0 / 120.0
+        func seededLoco() -> Locomotion {
+            let l = Locomotion()
+            l.attach(LocoHost(rand: Rng(seed: 0xC0FFEE)))
+            return l
+        }
+
+        // Standing leap: gather, hang, height.
+        var leap = 0.0
+        do {
+            let loco = seededLoco()
+            let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let stand = p.pos.y
+            var peak = 0.0, air = 0.0, gather = 0.0
+            var started = false
+            for i in 0..<(120 * 3) {
+                _ = loco.step(p, DesiredMove(jump: i < 4), dt)
+                if p.state == .jump && !p.air.airborne { gather += dt }
+                if p.air.airborne {
+                    air += dt
+                    started = true
+                }
+                peak = Swift.max(peak, p.pos.y)
+                if started && !p.air.airborne && air > 0.05 { break }
+            }
+            leap = peak - stand
+            Check.inRange(leap, 0.55, 0.95, "standing vertical leap")
+            Check.inRange(air, 0.55, 0.95, "hang time")
+            Check.inRange(
+                gather, 0.10, 0.20, "gather (jumps are not instant)")
+        }
+
+        // A running approach adds to the leap.
+        do {
+            let loco = seededLoco()
+            let r = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            driveLoco(
+                loco, [r], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 6)
+            let base = r.pos.y
+            var peak2 = 0.0
+            for i in 0..<(120 * 2) {
+                _ = loco.step(
+                    r,
+                    DesiredMove(
+                        dir: Vec2d(0, 1), mode: .sprint, jump: i < 4), dt)
+                peak2 = Swift.max(peak2, r.pos.y)
+                if i > 30 && !r.air.airborne { break }
+            }
+            Check.ok(
+                peak2 - base > leap * 1.15, "run-up increases the leap")
+        }
+
+        // Mistimed jump loses to a well-timed one, at the jumper's apex.
+        do {
+            let loco = seededLoco()
+            let a = loco.create(CreateOpts(
+                id: 1, attr: eliteAttrs, pos: Vec3d(-0.35, 0, 0)))
+            let b = loco.create(CreateOpts(
+                id: 2, attr: eliteAttrs, pos: Vec3d(0.35, 0, 0)))
+            for _ in 0..<4 {
+                _ = loco.step(a, DesiredMove(jump: true), dt)
+                _ = loco.step(b, DesiredMove(), dt)
+            }
+            for _ in 0..<Int((0.30 / dt).rounded()) {
+                _ = loco.step(a, DesiredMove(), dt)
+                _ = loco.step(b, DesiredMove(), dt)
+            }
+            let at = Swift.max(0, a.air.tApex - a.t)
+            let res = loco.contest(a, b, discPos: Vec3d(0, 3.0, 0), tContest: at)
+            Check.eq(
+                res.winner, .a, "well-timed jumper out-reaches the late one")
+            Check.inRange(res.margin, 0.15, 1.2, "reach margin")
+        }
+
+        // Box-out: inside position wins the tied contest.
+        do {
+            let loco = seededLoco()
+            let x = loco.create(CreateOpts(
+                id: 1, attr: eliteAttrs, pos: Vec3d(0.1, 0, 0)))
+            let y = loco.create(CreateOpts(
+                id: 2, attr: eliteAttrs, pos: Vec3d(-0.7, 0, 0)))
+            let res = loco.contest(
+                x, y, discPos: Vec3d(0.5, 2.6, 0), tContest: 0)
+            Check.eq(res.winner, .a, "inside position wins a tied contest")
+        }
     }
 
     // MARK: - stamina
