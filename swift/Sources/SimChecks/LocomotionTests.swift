@@ -103,6 +103,7 @@ enum LocomotionTests {
         sprintAndCut()
         footPlants()
         leapAndContest()
+        layoutTrajectory()
         staminaTests()
 
         flatWorldClaims()
@@ -2796,6 +2797,106 @@ enum LocomotionTests {
                 x, y, discPos: Vec3d(0.5, 2.6, 0), tContest: 0)
             Check.eq(res.winner, .a, "inside position wins a tied contest")
         }
+    }
+
+    // MARK: - layout trajectory
+
+    /// Phase 1b (`tools/test-locomotion.ts` section 6): a layout as a
+    /// trajectory, not as takeoff mechanics. Airtime, air distance, arc rise,
+    /// slide distance, get-up time and total time out of the play sit in human
+    /// bands; the body is unavailable for the whole window and upright after;
+    /// a landing event fires; the window is a real risk (a sprinter covers
+    /// ground); and steering is ignored once committed. The takeoff/landing
+    /// mechanics themselves are `jumpLayoutMechanics`' subject, not this
+    /// section's. Same ratings, durations and bounds as the reference suite.
+    private static func layoutTrajectory() {
+        let dt = 1.0 / 120.0
+        let box = EventBox()
+        let loco = Locomotion()
+        loco.attach(LocoHost(events: { box.events.append($0) }))
+        let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+        driveLoco(loco, [p], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 5)
+
+        var takeoffPos: Vec3d? = nil
+        var landPos: Vec3d? = nil
+        var apexY = 0.0, airT = 0.0, tTakeoff = 0.0, tLand = 0.0
+        var tStop = 0.0, tUp = 0.0
+        var slideStart: Vec3d? = nil
+        box.events.removeAll()
+        for i in 0..<(120 * 8) {
+            let wasAir = p.air.airborne
+            _ = loco.step(
+                p,
+                DesiredMove(dir: Vec2d(0, 1), mode: .sprint, layout: i < 4), dt)
+            if !wasAir && p.air.airborne {
+                takeoffPos = p.pos
+                tTakeoff = p.t
+            }
+            if p.air.airborne {
+                apexY = Swift.max(apexY, p.pos.y)
+                airT += dt
+            }
+            if wasAir && !p.air.airborne {
+                landPos = p.pos
+                tLand = p.t
+                slideStart = p.pos
+            }
+            if tLand > 0 && tStop == 0 && p.state == .recovery { tStop = p.t }
+            if tStop > 0 && p.state != .recovery && p.state != .landing {
+                tUp = p.t
+                break
+            }
+        }
+        let airDist = if let takeoffPos, let landPos {
+            Foundation.hypot(
+                landPos.x - takeoffPos.x, landPos.z - takeoffPos.z)
+        } else { 0.0 }
+        let slideDist = if let slideStart, tStop > 0 {
+            Foundation.hypot(p.pos.x - slideStart.x, p.pos.z - slideStart.z)
+        } else { 0.0 }
+        let rise = if let takeoffPos { apexY - takeoffPos.y } else { 0.0 }
+        let unavailable = tUp - tTakeoff
+        Check.ok(airT > 0, "layout leaves the ground")
+        Check.inRange(airT, 0.35, 0.90, "layout airtime")
+        Check.inRange(airDist, 2.0, 7.0, "layout air distance")
+        Check.inRange(rise, 0.05, 0.55, "layout COM rise (it arcs)")
+        Check.inRange(slideDist, 0.8, 4.0, "layout slide distance")
+        Check.inRange(tUp - tStop, 0.70, 1.50, "get-up time")
+        Check.inRange(unavailable, 1.6, 3.6, "total time out of the play")
+        Check.ok(
+            unavailable > 0
+                && !Locomotion.isAvailable(
+                    stateTestPlayer(state: .landing, stateT: 0, stateDur: 1)),
+            "unavailable for the whole window")
+        Check.ok(
+            Locomotion.isAvailable(p) && !p.prone,
+            "upright and available again at the end")
+        Check.ok(
+            box.events.contains {
+                if case .land(_, _, _, let layout) = $0 { return layout }
+                return false
+            }, "landing event emitted")
+        Check.ok(
+            7.6 * unavailable > 12, "layout is a real risk")
+
+        // Committed: steering (plus brake) during the flight is ignored.
+        let l2 = Locomotion()
+        l2.attach(LocoHost())
+        let q = l2.create(CreateOpts(id: 1, attr: eliteAttrs))
+        driveLoco(l2, [q], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 5)
+        for _ in 0..<4 {
+            _ = l2.step(
+                q, DesiredMove(dir: Vec2d(0, 1), mode: .sprint, layout: true),
+                dt)
+        }
+        var drift = 0.0
+        for _ in 0..<60 {
+            _ = l2.step(
+                q,
+                DesiredMove(dir: Vec2d(-1, 0), mode: .sprint, brake: true), dt)
+            if q.air.airborne { drift = Swift.max(drift, abs(q.vel.x)) }
+        }
+        Check.ok(drift < 0.05, "layout ignores steering once committed")
     }
 
     // MARK: - stamina
