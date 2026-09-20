@@ -29,6 +29,7 @@ enum FlightTests {
         symmetryAndDeterminism()
         flightShape()
         flightWindAndConvergence()
+        flightReleaseResponse()
     }
 
     private static func physicalProperties() {
@@ -246,10 +247,26 @@ enum FlightTests {
         return Foundation.atan2(s.normal.dot(right), s.normal.y)
     }
 
-    private static func bh(_ speed: Double, angle: Double = 0, spin: Double = 0.6) -> DiscState {
+    private static func bh(
+        _ speed: Double, angle: Double = 0, spin: Double = 0.6,
+        opts: ThrowOptions = ThrowOptions()
+    ) -> DiscState {
         throwDisc(
             .backhand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
-            power: powerForSpeed(.backhand, speed), angle: angle, spin: spin)
+            power: powerForSpeed(.backhand, speed), angle: angle, spin: spin,
+            options: opts)
+    }
+
+    private static func noseOpts(_ nose: Double) -> ThrowOptions {
+        var o = ThrowOptions()
+        o.nose = nose
+        return o
+    }
+
+    private static func bankOpts(_ bank: Double) -> ThrowOptions {
+        var o = ThrowOptions()
+        o.bank = bank
+        return o
     }
 
     /// Phase 1b (`tools/test-disc.ts` sections 1–3): the sport-visible shape of a
@@ -458,6 +475,141 @@ enum FlightTests {
             Check.ok(
                 (s1.pos - s2.pos).length < 1e-9,
                 "a 1/30 s call sub-steps to exactly four 1/120 s steps")
+        }
+    }
+
+    /// Phase 1b (`tools/test-disc.ts` sections 7, 8, 8b, 9): release response.
+    /// The probe reads sane forces at 20 m/s and alpha tracks the wrist; more
+    /// power means more carry up to an interior release angle; bank is a real
+    /// control (hyzer holds the line a flat backhand turns over); and every
+    /// throw type lands, covers ground, and keeps its character (push short,
+    /// blade steep).
+    private static func flightReleaseResponse() {
+        let body = DiscBody.standard
+
+        // The aero probe at a 20 m/s backhand release: lift around one disc
+        // weight, drag under two newtons, precession a slow roll not a flip.
+        // Precession is |M_perp| / |Izz * spin|, the axis rate the reference
+        // probe reports — derived here from the probe's own moments.
+        do {
+            let s = bh(20)
+            let p = s.probe()
+            Check.inRange(
+                p.lift, 1.3, 2.6, "lift at 20 m/s is around one disc weight")
+            Check.inRange(p.drag, 0.9, 1.8, "drag at 20 m/s")
+            let precession = Foundation.hypot(p.pitchMoment, p.rollMoment)
+                / abs(body.Izz * p.spin)
+            Check.inRange(
+                precession, 0.05, 1.2,
+                "precession rate is a slow roll, not a flip")
+        }
+
+        // Alpha tracks the wrist: nose ±0.15 moves alpha by exactly that, and
+        // more alpha means more lift. A nose-up release balloons over nose-down.
+        do {
+            let specNose = throwSpec(.backhand).nose
+            let up = bh(20, opts: noseOpts(0.15))
+            let dn = bh(20, opts: noseOpts(-0.15))
+            Check.ok(
+                abs(up.alpha - (specNose + 0.15)) < 1e-6,
+                "nose-up release gives alpha = nose angle")
+            Check.ok(
+                abs(dn.alpha - (specNose - 0.15)) < 1e-6,
+                "nose-down release gives negative alpha")
+            Check.ok(
+                up.probe().CL > dn.probe().CL, "more alpha means more lift")
+            let fUp = fly(bh(20, opts: noseOpts(0.12)))
+            let fDn = fly(bh(20, opts: noseOpts(-0.12)))
+            Check.ok(
+                fUp.maxHeight > fDn.maxHeight, "nose-up release balloons")
+        }
+
+        // Power: carry rises monotonically; release angle has an interior
+        // optimum — too flat stalls the glide, too steep wastes speed on climb.
+        do {
+            var last = 0.0
+            var mono = true
+            for v in [12.0, 16.0, 20.0, 24.0, 27.0] {
+                let d = fly(bh(v, angle: 0.10)).distance
+                if d <= last { mono = false }
+                last = d
+            }
+            Check.ok(mono, "distance increases monotonically with power")
+            let angles = [-0.1, 0.0, 0.1, 0.2, 0.35, 0.5]
+            let dists = angles.map { fly(bh(24, angle: $0)).distance }
+            let best = dists.indices.max(by: { dists[$0] < dists[$1] }) ?? 0
+            Check.ok(
+                best > 0 && best < angles.count - 1,
+                "an interior release angle maximises distance")
+        }
+
+        // Bank: a flat max-power backhand turns over right; hyzer holds the
+        // line and holds the distance; release bank orders peak bank
+        // monotonically without flipping the disc.
+        do {
+            func peakBank(_ bank: Double) -> Double {
+                var p = bh(26, spin: 0.8, opts: bankOpts(bank))
+                var peak = -180.0
+                for _ in 0..<1400 {
+                    if p.touchedGround { break }
+                    p.step(dt: FIXED_DT)
+                    peak = Swift.max(peak, bankAngle(p) * 180 / Double.pi)
+                }
+                return peak
+            }
+            let flat = fly(bh(26, spin: 0.8))
+            let hyzer = fly(bh(26, spin: 0.8, opts: bankOpts(-0.25)))
+            let anhyzer = fly(bh(26, spin: 0.8, opts: bankOpts(0.25)))
+            Check.ok(
+                flat.drift < -5,
+                "a flat max-power backhand turns over to the right")
+            Check.ok(
+                hyzer.drift > flat.drift + 8,
+                "hyzer holds the line against the turnover")
+            let pFlat = peakBank(0), pHy = peakBank(-0.25), pAn = peakBank(0.25)
+            Check.ok(
+                pAn > pFlat && pFlat > pHy,
+                "bank at release orders the turnover monotonically")
+            Check.ok(
+                hyzer.distance > anhyzer.distance + 5,
+                "a big huck has to be thrown with hyzer to hold its distance")
+            Check.inRange(
+                pFlat, 12, 60,
+                "the disc rolls onto its right edge but does not flip")
+        }
+
+        // Every throw type lands, stays finite, covers ground — and keeps its
+        // character: the push is short, the blade knifes down steeply and hard.
+        do {
+            let heights: [ThrowType: Double] = [
+                .backhand: 1.3, .forehand: 1.2, .hammer: 2.0,
+                .scoober: 1.6, .push: 1.1, .blade: 2.0,
+            ]
+            var results: [ThrowType: Flight] = [:]
+            for t in ThrowType.allCases {
+                let st = throwDisc(
+                    t, from: Vec3d(0, heights[t] ?? 1.3, 0), aim: Vec3d(0, 0, 1),
+                    power: 0.8, angle: 0, spin: 0.7)
+                results[t] = fly(st)
+            }
+            for t in ThrowType.allCases {
+                Check.ok(results[t]?.landed ?? false, "\(t) lands")
+                Check.ok(
+                    results[t]?.state.isFinite ?? false, "\(t) stays finite")
+                Check.ok(
+                    (results[t]?.distance ?? 0) > 3, "\(t) covers ground")
+            }
+            if let push = results[.push], let bh = results[.backhand] {
+                Check.ok(
+                    push.distance < bh.distance * 0.6,
+                    "push pass is a short throw")
+            }
+            if let blade = results[.blade] {
+                Check.ok(
+                    blade.descentDeg > 40, "blade knifes down steeply")
+                Check.ok(
+                    abs(blade.drift) > 3, "blade curves hard")
+            }
         }
     }
 
