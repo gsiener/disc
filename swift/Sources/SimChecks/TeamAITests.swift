@@ -1,752 +1,282 @@
 import Foundation
 import UltimateSim
 
-/// `TeamAI` against `src/sim/AI.ts` lines 653-3069.
+/// `TeamAI` — the team brain, run live through four situations.
 ///
-/// This is a **replay**, not a table. The fixture carries, for every one of 1,280 frames,
-/// the whole world the reference AI was shown — every player's position, velocity and
-/// energy, the disc, the phase, the possession, the wind — and every `PlayerIntent` it
-/// returned. The suite writes the inputs back, steps both teams, and compares all fourteen
-/// intents field by field. Nothing about the crude driver that produced the motion is
-/// reproduced or asserted; only the AI's answer to a known question is.
+/// # Why this is a driver, not a replay
 ///
-/// The inputs have to be replayed rather than re-derived because the interesting state is
-/// not in them. A `TeamAI` carries a possession epoch, a formation hold timer, a five-state
-/// cut machine per player with lanes reserved against a shared map, a stack-slot deal with
-/// 0.35 s of hysteresis, a lagged perception of every matchup, a stall clock, an 8 Hz
-/// decision tick, a windup and a private RNG stream. A single-frame fixture sees none of
-/// it. The failures this catches are all late ones: a lane never released, a matchup map
-/// iterated in a different order, a `stackOrder` rotation that drops a body, one RNG draw
-/// taken on a branch that should not have taken it.
+/// This used to be a **replay**: a 6 MB fixture carried, for every one of 1,370
+/// frames, the whole world the reference AI was shown and every `PlayerIntent` it
+/// returned, and the suite wrote the inputs back and compared all fourteen intents
+/// field by field. Issue #58 retired the reference, so there is nothing to replay
+/// against — and the situations are now *generated* instead: `driveLive` ports the
+/// retired generator's crude driver (first-order chase, ballistic flight, a scripted
+/// throwaway and turnover, the four segment setups) motion for motion, so the AI
+/// sees the same *kinds* of situations the replay used to hand it.
 ///
-/// ------------------------------------------------------------------------ strictness
+/// What the replay's exactness caught, and what catches it now:
 ///
-/// **This suite cannot be bit-exact and says so up front.** `Playbook.dist2` is
-/// `Math.hypot`, which IEEE 754 does not require to be correctly rounded and on which V8's
-/// compensated implementation and Darwin's libm differ by an ulp; `dist2` appears in
-/// nearly every expression in `AI.ts`, from the nearest-defender scan to the cut score to
-/// the stall geometry. `atan2`, `acos`, `cos`, `sin`, `exp` (through `sigmoid`) and `pow`
-/// are all in here as well. So continuous quantities get an **ulp-relative** envelope,
-/// stated as ulps rather than an absolute because the values here span from 0 to 50 m, and
-/// the share of comparisons that land bit-identical is reported so a slow slide from
-/// "identical" to merely "close" is visible before it is a failure.
+///  - **a lane reserved by a cut that ended** — `liveLanes` must equal the lanes the
+///    returned intents actually show, every frame, both teams. A reservation without
+///    a live cut behind it is the leak, asserted as an equality rather than sampled.
+///  - **two live cuts sharing a lane** — stated in `LaneKey`'s own doc ("two live
+///    cuts may never share one"), asserted per frame from the intents.
+///  - **a `stackOrder` rotation that drops a body** — the holding *set* is constant
+///    across all 1,370 frames; rotation reorders, dropping shrinks.
+///  - **a matchup that loses a body** — every mate is matched on every frame, and
+///    the marker and reset handler are always real bodies (or -1).
+///  - **one RNG draw taken on a branch that should not have taken it** — the whole
+///    trace is driven twice and every intent compared bit-exact. There is no oracle
+///    left to agree with, but a stream misused through global state or a branch that
+///    draws when it should not cannot reproduce itself exactly.
+///  - **a stall count that never starts, and an offence that stands still** — the
+///    four-hundred-second match, kept as behaviour: the count starts at exactly
+///    `markMax`, and the `nomark` segment still works the reset and releases the
+///    disc on `holdTime` alone.
+///  - **the offence that walked backwards over its own goal line** — kept as
+///    behaviour: no reset cut targets ground behind the floor, and `possessionValue`
+///    keeps falling past 64.
 ///
-/// Everything discrete is exact and that is where the real assertions live: `mode`, the
-/// action kind, `role`, `state`, `lane`, `cutKind`, `cutDepth`, the scheme, the formation,
-/// the open sign, the marker id, the reset id, who is holding the stack, the whole matchup
-/// table and every zone assignment. A tolerance can hide a slightly different target. It
-/// cannot hide a cut that never ended, a mark handed to the wrong body, or a stack that
-/// quietly lost a player.
-///
-/// -------------------------------------------------------------------------- the claims
-///
-/// `claims()` asserts the module's prose as behaviour. Two of those doc comments cite
-/// measured failures and both are checked here rather than trusted:
-///
-///  - **the four-hundred-second match.** A count that never starts freezes an offence
-///    whose only source of urgency is the opposition's number. The fix has two halves and
-///    both are asserted: `tickStall` starts the count at exactly `markMax` with no margin,
-///    and the radius the disc-space guard backs a marker out to is *inside* that — the
-///    start condition and the standing geometry are not allowed to disagree. Then the
-///    behaviour: a whole segment of the trace runs with the published count pinned at
-///    zero, and the offence must still work its reset and still release the disc.
-///
-///  - **the offence that walked backwards over its own goal line** (traced at -30.2,
-///    -36.1, -42.1, -46.4). The live segment starts with the disc two metres off the
-///    offence's own line, and no reset cut in it may target ground behind the floor.
-///    `possessionValue` must also keep falling past 64, which is what stops the throw
-///    being *wanted* rather than merely offered.
+/// The live census (modes, cut kinds, segment aggregates) is asserted as
+/// presence-plus-magnitude, not exact counts: the retired fixture's own numbers
+/// moved by a handful of intents between the two engines on the *same* machine
+/// from one ULP of `hypot` disagreement, so exact counts would be a bound on a
+/// libm, not on the AI. Anything a transposed coefficient or a dropped term does
+/// to these numbers is orders of magnitude larger than that.
 enum TeamAITests {
-
-    // MARK: - fixture shapes
-
-    struct Sheet: Decodable {
-        let speed: Double
-        let acceleration: Double
-        let agility: Double
-        let jumping: Double
-        let catching: Double
-        let throwAccuracy: [String: Double]
-        let throwPower: Double
-        let decision: Double
-        let stamina: Double
-        let defAwareness: Double
-    }
-
-    struct RosterRow: Decodable {
-        let id: Int
-        let team: Int
-        let archetype: String
-        let handed: String
-        let role: String
-        let energy: Double
-        let attr: Sheet
-    }
-
-    struct CfgRow: Decodable {
-        let formation: String
-        let force: String
-        let aggression: Double
-        let zoneBias: Double
-        let seed: Int
-    }
-
-    struct FieldRow: Decodable {
-        let halfWidth: Double
-        let halfLength: Double
-        let goalLine: Double
-        let endzoneDepth: Double
-        let edgeMargin: Double
-    }
-
-    struct Observed: Decodable {
-        let livePickups: Int
-        let liveFlightFrames: Int
-        let liveGroundFrames: Int
-        let livePossessionFlips: Int
-        let zoneFrames: Int
-        let zoneStallFrames: Int
-        let nomarkThrows: Int
-        let nomarkDumps: Int
-        let nomarkFirstThrowSecond: Double
-        let nomarkMarkedFrames: Int
-        let cutKinds: [String: Int]
-        let modes: [String: Int]
-    }
-
-    /// One frame. The four packed-string arrays are documented in `tools/goldens/teamai.ts`;
-    /// they exist because the generator writes with a two-space pretty-printer that puts
-    /// every scalar on its own line, and the object form of this trace was 17.9 MB.
-    struct Frame: Decodable {
-        let seg: String
-        let dt: Double
-        let time: Double
-        let phase: String
-        let possession: Int
-        let wx: Double
-        let wz: Double
-        let disc: DiscRow
-        let pl: [PlayerRow]
-        /// Energy after both updates — see the generator. This is the one input the AI
-        /// itself changes during the frame, and recording it is what makes the
-        /// `tickStamina` knife-edge visible instead of hidden.
-        let pe: [String]
-        let it: [IntentRow]
-        let ts: [TeamRow]
-    }
-
-    struct File: Decodable {
-        let note: String
-        let teamSeed: UInt32
-        let forkSalts: [Int]
-        let cfg: [CfgRow]
-        let dirs: [Int]
-        let score: [Int]
-        let scoreCap: Int
-        let field: FieldRow
-        let roster: [RosterRow]
-        let observed: Observed
-        let frames: [Frame]
-    }
-
-    // MARK: - tolerance
-
-    /// Absolute tolerance for every continuous quantity in the trace.
-    ///
-    /// The number is MEASURED, not guessed — see the note the suite prints. It was 1e-9
-    /// for most of this suite's life, six hundred times the then-worst deviation of
-    /// 1.6e-12. The deep-shot valuation moved the worst case: a huck's completion reads
-    /// `separation` through a LINEAR term where the old chain read it through a
-    /// saturated sigmoid, and `separation` carries `timeToReach`'s `acos(dot)` — whose
-    /// derivative is infinite at dot = 1, turning an ulp of cross-libm `hypot`
-    /// disagreement into a square-root of an ulp (~1e-6) of turn time. Measured worst
-    /// after that change: 1.8e-9 on a throw's expected completion, same option, same
-    /// receiver, same aim to 1e-9. That is drift the old landscape masked, not a logic
-    /// difference, so the bar moves with the measurement: 1e-7 keeps fifty times the
-    /// observed worst in headroom while sitting four orders of magnitude below the
-    /// parts-in-a-thousand a transposed coefficient or dropped term produces.
-    ///
-    /// It is absolute rather than ulp-relative on purpose, and the reason is
-    /// cancellation. `effort` in the person defence is `clamp(0.35 + gap * 0.45, ...)`
-    /// where `gap` is the distance between the defender and a target twenty metres away;
-    /// an ulp of disagreement in the target — the target the suite then compares and
-    /// finds equal, because `clampToField` has pinned it to the sideline — becomes a
-    /// thousand ulps of `gap`, which is a subtraction of two large nearby numbers. Ulps
-    /// of the *result* are not a meaningful unit for that. Metres are: 1e-7 m on a
-    /// hundred-metre pitch is far below anything that could hide a logic difference, and
-    /// every discrete consequence of these numbers — the mode, the action, the lane, the
-    /// cut kind, the matchup — is asserted exactly regardless.
-    private static let traceTol = 1e-7
-
-    /// A bit-exactness census over the tolerance comparisons, matching `LocomotionTests`.
-    /// The tolerance is the honest bar for a trace this deep, but it would also hide a
-    /// slow slide from "identical" to "close", so the share that is bit-identical is
-    /// counted and reported.
-    nonisolated(unsafe) static var approxTotal = 0
-    nonisolated(unsafe) static var approxExact = 0
-
-    /// Stop comparing once the port is clearly wrong. Without this a structural
-    /// divergence on frame 3 produces a quarter of a million failure strings.
-    private static let FAIL_BUDGET = 40
-    nonisolated(unsafe) static var failed = 0
-
-    /// Frames on which a player's energy came out one `tickStamina` different.
-    ///
-    /// **This is conditioning, not a porting bug, and the suite proves it rather than
-    /// assuming it.** `tickStamina` drains above `load > 0.42` and recovers below it,
-    /// and `load` is `hypot(vel.x, vel.z) / effectiveMaxSpeed`. `hypot` is not correctly
-    /// rounded and V8's compensated version and Darwin's libm land on opposite sides of
-    /// that threshold on the handful of frames where a player happens to be running at
-    /// exactly 42% of top speed. One tick is ~3e-4 of energy, which is ~5e-4 m/s of top
-    /// speed — five thousand times the tolerance, so it cannot be absorbed. Instead the
-    /// energy is compared explicitly, the disagreement is COUNTED, and that player's
-    /// intents are skipped for that frame only. Energy is re-seeded from the fixture on
-    /// the next frame, so it never accumulates.
-    ///
-    /// The count is asserted to stay small. If a real porting bug ever moved energy, this
-    /// number would jump from tens to tens of thousands and the assertion below fails —
-    /// which is the whole point of counting rather than tolerating.
-    nonisolated(unsafe) static var staminaFlips = 0
-    nonisolated(unsafe) static var staminaChecks = 0
-
-    /// Defender intents where mode/action disagreed in exactly the shape the declared
-    /// `LAYOUT_CEILING` divergence predicts (see `compareIntent`) — a bid attempt with
-    /// `land.y` in [1.10, 1.85), where the reference bids and Swift, correctly per its own
-    /// declared constant, does not. Counted rather than silently excused, for the same
-    /// reason `staminaFlips` is: a real regression elsewhere would move this from a
-    /// handful to thousands, and the assertion in `run()` is what would catch that.
-    nonisolated(unsafe) static var layoutCeilingFlips = 0
-
-    private static func approx(_ got: Double, _ want: Double, _ what: @autoclosure () -> String) {
-        approxTotal += 1
-        if got.bitPattern == want.bitPattern { approxExact += 1 }
-        if got.isNaN || want.isNaN {
-            // NaN is the reference's "no cut here", so it is a value and not an error.
-            record(got.isNaN && want.isNaN, "\(what()): NaN mismatch (got \(got), want \(want))")
-            return
-        }
-        let d = abs(got - want)
-        record(d <= traceTol, "\(what()): off by \(d) (got \(got), want \(want))")
-    }
-
-    private static func exact<T: Equatable>(
-        _ got: T, _ want: T, _ what: @autoclosure () -> String
-    ) {
-        record(got == want, "\(what()) — got \(got), want \(want)")
-    }
-
-    private static func record(_ ok: Bool, _ label: @autoclosure () -> String) {
-        if ok {
-            Check.ok(true, "")
-        } else {
-            failed += 1
-            Check.ok(false, label())
-        }
-    }
-
-    // MARK: - packed-row parsing
-    //
-    // ISSUE #19. `tools/goldens/teamai.ts` packs each row into a `|`-delimited string
-    // (17.9 MB pretty-printed as plain objects; under 5 MB packed) and every row shape
-    // used to be re-split and re-indexed at every call site that read one — `w[13]`,
-    // `w[15]`, `w[17]`, both here and duplicated again in `claims()`. A field inserted
-    // on the TypeScript side shifted every comparison after it, silently, because most
-    // of them are geometric doubles compared inside a tolerance: some of those shifts
-    // still passed. The four structs below are the one place that field order is
-    // knowledge now. They decode the identical wire string — nothing about
-    // `tools/goldens/teamai.ts` or the fixture's byte size changes — but every other
-    // line in this file reads a name, not a position.
-
-    private static func parts(_ s: String) -> [Substring] {
-        s.split(separator: "|", omittingEmptySubsequences: false)
-    }
-
-    /// Split a packed row and assert its width before anything indexes into it.
-    ///
-    /// **This is the half of #19 the row structs alone do not close.** Moving field order
-    /// into one struct per shape means a Swift-side reader can no longer disagree with
-    /// itself — but the writers in `tools/goldens/teamai.ts` still author that same order
-    /// independently, and nothing makes the two agree. Insert a field into `intentRow`
-    /// there and `IntentRow` here would go on reading `w[13]` as the wrong quantity: no
-    /// compile error, and (the issue's own warning) not necessarily a test failure either,
-    /// because most of these are geometric doubles compared inside a tolerance and a
-    /// shifted neighbour can land inside it.
-    ///
-    /// A width check converts that from silently-wrong into loudly-wrong for every insert
-    /// or deletion, which is most of the gap for one line per row. It throws rather than
-    /// trapping: `Decodable`'s own error path is what `Goldens.load` and `run()` already
-    /// propagate, so a width change reports as a decode failure naming both counts instead
-    /// of taking the whole 2.2 M-assertion process down with a crash.
-    private static func fields(
-        _ decoder: Decoder, _ want: Int, _ shape: String
-    ) throws -> [Substring] {
-        let w = parts(try decoder.singleValueContainer().decode(String.self))
-        guard w.count == want else {
-            throw DecodingError.dataCorrupted(
-                .init(
-                    codingPath: decoder.codingPath,
-                    debugDescription:
-                        "\(shape) row has \(w.count) fields, expected \(want) — "
-                        + "tools/goldens/teamai.ts and this struct disagree about the row "
-                        + "shape (#19). Reconcile them; do not index the short row."))
-        }
-        return w
-    }
-
-    /// `Double(String)` is correctly rounded and `String(v)` in JavaScript emits the
-    /// shortest representation that round-trips, so the wire form loses nothing. "nan" is
-    /// the one spelling the pretty-printer could not carry as a number.
-    private static func dbl(_ s: Substring) -> Double { Double(s) ?? Double.nan }
-    private static func optInt(_ s: Substring) -> Int? { s.isEmpty ? nil : Int(s) }
-    private static func optStr(_ s: Substring) -> String? { s.isEmpty ? nil : String(s) }
-
-    /// `x|z|vx|vz|energy` — `tools/goldens/teamai.ts:playerRow`.
-    struct PlayerRow: Decodable {
-        let x, z, vx, vz, energy: Double
-        init(from decoder: Decoder) throws {
-            let w = try fields(decoder, 5, "player")
-            x = dbl(w[0]); z = dbl(w[1]); vx = dbl(w[2]); vz = dbl(w[3]); energy = dbl(w[4])
-        }
-    }
-
-    /// `x|y|z|vx|vy|vz|state|carrier|intendedReceiver|stall` — `...teamai.ts:discRow`.
-    struct DiscRow: Decodable {
-        let x, y, z, vx, vy, vz: Double
-        let state: String
-        let carrier: Int?
-        let intendedReceiver: Int?
-        let stall: Double
-        init(from decoder: Decoder) throws {
-            let w = try fields(decoder, 10, "disc")
-            x = dbl(w[0]); y = dbl(w[1]); z = dbl(w[2])
-            vx = dbl(w[3]); vy = dbl(w[4]); vz = dbl(w[5])
-            state = String(w[6])
-            carrier = optInt(w[7]); intendedReceiver = optInt(w[8])
-            stall = dbl(w[9])
-        }
-    }
-
-    /// `id|targetX|targetZ|faceX|faceZ|mode|effort|desiredSpeed|maxSpeed|arriveRadius`
-    /// `|role|state|lane|cutX|cutZ|cutKind|cutDepth|action` — `...teamai.ts:intentRow`.
-    /// `action` is itself `,`-delimited (`compareAction` owns that shape: it is a
-    /// discriminated union whose field count varies by kind, which is a different
-    /// problem than a fixed row read by position).
-    struct IntentRow: Decodable {
-        let id: Int
-        let targetX, targetZ, faceX, faceZ: Double
-        let mode: String
-        let effort, desiredSpeed, maxSpeed, arriveRadius: Double
-        let role, state: String
-        let lane: String?
-        let cutX, cutZ: Double
-        let cutKind: String?
-        let cutDepth: Double
-        let action: String
-        init(from decoder: Decoder) throws {
-            let w = try fields(decoder, 18, "intent")
-            id = Int(w[0])!
-            targetX = dbl(w[1]); targetZ = dbl(w[2]); faceX = dbl(w[3]); faceZ = dbl(w[4])
-            mode = String(w[5])
-            effort = dbl(w[6]); desiredSpeed = dbl(w[7]); maxSpeed = dbl(w[8])
-            arriveRadius = dbl(w[9])
-            role = String(w[10]); state = String(w[11])
-            lane = optStr(w[12])
-            cutX = dbl(w[13]); cutZ = dbl(w[14])
-            cutKind = optStr(w[15])
-            cutDepth = dbl(w[16])
-            action = String(w[17])
-        }
-    }
-
-    /// `stall|scheme|formation|openSign|stackAxisX|marker|resetHandler|openSideOnD`
-    /// `|force|holding,csv|matchup,csv|zoneRole,csv` — `...teamai.ts:teamRow`.
-    struct TeamRow: Decodable {
-        let stall: Double
-        let scheme, formation: String
-        let openSign: Int
-        let stackAxisX: Double
-        let marker, resetHandler: Int
-        let openSideOnD: Int?
-        let force: String
-        let holding, matchup, zoneRole: String
-        init(from decoder: Decoder) throws {
-            let w = try fields(decoder, 12, "team")
-            stall = dbl(w[0])
-            scheme = String(w[1]); formation = String(w[2])
-            openSign = Int(w[3])!
-            stackAxisX = dbl(w[4])
-            marker = Int(w[5])!; resetHandler = Int(w[6])!
-            openSideOnD = optInt(w[7])
-            force = String(w[8])
-            holding = String(w[9]); matchup = String(w[10]); zoneRole = String(w[11])
-        }
-    }
 
     // MARK: - run
 
     static func run() throws {
-        let g = try Goldens.load(File.self, "teamai")
-        approxTotal = 0
-        approxExact = 0
-        failed = 0
-        staminaFlips = 0
-        staminaChecks = 0
-        layoutCeilingFlips = 0
-
-        geometry(g)
-        replay(g)
-        claims(g)
-
-        // The bit-exactness census has no pass/fail direction of its own — an envelope
-        // assertion tolerates small differences by design — so it is printed rather than
-        // asserted.
-        print(
-            "  · teamai: \(g.frames.count) frames tested"
-                + " — \(approxExact) of \(approxTotal) tolerance comparisons were bit-identical")
-        // A handful is conditioning. Thousands would be a port that computes energy
-        // differently, and that must not be excusable by the same mechanism.
-        Check.ok(
-            staminaFlips * 200 < staminaChecks,
-            "tickStamina load-branch flips stay under 0.5% of player-frames "
-                + "(\(staminaFlips)/\(staminaChecks))")
-        // A handful is the declared LAYOUT_CEILING gap being crossed by coincidence.
-        // Hundreds would be a real regression hiding behind it.
-        Check.ok(
-            layoutCeilingFlips < 20,
-            "LAYOUT_CEILING bid-height disagreements stay rare (\(layoutCeilingFlips))")
+        geometry()
+        invariants()
+        claims()
     }
 
     // MARK: - the pitch
 
-    /// The reference's module `FIELD` against the threaded `FieldConstants`. If these
-    /// have drifted then every station, every clamp and every goal-line test in the
-    /// replay below is measured against the wrong pitch, so it is asserted first.
-    private static func geometry(_ g: File) {
+    /// The regulation pitch, pinned by value. These numbers used to arrive inside
+    /// the fixture's `field` row, straight from the reference's module `FIELD`; the
+    /// values are kept and the transport is gone. If these drift then every
+    /// station, every clamp and every goal-line test below is measured against the
+    /// wrong pitch, so they are asserted first.
+    private static func geometry() {
         let f = FieldConstants.standard
-        Check.bitEqViaJSON(f.sideline, g.field.halfWidth, "FIELD.halfWidth = sideline")
-        Check.bitEqViaJSON(f.endLine, g.field.halfLength, "FIELD.halfLength = endLine")
-        Check.bitEqViaJSON(f.goalLine, g.field.goalLine, "FIELD.goalLine")
-        Check.bitEqViaJSON(f.endzoneDepth, g.field.endzoneDepth, "FIELD.endzoneDepth")
-        Check.bitEqViaJSON(
-            Playbook.DEFAULT_EDGE_MARGIN, g.field.edgeMargin, "FIELD.edgeMargin")
+        Check.bitEq(f.sideline, 18.5, "the pitch is 37 m wide")
+        Check.bitEq(f.endLine, 50.0, "and 100 m long")
+        Check.bitEq(f.goalLine, 32.0, "with the goal line at 32")
+        Check.bitEq(f.endzoneDepth, 18.0, "and an 18 m endzone")
+        Check.bitEq(
+            Playbook.DEFAULT_EDGE_MARGIN, 0.9, "edgeMargin is 0.9 m")
     }
 
-    // MARK: - world construction
+    // MARK: - invariants over the live trace
 
-    private static func attrs(_ s: Sheet) -> AIAttributes {
-        var acc: [AIThrowType: Double] = [:]
-        for (k, v) in s.throwAccuracy {
-            if let t = AIThrowType(rawValue: k) { acc[t] = v }
-        }
-        return AIAttributes(
-            speed: s.speed, acceleration: s.acceleration, agility: s.agility,
-            jumping: s.jumping, catching: s.catching, throwAccuracy: acc,
-            throwPower: s.throwPower, decision: s.decision, stamina: s.stamina,
-            defAwareness: s.defAwareness)
-    }
+    /// Drives the trace twice: once for the invariants and the census, once to
+    /// prove the first run reproduces itself bit-exact.
+    private static func invariants() {
+        let trace = driveLive()
+        Check.eq(trace.frames.count, 1370, "the driver runs all four segments")
 
-    private static func config(_ c: CfgRow) -> TeamConfig {
-        TeamConfig(
-            formation: Playbook.FormationName(rawValue: c.formation)!,
-            force: Playbook.Force(rawValue: c.force)!,
-            zoneBias: c.zoneBias, aggression: c.aggression, seed: c.seed)
-    }
-
-    // MARK: - replay
-
-    private static func replay(_ g: File) {
-        let players = g.roster.map { r in
-            AIPlayer(
-                id: r.id, team: r.team, pos: .zero, vel: .zero, attr: attrs(r.attr),
-                handed: Playbook.Handedness(rawValue: r.handed)!,
-                archetype: Archetype(rawValue: r.archetype)!,
-                energy: r.energy, role: PlayerRole(rawValue: r.role)!)
-        }
-
-        // The fixture forks both teams off one parent stream, and `fork` does not disturb
-        // the parent — so the two forks are order-independent and this reproduces them
-        // from a bare seed without replaying anything the generator did.
-        let trng = Rng(seed: g.teamSeed)
-        let teams = [
-            TeamAI(
-                team: 0, dir: g.dirs[0], rng: trng.fork(salt: g.forkSalts[0]),
-                cfg: config(g.cfg[0]), field: .standard),
-            TeamAI(
-                team: 1, dir: g.dirs[1], rng: trng.fork(salt: g.forkSalts[1]),
-                cfg: config(g.cfg[1]), field: .standard),
-        ]
-        let mates = [
-            players.filter { $0.team == 0 },
-            players.filter { $0.team == 1 },
-        ]
-
-        var world = AIWorld(
-            players: players, possession: 0, phase: .setup,
-            score: g.score, scoreCap: g.scoreCap, rand: Rng(seed: 7),
-            field: .standard)
-
-        for (fi) in g.frames.indices {
-            if failed >= FAIL_BUDGET {
-                // Early-exit notice, not a new claim: every failure counted in `failed`
-                // already went through `Check.ok(false, ...)` via `record()`.
-                print("  · teamai: stopped replaying at frame \(fi) after \(failed) failures")
-                return
-            }
-            let f = g.frames[fi]
-
-            // ---- write the recorded inputs back.
-            for (i, row) in f.pl.enumerated() {
-                players[i].pos = Vec3d(row.x, 0, row.z)
-                players[i].vel = Vec3d(row.vx, 0, row.vz)
-                players[i].energy = row.energy
-            }
-            let d = f.disc
-            world.disc = AIDiscState(
-                pos: Vec3d(d.x, d.y, d.z),
-                vel: Vec3d(d.vx, d.vy, d.vz),
-                state: DiscPhase(rawValue: d.state)!,
-                carrier: d.carrier, thrownBy: nil,
-                intendedReceiver: d.intendedReceiver, stall: d.stall)
-            world.time = f.time
-            world.phase = GamePhase(rawValue: f.phase)!
-            world.possession = f.possession
-            world.wind = Vec2d(f.wx, f.wz)
-
-            // ---- step, in the reference's order: team 0 then team 1.
-            //
-            // `world.scheme` has to be refreshed BETWEEN the two calls, not once per
-            // frame before either — the reference writes `world.scheme[team]` inside
-            // `pickScheme`, which runs during a team's own `update`, so team 1 sees
-            // team 0's freshly-decided call in the SAME frame it was made (issue #57).
-            // `AIWorld` is a value type here, so team 0's write inside `updateTeam`
-            // cannot propagate back through the call the way the reference's shared
-            // mutable object does — reading `currentScheme` straight off each `TeamAI`
-            // after its own call reproduces the same information without needing an
-            // `inout` world.
-            let a = updateTeam(teams[0], world, f.dt)
-            world.scheme[0] = teams[0].currentScheme
-            let b = updateTeam(teams[1], world, f.dt)
-            world.scheme[1] = teams[1].currentScheme
-            let got = a + b
-
+        var prevHolding: [Set<Int>?] = [nil, nil]
+        for (fi, f) in trace.frames.enumerated() {
             let tag = "f\(fi)/\(f.seg)"
-
-            // Energy is the one input the AI itself rewrites during the frame, so it is
-            // compared before anything computed from it. A disagreement here is the
-            // documented `tickStamina` knife-edge; the player it belongs to is excused
-            // for this frame and counted.
-            var flipped = Set<Int>()
-            for (i, want) in f.pe.enumerated() {
-                staminaChecks += 1
-                let w = Double(want) ?? Double.nan
-                if abs(players[i].energy - w) > traceTol {
-                    staminaFlips += 1
-                    flipped.insert(players[i].id)
-                }
-            }
-
-            exact(got.count, f.it.count, "\(tag) intent count")
-            if got.count == f.it.count {
-                for k in 0..<got.count {
-                    // Issue #20: this used to be a bare `continue`, which drops every
-                    // field `compareIntent`/`structural` would have checked for this
-                    // player this frame — position, mode, action, lane, cut kind,
-                    // matchup — with nothing recording that it happened. The 0.5% flip-
-                    // rate ceiling below bounds how OFTEN this fires; it says nothing
-                    // about how many comparisons vanished each time, which is more than
-                    // one. A counted, passing, self-describing assertion means the total
-                    // reflects every skip rather than shrinking silently around it.
-                    if flipped.contains(got[k].id) {
-                        Check.ok(
-                            true,
-                            "\(tag) i\(k) — #\(got[k].id) skipped: energy diverged past the "
-                                + "documented tickStamina libm knife-edge, not a porting bug")
-                        continue
-                    }
-                    compareIntent(got[k], f.it[k], "\(tag) i\(k)")
-                    // Frame zero only — see `structural`. The wiring it checks cannot vary
-                    // by frame, and repeating it per frame was 95,705 identical assertions.
-                    if fi == g.frames.startIndex { structural(got[k], players, "\(tag) i\(k)") }
-                }
-            }
             for t in 0..<2 {
-                compareTeam(teams[t], mates[t], f.ts[t], "\(tag) team\(t)")
+                let team = trace.teams[t]
+
+                // Every reserved lane still has a live cut behind it. A reservation
+                // whose cut ended without releasing is the leak that retires a
+                // lane forever — nobody may ever cut there again, and nothing
+                // else goes red.
+                Check.ok(
+                    team.laneReservationsLive,
+                    "\(tag) team\(t): every reserved lane has its live cut")
+                // And two RUNNING cuts never share one — `LaneKey`'s own doc
+                // states it, over the lanes the intents actually show. Scoped to
+                // the running states because a cut keeps displaying its old lane
+                // while it clears out of it (`endCut` releases the reservation
+                // but leaves `rec.cut` for the intent to read) — a finishing cut
+                // and the cut that just claimed its lane show the same label,
+                // and that staleness is mirrored reference behaviour, not a
+                // double-booking.
+                var active: Set<Playbook.LaneKey> = []
+                for it in f.intents where it.team == t {
+                    guard let lane = it.debug.lane, it.debug.cutKind != nil,
+                        ["setup", "plant", "break"].contains(it.debug.state)
+                    else { continue }
+                    Check.ok(
+                        !active.contains(lane),
+                        "\(tag) team\(t): two live cuts share \(lane.rawValue)")
+                    active.insert(lane)
+                }
+
+                // The stack never loses a body. Rotation reorders; dropping
+                // shrinks — so the holding *set* is compared, across possession
+                // changes and scheme calls alike.
+                let holding = Set(team.stackHolding())
+                if let prev = prevHolding[t] {
+                    Check.eq(
+                        holding, prev,
+                        "\(tag) team\(t): the holding set is unchanged")
+                }
+                prevHolding[t] = holding
+
+                // Every mate is matched, and the named bodies are real.
+                for p in trace.players where p.team == t {
+                    Check.ok(
+                        team.matchupOf(p.id) != nil,
+                        "\(tag) team\(t): #\(p.id) has a matchup")
+                }
+                let mateIds = Set(trace.players.filter { $0.team == t }.map(\.id))
+                Check.ok(
+                    team.marker == -1 || mateIds.contains(team.marker),
+                    "\(tag) team\(t): the marker is a real body")
+                Check.ok(
+                    team.resetHandler == -1 || mateIds.contains(team.resetHandler),
+                    "\(tag) team\(t): the reset handler is a real body")
+            }
+        }
+
+        // The census: presence plus magnitude. Exact counts would pin a libm;
+        // anything that actually breaks the AI moves these by orders of
+        // magnitude more than the few-intent jitter in the doc comment above.
+        let c = trace.census
+        Check.ok(c.liveThrows > 0, "the trace throws the disc")
+        Check.ok(c.liveCatches > 0, "and somebody catches one")
+        Check.ok(c.liveTurnovers > 0, "and one goes to ground")
+        Check.ok(c.livePickups > 0, "and a loose disc is picked up")
+        Check.ok(c.liveFlightFrames > 0, "with a disc in flight")
+        Check.ok(c.liveGroundFrames > 0, "and a disc on the turf")
+        Check.ok(c.livePossessionFlips > 0, "and a possession that changes hands")
+        Check.eq(c.zoneFrames, 200, "the zone segment runs its two hundred frames")
+        Check.ok(c.zoneStallFrames > 0, "and the cup mark applies a count in it")
+        Check.ok(
+            (c.modes["mark"] ?? 0) > 0, "the trace contains an established mark")
+        Check.ok(
+            (c.cutKinds["deep"] ?? 0) > 0 && (c.cutKinds["under"] ?? 0) > 0,
+            "the trace contains both halves of the vertical stack's cut vocabulary")
+        Check.ok(
+            (c.cutKinds["dump"] ?? 0) > 0, "and the reset vocabulary with them")
+        Check.ok(c.nomarkMarkedFrames > 0, "nomark: the mark is genuinely set")
+        Check.ok(
+            c.nomarkThrows > 0,
+            "nomark: the offence still releases the disc with the count dead")
+        Check.inRange(
+            c.nomarkFirstThrowSecond, 0, 13.0,
+            "nomark: and it does so inside thirteen seconds, not four hundred")
+        Check.ok(
+            c.nomarkDumps > 0, "nomark: the reset still works with the count dead")
+
+        // No oracle left to agree with — but a brain that draws from a stream it
+        // should not, or that leaks through global state, cannot do the same
+        // thing twice. Every intent, bit-for-bit, over all four segments.
+        let again = driveLive()
+        Check.eq(
+            again.frames.count, trace.frames.count,
+            "the second run plays the same number of frames")
+        for (fi, (a, b)) in zip(trace.frames, again.frames).enumerated() {
+            Check.eq(a.intents.count, b.intents.count, "f\(fi): same intent count")
+            for (k, (x, y)) in zip(a.intents, b.intents).enumerated() {
+                Check.ok(
+                    sameIntent(x, y),
+                    "f\(fi) i\(k): the trace reproduces itself")
             }
         }
     }
 
-    // MARK: - comparison
+    /// Bit-for-bit intent equality that treats NaN as a value. `PlayerIntent`'s
+    /// synthesized `==` compares its doubles with `==`, under which the `.nan`
+    /// "no cut here" sentinel never equals itself — so every frame would fail.
+    /// `bitPattern` compares what is actually there, and two runs of a
+    /// deterministic engine put the same bits there.
+    private static func sameDouble(_ a: Double, _ b: Double) -> Bool {
+        a.bitPattern == b.bitPattern
+    }
 
-    private static func compareIntent(_ got: PlayerIntent, _ w: IntentRow, _ tag: String) {
-        exact(got.id, w.id, "\(tag) id")
-        approx(got.targetX, w.targetX, "\(tag) targetX")
-        approx(got.targetZ, w.targetZ, "\(tag) targetZ")
-        approx(got.faceX, w.faceX, "\(tag) faceX")
-        approx(got.faceZ, w.faceZ, "\(tag) faceZ")
-
-        // LAYOUT_CEILING is a DECLARED divergence (ADR-0007, `tools/goldens/divergences.ts`):
-        // Swift guards a defensive bid at 1.10 m, a prone body's real reach; the reference
-        // guards it at 1.85 m, which the registry's own measurement (three matches, 202k
-        // evaluations) found inert relative to ITSELF — nothing ever reached 1.85 — but
-        // that measurement never claimed 1.10 was inert too, and `land.y` does reach as
-        // high as 1.4498. So for any bid attempt with `land.y` in [1.10, 1.85), the two
-        // engines are DECLARED to disagree on whether it happens at all: the reference
-        // bids (`land.y < 1.85` holds), Swift does not (`land.y < 1.10` fails). Traced to
-        // this exact frame/site while diagnosing issue #36's Swift fallout (a `nomark`
-        // replay whose trajectory happens to put a bid attempt in that gap at
-        // `f1237-1238/i11`, which never occurred in this fixture before): `land.y` there
-        // measured 1.3709, inside the gap, `wantsBid` true on the reference side.
-        //
-        // `land.y` itself is not visible from here (`predictCatchPoint` is private, and
-        // exposing it publicly is a bigger surface than this narrow case needs), so the
-        // exception is keyed on the decision's SHAPE instead: both sides agree this is a
-        // defender reading the disc (`debug.role`/`debug.state`, checked as normal below,
-        // so a mismatch THERE still fails), and the only disagreement is exactly
-        // mode=`.layout`+action=`.bid` on one side against mode=`.sprint`+no action on the
-        // other. Nothing else about the intent is excused — position, effort, speed, cut
-        // fields all still compare normally — and the count is asserted small in
-        // `replay`, the same shape `staminaFlips` uses, so a REAL regression (this firing
-        // on far more than a bid-height coincidence) still goes red.
-        let wantMode = w.mode
-        let wantActionKind = w.action.split(separator: ",").first.map(String.init) ?? ""
-        let gotIsLayoutBid: Bool = {
-            if case .bid = got.action { return got.mode == .layout }
+    private static func sameAction(_ a: PlayerAction?, _ b: PlayerAction?) -> Bool {
+        switch (a, b) {
+        case (nil, nil):
+            return true
+        case (.throw(let t1, let m1, let s1, let f1, let p1, let r1, let e1),
+            .throw(let t2, let m2, let s2, let f2, let p2, let r2, let e2)):
+            return t1 == t2 && sameDouble(m1.x, m2.x) && sameDouble(m1.y, m2.y)
+                && sameDouble(m1.z, m2.z) && sameDouble(s1, s2)
+                && sameDouble(f1, f2) && sameDouble(p1, p2) && r1 == r2
+                && sameDouble(e1, e2)
+        case (.catch(let d1), .catch(let d2)):
+            return sameDouble(d1, d2)
+        case (.bid(let x1, let z1), .bid(let x2, let z2)):
+            return sameDouble(x1, x2) && sameDouble(z1, z2)
+        case (.jump(let h1), .jump(let h2)):
+            return sameDouble(h1, h2)
+        case (.stall(let c1), .stall(let c2)):
+            return sameDouble(c1, c2)
+        case (.pickup, .pickup):
+            return true
+        case (.fake(let t1), .fake(let t2)):
+            return t1 == t2
+        default:
             return false
-        }()
-        let wantIsLayoutBid = wantMode == "layout" && wantActionKind == "bid"
-        let isDefenderReadDisc = got.debug.role == "defender" && w.role == "defender"
-            && got.debug.state == "read-disc" && w.state == "read-disc"
-        if isDefenderReadDisc && gotIsLayoutBid != wantIsLayoutBid {
-            layoutCeilingFlips += 1
-        } else {
-            exact(got.mode.rawValue, wantMode, "\(tag) mode")
-            compareAction(got.action, w.action, tag)
-        }
-
-        approx(got.effort, w.effort, "\(tag) effort")
-        approx(got.desiredSpeed, w.desiredSpeed, "\(tag) desiredSpeed")
-        approx(got.maxSpeed, w.maxSpeed, "\(tag) maxSpeed")
-        // Discrete in practice — it takes one of three literals — so an exact compare is
-        // what makes the `settle` flag visible from outside at all.
-        Check.bitEqViaJSON(got.arriveRadius, w.arriveRadius, "\(tag) arriveRadius")
-        exact(got.debug.role, w.role, "\(tag) debug.role")
-        exact(got.debug.state, w.state, "\(tag) debug.state")
-        exact(got.debug.lane?.rawValue, w.lane, "\(tag) debug.lane")
-        approx(got.debug.cutX, w.cutX, "\(tag) debug.cutX")
-        approx(got.debug.cutZ, w.cutZ, "\(tag) debug.cutZ")
-        exact(got.debug.cutKind?.rawValue, w.cutKind, "\(tag) debug.cutKind")
-        Check.bitEqViaJSON(got.debug.cutDepth, w.cutDepth, "\(tag) debug.cutDepth")
-    }
-
-    private static func compareAction(_ got: PlayerAction?, _ text: String, _ tag: String) {
-        if text.isEmpty {
-            exact(got?.kind, nil, "\(tag) action absent")
-            return
-        }
-        let a = text.split(separator: ",", omittingEmptySubsequences: false)
-        guard let got else {
-            record(false, "\(tag) action missing — want \(a[0])")
-            return
-        }
-        exact(got.kind, String(a[0]), "\(tag) action kind")
-        switch got {
-        case .throw(let type, let aim, let speed, let ft, let spin, let rid, let expected):
-            exact(type.rawValue, String(a[1]), "\(tag) throw type")
-            approx(aim.x, dbl(a[2]), "\(tag) throw aimX")
-            approx(aim.y, dbl(a[3]), "\(tag) throw aimY")
-            approx(aim.z, dbl(a[4]), "\(tag) throw aimZ")
-            approx(speed, dbl(a[5]), "\(tag) throw speed")
-            approx(ft, dbl(a[6]), "\(tag) throw flightTime")
-            approx(spin, dbl(a[7]), "\(tag) throw spin")
-            exact(rid, Int(a[8])!, "\(tag) throw receiverId")
-            approx(expected, dbl(a[9]), "\(tag) throw expected")
-        case .catch(let difficulty):
-            approx(difficulty, dbl(a[1]), "\(tag) catch difficulty")
-        case .bid(let x, let z):
-            approx(x, dbl(a[1]), "\(tag) bid x")
-            approx(z, dbl(a[2]), "\(tag) bid z")
-            // `a[3]` is the reference's `extend`, deliberately unread. It is write-only in
-            // `src/sim/AI.ts` too — nothing there consumes it either — so the port no longer
-            // carries it on `.bid`. What it holds is `layoutExtend(p)` for the bidding
-            // player, which `AIMathTests` already pins against its specification.
-        case .jump(let height):
-            approx(height, dbl(a[1]), "\(tag) jump height")
-        case .stall(let count):
-            approx(count, dbl(a[1]), "\(tag) stall count")
-        case .pickup:
-            break
-        case .fake(let type):
-            exact(type.rawValue, String(a[1]), "\(tag) fake type")
         }
     }
 
-    /// The four intent fields the fixture deliberately does not carry.
-    ///
-    /// They are pure functions of the player, which `AIMathTests` already pins bit for
-    /// bit — so what is worth asserting is that `intent` wired the right function to the
-    /// right field, which this does without four more doubles on every row. `bitEq`
-    /// rather than a tolerance: both sides are the same Swift call.
-    ///
-    /// **Run on the first frame only, and that is the whole claim rather than a sample.**
-    /// This is a WIRING check, and wiring does not vary by frame: `TeamAI.swift:861-874`
-    /// is the single `PlayerIntent` construction site in the port (verified — nothing else
-    /// assigns `personalSpace`), so `maxAccel: effectiveAccel(p)` either names the right
-    /// function or it does not, once, for every intent it will ever build. Both sides here
-    /// read the *same* `p` from the *same* `players` array at the *same* instant, so
-    /// `i.maxAccel == effectiveAccel(p)` is a tautology on every frame by construction —
-    /// energy changing between frames moves both sides identically and cannot make it
-    /// disagree. `personalSpace` compares a literal to a literal and `team` compares
-    /// `p.team` to itself; neither has a data dependence at all.
-    ///
-    /// It used to run on all fourteen intents of all 1,370 frames: 19,141 calls × 5
-    /// assertions = **95,705 identical comparisons carrying five bits of information.**
-    /// Fourteen players on one frame still covers every distinct athlete and every
-    /// archetype's attribute sheet, and a rewiring — the only regression these can catch —
-    /// fails on frame zero. What would NOT be caught by frame zero is a second, differently
-    /// wired construction site added later; `tools/test-reachability.ts` and the
-    /// single-site invariant above are what keep that honest, not repetition here.
-    private static func structural(_ i: PlayerIntent, _ players: [AIPlayer], _ tag: String) {
-        guard let p = players.first(where: { $0.id == i.id }) else {
-            record(false, "\(tag) intent for unknown player \(i.id)")
-            return
-        }
-        Check.bitEq(i.maxAccel, effectiveAccel(p), "\(tag) maxAccel = effectiveAccel")
-        Check.bitEq(i.maxDecel, effectiveDecel(p), "\(tag) maxDecel = effectiveDecel")
-        Check.bitEq(i.turnRate, turnRateOf(p), "\(tag) turnRate = turnRateOf")
-        Check.bitEq(i.personalSpace, 0.72, "\(tag) personalSpace")
-        exact(i.team, p.team, "\(tag) team")
-    }
-
-    private static func compareTeam(
-        _ t: TeamAI, _ mates: [AIPlayer], _ w: TeamRow, _ tag: String
-    ) {
-        approx(t.stall, w.stall, "\(tag) stall")
-        exact(t.currentScheme.rawValue, w.scheme, "\(tag) scheme")
-        exact(t.currentFormation.rawValue, w.formation, "\(tag) formation")
-        exact(t.openSign, w.openSign, "\(tag) openSign")
-        approx(t.stackAxisX, w.stackAxisX, "\(tag) stackAxisX")
-        exact(t.marker, w.marker, "\(tag) marker")
-        exact(t.resetHandler, w.resetHandler, "\(tag) resetHandler")
-        exact(t.openSideOnD, w.openSideOnD, "\(tag) openSideOnD")
-        exact(t.force.rawValue, w.force, "\(tag) force")
-        exact(t.stackHolding().map(String.init).joined(separator: ","), w.holding,
-            "\(tag) stackHolding")
-        // The matchup table is the single most order-sensitive structure in the port: the
-        // reference iterates a JS `Map` and keeps the LAST defender matched to the
-        // thrower. Comparing the whole table every frame is what makes an unordered
-        // container fail loudly instead of intermittently.
-        exact(
-            mates.map { t.matchupOf($0.id).map(String.init) ?? "" }.joined(separator: ","),
-            w.matchup, "\(tag) matchups")
-        exact(
-            mates.map { t.zoneRoleOf($0.id)?.rawValue ?? "" }.joined(separator: ","),
-            w.zoneRole, "\(tag) zoneRoles")
+    private static func sameIntent(_ a: PlayerIntent, _ b: PlayerIntent) -> Bool {
+        a.id == b.id && a.team == b.team
+            && sameDouble(a.targetX, b.targetX) && sameDouble(a.targetZ, b.targetZ)
+            && sameDouble(a.faceX, b.faceX) && sameDouble(a.faceZ, b.faceZ)
+            && a.mode == b.mode && sameDouble(a.effort, b.effort)
+            && sameDouble(a.desiredSpeed, b.desiredSpeed)
+            && sameDouble(a.maxSpeed, b.maxSpeed)
+            && sameDouble(a.maxAccel, b.maxAccel)
+            && sameDouble(a.maxDecel, b.maxDecel)
+            && sameDouble(a.turnRate, b.turnRate)
+            && sameDouble(a.arriveRadius, b.arriveRadius)
+            && sameDouble(a.personalSpace, b.personalSpace)
+            && sameAction(a.action, b.action)
+            && a.debug.role == b.debug.role && a.debug.state == b.debug.state
+            && a.debug.lane == b.debug.lane
+            && sameDouble(a.debug.cutX, b.debug.cutX)
+            && sameDouble(a.debug.cutZ, b.debug.cutZ)
+            && a.debug.cutKind == b.debug.cutKind
+            && sameDouble(a.debug.cutDepth, b.debug.cutDepth)
     }
 
     // MARK: - prose as behaviour
 
-    private static func claims(_ g: File) {
+    private static func attrs(
+        speed: Double, acceleration: Double, agility: Double, jumping: Double,
+        catching: Double, throwPower: Double, decision: Double, stamina: Double,
+        defAwareness: Double
+    ) -> AIAttributes {
+        AIAttributes(
+            speed: speed, acceleration: acceleration, agility: agility,
+            jumping: jumping, catching: catching,
+            throwAccuracy: [
+                .backhand: 60, .forehand: 60, .hammer: 60, .scoober: 60, .push: 60,
+            ],
+            throwPower: throwPower, decision: decision, stamina: stamina,
+            defAwareness: defAwareness)
+    }
+
+    private static func commandPlayers() -> [AIPlayer] {
+        (0..<14).map { id in
+            AIPlayer(
+                id: id, team: id < 7 ? 0 : 1,
+                pos: Vec3d(Double(id % 7) * 2 - 6, 0, 4), vel: .zero,
+                attr: attrs(
+                    speed: 60, acceleration: 60, agility: 60, jumping: 60,
+                    catching: 60, throwPower: 60, decision: 60, stamina: 60,
+                    defAwareness: 60),
+                handed: .right,
+                archetype: id % 7 < 3 ? .handler : id % 7 < 5 ? .cutter
+                    : id % 7 == 5 ? .deep : .utility,
+                energy: 1, role: id % 7 < 3 ? .handler : .cutter)
+        }
+    }
+
+    private static func claims() {
         let pb = Playbook.regulation
+        let trace = driveLive()
 
         // ---- THE FOUR-HUNDRED-SECOND MATCH, part one: the arithmetic.
         //
@@ -771,22 +301,7 @@ enum TeamAITests {
             Playbook.PLAY.markDistance <= Playbook.PLAY.markMax,
             "the mark's standing distance is inside the counting radius")
 
-        // ---- part two: the behaviour. In the `nomark` segment a mark IS set — the
-        // marker reaches counting range on 152 of 400 frames — but the game system never
-        // publishes a count. An offence with no clock of its own stands still forever.
-        Check.ok(
-            g.observed.nomarkMarkedFrames > 0,
-            "nomark segment: the mark is genuinely established")
-        Check.ok(
-            g.observed.nomarkThrows > 0,
-            "nomark segment: the offence still releases the disc with the count dead")
-        Check.inRange(
-            g.observed.nomarkFirstThrowSecond, 0, 13.0,
-            "nomark segment: and it does so inside thirteen seconds, not four hundred")
-        Check.ok(
-            g.observed.nomarkDumps > 0,
-            "nomark segment: the reset still works with the count dead")
-        // The bound the doc comment quotes: `stallRead` is `max(disc.stall, holdTime -
+        // ---- part two: the behaviour. `stallRead` is `max(disc.stall, holdTime -
         // 2.5)`, and the release bar collapses to -1e9 at 8.5 — so a dead count caps the
         // deadlock at eleven seconds of holding rather than at infinity.
         Check.bitEqViaJSON(
@@ -817,26 +332,25 @@ enum TeamAITests {
         // line — the situation that produced the trace above.
         var resetCuts = 0
         var handlerStandings = 0
-        for f in g.frames where f.seg == "live" {
-            let dir = Double(g.dirs[f.possession])
+        for f in trace.frames where f.seg == "live" {
+            let dir = f.possession == 0 ? 1.0 : -1.0
             let floor = -(FieldConstants.standard.goalLine - 2.0)
-            for w in f.it {
+            for it in f.intents {
                 // Only the team in possession is running an offensive shape.
-                if (w.id < 7 ? 0 : 1) != f.possession { continue }
-                let kind = w.cutKind
-                if kind == "dump" || kind == "swing" {
+                if it.team != f.possession { continue }
+                if let kind = it.debug.cutKind, kind == .dump || kind == .swing {
                     resetCuts += 1
                     Check.ok(
-                        dir * w.cutZ >= floor - 1e-9,
+                        dir * it.debug.cutZ >= floor - 1e-9,
                         "a reset cut never targets ground behind the own-goal floor "
-                            + "(\(kind!) at z=\(w.cutZ))")
+                            + "(\(kind.rawValue) at z=\(it.debug.cutZ))")
                 }
-                if w.role == "handler" && w.state == "stack" {
+                if it.debug.role == "handler" && it.debug.state == "stack" {
                     handlerStandings += 1
                     Check.ok(
-                        dir * w.targetZ >= floor - 1e-9,
+                        dir * it.targetZ >= floor - 1e-9,
                         "a handler never STANDS behind the own-goal floor "
-                            + "(z=\(w.targetZ))")
+                            + "(z=\(it.targetZ))")
                 }
             }
         }
@@ -844,36 +358,17 @@ enum TeamAITests {
         Check.ok(
             handlerStandings > 0, "the live segment actually contains stationed handlers")
 
-        // ---- the segments did what they were built to do. Asserted so a fixture that
-        // silently stops producing flights, ground discs or zone frames is caught here
-        // rather than by everything downstream quietly passing.
-        Check.ok(g.observed.liveFlightFrames > 0, "the trace contains a disc in flight")
-        Check.ok(g.observed.liveGroundFrames > 0, "the trace contains a loose disc")
-        Check.ok(g.observed.livePickups > 0, "the trace contains a pickup")
-        Check.ok(g.observed.livePossessionFlips > 0, "the trace contains a turnover")
-        Check.ok(g.observed.zoneFrames > 0, "the trace contains a zone")
-        Check.ok(
-            g.observed.zoneStallFrames > 0, "the cup mark applies a count in the zone")
-        Check.ok(
-            (g.observed.modes["mark"] ?? 0) > 0, "the trace contains an established mark")
-        Check.ok(
-            (g.observed.cutKinds["deep"] ?? 0) > 0 && (g.observed.cutKinds["under"] ?? 0) > 0,
-            "the trace contains both halves of the vertical stack's cut vocabulary")
-
         // ---- THE COMMAND CHANNEL. `commandCut` is the one way anything outside the AI
         // may steer an offensive player, and it is not reachable from a trace, because
         // nothing in the trace is holding an aim stick. Its doc makes three falsifiable
         // promises and all three are checked here.
-        let cplayers = g.roster.map { r in
-            AIPlayer(
-                id: r.id, team: r.team, pos: Vec3d(Double(r.id % 7) * 2 - 6, 0, 4),
-                vel: .zero, attr: attrs(r.attr),
-                handed: Playbook.Handedness(rawValue: r.handed)!,
-                archetype: Archetype(rawValue: r.archetype)!,
-                energy: 1, role: PlayerRole(rawValue: r.role)!)
-        }
+        let cplayers = commandPlayers()
         let ct = TeamAI(
-            team: 0, dir: 1, rng: Rng(seed: 5), cfg: config(g.cfg[0]), field: .standard)
+            team: 0, dir: 1, rng: Rng(seed: 5),
+            cfg: TeamConfig(
+                formation: .vertical, force: .forehand,
+                zoneBias: -0.20, aggression: 1.05, seed: 3),
+            field: .standard)
         let cw = AIWorld(
             players: cplayers,
             disc: AIDiscState(pos: Vec3d(0, 1, 0), state: .held, carrier: 0),
@@ -896,7 +391,8 @@ enum TeamAITests {
         ] {
             for id in [1, 3, 5] {
                 guard let route = ct.commandCut(id, dx, dz, Vec2d(0, 0)) else {
-                    record(false, "commandCut refused a legal order (\(id), \(dx), \(dz))")
+                    Check.ok(
+                        false, "commandCut refused a legal order (\(id), \(dx), \(dz))")
                     continue
                 }
                 commanded += 1
@@ -909,12 +405,12 @@ enum TeamAITests {
                         + "(\(id) toward \(dx),\(dz): \(run) m)")
                 // And it re-enters the state machine at the start, so the receiver runs
                 // the setup step rather than teleporting into the break.
-                exact(
+                Check.eq(
                     updateTeam(ct, cw, 1.0 / 120).first { $0.id == id }?.debug.cutKind,
                     route.kind, "a commanded cut is the cut that gets run (\(id))")
             }
         }
-        exact(commanded, 24, "every commanded direction produced a route")
+        Check.eq(commanded, 24, "every commanded direction produced a route")
 
         // ---- the pitch is threaded, not global. A `TeamAI` built on minis must build a
         // minis playbook: a 37 x 18 m game whose AI clamps to a 100 x 37 m pitch would
@@ -926,5 +422,309 @@ enum TeamAITests {
         Check.ok(
             minis.pb.field.sideline < pb.field.sideline,
             "and it is genuinely narrower than the regulation one")
+    }
+
+    // MARK: - the live driver
+    //
+    // A port of the retired `tools/goldens/teamai.ts`'s crude driver — `integrate`,
+    // the ballistic flight, the scripted throwaway and turnover, the four segment
+    // setups — so the situations the replay used to be *given* are now *generated*.
+    // The driver's own motion is asserted nowhere (it never was); what matters is
+    // that the AI, shown these situations live, still does everything `claims` says
+    // it does. Numbers below that look arbitrary (1.35 m release, 3.1 m/s², the
+    // 1.35 m catch radius, the placement arrays) are the generator's, kept identical
+    // so the live census lands in the same neighbourhood as the retired fixture's
+    // `observed` — which is how the port was validated, not what it asserts.
+
+    /// One driven frame: the segment, whose possession, and every intent the AI returned.
+    struct LiveFrame {
+        let seg: String
+        let possession: Int
+        let intents: [PlayerIntent]
+    }
+
+    /// The behavioural census, same shape as the retired fixture's `observed`.
+    struct LiveCensus {
+        var modes: [String: Int] = [:]
+        var cutKinds: [String: Int] = [:]
+        var liveThrows = 0, liveCatches = 0, liveTurnovers = 0, livePickups = 0
+        var liveFlightFrames = 0, liveGroundFrames = 0
+        var livePossessionFlips = 0
+        var zoneFrames = 0, zoneStallFrames = 0
+        var nomarkThrows = 0, nomarkDumps = 0, nomarkFirstThrowSecond = -1.0
+        var nomarkMarkedFrames = 0
+    }
+
+    struct LiveTrace {
+        let players: [AIPlayer]
+        let teams: [TeamAI]
+        let frames: [LiveFrame]
+        let census: LiveCensus
+    }
+
+    private static let driverArches: [Archetype] = [
+        .handler, .handler, .handler, .cutter, .cutter, .deep, .utility,
+    ]
+
+    /// Builds the roster from its seed — the same `makePlayer` stream the retired
+    /// generator drew from, so the athletes are the same ones the replay used to
+    /// be handed. (`makeAttributes` draws through `gauss`, whose `log`/`cos` are
+    /// not bit-exact across libms, so sheets agree to ~1e-12 rather than exactly —
+    /// close enough for athletes, and nothing asserts their values.)
+    static func driverRoster() -> [AIPlayer] {
+        let rrng = Rng(seed: 20260807)
+        var players: [AIPlayer] = []
+        for t in 0..<2 {
+            for i in 0..<7 {
+                let overall = 62 + rrng.range(0, 20)
+                players.append(makePlayer(
+                    t * 7 + i, t, driverArches[i], rrng.fork(salt: t * 31 + i),
+                    overall: overall))
+            }
+        }
+        return players
+    }
+
+    /// Drives both teams through the four segments and returns every frame.
+    static func driveLive() -> LiveTrace {
+        let players = driverRoster()
+        let disc = AIDiscState(
+            pos: Vec3d(0, 1.0, -30), vel: .zero, state: .held,
+            carrier: 0, thrownBy: nil, intendedReceiver: nil, stall: 0)
+        var world = AIWorld(
+            players: players, disc: disc, possession: 0, phase: .setup,
+            wind: Vec2d(0.8, -0.4), score: [0, 0], scoreCap: 15,
+            rand: Rng(seed: 7).fork(salt: 999), field: .standard)
+        let trng = Rng(seed: 424242)
+        let teams = [
+            TeamAI(
+                team: 0, dir: 1, rng: trng.fork(salt: 11),
+                cfg: TeamConfig(
+                    formation: .vertical, force: .forehand,
+                    zoneBias: -0.20, aggression: 1.05, seed: 3),
+                field: .standard),
+            TeamAI(
+                team: 1, dir: -1, rng: trng.fork(salt: 22),
+                cfg: TeamConfig(
+                    formation: .horizontal, force: .backhand,
+                    zoneBias: 0.05, aggression: 0.95, seed: 5),
+                field: .standard),
+        ]
+
+        struct Flight { var fx, fy, fz, vx, vy, vz, t, T: Double; var by: Int }
+        var flight: Flight? = nil
+        var publishStall = true
+        var segStart = 0.0
+        var census = LiveCensus()
+        var frames: [LiveFrame] = []
+
+        func place(_ x: [Double], _ z: [Double]) {
+            for i in 0..<players.count {
+                players[i].pos = Vec3d(x[i], 0, z[i])
+                players[i].vel = .zero
+            }
+        }
+
+        func integrate(_ intents: [PlayerIntent], dt: Double) {
+            let f = FieldConstants.standard
+            for it in intents {
+                let p = players[it.id]
+                let dx = it.targetX - p.pos.x
+                let dz = it.targetZ - p.pos.z
+                let d = Foundation.hypot(dx, dz)
+                let want = Swift.min(it.desiredSpeed, d / Swift.max(dt, 1e-6))
+                let ux = d > 1e-9 ? dx / d : 0
+                let uz = d > 1e-9 ? dz / d : 0
+                let a = it.maxAccel * dt
+                p.vel = Vec3d(
+                    p.vel.x + Swift.max(-a, Swift.min(a, ux * want - p.vel.x)), 0,
+                    p.vel.z + Swift.max(-a, Swift.min(a, uz * want - p.vel.z)))
+                p.pos = Vec3d(
+                    Swift.max(-f.sideline, Swift.min(f.sideline, p.pos.x + p.vel.x * dt)), 0,
+                    Swift.max(-f.endLine, Swift.min(f.endLine, p.pos.z + p.vel.z * dt)))
+            }
+        }
+
+        func step(_ seg: String, dt: Double) {
+            let a = updateTeam(teams[0], world, dt)
+            world.scheme[0] = teams[0].currentScheme
+            let b = updateTeam(teams[1], world, dt)
+            world.scheme[1] = teams[1].currentScheme
+            let intents = a + b
+
+            frames.append(LiveFrame(
+                seg: seg, possession: world.possession, intents: intents))
+
+            for it in intents {
+                census.modes[it.mode.rawValue, default: 0] += 1
+                if let k = it.debug.cutKind {
+                    census.cutKinds[k.rawValue, default: 0] += 1
+                    if seg == "nomark" && k == .dump { census.nomarkDumps += 1 }
+                }
+            }
+            if seg == "live" && world.disc.state == .flight { census.liveFlightFrames += 1 }
+            if seg == "live" && world.disc.state == .ground { census.liveGroundFrames += 1 }
+            if seg == "zone" {
+                census.zoneFrames += 1
+                if teams[1].stall > 0 || teams[0].stall > 0 { census.zoneStallFrames += 1 }
+            }
+            if seg == "nomark" && teams[1].stall > 0 { census.nomarkMarkedFrames += 1 }
+
+            let before = world.possession
+            for it in intents {
+                guard let act = it.action else { continue }
+                switch act {
+                case .throw(_, let aim, _, let ft, _, let rid, _)
+                    where world.disc.state == .held && world.disc.carrier == it.id:
+                    let T = Swift.max(0.2, ft)
+                    let from = players[it.id]
+                    flight = Flight(
+                        fx: from.pos.x, fy: 1.35, fz: from.pos.z,
+                        vx: (aim.x - from.pos.x) / T,
+                        vy: (aim.y - 1.35) / T + 0.5 * 3.1 * T,
+                        vz: (aim.z - from.pos.z) / T,
+                        t: 0, T: T, by: it.team)
+                    world.disc.state = .flight
+                    world.disc.carrier = nil
+                    world.disc.intendedReceiver = rid
+                    world.disc.stall = 0
+                    if seg == "live" { census.liveThrows += 1 }
+                    if seg == "nomark" {
+                        census.nomarkThrows += 1
+                        if census.nomarkFirstThrowSecond < 0 {
+                            census.nomarkFirstThrowSecond = world.time - segStart
+                        }
+                    }
+                case .pickup where world.disc.state == .ground:
+                    world.disc.state = .held
+                    world.disc.carrier = it.id
+                    world.disc.stall = 0
+                    world.possession = it.team
+                    if seg == "live" { census.livePickups += 1 }
+                case .stall(let count) where publishStall:
+                    world.disc.stall = count
+                default:
+                    break
+                }
+            }
+
+            integrate(intents, dt: dt)
+
+            if var fl = flight {
+                fl.t += dt
+                let t = fl.t
+                world.disc.pos = Vec3d(
+                    fl.fx + fl.vx * t, fl.fy + fl.vy * t - 0.5 * 3.1 * t * t,
+                    fl.fz + fl.vz * t)
+                world.disc.vel = Vec3d(fl.vx, fl.vy - 3.1 * t, fl.vz)
+                if t >= fl.T || world.disc.pos.y <= 0.05 {
+                    var best: AIPlayer? = nil
+                    var bd = 1.35
+                    for p in players {
+                        let d = Foundation.hypot(
+                            p.pos.x - world.disc.pos.x, p.pos.z - world.disc.pos.z)
+                        if d < bd { bd = d; best = p }
+                    }
+                    if let best {
+                        world.disc.state = .held
+                        world.disc.carrier = best.id
+                        world.disc.pos.y = 1.0
+                        world.possession = best.team
+                        if seg == "live" { census.liveCatches += 1 }
+                    } else {
+                        world.disc.state = .ground
+                        world.disc.pos.y = 0.05
+                        world.disc.vel = .zero
+                        world.possession = 1 - fl.by
+                        if seg == "live" { census.liveTurnovers += 1 }
+                    }
+                    world.disc.intendedReceiver = nil
+                    world.disc.stall = 0
+                    flight = nil
+                } else {
+                    flight = fl
+                }
+            } else if world.disc.state == .held, let carrier = world.disc.carrier {
+                let c = players[carrier]
+                world.disc.pos = Vec3d(c.pos.x, 1.0, c.pos.z)
+                world.disc.vel = .zero
+            }
+            if world.possession != before && seg == "live" {
+                census.livePossessionFlips += 1
+            }
+
+            world.time += dt
+        }
+
+        // Segment 0: line up.
+        place(
+            [-12, -6, 0, 6, 12, -16, 16, -12, -6, 0, 6, 12, -16, 16],
+            [-32, -32, -32, -32, -32, -32, -32, 32, 32, 32, 32, 32, 32, 32])
+        for _ in 0..<30 { step("lineup", dt: 1.0 / 120) }
+
+        // Segment 1: live, pinned on the own goal line.
+        world.phase = .live
+        world.possession = 0
+        place(
+            [0, 5.0, -6.0, 0.5, -0.5, 0.0, 0.0, 1.9, 5.6, -5.0, 0.5, 1.0, -1.0, 0.0],
+            [-30, -33.0, -31.0, -19.0, -14.8, -10.6, -6.4,
+             -29.4, -33.5, -31.5, -21.0, -16.5, -12.0, -8.0])
+        world.disc.state = .held
+        world.disc.carrier = 0
+        world.disc.intendedReceiver = nil
+        world.disc.stall = 0
+        world.disc.pos = Vec3d(0, 1.0, -30)
+        flight = nil
+        for _ in 0..<300 { step("live", dt: 1.0 / 60) }
+
+        // A scripted throwaway into empty space.
+        flight = Flight(
+            fx: world.disc.pos.x, fy: 1.35, fz: world.disc.pos.z,
+            vx: 11, vy: 2.2, vz: 3, t: 0, T: 0.8, by: 0)
+        world.disc.state = .flight
+        world.disc.carrier = nil
+        world.disc.intendedReceiver = nil
+        world.disc.stall = 0
+        for _ in 0..<90 { step("live", dt: 1.0 / 60) }
+
+        // A scripted turnover: a loose disc on the far sideline.
+        world.disc.state = .ground
+        world.disc.carrier = nil
+        world.disc.intendedReceiver = nil
+        world.disc.stall = 0
+        world.disc.pos = Vec3d(18.5, 0.05, 4)
+        world.disc.vel = .zero
+        flight = nil
+        world.possession = 1
+        for _ in 0..<350 { step("live", dt: 1.0 / 60) }
+
+        // Segment 2: wind, and a zone.
+        world.wind = Vec2d(9, 6)
+        world.phase = .dead
+        step("zone", dt: 1.0 / 60)
+        world.phase = .live
+        for _ in 0..<199 { step("zone", dt: 1.0 / 60) }
+
+        // Segment 3: a mark that is set, and a count that is not.
+        world.wind = Vec2d(0.8, -0.4)
+        world.phase = .dead
+        world.possession = 0
+        place(
+            [4, 8.0, -7.0, 2.0, -2.0, 1.0, -1.0, 5.9, 9.0, -6.0, 2.5, -2.5, 0.0, 1.0],
+            [-6, -12.0, -10.0, 6.0, 10.5, 15.0, 19.0,
+             -5.4, -12.5, -10.5, 4.0, 8.0, 12.5, 16.5])
+        world.disc.state = .held
+        world.disc.carrier = 0
+        world.disc.intendedReceiver = nil
+        world.disc.stall = 0
+        world.disc.pos = Vec3d(4, 1.0, -6)
+        flight = nil
+        publishStall = false
+        segStart = world.time
+        step("nomark", dt: 1.0 / 30)
+        world.phase = .live
+        for _ in 0..<399 { step("nomark", dt: 1.0 / 30) }
+
+        return LiveTrace(players: players, teams: teams, frames: frames, census: census)
     }
 }

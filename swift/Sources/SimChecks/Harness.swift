@@ -332,15 +332,12 @@ let allSuites: [Suite] = [
     Suite(name: "aimath", run: AIMathTests.run, minAssertions: 138497),
     Suite(name: "humanrelease", run: HumanReleaseTests.run, minAssertions: 9990),
     Suite(name: "discruntime", run: DiscRuntimeTests.run, minAssertions: 93492),
-    // Lowered from 476751 deliberately: `TeamAITests.structural` now runs on frame zero
-    // instead of all 1,370 frames, because the wiring it checks cannot vary by frame (one
-    // construction site, both sides reading the same player at the same instant). That is
-    // 95,635 identical comparisons removed, not coverage — see `structural`'s own comment.
-    // Lowered from 381115 for issue #64: the regenerated teamai fixture covers
-    // the same 1,370 frames, but trajectory-dependent conditional comparisons
-    // fire 316 fewer times under the migrated column (380799 measured) — moved
-    // trajectories, not removed coverage.
-    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 380799),
+    // Issue #58: `teamai` no longer loads a golden. The 1,370-frame replay of the
+    // reference — ~380k field-by-field comparisons — becomes 53,058 assertions over
+    // a live-driven trace: per-frame lane/stack/matchup invariants, a
+    // presence-plus-magnitude census, the prose claims, and a bit-for-bit
+    // self-reproduction run. See TeamAITests.swift's header.
+    Suite(name: "teamai", run: TeamAITests.run, minAssertions: 53058),
     // Issue #58: `gamestate` no longer loads a golden. Nine hand-written scripts and 2,223
     // recorded comparisons become 89,808 assertions against the machine itself — every cell
     // of the phase x action table driven, every phase reached and shown not to be a dead

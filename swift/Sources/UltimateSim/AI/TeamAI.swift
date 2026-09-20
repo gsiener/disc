@@ -385,6 +385,21 @@ public final class TeamAI {
     /// Who a defender is assigned to. Nil in zone or unassigned.
     public func matchupOf(_ defenderId: Int) -> Int? { matchup[defenderId] }
 
+    /// Every reserved lane still has a live cut behind it on that same lane.
+    ///
+    /// Test introspection for `TeamAITests`: a reservation whose cut ended without
+    /// releasing is the leak that retires a lane forever — nobody may ever cut
+    /// there again, and nothing else goes red. All three claim sites (the cutter
+    /// deal, the handler deal, `commandCut`) arm the cut alongside the reservation,
+    /// so this is true on every frame by construction unless a cut-end path forgets
+    /// its release.
+    public var laneReservationsLive: Bool {
+        for (lane, id) in liveLanes {
+            guard let cut = m(id).cut, cut.lane == lane else { return false }
+        }
+        return true
+    }
+
     /// This defender's zone responsibility, or nil in person.
     public func zoneRoleOf(_ defenderId: Int) -> Playbook.ZoneRole? { zoneRole[defenderId] }
 
