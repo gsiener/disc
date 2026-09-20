@@ -99,6 +99,7 @@ enum LocomotionTests {
         pivotMechanics()
         collisionMechanics()
         collisionAcceptance()
+        groundAndAdapter()
         separationAcceptance()
         gaitCaps()
         sprintAndCut()
@@ -2129,6 +2130,179 @@ enum LocomotionTests {
             }
             Check.ok(worst > rsum - 0.02, "pile-up untangles")
             Check.ok(maxV < 0.6, "untangle adds no energy")
+        }
+    }
+
+    // MARK: - ground conforming and the AI adapter
+
+    /// Phase 1b (`tools/test-locomotion.ts` sections 9–10): terrain following,
+    /// determinism, and the intent adapter as behaviour. Bodies ride a wavy
+    /// surface at hip height with the planted foot on it, a methodless field
+    /// degrades to flat, identical seeds trace bit-identically, intents settle
+    /// on their target without orbiting while syncing the world record, the
+    /// intent's maxSpeed clamps the model, and `timeToReach` matches what
+    /// actually happens. Creation-time conforming is `createTests`' subject;
+    /// the flat fallback's hips are pinned there. Same ratings, durations and
+    /// bounds as the reference suite.
+    private static func groundAndAdapter() {
+        let dt = 1.0 / 120.0
+        let hip = 0.53 * 1.80
+
+        // A wavy surface appears and the body rides it, foot on the turf.
+        do {
+            let hAt: (Double, Double) -> Double = { x, z in
+                0.4 * Foundation.sin(x * 0.25) + 0.02 * z
+            }
+            let nAt: (Double, Double) -> Vec3d = { x, _ in
+                let dhdx = 0.1 * Foundation.cos(x * 0.25)
+                return Vec3d(-dhdx, 1, -0.02).normalized
+            }
+            let loco = Locomotion()
+            loco.attach(LocoHost(
+                rand: Rng(seed: 0xC0FFEE),
+                field: FieldLike(heightAt: hAt, normalAt: nAt)))
+            let q = loco.create(CreateOpts(
+                id: 1, attr: averageAttrs, pos: Vec3d(3, 0, 0)))
+            driveLoco(
+                loco, [q], [DesiredMove(dir: Vec2d(1, 0), mode: .run)], 3)
+            Check.ok(
+                abs(q.pos.y - (hAt(q.pos.x, q.pos.z) + hip)) < 1e-6,
+                "player rides the surface")
+            Check.ok(
+                abs(q.foot.pos.y - hAt(q.foot.pos.x, q.foot.pos.z)) < 1e-6,
+                "planted foot sits on the surface")
+        }
+
+        // A field with no methods degrades to the flat fallback, no throw.
+        do {
+            let loco = Locomotion()
+            loco.attach(LocoHost(field: FieldLike()))
+            let z = loco.create(CreateOpts(id: 1, attr: averageAttrs))
+            driveLoco(
+                loco, [z], [DesiredMove(dir: Vec2d(0, 1), mode: .run)], 1)
+            Check.ok(
+                abs(z.pos.y - hip) < 1e-6,
+                "degrades gracefully when field has no heightAt")
+        }
+
+        // Determinism: identical seeds, identical trajectories, bit for bit.
+        do {
+            func trace() -> String {
+                let loco = Locomotion()
+                loco.attach(LocoHost(rand: Rng(seed: 0xC0FFEE)))
+                let players = [0, 1, 2].map { i in
+                    loco.create(CreateOpts(
+                        id: i, attr: i == 0 ? eliteAttrs : averageAttrs,
+                        pos: Vec3d(Double(i) * 0.5 - 0.5, 0, Double(i) * 0.3)))
+                }
+                for i in 0..<900 {
+                    let ang = Double(i) * 0.02
+                    for q in players {
+                        _ = loco.step(
+                            q,
+                            DesiredMove(
+                                dir: Vec2d(
+                                    Foundation.sin(ang + Double(q.id)),
+                                    Foundation.cos(ang + Double(q.id))),
+                                mode: .sprint, jump: i == 300,
+                                layout: i == 600), dt)
+                    }
+                    loco.resolveCollisions(dt)
+                }
+                return players.map {
+                    "\($0.pos.x),\($0.pos.y),\($0.pos.z),\($0.state),\($0.stamina)"
+                }.joined(separator: "|")
+            }
+            Check.eq(trace(), trace(), "two runs produce identical state")
+        }
+
+        // Arrive: run to a point and settle on it, syncing the world record.
+        do {
+            let loco = Locomotion()
+            loco.attach(LocoHost(rand: Rng(seed: 0xC0FFEE)))
+            let attrs = fromAIAttributes(
+                ["speed": 92, "acceleration": 90, "agility": 88,
+                 "jumping": 84, "stamina": 82], height: 1.86, mass: 84)
+            let p = loco.create(CreateOpts(
+                id: 4, attr: attrs, pos: Vec3d(0, 0, 0)))
+            var world = [WorldPlayerRecord(
+                id: 4, pos: Vec3d(0, 0, 0), vel: Vec3d(0, 0, 0),
+                airborne: false)]
+            let intent = IntentLike(
+                id: 4, targetX: 0, targetZ: 18, faceX: 0, faceZ: 1,
+                mode: "sprint", effort: 1, desiredSpeed: 9.4, maxSpeed: 9.4,
+                arriveRadius: 2.5)
+            var overshoot = 0.0
+            for _ in 0..<(120 * 8) {
+                loco.apply([intent], dt: dt, world: &world)
+                overshoot = Swift.max(overshoot, p.pos.z - 18)
+            }
+            let err = Foundation.hypot(p.pos.x - 0, p.pos.z - 18)
+            Check.inRange(err, 0, 0.12, "settles on the target")
+            Check.ok(overshoot < 0.5, "does not orbit or overshoot badly")
+            Check.ok(
+                abs((world[0].pos?.z ?? -1) - p.pos.z) < 1e-12
+                    && world[0].airborne == false,
+                "world record synced back")
+        }
+
+        // The intent's maxSpeed clamps the model even in sprint mode.
+        do {
+            let loco = Locomotion()
+            loco.attach(LocoHost(rand: Rng(seed: 0xC0FFEE)))
+            let attrs = fromAIAttributes(
+                ["speed": 92, "acceleration": 90, "agility": 88,
+                 "jumping": 84, "stamina": 82], height: 1.86, mass: 84)
+            let q = loco.create(CreateOpts(id: 1, attr: attrs))
+            for _ in 0..<(120 * 6) {
+                loco.stepIntent(
+                    q,
+                    IntentLike(
+                        id: 1, targetX: 0, targetZ: 200, mode: "sprint",
+                        desiredSpeed: 20, maxSpeed: 6.0, arriveRadius: 1), dt)
+            }
+            Check.ok(
+                abs(locoSpd(q) - 6.0) < 0.02, "intent maxSpeed clamps the model")
+        }
+
+        // timeToReach matches what actually happens, from rest and at speed.
+        do {
+            let attrs = fromAIAttributes(
+                ["speed": 92, "acceleration": 90, "agility": 88,
+                 "jumping": 84, "stamina": 82], height: 1.86, mass: 84)
+            for (label, tx, tz, windup) in [
+                ("straight, from rest", 0.0, 25.0, 0),
+                ("straight, at speed", 0.0, 25.0, 3),
+                ("90 deg away, at speed", 25.0, 0.0, 3),
+            ] {
+                let loco = Locomotion()
+                loco.attach(LocoHost(rand: Rng(seed: 0xC0FFEE)))
+                let a = loco.create(CreateOpts(id: 1, attr: attrs))
+                if windup > 0 {
+                    driveLoco(
+                        loco, [a],
+                        [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)],
+                        Double(windup))
+                }
+                let gx = a.pos.x + tx, gz = a.pos.z + tz
+                let predicted = loco.timeToReach(
+                    AthleteLike(id: a.id), x: gx, z: gz)
+                var actual = -1.0
+                for i in 0..<(120 * 12) {
+                    _ = loco.step(
+                        a,
+                        DesiredMove(
+                            dir: Vec2d(gx - a.pos.x, gz - a.pos.z),
+                            mode: .sprint), dt)
+                    if Foundation.hypot(gx - a.pos.x, gz - a.pos.z) < 0.3 {
+                        actual = (Double(i) + 1) * dt
+                        break
+                    }
+                }
+                let relErr = abs(predicted - actual) / actual
+                Check.ok(
+                    relErr < 0.22, "timeToReach: \(label)")
+            }
         }
     }
 
