@@ -333,9 +333,11 @@ let allSuites: [Suite] = [
     // `footPlants` ports section 4 (10 more, measured 23725),
     // `leapAndContest` ports section 5 (7 more, measured 23732),
     // `layoutTrajectory` ports section 6 (12 more, measured 23744),
-    // `collisionAcceptance` ports section 8 (10 more, measured 23754), and
-    // `groundAndAdapter` ports sections 9-10 (11 more, measured 23765).
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23765),
+    // `collisionAcceptance` ports section 8 (10 more, measured 23754),
+    // `groundAndAdapter` ports sections 9-10 (11 more, measured 23765), and
+    // `matchBlobStats` ports `tools/test-move.ts` section 5's passing subset
+    // (6 per seed × 3 seeds, measured 23783).
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23783),
     // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
     // become 23,026 assertions against `Model` — a second, independently typed
     // implementation of every formula in Playbook.swift, hand-typed from its own doc
