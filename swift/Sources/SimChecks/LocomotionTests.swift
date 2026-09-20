@@ -100,6 +100,7 @@ enum LocomotionTests {
         collisionMechanics()
         separationAcceptance()
         gaitCaps()
+        sprintAndCut()
         staminaTests()
 
         flatWorldClaims()
@@ -2471,6 +2472,136 @@ enum LocomotionTests {
             Check.inRange(
                 rec.pos.z - (def.pos.z - 2), 12, 26,
                 "deep separation gained in 5 s")
+        }
+    }
+
+    // MARK: - sprint bands and direction changes
+
+    /// Phase 1b (`tools/test-locomotion.ts` sections 1–2): straight-line sprint
+    /// and direction changes as behaviour. The dash bands and top speed pin the
+    /// shipped feel; the first tick proves acceleration is finite; the angle
+    /// sweep proves sharper cuts scrub more speed with a regain time, a near
+    /// stop on reversal, and a turn rate the grip budget always covers. Same
+    /// ratings, durations and bounds as the reference suite.
+    private static func sprintAndCut() {
+        let dt = 1.0 / 120.0
+
+        // 40 m from a standing start, elite and average, plus top speed — and
+        // one tick must not teleport.
+        for (label, attr, lo, hi) in [
+            ("elite", eliteAttrs, 4.9, 5.6), ("average", averageAttrs, 5.2, 6.2),
+        ] {
+            let loco = freshLoco()
+            let p = loco.create(CreateOpts(id: 1, attr: attr))
+            var t40 = -1.0
+            var vTop = 0.0
+            var t = 0.0
+            for _ in 0..<(120 * 12) {
+                _ = loco.step(
+                    p, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                t += dt
+                vTop = Swift.max(vTop, locoSpd(p))
+                if p.pos.z >= 40 {
+                    t40 = t
+                    break
+                }
+            }
+            Check.inRange(t40, lo, hi, "40 m dash (\(label))")
+            Check.inRange(vTop, 7.5, 10.0, "top speed (\(label))")
+        }
+        do {
+            let loco = freshLoco()
+            let p = loco.create(CreateOpts(id: 2, attr: eliteAttrs))
+            _ = loco.step(p, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+            Check.inRange(
+                locoSpd(p), 0.02, 0.12, "speed after one 1/120 s tick")
+        }
+
+        // Direction changes cost speed: sharper scrubs more, 90 keeps its
+        // band with a regain time, 30 barely costs, 180 passes near stop.
+        var ratio: [Int: Double] = [:]
+        var minSpeed: [Int: Double] = [:]
+        var recover: [Int: Double] = [:]
+        var entry90 = 0.0
+        for deg in [30, 45, 90, 135, 180] {
+            let loco = freshLoco()
+            let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            driveLoco(
+                loco, [p], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 6)
+            let entry = locoSpd(p)
+            if deg == 90 { entry90 = entry }
+            let rad = Double(deg) * Double.pi / 180
+            let nd = Vec2d(Foundation.sin(rad), Foundation.cos(rad))
+            var minS = entry
+            var prevHeading = Foundation.atan2(p.vel.x, p.vel.z)
+            var rec = -1.0
+            var t = 0.0
+            for _ in 0..<(120 * 4) {
+                _ = loco.step(p, DesiredMove(dir: nd, mode: .sprint), dt)
+                t += dt
+                let s = locoSpd(p)
+                if s > 0.2 {
+                    let h = Foundation.atan2(p.vel.x, p.vel.z)
+                    var dh = h - prevHeading
+                    while dh > Double.pi { dh -= 2 * Double.pi }
+                    while dh < -Double.pi { dh += 2 * Double.pi }
+                    prevHeading = h
+                }
+                minS = Swift.min(minS, s)
+                let aligned = (p.vel.x * nd.x + p.vel.z * nd.z) / Swift.max(1e-6, s)
+                if rec < 0 && aligned > 0.995 && s > entry * 0.95 { rec = t }
+            }
+            ratio[deg] = minS / entry
+            minSpeed[deg] = minS
+            recover[deg] = rec
+        }
+        Check.ok(
+            ratio[30]! > ratio[45]! && ratio[45]! > ratio[90]!
+                && ratio[90]! > ratio[135]! && ratio[135]! > ratio[180]!,
+            "sharper cut scrubs more speed")
+        Check.inRange(
+            ratio[90]!, 0.45, 0.80, "90 deg cut keeps this fraction of entry speed")
+        Check.inRange(
+            recover[90]!, 0.60, 2.20, "90 deg cut regain time")
+        Check.inRange(
+            ratio[30]!, 0.85, 1.0, "30 deg cut keeps this fraction")
+        Check.ok(
+            minSpeed[180]! < 0.20, "180 deg reversal passes through a near-stop")
+        Check.inRange(
+            entry90 - minSpeed[90]!, 1.5, 5.5, "90 deg cut speed lost")
+
+        // No instant reversal, ever: implied lateral acceleration (turn rate x
+        // speed) stays inside the grip budget through a near-180.
+        do {
+            let loco = freshLoco()
+            let p = loco.create(CreateOpts(id: 9, attr: eliteAttrs))
+            driveLoco(
+                loco, [p], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 6)
+            let gripBudget = p.derived.gripMax * 1.8
+            var worstLat = 0.0
+            var prevX = p.vel.x, prevZ = p.vel.z
+            var prevS = locoSpd(p)
+            for _ in 0..<480 {
+                _ = loco.step(
+                    p, DesiredMove(dir: Vec2d(0.2, -1), mode: .sprint), dt)
+                let s = locoSpd(p)
+                if s > 0.5 {
+                    let il = 1 / Swift.max(1e-9, s)
+                    let ipl = 1 / Swift.max(1e-9, prevS)
+                    let dot = (p.vel.x * il) * (prevX * ipl)
+                        + (p.vel.z * il) * (prevZ * ipl)
+                    let rate = Foundation.acos(Swift.min(1, Swift.max(-1, dot))) / dt
+                    if prevS > 0.5 {
+                        worstLat = Swift.max(worstLat, rate * Swift.min(s, prevS))
+                    }
+                    prevX = p.vel.x
+                    prevZ = p.vel.z
+                }
+                prevS = s
+            }
+            Check.ok(
+                worstLat < gripBudget * 1.10,
+                "turn rate never exceeds the grip budget")
         }
     }
 

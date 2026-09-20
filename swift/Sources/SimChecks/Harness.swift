@@ -327,9 +327,10 @@ let allSuites: [Suite] = [
     // the integrator and the contact resolver, and a self-driven trace for
     // claims only a trajectory can settle. See LocomotionTests.swift's header.
     // Bumped from 23665 for issue #58 Phase 1b: `separationAcceptance` ports
-    // `tools/test-move.ts` sections 1-4 (27 assertions, measured 23692), and
-    // `gaitCaps` ports `tools/test-locomotion.ts` section 3 (11 more, 23703).
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23703),
+    // `tools/test-move.ts` sections 1-4 (27 assertions, measured 23692),
+    // `gaitCaps` ports `tools/test-locomotion.ts` section 3 (11 more, 23703),
+    // and `sprintAndCut` ports sections 1-2 (12 more, measured 23715).
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23715),
     // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
     // become 23,026 assertions against `Model` — a second, independently typed
     // implementation of every formula in Playbook.swift, hand-typed from its own doc
