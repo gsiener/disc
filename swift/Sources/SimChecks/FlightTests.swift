@@ -28,6 +28,7 @@ enum FlightTests {
         physicalProperties()
         symmetryAndDeterminism()
         flightShape()
+        flightWindAndConvergence()
     }
 
     private static func physicalProperties() {
@@ -185,6 +186,72 @@ enum FlightTests {
         Check.inRange(low.pos.y, -0.01, 0.2, "and finishes at ground level, not airborne or buried")
     }
 
+    /// A flight reduced to its sport-visible numbers. Aim is assumed +Z, so
+    /// lateral drift is +X, the thrower's left.
+    private struct Flight {
+        var distance, downrange, drift, maxHeight, time: Double
+        var landed: Bool
+        var descentDeg: Double
+        var alphaMax, alphaStep: Double
+        var invertedFrac: Double
+        var v0, vEnd: Double
+        var state: DiscState
+    }
+
+    private static func fly(
+        _ s: DiscState, wind: Vec3d = .zero, maxT: Double = 12
+    ) -> Flight {
+        var s = s
+        let start = s.pos
+        var f = Flight(
+            distance: 0, downrange: 0, drift: 0, maxHeight: 0, time: 0,
+            landed: false, descentDeg: 0, alphaMax: -9, alphaStep: 0,
+            invertedFrac: 0, v0: s.vel.length, vEnd: 0, state: s)
+        var prevAlpha = s.alpha
+        var inverted = 0, airborne = 0
+        var lastVel = s.vel
+        for _ in 0..<Int((maxT / FIXED_DT).rounded()) {
+            lastVel = s.vel
+            s.step(dt: FIXED_DT, wind: wind)
+            if s.touchedGround {
+                f.landed = true
+                f.time = s.t
+                break
+            }
+            airborne += 1
+            f.maxHeight = Swift.max(f.maxHeight, s.pos.y - start.y)
+            f.alphaMax = Swift.max(f.alphaMax, s.alpha)
+            f.alphaStep = Swift.max(f.alphaStep, abs(s.alpha - prevAlpha))
+            prevAlpha = s.alpha
+            if s.normal.y < 0 { inverted += 1 }
+        }
+        if !f.landed { f.time = s.t }
+        f.vEnd = lastVel.length
+        f.downrange = s.pos.z - start.z
+        f.drift = s.pos.x - start.x
+        f.distance = Foundation.hypot(f.drift, f.downrange)
+        f.invertedFrac = airborne > 0 ? Double(inverted) / Double(airborne) : 0
+        f.descentDeg = Foundation.atan2(
+            -lastVel.y, Foundation.hypot(lastVel.x, lastVel.z)) * 180 / Double.pi
+        f.state = s
+        return f
+    }
+
+    /// Bank angle about the flight axis, rad. Positive = right edge down.
+    private static func bankAngle(_ s: DiscState) -> Double {
+        let heading = Vec3d(s.vel.x, 0, s.vel.z)
+        if heading.lengthSq < 1e-10 { return 0 }
+        let h = heading.normalized
+        let right = h.cross(Vec3d(0, 1, 0))
+        return Foundation.atan2(s.normal.dot(right), s.normal.y)
+    }
+
+    private static func bh(_ speed: Double, angle: Double = 0, spin: Double = 0.6) -> DiscState {
+        throwDisc(
+            .backhand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
+            power: powerForSpeed(.backhand, speed), angle: angle, spin: spin)
+    }
+
     /// Phase 1b (`tools/test-disc.ts` sections 1–3): the sport-visible shape of a
     /// flight. The laws above say energy falls and bank curves; they do not say a
     /// flat backhand turns over early and fades late, that a forehand goes the
@@ -193,66 +260,6 @@ enum FlightTests {
     /// real integration at the engine's fixed step — same releases, same bounds
     /// as the reference suite.
     private static func flightShape() {
-        struct Flight {
-            var distance, downrange, drift, maxHeight, time: Double
-            var landed: Bool
-            var descentDeg: Double
-            var alphaMax, alphaStep: Double
-            var invertedFrac: Double
-            var v0, vEnd: Double
-            var state: DiscState
-        }
-
-        func fly(_ s: DiscState, maxT: Double = 12) -> Flight {
-            var s = s
-            let start = s.pos
-            var f = Flight(
-                distance: 0, downrange: 0, drift: 0, maxHeight: 0, time: 0,
-                landed: false, descentDeg: 0, alphaMax: -9, alphaStep: 0,
-                invertedFrac: 0, v0: s.vel.length, vEnd: 0, state: s)
-            var prevAlpha = s.alpha
-            var inverted = 0, airborne = 0
-            var lastVel = s.vel
-            for _ in 0..<Int((maxT / FIXED_DT).rounded()) {
-                lastVel = s.vel
-                s.step(dt: FIXED_DT)
-                if s.touchedGround {
-                    f.landed = true
-                    f.time = s.t
-                    break
-                }
-                airborne += 1
-                f.maxHeight = Swift.max(f.maxHeight, s.pos.y - start.y)
-                f.alphaMax = Swift.max(f.alphaMax, s.alpha)
-                f.alphaStep = Swift.max(f.alphaStep, abs(s.alpha - prevAlpha))
-                prevAlpha = s.alpha
-                if s.normal.y < 0 { inverted += 1 }
-            }
-            if !f.landed { f.time = s.t }
-            f.vEnd = lastVel.length
-            f.downrange = s.pos.z - start.z
-            f.drift = s.pos.x - start.x
-            f.distance = Foundation.hypot(f.drift, f.downrange)
-            f.invertedFrac = airborne > 0 ? Double(inverted) / Double(airborne) : 0
-            f.descentDeg = Foundation.atan2(
-                -lastVel.y, Foundation.hypot(lastVel.x, lastVel.z)) * 180 / Double.pi
-            f.state = s
-            return f
-        }
-
-        func bankAngle(_ s: DiscState) -> Double {
-            let heading = Vec3d(s.vel.x, 0, s.vel.z)
-            if heading.lengthSq < 1e-10 { return 0 }
-            let h = heading.normalized
-            let right = h.cross(Vec3d(0, 1, 0))
-            return Foundation.atan2(s.normal.dot(right), s.normal.y)
-        }
-
-        func bh(_ speed: Double) -> DiscState {
-            throwDisc(
-                .backhand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
-                power: powerForSpeed(.backhand, speed), angle: 0, spin: 0.6)
-        }
 
         // A flat 20 m/s right-handed backhand: plausible carry, hang and apex,
         // drag bleeding speed — and turn-then-fade, banks right early and rolls
@@ -332,6 +339,126 @@ enum FlightTests {
             power: 0.7, angle: 0, spin: 0.6))
         Check.ok(
             sc.drift * h.drift < 0, "scoober breaks the opposite way to the hammer")
+    }
+
+    /// Phase 1b (`tools/test-disc.ts` sections 4–6): wind response, long-run
+    /// stability, and timestep convergence. A tailwind carries, a headwind
+    /// balloons past the stall angle, a crosswind pushes laterally, and a gale
+    /// stops a huck dead; the integrator sheds energy and spin monotonically
+    /// for 2,000 steps without NaN; and 1/120 agrees with an 8x finer step and
+    /// sub-steps a 1/30 call exactly.
+    private static func flightWindAndConvergence() {
+        let aero = AeroCoeffs.standard
+        let body = DiscBody.standard
+
+        // Wind with the throw carries; wind against it balloons past the stall
+        // angle; wind across it pushes laterally.
+        let withWind = fly(bh(20, angle: 0.12), wind: Vec3d(0, 0, 6))
+        let against = fly(bh(20, angle: 0.12), wind: Vec3d(0, 0, -6))
+        let still = fly(bh(20, angle: 0.12))
+        Check.ok(
+            withWind.distance > against.distance + 8,
+            "downwind travels measurably further")
+        Check.ok(
+            withWind.distance > still.distance, "downwind beats still air")
+        Check.ok(
+            against.distance < still.distance, "upwind falls short of still air")
+        Check.ok(
+            against.maxHeight > withWind.maxHeight,
+            "upwind huck climbs higher (it balloons)")
+        Check.ok(
+            against.alphaMax > withWind.alphaMax,
+            "upwind reaches a higher angle of attack")
+        Check.ok(
+            against.alphaMax > aero.aStall, "and pushes past the stall angle")
+
+        // Upwind stall: a 9 m/s headwind stops a 22 m/s huck dead.
+        let gale = fly(bh(22, angle: 0.25), wind: Vec3d(0, 0, -9))
+        Check.ok(
+            gale.downrange < 12,
+            "a big upwind throw makes almost no progress downfield")
+        Check.ok(gale.maxHeight > 8, "it just balloons instead")
+
+        // Crosswind pushes the disc downwind laterally.
+        let cross = fly(bh(20, angle: 0.12), wind: Vec3d(5, 0, 0))
+        Check.ok(
+            cross.drift > still.drift,
+            "crosswind pushes the disc downwind laterally")
+
+        // Stability: 2,000 steps with no ground. Energy and spin magnitude fall
+        // monotonically (zero wind, so aero forces are purely dissipative), the
+        // quaternion stays unit, alpha never jumps.
+        do {
+            var s = bh(24, angle: 0.35, spin: 1.0)
+            s.groundY = -5000
+            var e = energy(s, body: body, aero: aero)
+            var spinMag = abs(s.spin)
+            var energyViolations = 0
+            var spinViolations = 0
+            var maxAlphaStep = 0.0
+            var prevAlpha = s.alpha
+            var finite = true
+            var firstSpin = 0.0
+            for i in 0..<2000 {
+                s.step(dt: FIXED_DT)
+                if !s.isFinite { finite = false; break }
+                let ne = energy(s, body: body, aero: aero)
+                if ne > e + 1e-9 { energyViolations += 1 }
+                e = ne
+                let sm = abs(s.spin)
+                if sm > spinMag + 1e-12 { spinViolations += 1 }
+                spinMag = sm
+                maxAlphaStep = Swift.max(maxAlphaStep, abs(s.alpha - prevAlpha))
+                prevAlpha = s.alpha
+                if i == 0 { firstSpin = s.spin }
+            }
+            Check.ok(finite, "nothing goes NaN or infinite over 2000 steps")
+            Check.eq(
+                energyViolations, 0,
+                "total energy is monotonically non-increasing")
+            Check.eq(
+                spinViolations, 0, "spin magnitude is monotonically decreasing")
+            Check.ok(
+                abs(s.spin) < abs(firstSpin) * 0.95, "spin actually decays")
+            Check.ok(
+                abs(s.orient.length - 1) < 1e-9, "quaternion stays unit")
+            Check.ok(
+                maxAlphaStep < 0.4,
+                "angle of attack stays bounded even in a long tumble")
+        }
+
+        // Convergence: 1/120 agrees with an 8x finer step; identical inputs are
+        // bit-identical; a 1/30 call sub-steps to exactly four 1/120 steps.
+        do {
+            func run(_ dt: Double) -> (pos: Vec3d, alpha: Double) {
+                var s = bh(22, angle: 0.1, spin: 0.7)
+                s.groundY = -5000
+                for _ in 0..<Int((3.0 / dt).rounded()) { s.step(dt: dt) }
+                return (s.pos, s.alpha)
+            }
+            let coarse = run(FIXED_DT)
+            let fine = run(1.0 / 960.0)
+            let posErr = (coarse.pos - fine.pos).length
+            Check.ok(
+                posErr < 0.05,
+                "position after 3 s agrees with an 8x finer step")
+            Check.ok(
+                abs(coarse.alpha - fine.alpha) < 1e-3,
+                "angle of attack agrees with an 8x finer step")
+            let a = run(FIXED_DT), b2 = run(FIXED_DT)
+            Check.ok(
+                a.pos.x == b2.pos.x && a.pos.y == b2.pos.y && a.pos.z == b2.pos.z,
+                "integration is bit-for-bit deterministic")
+            var s1 = bh(20)
+            s1.groundY = -5000
+            var s2 = bh(20)
+            s2.groundY = -5000
+            for _ in 0..<60 { s1.step(dt: 1.0 / 30.0) }
+            for _ in 0..<240 { s2.step(dt: FIXED_DT) }
+            Check.ok(
+                (s1.pos - s2.pos).length < 1e-9,
+                "a 1/30 s call sub-steps to exactly four 1/120 s steps")
+        }
     }
 
     /// Build a release state the way the fixture generator does.

@@ -300,8 +300,9 @@ let allSuites: [Suite] = [
     // model — see SimMathTests.swift's header.
     Suite(name: "simmath", run: SimMathTests.run, minAssertions: 392341),
     // Bumped from 1458 for issue #58 Phase 1b: `flightShape` ports
-    // `tools/test-disc.ts` sections 1-3 (23 assertions, measured 1481).
-    Suite(name: "flight", run: FlightTests.run, minAssertions: 1481),
+    // `tools/test-disc.ts` sections 1-3 (23 assertions, measured 1481), and
+    // `flightWindAndConvergence` ports sections 4-6 (19 more, measured 1500).
+    Suite(name: "flight", run: FlightTests.run, minAssertions: 1500),
     // Issue #58: `throws` no longer loads a golden. 36 recorded flights become 211,410
     // assertions against the release geometry in closed form, an independently written
     // frame model, two flight symmetries, and exact-value pins on the throw table — see
