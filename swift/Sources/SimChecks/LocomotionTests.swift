@@ -101,6 +101,7 @@ enum LocomotionTests {
         separationAcceptance()
         gaitCaps()
         sprintAndCut()
+        footPlants()
         staminaTests()
 
         flatWorldClaims()
@@ -2603,6 +2604,102 @@ enum LocomotionTests {
                 worstLat < gripBudget * 1.10,
                 "turn rate never exceeds the grip budget")
         }
+    }
+
+    // MARK: - foot planting
+
+    /// Phase 1b (`tools/test-locomotion.ts` section 4): foot plants as
+    /// behaviour. Sprint cadence and step length sit in human bands with feet
+    /// alternating, jogging steps slower, and a hard cut emits a hard plant on
+    /// the outside foot at a body-plausible offset — the point the cut pivots
+    /// from, exposed on the foot state. Same ratings, durations and bounds as
+    /// the reference suite.
+    private static func footPlants() {
+        // Sprint cadence, alternation, step length, payload shape.
+        let box = EventBox()
+        let loco = Locomotion()
+        loco.attach(LocoHost(events: { box.events.append($0) }))
+        let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+        driveLoco(
+            loco, [p], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 3)
+        box.events.removeAll()
+        driveLoco(
+            loco, [p], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 3)
+        struct Plant { var foot: Foot; var pos: Vec3d; var speed: Double }
+        var plants: [Plant] = []
+        for e in box.events {
+            if case .footstep(_, let pos, let foot, let speed, _) = e {
+                plants.append(Plant(foot: foot, pos: pos, speed: speed))
+            }
+        }
+        let rate = Double(plants.count) / 3
+        var alternates = true
+        for i in 1..<plants.count where plants[i].foot == plants[i - 1].foot {
+            alternates = false
+        }
+        var strideMin = Double.infinity, strideMax = 0.0
+        for i in 1..<plants.count {
+            let d = (plants[i].pos - plants[i - 1].pos).length
+            strideMin = Swift.min(strideMin, d)
+            strideMax = Swift.max(strideMax, d)
+        }
+        Check.inRange(rate, 4.0, 5.2, "sprint cadence")
+        Check.ok(alternates, "feet alternate L/R")
+        Check.inRange(
+            (strideMin + strideMax) / 2, 1.5, 2.6, "sprint step length")
+        Check.ok(
+            !plants.isEmpty && plants[0].speed > 1,
+            "footstep payload has pos/foot/speed")
+
+        // Jogging steps slower than sprinting.
+        let box2 = EventBox()
+        let l2 = Locomotion()
+        l2.attach(LocoHost(events: { box2.events.append($0) }))
+        let q = l2.create(CreateOpts(id: 1, attr: eliteAttrs))
+        driveLoco(l2, [q], [DesiredMove(dir: Vec2d(0, 1), mode: .jog)], 4)
+        box2.events.removeAll()
+        driveLoco(l2, [q], [DesiredMove(dir: Vec2d(0, 1), mode: .jog)], 3)
+        let jogRate = Double(box2.events.filter {
+            if case .footstep = $0 { return true }
+            return false
+        }.count) / 3
+        Check.ok(
+            jogRate < rate - 0.5, "jog cadence below sprint cadence")
+
+        // A hard cut emits a hard plant on the outside foot, at a
+        // body-plausible offset — travelling +Z and cutting to +X turns left,
+        // so the planting (outside) foot is the right.
+        let box3 = EventBox()
+        let l3 = Locomotion()
+        l3.attach(LocoHost(events: { box3.events.append($0) }))
+        let c = l3.create(CreateOpts(id: 1, attr: eliteAttrs))
+        driveLoco(l3, [c], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 6)
+        box3.events.removeAll()
+        let before = c.pos
+        driveLoco(l3, [c], [DesiredMove(dir: Vec2d(1, 0), mode: .sprint)], 0.05)
+        var hard: (foot: Foot, pos: Vec3d)? = nil
+        for e in box3.events {
+            if case .footstep(_, let pos, let foot, _, let isHard) = e, isHard {
+                hard = (foot, pos)
+            }
+        }
+        Check.ok(hard != nil, "hard cut emits a hard plant")
+        if let hard {
+            let d = Foundation.hypot(
+                hard.pos.x - before.x, hard.pos.z - before.z)
+            Check.inRange(
+                d, 0.2, 1.2, "cut plant is a body-plausible offset")
+            Check.eq(hard.foot, .right, "cut plant is the outside foot")
+            Check.ok(
+                hard.pos.x - before.x < -0.1, "plant is outside the turn")
+            Check.ok(
+                c.foot.hard && c.foot.pos == hard.pos,
+                "planted foot state exposed")
+        }
+    }
+
+    private final class EventBox {
+        var events: [LocoEvent] = []
     }
 
     // MARK: - stamina
