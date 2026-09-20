@@ -27,6 +27,7 @@ enum FlightTests {
         Check.near(FIXED_DT, 1.0 / 120.0, 1e-18, "the engine's fixed dt is what it has always been")
         physicalProperties()
         symmetryAndDeterminism()
+        flightShape()
     }
 
     private static func physicalProperties() {
@@ -182,6 +183,155 @@ enum FlightTests {
         for _ in 0..<(120 * 8) where !low.atRest { low.step(dt: FIXED_DT) }
         Check.ok(low.atRest, "a disc released low comes to rest")
         Check.inRange(low.pos.y, -0.01, 0.2, "and finishes at ground level, not airborne or buried")
+    }
+
+    /// Phase 1b (`tools/test-disc.ts` sections 1–3): the sport-visible shape of a
+    /// flight. The laws above say energy falls and bank curves; they do not say a
+    /// flat backhand turns over early and fades late, that a forehand goes the
+    /// other way, that a left hand mirrors a right, or that a hammer falls out
+    /// of the sky. Those are the behaviours a player actually sees, measured off
+    /// real integration at the engine's fixed step — same releases, same bounds
+    /// as the reference suite.
+    private static func flightShape() {
+        struct Flight {
+            var distance, downrange, drift, maxHeight, time: Double
+            var landed: Bool
+            var descentDeg: Double
+            var alphaMax, alphaStep: Double
+            var invertedFrac: Double
+            var v0, vEnd: Double
+            var state: DiscState
+        }
+
+        func fly(_ s: DiscState, maxT: Double = 12) -> Flight {
+            var s = s
+            let start = s.pos
+            var f = Flight(
+                distance: 0, downrange: 0, drift: 0, maxHeight: 0, time: 0,
+                landed: false, descentDeg: 0, alphaMax: -9, alphaStep: 0,
+                invertedFrac: 0, v0: s.vel.length, vEnd: 0, state: s)
+            var prevAlpha = s.alpha
+            var inverted = 0, airborne = 0
+            var lastVel = s.vel
+            for _ in 0..<Int((maxT / FIXED_DT).rounded()) {
+                lastVel = s.vel
+                s.step(dt: FIXED_DT)
+                if s.touchedGround {
+                    f.landed = true
+                    f.time = s.t
+                    break
+                }
+                airborne += 1
+                f.maxHeight = Swift.max(f.maxHeight, s.pos.y - start.y)
+                f.alphaMax = Swift.max(f.alphaMax, s.alpha)
+                f.alphaStep = Swift.max(f.alphaStep, abs(s.alpha - prevAlpha))
+                prevAlpha = s.alpha
+                if s.normal.y < 0 { inverted += 1 }
+            }
+            if !f.landed { f.time = s.t }
+            f.vEnd = lastVel.length
+            f.downrange = s.pos.z - start.z
+            f.drift = s.pos.x - start.x
+            f.distance = Foundation.hypot(f.drift, f.downrange)
+            f.invertedFrac = airborne > 0 ? Double(inverted) / Double(airborne) : 0
+            f.descentDeg = Foundation.atan2(
+                -lastVel.y, Foundation.hypot(lastVel.x, lastVel.z)) * 180 / Double.pi
+            f.state = s
+            return f
+        }
+
+        func bankAngle(_ s: DiscState) -> Double {
+            let heading = Vec3d(s.vel.x, 0, s.vel.z)
+            if heading.lengthSq < 1e-10 { return 0 }
+            let h = heading.normalized
+            let right = h.cross(Vec3d(0, 1, 0))
+            return Foundation.atan2(s.normal.dot(right), s.normal.y)
+        }
+
+        func bh(_ speed: Double) -> DiscState {
+            throwDisc(
+                .backhand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
+                power: powerForSpeed(.backhand, speed), angle: 0, spin: 0.6)
+        }
+
+        // A flat 20 m/s right-handed backhand: plausible carry, hang and apex,
+        // drag bleeding speed — and turn-then-fade, banks right early and rolls
+        // back onto hyzer late.
+        let flat20 = fly(bh(20))
+        Check.ok(flat20.landed, "a flat backhand lands (does not fly forever)")
+        Check.inRange(flat20.distance, 35, 55, "its distance is plausible")
+        Check.inRange(flat20.time, 2.0, 6.0, "its hang time is plausible")
+        Check.inRange(flat20.maxHeight, 0.0, 8.0, "its apex is plausible")
+        Check.ok(flat20.state.isFinite, "state finite at landing")
+        Check.ok(
+            flat20.vEnd < flat20.v0 * 0.75, "drag bleeds speed")
+        Check.ok(
+            flat20.alphaStep < 0.02,
+            "angle of attack is smooth over the whole flight at 1/120 s")
+        do {
+            var p = bh(20)
+            var banks: [Double] = []
+            for i in 0..<1200 {
+                if p.touchedGround { break }
+                p.step(dt: FIXED_DT)
+                if i % 12 == 0 { banks.append(bankAngle(p) * 180 / Double.pi) }
+            }
+            let early = banks.prefix(banks.count * 2 / 5).max() ?? 0
+            let late = banks.suffix(from: banks.count / 2).min() ?? 0
+            Check.ok(
+                early > 0.5, "high-speed turn: banks right (turns over) early")
+            Check.ok(
+                late < -5, "low-speed fade: rolls back onto hyzer and finishes left")
+            Check.ok(
+                late < early - 10, "the roll reverses direction mid-flight")
+        }
+
+        // Backhand and forehand curve to opposite sides, measurably, finishing
+        // left and right respectively for a right hand.
+        let b = fly(bh(20))
+        let fh = fly(throwDisc(
+            .forehand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
+            power: powerForSpeed(.forehand, 20), angle: 0, spin: 0.6))
+        Check.ok(b.drift * fh.drift < 0, "drift signs are opposite")
+        Check.ok(abs(b.drift) > 1.0, "backhand curve is measurable")
+        Check.ok(abs(fh.drift) > 1.0, "forehand curve is measurable")
+        Check.ok(b.drift > 0, "RH backhand finishes LEFT")
+        Check.ok(fh.drift < 0, "RH forehand finishes RIGHT")
+
+        // A left hand is an exact mirror: same distance, opposite drift.
+        var leftOpts = ThrowOptions()
+        leftOpts.hand = .left
+        let lh = fly(throwDisc(
+            .backhand, from: Vec3d(0, 1.3, 0), aim: Vec3d(0, 0, 1),
+            power: powerForSpeed(.backhand, 20), angle: 0, spin: 0.6,
+            options: leftOpts))
+        Check.ok(
+            abs(lh.drift + b.drift) < 1e-6,
+            "left-handed backhand is an exact mirror")
+        Check.ok(
+            abs(lh.distance - b.distance) < 1e-6, "mirror keeps the same distance")
+
+        // A hammer flies upside down and falls off hard: steeper than a
+        // backhand, steeper than it launched, shorter, collapsing late. A
+        // scoober breaks the other way.
+        let h = fly(throwDisc(
+            .hammer, from: Vec3d(0, 2.0, 0), aim: Vec3d(0, 0, 1),
+            power: 0.75, angle: 0, spin: 0.6))
+        Check.ok(h.invertedFrac > 0.9, "a hammer flies upside down")
+        Check.ok(
+            h.descentDeg > b.descentDeg + 10,
+            "it drops far more steeply than a backhand")
+        Check.ok(h.descentDeg > 35, "descent is genuinely steep")
+        Check.ok(
+            h.distance < b.distance, "it covers less ground than a backhand")
+        let launchDeg = throwSpec(.hammer).elevation * 180 / Double.pi
+        Check.ok(
+            h.descentDeg > launchDeg + 8, "it comes down steeper than it went up")
+        let sc = fly(throwDisc(
+            .scoober, from: Vec3d(0, 1.6, 0), aim: Vec3d(0, 0, 1),
+            power: 0.7, angle: 0, spin: 0.6))
+        Check.ok(
+            sc.drift * h.drift < 0, "scoober breaks the opposite way to the hammer")
     }
 
     /// Build a release state the way the fixture generator does.
