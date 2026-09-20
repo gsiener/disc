@@ -38,6 +38,7 @@ enum HumanCutTests {
         theCommandedReceiverRunsIt()
         theOrderExpiresAndTheAIGetsThePlayerBack()
         ordersAreRateLimited()
+        theDragResolvesToAScoredTeammate()
     }
 
     // MARK: - the gate
@@ -637,5 +638,79 @@ enum HumanCutTests {
 
     private static func teamAI(_ e: Engine, _ team: TeamId) -> TeamAI? {
         e.ai.first { $0.team == team }
+    }
+
+    // MARK: - receiver selection
+
+    /// Phase 1b (`tools/test-game.ts`, receiver selection): the drag resolves
+    /// to a scored teammate. Every candidate sits inside the 35-degree cone,
+    /// each score is 60% angular fit / 25% lane / 15% distance sanity composed
+    /// exactly, the resolution is the argmax, and an empty cone resolves to
+    /// nothing. Unit-level, against bodies rather than an engine: the cone,
+    /// the weights and the argmax are `HumanTargeting`'s whole contract, and
+    /// the pooled stick-agreement ratio the reference suite measures needs a
+    /// scripted game harness this target does not have.
+    private static func theDragResolvesToAScoredTeammate() {
+        let attrs = AIAttributes(
+            speed: 60, acceleration: 60, agility: 60, jumping: 60, catching: 60,
+            throwAccuracy: [
+                .backhand: 60, .forehand: 60, .hammer: 60, .scoober: 60,
+                .push: 60,
+            ],
+            throwPower: 60, decision: 60, stamina: 60, defAwareness: 60)
+        func body(
+            _ id: Int, _ team: TeamId, _ x: Double, _ z: Double,
+            available: Bool = true
+        ) -> HumanTargeting.Body {
+            HumanTargeting.Body(
+                id: id, team: team, pos: Vec3d(x, 0, z), vel: .zero,
+                attr: attrs, energy: 1, available: available)
+        }
+        let thrower = body(0, 0, 0, 0)
+        let bodies = [
+            thrower,
+            body(1, 0, 2, 18),    // ahead, slightly right
+            body(2, 0, -6, 14),   // ahead left
+            body(3, 0, 1, 4),     // close dish
+            body(4, 0, 40, 10),   // far prayer
+            body(5, 1, 0, 12),    // a defender, same lane as #1
+            body(6, 0, -2, -8),   // behind the disc
+            body(7, 0, 3, 16, available: false),  // down but in the cone
+        ]
+        let cone = HumanTargeting.selectCone
+        let cands = HumanTargeting.scoreConeCandidates(
+            dx: 0, dz: 1, thrower: thrower, bodies: bodies)
+        Check.ok(!cands.isEmpty, "the cone finds its teammates")
+        for c in cands {
+            Check.ok(
+                c.angle <= cone + 1e-9,
+                "no candidate is ever outside the 35-degree cone")
+            Check.bitEq(
+                c.score,
+                HumanTargeting.wAngle * c.angular + HumanTargeting.wLane * c.openness
+                    + HumanTargeting.wDist * c.sanity,
+                "the score is 60% angular / 25% lane / 15% distance, exactly")
+            Check.ok(c.id != 0 && c.id != 5, "neither the thrower nor a defender")
+        }
+        var best = -1, bestScore = -1.0
+        for c in cands where c.score > bestScore {
+            bestScore = c.score
+            best = c.id
+        }
+        Check.eq(
+            HumanTargeting.resolveConeSelect(
+                dx: 0, dz: 1, thrower: thrower, bodies: bodies),
+            best, "the selection is always the argmax of the score")
+
+        // An empty cone resolves to nothing: a zero drag, and a sideways drag
+        // past the one body behind the disc (at >90 degrees, outside the cone).
+        Check.eq(
+            HumanTargeting.resolveConeSelect(
+                dx: 0, dz: 0, thrower: thrower, bodies: bodies),
+            nil, "a zero drag resolves to nothing")
+        Check.eq(
+            HumanTargeting.resolveConeSelect(
+                dx: 1, dz: 0, thrower: thrower, bodies: [thrower, bodies[6]]),
+            nil, "a drag at nobody resolves to nothing")
     }
 }

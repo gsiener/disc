@@ -387,7 +387,9 @@ let allSuites: [Suite] = [
     // Floor lowered from 125 to 123 for the same reason as `engine` above — issue #56.
     Suite(name: "events", run: EventTests.run, minAssertions: 123),
     Suite(name: "humandefence", run: HumanDefenceTests.run, minAssertions: 20),
-    Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 37),
+    // Bumped from 37 for issue #58 Phase 1b: `theDragResolvesToAScoredTeammate`
+    // ports `tools/test-game.ts`' receiver selection (13 assertions, measured 50).
+    Suite(name: "humancut", run: HumanCutTests.run, minAssertions: 50),
     Suite(name: "pivot", run: PivotTests.run, minAssertions: 38),
     Suite(name: "calls", run: CallsTests.run, minAssertions: 29),
     Suite(name: "stoppage", run: StoppageTests.run, minAssertions: 4477),

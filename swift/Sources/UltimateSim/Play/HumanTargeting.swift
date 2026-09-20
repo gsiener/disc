@@ -118,28 +118,33 @@ public enum HumanTargeting {
         AIPlayer(id: b.id, team: b.team, attr: b.attr, archetype: .cutter, energy: b.energy)
     }
 
-    /// Resolve a drag direction to the teammate it means, or nil if the cone is empty.
-    ///
-    /// The cone is generous because a drag is a coarse instrument. The lane term is what
-    /// stops it handing you the player standing behind a defender, and the distance term is
-    /// what stops a 2 m dish and a 55 m prayer from outscoring the 20 m cut you were
-    /// obviously looking at.
-    ///
-    /// `cone` defaults to the pinned `selectCone`; `Engine` passes its config's value so
-    /// a mode can widen or tighten the select without touching the reference constant.
-    public static func resolveConeSelect(
+    /// One teammate inside the cone with its score broken out — the same shape
+    /// the reference's select returns per candidate, so the cone bound, the
+    /// weight composition and the argmax are all assertable from outside.
+    public struct ScoredCandidate: Equatable, Sendable {
+        public let id: Int
+        public let angle: Double
+        public let angular: Double
+        public let openness: Double
+        public let sanity: Double
+        public let score: Double
+    }
+
+    /// Every teammate the drag direction could mean, scored. `resolveConeSelect`
+    /// is the argmax of this list; the list itself is what a suite (or a UI
+    /// showing its work) reads.
+    public static func scoreConeCandidates(
         dx: Double, dz: Double, thrower: Body, bodies: [Body],
         cone: Double = HumanTargeting.selectCone
-    ) -> Int? {
+    ) -> [ScoredCandidate] {
         let l = (dx * dx + dz * dz).squareRoot()
-        guard l > 1e-3 else { return nil }
+        guard l > 1e-3 else { return [] }
         let ux = dx / l
         let uz = dz / l
         let ox = thrower.pos.x
         let oz = thrower.pos.z
 
-        var best: Int?
-        var bestScore = -1.0
+        var out: [ScoredCandidate] = []
         for r in bodies where r.team == thrower.team && r.id != thrower.id {
             guard r.available else { continue }
             let vx = r.pos.x - ox
@@ -156,9 +161,34 @@ public enum HumanTargeting {
             // tapering to nothing at the 46 m the arm cannot reach anyway.
             let sanity = smooth01(d, 2.0, 6.0) * (1 - smooth01(d, 30, 46))
             let score = wAngle * angular + wLane * openness + wDist * sanity
-            if score > bestScore {
-                bestScore = score
-                best = r.id
+            out.append(ScoredCandidate(
+                id: r.id, angle: angle, angular: angular, openness: openness,
+                sanity: sanity, score: score))
+        }
+        return out
+    }
+
+    /// Resolve a drag direction to the teammate it means, or nil if the cone is empty.
+    ///
+    /// The cone is generous because a drag is a coarse instrument. The lane term is what
+    /// stops it handing you the player standing behind a defender, and the distance term is
+    /// what stops a 2 m dish and a 55 m prayer from outscoring the 20 m cut you were
+    /// obviously looking at.
+    ///
+    /// `cone` defaults to the pinned `selectCone`; `Engine` passes its config's value so
+    /// a mode can widen or tighten the select without touching the reference constant.
+    public static func resolveConeSelect(
+        dx: Double, dz: Double, thrower: Body, bodies: [Body],
+        cone: Double = HumanTargeting.selectCone
+    ) -> Int? {
+        var best: Int?
+        var bestScore = -1.0
+        for c in scoreConeCandidates(
+            dx: dx, dz: dz, thrower: thrower, bodies: bodies, cone: cone)
+        {
+            if c.score > bestScore {
+                bestScore = c.score
+                best = c.id
             }
         }
         return best
