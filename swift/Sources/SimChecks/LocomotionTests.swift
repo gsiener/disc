@@ -99,6 +99,7 @@ enum LocomotionTests {
         pivotMechanics()
         collisionMechanics()
         separationAcceptance()
+        gaitCaps()
         staminaTests()
 
         flatWorldClaims()
@@ -2372,6 +2373,104 @@ enum LocomotionTests {
                 Check.ok(
                     abs(on - off) < 1e-9, "separation does not change the layout")
             }
+        }
+    }
+
+    // MARK: - gait caps and auto selection
+
+    /// Phase 1b (`tools/test-locomotion.ts` section 3): gait caps as behaviour.
+    /// Backpedal and shuffle are slower than running by stated fractions, the
+    /// states report honestly, `auto` picks the gait from where the body looks
+    /// versus where it goes, effort and explicit speed are honoured — and a
+    /// receiver still separates from a backpedalling defender at the sport's
+    /// rate. Same ratings, durations and bounds as the reference suite.
+    private static func gaitCaps() {
+        let dt = 1.0 / 120.0
+
+        // Caps: backpedal ~0.55x, shuffle slower still, sprint 3+ m/s clear.
+        do {
+            let loco = freshLoco()
+            let s = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let b = loco.create(CreateOpts(id: 2, attr: eliteAttrs))
+            let h = loco.create(CreateOpts(id: 3, attr: eliteAttrs))
+            let j = loco.create(CreateOpts(id: 4, attr: eliteAttrs))
+            driveLoco(loco, [s], [DesiredMove(dir: Vec2d(0, 1), mode: .sprint)], 8)
+            driveLoco(loco, [b], [DesiredMove(dir: Vec2d(0, 1), mode: .backpedal)], 8)
+            driveLoco(loco, [h], [DesiredMove(dir: Vec2d(0, 1), mode: .shuffle)], 8)
+            driveLoco(loco, [j], [DesiredMove(dir: Vec2d(0, 1), mode: .jog)], 8)
+            let vs = locoSpd(s), vb = locoSpd(b)
+            let vh = locoSpd(h), vj = locoSpd(j)
+            Check.inRange(
+                vb / vs, 0.45, 0.62, "backpedal top as fraction of sprint")
+            Check.inRange(
+                vh / vs, 0.38, 0.56, "shuffle top as fraction of sprint")
+            Check.ok(
+                vh < vb && vh < vj + 1.0, "shuffle is the slowest gait")
+            Check.ok(vs - vb > 3.0, "sprint beats backpedal by >3 m/s")
+            Check.ok(
+                s.state == .sprint && b.state == .backpedal && h.state == .shuffle,
+                "gait states reported")
+        }
+
+        // Auto: a defender keeping eyes on the thrower picks the gait itself.
+        do {
+            let loco = freshLoco()
+            let back = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let side = loco.create(CreateOpts(id: 2, attr: eliteAttrs))
+            let fwd = loco.create(CreateOpts(id: 3, attr: eliteAttrs))
+            driveLoco(
+                loco, [back],
+                [DesiredMove(dir: Vec2d(0, 1), face: Vec2d(0, -1))], 6)
+            driveLoco(
+                loco, [side],
+                [DesiredMove(dir: Vec2d(1, 0), face: Vec2d(0, -1))], 6)
+            driveLoco(
+                loco, [fwd],
+                [DesiredMove(dir: Vec2d(0, -1), face: Vec2d(0, -1))], 6)
+            Check.eq(
+                back.state, .backpedal,
+                "auto picks backpedal when running away from the look direction")
+            Check.eq(
+                side.state, .shuffle, "auto picks shuffle when moving laterally")
+            Check.ok(
+                fwd.state == .sprint || fwd.state == .run,
+                "auto runs when moving where it looks")
+        }
+
+        // Effort and explicit speed are honoured.
+        do {
+            let loco = freshLoco()
+            let half = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let exact = loco.create(CreateOpts(id: 2, attr: eliteAttrs))
+            driveLoco(
+                loco, [half],
+                [DesiredMove(dir: Vec2d(0, 1), effort: 0.5, mode: .sprint)], 6)
+            driveLoco(
+                loco, [exact],
+                [DesiredMove(dir: Vec2d(0, 1), speed: 4.0, mode: .sprint)], 6)
+            Check.ok(
+                abs(locoSpd(half) - half.derived.topSpeed * 0.5) < 0.05,
+                "effort 0.5 gives half the cap")
+            Check.ok(
+                abs(locoSpd(exact) - 4.0) < 0.02, "explicit target speed honoured")
+        }
+
+        // A receiver separates from a backpedalling defender at the sport's rate.
+        do {
+            let loco = freshLoco()
+            let rec = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let def = loco.create(CreateOpts(
+                id: 2, attr: eliteAttrs, pos: Vec3d(3, 0, 2)))
+            for _ in 0..<(120 * 5) {
+                _ = loco.step(
+                    rec, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                _ = loco.step(
+                    def, DesiredMove(dir: Vec2d(0, 1), mode: .backpedal), dt)
+                loco.resolveCollisions(dt)
+            }
+            Check.inRange(
+                rec.pos.z - (def.pos.z - 2), 12, 26,
+                "deep separation gained in 5 s")
         }
     }
 
