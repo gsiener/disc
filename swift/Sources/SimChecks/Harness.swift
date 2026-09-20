@@ -302,9 +302,10 @@ let allSuites: [Suite] = [
     // Bumped from 1458 for issue #58 Phase 1b: `flightShape` ports
     // `tools/test-disc.ts` sections 1-3 (23 assertions, measured 1481),
     // `flightWindAndConvergence` ports sections 4-6 (19 more, measured 1500),
-    // and `flightReleaseResponse` ports sections 7, 8, 8b, 9 (35 more,
-    // measured 1535).
-    Suite(name: "flight", run: FlightTests.run, minAssertions: 1535),
+    // `flightReleaseResponse` ports sections 7, 8, 8b, 9 (35 more,
+    // measured 1535), and `groundRest` ports section 11's skid/flat remainder
+    // (5 more, measured 1540).
+    Suite(name: "flight", run: FlightTests.run, minAssertions: 1540),
     // Issue #58: `throws` no longer loads a golden. 36 recorded flights become 211,410
     // assertions against the release geometry in closed form, an independently written
     // frame model, two flight symmetries, and exact-value pins on the throw table — see

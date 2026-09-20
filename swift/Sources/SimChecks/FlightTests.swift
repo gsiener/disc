@@ -30,6 +30,7 @@ enum FlightTests {
         flightShape()
         flightWindAndConvergence()
         flightReleaseResponse()
+        groundRest()
     }
 
     private static func physicalProperties() {
@@ -611,6 +612,35 @@ enum FlightTests {
                     abs(blade.drift) > 3, "blade curves hard")
             }
         }
+    }
+
+    /// Phase 1b (`tools/test-disc.ts` section 11, the unasserted remainder): a
+    /// flown backhand skids briefly and settles flat. Touchdown-to-rest takes
+    /// longer than a stick and less than a slide into next week; at rest the
+    /// normal is up and nothing moves. `DiscRuntimeTests` covers the settle
+    /// state machine (`hold`/`settle`, trail, half-height parking); what it
+    /// does not fly is a real throw all the way down, which is the only thing
+    /// that exercises the skid.
+    private static func groundRest() {
+        var s = bh(20)
+        var landT = 0.0
+        for _ in 0..<Int((12 / FIXED_DT).rounded()) {
+            s.step(dt: FIXED_DT)
+            if s.touchedGround && landT == 0 { landT = s.t }
+            if s.atRest { break }
+        }
+        Check.ok(s.atRest, "the disc comes to rest")
+        Check.ok(
+            abs(s.pos.y - DiscBody.standard.halfHeight) < 1e-9,
+            "rests on the ground plane")
+        Check.ok(
+            s.vel.length == 0 && s.omega.length == 0,
+            "no residual motion at rest")
+        Check.ok(
+            abs(s.normal.y) > 0.999, "settles flat")
+        Check.ok(
+            s.t - landT > 0.05 && s.t - landT < 4,
+            "skids briefly rather than sticking or sliding forever")
     }
 
     /// Build a release state the way the fixture generator does.
