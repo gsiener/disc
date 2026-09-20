@@ -321,7 +321,9 @@ let allSuites: [Suite] = [
     // of groundPhase's state machine driven through step(), physical laws for
     // the integrator and the contact resolver, and a self-driven trace for
     // claims only a trajectory can settle. See LocomotionTests.swift's header.
-    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23665),
+    // Bumped from 23665 for issue #58 Phase 1b: `separationAcceptance` ports
+    // `tools/test-move.ts` sections 1-4 (27 assertions, measured 23692).
+    Suite(name: "locomotion", run: LocomotionTests.run, minAssertions: 23692),
     // Issue #58: `playbook` no longer loads a golden. 21,897 recorded comparisons
     // become 23,026 assertions against `Model` — a second, independently typed
     // implementation of every formula in Playbook.swift, hand-typed from its own doc

@@ -98,6 +98,7 @@ enum LocomotionTests {
         jumpLayoutMechanics()
         pivotMechanics()
         collisionMechanics()
+        separationAcceptance()
         staminaTests()
 
         flatWorldClaims()
@@ -2005,6 +2006,372 @@ enum LocomotionTests {
             loco.resolveCollisions(dt, list: [a, b])
             Check.bitEqViaJSON(a.vel.x, -2, "no impulse on an already-separating pair (a)")
             Check.bitEqViaJSON(b.vel.x, 2, "no impulse on an already-separating pair (b)")
+        }
+    }
+
+    // MARK: - separation acceptance
+
+    /// Phase 1b (`tools/test-move.ts` sections 1–4): personal-space separation as
+    /// behaviour, not as leaf functions. The blind critic's note that motivated
+    /// the reference suite was that bodies piled up *on* the hard-contact floor —
+    /// 54% of frames with some pair sitting on the contact radius — while nothing
+    /// interpenetrated, so no component check could see it. These scenarios drive
+    /// `create`/`step`/`resolveCollisions` exactly the way the reference suite
+    /// does (same ratings, same placements, same step counts) and assert the same
+    /// distributions: settles without oscillation, intent preserved, committed
+    /// bodies untouched, locomotion numbers unchanged.
+    ///
+    /// Sections 5–7 of the reference suite (whole-match blob statistics, turf
+    /// placement, determinism, cost) are not ported here: the match-level blob
+    /// bounds sit on game trajectories this file does not drive, and two of those
+    /// assertions are red on the reference itself (see the known-red table — the
+    /// dwell bound is exactly on its edge and `groundY` misses by millimetres).
+    /// Porting a red assertion would import the failure, not the coverage.
+
+    private static let averageAttrs = Attributes(
+        speed: 68, accel: 66, agility: 66, strength: 62,
+        vertical: 60, endurance: 65, balance: 65, height: 1.80, mass: 82)
+    private static let eliteAttrs = Attributes(
+        speed: 92, accel: 90, agility: 88, strength: 72,
+        vertical: 84, endurance: 82, balance: 80, height: 1.86, mass: 84)
+
+    private static func locoSpd(_ p: LocoPlayer) -> Double {
+        Foundation.hypot(p.vel.x, p.vel.z)
+    }
+
+    private static func locoGap(_ a: LocoPlayer, _ b: LocoPlayer) -> Double {
+        Foundation.hypot(b.pos.x - a.pos.x, b.pos.z - a.pos.z)
+    }
+
+    private static func driveLoco(
+        _ loco: Locomotion, _ ps: [LocoPlayer], _ ds: [DesiredMove],
+        _ seconds: Double, dt: Double = 1.0 / 120.0, onStep: ((Double) -> Void)? = nil
+    ) {
+        let n = Int((seconds / dt).rounded())
+        for i in 0..<n {
+            for k in 0..<ps.count { _ = loco.step(ps[k], ds[k], dt) }
+            loco.resolveCollisions(dt)
+            onStep?((Double(i) + 1) * dt)
+        }
+    }
+
+    private static func separationAcceptance() {
+        let dt = 1.0 / 120.0
+        let target = 2 * PERSONAL_RADIUS
+
+        // 1a. Two idle bodies dumped on top of each other settle at personal
+        // distance, monotonically — a single reversal is two bodies shoving on
+        // alternate frames, which reads worse than the overlap it fixes.
+        do {
+            let loco = freshLoco()
+            let a = loco.create(CreateOpts(
+                id: 1, attr: averageAttrs, pos: Vec3d(-0.15, 0, 0)))
+            let b = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0.15, 0, 0)))
+            var d: [Double] = []
+            driveLoco(loco, [a, b], [DesiredMove(), DesiredMove()], 6) {
+                _ in d.append(locoGap(a, b))
+            }
+            var reversals = 0
+            for i in 1..<d.count where d[i] < d[i - 1] - 1e-9 { reversals += 1 }
+            let settle = d[d.count - 1]
+            let tailDrift = abs(d[d.count - 1] - d[d.count - 121])
+            Check.inRange(
+                settle, target - 0.05, target + 0.01,
+                "two idle bodies settle at personal distance (\(settle) m)")
+            Check.eq(reversals, 0, "the approach never reverses")
+            Check.ok(tailDrift < 2e-3, "settled: no residual drift")
+            Check.ok(
+                locoSpd(a) < 1e-9 && locoSpd(b) < 1e-9,
+                "separation writes no velocity")
+        }
+
+        // 1b. A seven-body pile spreads to personal distance and gains no energy.
+        do {
+            let loco = freshLoco()
+            let rrng = Rng(seed: 7)
+            var pack: [LocoPlayer] = []
+            for i in 0..<7 {
+                pack.append(loco.create(CreateOpts(
+                    id: i, attr: averageAttrs,
+                    pos: Vec3d(rrng.range(-0.4, 0.4), 0, rrng.range(-0.4, 0.4)))))
+            }
+            var maxV = 0.0
+            var closest: [Double] = []
+            driveLoco(loco, pack, pack.map { _ in DesiredMove() }, 8) { _ in
+                for q in pack { maxV = Swift.max(maxV, locoSpd(q)) }
+                var w = Double.infinity
+                for i in 0..<pack.count {
+                    for j in (i + 1)..<pack.count {
+                        w = Swift.min(w, locoGap(pack[i], pack[j]))
+                    }
+                }
+                closest.append(w)
+            }
+            let worst = closest[closest.count - 1]
+            var reversals = 0
+            for i in 400..<closest.count where closest[i] < closest[i - 1] - 1e-6 {
+                reversals += 1
+            }
+            Check.ok(
+                worst > target - 0.10,
+                "a pile spreads to personal distance (\(worst) m)")
+            Check.ok(maxV < 1e-9, "the pile adds no energy")
+            Check.eq(reversals, 0, "the pile does not churn once spread")
+        }
+
+        // 2a. A marker sent to the AI's actual mark stand-off (2.15 m) arrives,
+        // and the thrower is not shoved off the pivot.
+        do {
+            let loco = freshLoco()
+            let thrower = loco.create(CreateOpts(id: 1, attr: averageAttrs))
+            let marker = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0, 0, 7)))
+            let (sx, sz) = (0.0, 2.15)
+            for _ in 0..<Int((6 / dt).rounded()) {
+                let dx = sx - marker.pos.x, dz = sz - marker.pos.z
+                let d = Foundation.hypot(dx, dz)
+                _ = loco.step(
+                    marker,
+                    d > 1e-4
+                        ? DesiredMove(
+                            dir: Vec2d(dx / d, dz / d),
+                            speed: Swift.min(6, d * 3), mode: .run)
+                        : DesiredMove(), dt)
+                _ = loco.step(thrower, DesiredMove(), dt)
+                loco.resolveCollisions(dt)
+            }
+            let err = Foundation.hypot(marker.pos.x - sx, marker.pos.z - sz)
+            let drift = Foundation.hypot(thrower.pos.x, thrower.pos.z)
+            Check.ok(err < 0.15, "the marker still reaches the mark (\(err) m)")
+            Check.ok(
+                drift < 0.02, "the thrower is not shoved off the pivot")
+        }
+
+        // 2b. A cutter sprinting a straight lane through a static body: allowed
+        // to move across the lane to get round, never allowed to cost downfield
+        // speed.
+        do {
+            func pass(
+                _ offset: Double, _ separate: Bool
+            ) -> (minZSpeed: Double, closest: Double, endZ: Double, offX: Double) {
+                let loco = freshLoco()
+                loco.separate = separate
+                let cutter = loco.create(CreateOpts(
+                    id: 1, attr: eliteAttrs, pos: Vec3d(0, 0, -20)))
+                let post = loco.create(CreateOpts(
+                    id: 2, attr: averageAttrs, pos: Vec3d(offset, 0, 0)))
+                var minZSpeed = Double.infinity
+                var closest = Double.infinity
+                for _ in 0..<Int((7 / dt).rounded()) {
+                    _ = loco.step(
+                        cutter, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                    _ = loco.step(post, DesiredMove(), dt)
+                    loco.resolveCollisions(dt)
+                    closest = Swift.min(closest, locoGap(cutter, post))
+                    if cutter.pos.z > -6 && cutter.pos.z < 6 {
+                        minZSpeed = Swift.min(minZSpeed, cutter.vel.z)
+                    }
+                }
+                return (
+                    minZSpeed, closest, cutter.pos.z, abs(cutter.pos.x))
+            }
+            let wideOn = pass(0.80, true), wideOff = pass(0.80, false)
+            Check.ok(
+                wideOn.minZSpeed > 8.5, "a clean pass is not braked at all")
+            Check.ok(
+                wideOn.closest > wideOff.closest + 0.05, "and the miss is widened")
+            let headOn = pass(0.0, true), headOff = pass(0.0, false)
+            Check.ok(
+                headOn.minZSpeed > headOff.minZSpeed + 1.0,
+                "separation rescues a dead-on convergence")
+            Check.ok(headOn.endZ > 20, "the cutter still runs the lane")
+            Check.ok(
+                headOn.offX > 0.05, "and gets round rather than through")
+            let glanceOn = pass(0.35, true), glanceOff = pass(0.35, false)
+            Check.ok(
+                glanceOn.minZSpeed >= glanceOff.minZSpeed - 1e-9
+                    && wideOn.minZSpeed >= wideOff.minZSpeed - 1e-9,
+                "separation never costs downfield speed")
+        }
+
+        // 2c. An exact head-on pair picks a side and holds it — the degenerate
+        // case with no lateral normal component to preserve.
+        do {
+            let loco = freshLoco()
+            let a = loco.create(CreateOpts(
+                id: 1, attr: averageAttrs, pos: Vec3d(0, 0, -12)))
+            let b = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0, 0, 12)))
+            var sides: [Double] = []
+            driveLoco(
+                loco, [a, b],
+                [DesiredMove(dir: Vec2d(0, 1), mode: .run),
+                 DesiredMove(dir: Vec2d(0, -1), mode: .run)], 8
+            ) { _ in
+                if abs(a.pos.z - b.pos.z) < 4 {
+                    let s = a.pos.x - b.pos.x
+                    sides.append(s > 0 ? 1 : s < 0 ? -1 : 0)
+                }
+            }
+            var flips = 0
+            for i in 1..<sides.count
+                where sides[i] != 0 && sides[i - 1] != 0 && sides[i] != sides[i - 1]
+            { flips += 1 }
+            Check.ok(
+                sides.count > 0 && sides.contains(where: { $0 != 0 }),
+                "a head-on pair picks a side")
+            Check.ok(flips <= 1, "and does not swap sides mid-pass")
+        }
+
+        // 3. A body mid-layout is a projectile: the arc is read by the catch
+        // solver and the animation, and a separation nudge would desync both.
+        // The body laid out over is the one that steps aside.
+        do {
+            let loco = freshLoco()
+            let flyer = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+            let post = loco.create(CreateOpts(
+                id: 2, attr: averageAttrs, pos: Vec3d(0, 0, 2.2)))
+            driveLoco(
+                loco, [flyer, post],
+                [DesiredMove(dir: Vec2d(0, 1), mode: .sprint), DesiredMove()], 1.4)
+            var airSteps = 0
+            var worst = 0.0
+            var prevX = 0.0, prevZ = 0.0, prevVX = 0.0, prevVZ = 0.0
+            var first = true
+            for i in 0..<Int((2.5 / dt).rounded()) {
+                _ = loco.step(
+                    flyer,
+                    DesiredMove(
+                        dir: Vec2d(0, 1), mode: .sprint, layout: i == 0), dt)
+                _ = loco.step(post, DesiredMove(), dt)
+                loco.resolveCollisions(dt)
+                if flyer.air.airborne {
+                    if !first {
+                        worst = Swift.max(
+                            worst,
+                            abs((flyer.pos.x - prevX) - prevVX * dt),
+                            abs((flyer.pos.z - prevZ) - prevVZ * dt))
+                    }
+                    first = false
+                    prevX = flyer.pos.x; prevZ = flyer.pos.z
+                    prevVX = flyer.vel.x; prevVZ = flyer.vel.z
+                    airSteps += 1
+                }
+            }
+            Check.ok(
+                airSteps > 30 && worst < 1e-9,
+                "a layout arc is untouched by separation")
+            let yielded = Foundation.hypot(post.pos.x, post.pos.z - 2.2)
+            Check.ok(
+                yielded > 0.05, "the upright body is the one that yields")
+        }
+
+        // 4. The regression guard: the shipped feel of the model, with
+        // separation on and off. A single body takes no separation branch, so
+        // these pairs must agree bit-near exactly; the bands are the values
+        // `test-locomotion` also asserts.
+        do {
+            func runOne<T>(_ fn: (Locomotion) -> T) -> (T, T) {
+                let withSep = freshLoco()
+                let a = fn(withSep)
+                let without = freshLoco()
+                without.separate = false
+                return (a, fn(without))
+            }
+            do {  // 40 m dash, elite, ~5.03 s.
+                let (on, off) = runOne { loco in
+                    let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+                    var t = 0.0
+                    for _ in 0..<(120 * 12) {
+                        _ = loco.step(
+                            p, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                        loco.resolveCollisions(dt)
+                        t += dt
+                        if p.pos.z >= 40 { break }
+                    }
+                    return t
+                }
+                Check.inRange(on, 4.90, 5.20, "40 m dash still ~5.03 s")
+                Check.ok(
+                    abs(on - off) < 1e-9, "separation does not change the 40 m dash")
+            }
+            do {  // A 90-degree cut keeps ~66.7% of entry speed.
+                let (on, off) = runOne { loco in
+                    let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+                    for _ in 0..<(120 * 6) {
+                        _ = loco.step(
+                            p, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                        loco.resolveCollisions(dt)
+                    }
+                    let entry = locoSpd(p)
+                    var min = entry
+                    for _ in 0..<Int((120 * 1.2).rounded()) {
+                        _ = loco.step(
+                            p, DesiredMove(dir: Vec2d(1, 0), mode: .sprint), dt)
+                        loco.resolveCollisions(dt)
+                        min = Swift.min(min, locoSpd(p))
+                    }
+                    return min / entry
+                }
+                Check.inRange(on, 0.62, 0.71, "90 deg cut still keeps ~66.7 %")
+                Check.ok(
+                    abs(on - off) < 1e-12, "separation does not change the cut")
+            }
+            do {  // Backpedal tops out at 0.553x sprint.
+                let (on, off) = runOne { loco in
+                    let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+                    var back = 0.0
+                    for _ in 0..<(120 * 8) {
+                        _ = loco.step(
+                            p,
+                            DesiredMove(
+                                dir: Vec2d(0, 1), mode: .backpedal,
+                                face: Vec2d(0, -1)), dt)
+                        loco.resolveCollisions(dt)
+                        back = Swift.max(back, locoSpd(p))
+                    }
+                    let q = loco.create(CreateOpts(id: 2, attr: eliteAttrs))
+                    var fwd = 0.0
+                    for _ in 0..<(120 * 8) {
+                        _ = loco.step(
+                            q, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                        loco.resolveCollisions(dt, list: [q])
+                        fwd = Swift.max(fwd, locoSpd(q))
+                    }
+                    return back / fwd
+                }
+                Check.inRange(on, 0.53, 0.58, "backpedal still 0.553x sprint")
+                Check.ok(
+                    abs(on - off) < 1e-12,
+                    "separation does not change the backpedal")
+            }
+            do {  // A layout is out of play for ~2.04 s.
+                let (on, off) = runOne { loco in
+                    let p = loco.create(CreateOpts(id: 1, attr: eliteAttrs))
+                    for _ in 0..<(120 * 3) {
+                        _ = loco.step(
+                            p, DesiredMove(dir: Vec2d(0, 1), mode: .sprint), dt)
+                        loco.resolveCollisions(dt)
+                    }
+                    var t = 0.0
+                    var out = 0.0
+                    for i in 0..<(120 * 8) {
+                        _ = loco.step(
+                            p,
+                            DesiredMove(
+                                dir: Vec2d(0, 1), mode: .sprint,
+                                layout: i == 0), dt)
+                        loco.resolveCollisions(dt)
+                        t += dt
+                        if !Locomotion.isAvailable(p) { out = t }
+                    }
+                    return out
+                }
+                Check.inRange(on, 1.90, 2.20, "layout still ~2.04 s out of play")
+                Check.ok(
+                    abs(on - off) < 1e-9, "separation does not change the layout")
+            }
         }
     }
 
