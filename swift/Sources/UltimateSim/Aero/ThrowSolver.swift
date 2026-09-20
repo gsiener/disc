@@ -331,7 +331,12 @@ public enum ThrowSolver {
         // a convergence (measured on the reference: the worst case went from 10.2 m off
         // to 35.7 m off). `windCross` is zero for a pure tailwind, so the gate keeps this
         // phase out of that case entirely.
-        if abs(windCross) > windDeadband {
+        //
+        // Issue #66: the comparison above the deadband in floating point, not in
+        // reals — see the reference for the measured fp edge (2.0 minus 2e-15 at
+        // exact alignment) and why 1e-9 opens the gate only for asks at the
+        // boundary itself. Ported exactly, epsilon included.
+        if abs(windCross) > windDeadband - 1e-9 {
             // THE SECANT MUST READ ITS ERROR IN THE TARGET'S FRAME, NOT THE CANDIDATE
             // HEADING'S OWN FRAME. `solveElevation(..., h, want, ...)` bisects so the
             // flight covers `want` metres measured ALONG `h` — so its own `lat` is the

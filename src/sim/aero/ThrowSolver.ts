@@ -570,7 +570,17 @@ export function solveRelease(
    * keeps this phase out of that case entirely and it falls through to the
    * ordinary calm-day trim below instead.
    */
-  if (Math.abs(windCross) > SOLVE_WIND_DEADBAND) {
+  // Issue #66: the comparison above the deadband in floating point, not in
+  // reals. `windCross` is `-wind.x*cos + wind.z*sin`, and at exact deadband
+  // alignment (heading 270° against wind (9.5, 2.0)) it reads 2.0 minus 2e-15,
+  // so `>` keeps the secant out and the 0.15 trim holds a ~5 m wind residual
+  // on four backhand asks (measured 8–11 m). The 1e-9 sits far above fp noise
+  // here (~1e-14 on values this size) and far below the 0.56 m/s gap to the
+  // strongest breeze crosswind (~1.44), so it opens the gate only for asks at
+  // the boundary itself. Measured: those four go 9.8 → 3.8 m worst case, and
+  // every ask under the boundary solves bit-identically (the gate is unchanged
+  // for all of them).
+  if (Math.abs(windCross) > SOLVE_WIND_DEADBAND - 1e-9) {
     /**
      * THE SECANT MUST READ ITS ERROR IN THE TARGET'S FRAME, NOT THE CANDIDATE
      * HEADING'S OWN FRAME — the bug that made the first version of this loop

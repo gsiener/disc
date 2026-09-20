@@ -50,24 +50,24 @@ import UltimateSim
 /// air or breeze, the lateral offset at closest approach must meet the same
 /// budget the total miss meets closer in. Measured worst case is 61% of it.
 ///
-/// **3. The strong-wind corner gets a backstop, not a budget.** At 9.5 m/s four
-/// reachable asks miss by 8–11 m — all backhand at 270°, both hands, 0.30 and
-/// 0.35 of range — and the long fractions spray. That corner belongs to issue
-/// #66 (power-lift ceiling, heading-step budget, or a joint solve), not to
-/// this suite. What this suite owns there is that no reachable ask ever comes
-/// back tens of metres off: every ask at or under 0.35 of range in strong
-/// wind must land within 12 m, 3× under the 36.5 m worst case that motivated
-/// all of this. When #66 lands, this backstop is deleted and the budget scope
-/// extends over the gale.
+/// **3. The strong-wind corner gets a backstop, not a budget.** At 9.5 m/s the
+/// reachable asks scatter 2–4 m, and the long fractions spray. That corner
+/// belongs to issue #66 (power-lift ceiling, heading-step budget, or a joint
+/// solve), not to this suite. What this suite owns there is that no reachable
+/// ask ever comes back tens of metres off: every ask at or under 0.35 of
+/// range in strong wind must land within 12 m, 3× under the 36.5 m worst case
+/// that motivated all of this. When #66 lands, this backstop is deleted and
+/// the budget scope extends over the gale.
 ///
-/// The four share one mechanism, and it is visible in the solution, not just
-/// the miss: heading 270° against wind (9.5, 2.0) reads a crosswind of almost
-/// exactly the 2.0 m/s `windDeadband`, so the heading secant stays out and the
-/// calm-day trim — clamped at 0.15 rad, sized for aerodynamic fade — is left
-/// holding a 5 m wind residual. All four solve to a pegged trim (0.150 rad)
-/// and a pegged bank (1.0 rad). An ulp the other way on the deadband
-/// comparison would run the secant instead, so this corner may read
-/// differently across libms — the backstop's headroom absorbs exactly that.
+/// The 8–11 m class that used to live here shared one mechanism, visible in
+/// the solution, not just the miss: heading 270° against wind (9.5, 2.0) read
+/// a crosswind of 2.0 minus 2e-15, so the heading secant stayed out and the
+/// calm-day trim — clamped at 0.15 rad, sized for aerodynamic fade — held a
+/// 5 m wind residual. The deadband gate now carries a 1e-9 epsilon for that fp
+/// edge (see the reference and the port), which runs the secant there and
+/// took the class from 9.8 to 3.8 m worst case. What is left is scatter, not a
+/// class — and scatter may still read differently across libms, which the
+/// backstop's headroom absorbs.
 ///
 /// **4. A solve that escapes its own brackets.** Elevation within
 /// `[elevLo, elevHi]`, bank within `±bankMax`, heading within `headingMax` of
@@ -102,10 +102,11 @@ enum ThrowSolverTests {
     static let hands: [ThrowOptions.Hand] = [.right, .left]
 
     /// Backstop for the strong-wind corner issue #66 owns: no reachable ask
-    /// comes back tens of metres off. Measured worst is 11.0 m against this
-    /// 12.0 line; the 36.5 m worst case that motivated the #65 fix is 3× above
-    /// it. When #66 lands, this backstop is deleted and the budget scope
-    /// extends over the gale.
+    /// comes back tens of metres off. Measured worst is 3.8 m against this
+    /// 12.0 line (was 11.0 m before the deadband-epsilon fix); the 36.5 m
+    /// worst case that motivated the #65 fix is 3× above it. The remaining
+    /// 2–4 m gale scatter is the noisy residual field #66 records, not a
+    /// defect class — extending the calm budget over it is still open.
     static let galeBackstop = 12.0
 
     static func run() throws {
