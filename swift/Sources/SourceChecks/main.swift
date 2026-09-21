@@ -7,13 +7,14 @@ import Foundation
 /// about the shape of the source has to run where the sources are. That is this target, and
 /// it is the reason these are not suites.
 ///
-/// Both audits run every time and failures are pooled: a scan you have to run four times to
+/// All audits run every time and failures are pooled: a scan you have to run four times to
 /// see four problems is a scan people run once.
 let quiet = CommandLine.arguments.contains("--quiet")
 var report = Report(quiet: quiet)
 
 Reachability.run(&report)
 Structure.run(&report)
+Imports.run(&report)
 
 if report.failures.isEmpty {
     print("\nPASS — every source invariant holds.")
